@@ -12,11 +12,34 @@ Invokes `codeprobe mine` under the hood -- all mining runs through the CLI, not 
 
 ---
 
-## Phase 0: Mining Configuration
+## Phase 0: Eval Goal
 
 Ask the user:
 
-**Question 1** -- Header: "Target codebase"
+**Question 1** -- Header: "What are you trying to learn?"
+
+- Question: "What's the goal of this evaluation? This determines what kinds of tasks I mine."
+- Options:
+  - **MCP / tool comparison** -- "Does adding Sourcegraph, code search, or other MCP tools help the agent? I'll mine harder tasks that require cross-file navigation and deep codebase understanding."
+  - **Model comparison** -- "Which model performs best (Opus vs Sonnet vs Haiku)? I'll mine a mix of difficulties to find where models diverge."
+  - **Prompt / instruction comparison** -- "Which system prompt or instruction style works best? I'll mine a variety of task types."
+  - **General benchmarking** -- "Just want to see how well agents handle my codebase. Balanced mix."
+
+Map selection to mining parameters:
+
+| Goal                  | `MIN_FILES`     | Difficulty bias                         | Rationale                                            |
+| --------------------- | --------------- | --------------------------------------- | ---------------------------------------------------- |
+| MCP / tool comparison | `--min-files 6` | Hard: cross-file, deep navigation       | Easy tasks don't differentiate MCP from agentic grep |
+| Model comparison      | `--min-files 2` | Mixed: need variance to separate models |                                                      |
+| Prompt comparison     | `--min-files 2` | Mixed                                   |                                                      |
+| General benchmarking  | (no filter)     | Balanced                                |                                                      |
+
+---
+
+## Phase 1: Mining Configuration
+
+**Question 2** -- Header: "Target codebase"
+
 - Question: "Which repo should I mine tasks from?"
 - Options:
   - **Current directory** -- "Mine from the repo in the current working directory"
@@ -33,7 +56,8 @@ git -C {REPO_PATH} rev-parse --git-dir 2>/dev/null && echo "valid" || echo "not 
 
 If not a git repo, ask the user for a different path.
 
-**Question 2** -- Header: "How many tasks?"
+**Question 3** -- Header: "How many tasks?"
+
 - Question: "How many tasks should I mine? (3-20)"
 - Options:
   - **Quick look (3-5)** -- "Fast results. Good for a first experiment or validating setup."
@@ -41,11 +65,13 @@ If not a git repo, ask the user for a different path.
   - **Thorough (10-20)** -- "More statistical confidence. Best for making real tooling decisions."
 
 Map selection to `TASK_COUNT`:
+
 - Quick look: `--count 5`
 - Standard: `--count 8`
 - Thorough: `--count 15`
 
-**Question 3** -- Header: "Git host"
+**Question 4** -- Header: "Git host"
+
 - Question: "Which git host does this repo use?"
 - Options:
   - **Auto-detect** -- "Let codeprobe figure it out from the remote URL"
@@ -57,6 +83,7 @@ Map selection to `TASK_COUNT`:
   - **Local only** -- "No remote API access, use git history only"
 
 Map selection to `SOURCE`:
+
 - Auto-detect: `--source auto`
 - GitHub: `--source github`
 - GitLab: `--source gitlab`
@@ -67,23 +94,89 @@ Map selection to `SOURCE`:
 
 ---
 
-## Phase 1: Run Mining
+## Phase 2: Pre-flight Summary
+
+Before mining, show the user a summary of what will happen:
+
+```
+Mining plan:
+  Goal:       {GOAL}
+  Repo:       {REPO_PATH}
+  Tasks:      {TASK_COUNT}
+  Source:      {SOURCE}
+  Min files:   {MIN_FILES} (biasing toward {DIFFICULTY_BIAS} tasks)
+```
+
+Confirm before proceeding.
+
+---
+
+## Phase 3: Run Mining
 
 Execute the codeprobe CLI:
 
 ```bash
-codeprobe mine {REPO_PATH} --count {TASK_COUNT} --source {SOURCE}
+codeprobe mine {REPO_PATH} --count {TASK_COUNT} --source {SOURCE} --min-files {MIN_FILES}
 ```
 
 This:
+
 1. Connects to the git host API (or falls back to local git log)
 2. Discovers merged PRs/MRs with testable code changes
-3. Filters for tasks with clear ground truth (patch, test scripts)
-4. Generates task directories with instruction files, ground truth, and scoring rubrics
+3. Filters for tasks meeting the min-files threshold
+4. Sorts by change size (larger changes surface first)
+5. Generates task directories with instruction files, ground truth, and scoring rubrics
 
 ---
 
-## Phase 2: Present Results
+## Phase 4: Quality Review
+
+After mining, review the results critically. Check for these common quality issues:
+
+### Difficulty distribution
+
+Count tasks by difficulty. Flag if the distribution doesn't match the goal:
+
+- **MCP comparison**: should be mostly medium/hard. If >50% easy, warn and suggest re-mining with higher `--min-files`.
+- **Model comparison**: should have variance. If all same difficulty, warn.
+
+### Instruction quality
+
+Read each generated `instruction.md`. Flag if:
+
+- Instructions are generic ("reproduce changes from merge X") without describing the problem being solved
+- No mention of affected files or the context needed to understand the change
+- Missing PR title, issue context, or description of what went wrong / what was needed
+
+If instructions are thin, suggest the user:
+
+1. Look up the original PR/issue for each task and enrich the instruction
+2. Or re-mine with `--source github` (or appropriate host) to pull PR descriptions
+
+### Test quality
+
+Check each `tests/test.sh`. Flag if:
+
+- Test scripts are generic stubs (e.g., just `bash tests/test.sh` at repo root)
+- No targeted test commands for the specific packages/files affected
+- Tests don't actually verify the specific change
+
+If tests are weak, suggest:
+
+1. Replace generic stubs with targeted test commands (e.g., `go test ./pkg/specific/...` or `pytest tests/test_specific.py`)
+2. Or use `codeprobe scaffold validate` to check task completeness
+
+### Task diversity
+
+Check if tasks cluster in one area of the codebase. Flag if:
+
+- > 70% of tasks are in the same directory or package
+- All tasks are the same language or category
+- No variety in task type (all bug fixes, all features, etc.)
+
+---
+
+## Phase 5: Present Results
 
 Display the mining output. For each discovered task, show:
 
@@ -92,44 +185,49 @@ Mined {N} tasks:
 
 | # | Task ID              | Category  | Difficulty | Files Changed | Language |
 |---|----------------------|-----------|------------|---------------|----------|
-| 1 | repo-leak-fix-001    | bug_fix   | hard       | 3             | Python   |
-| 2 | repo-auth-feat-001   | feature   | medium     | 5             | Python   |
-| 3 | repo-refactor-001    | refactor  | easy       | 2             | Python   |
+| 1 | repo-leak-fix-001    | bug_fix   | hard       | 12            | Go       |
+| 2 | repo-auth-feat-001   | feature   | medium     | 7             | Go       |
+| 3 | repo-refactor-001    | refactor  | medium     | 5             | Go       |
 ```
 
 Highlight:
+
 - **Task mix quality** -- Good spread of difficulty and category?
-- **Ground truth coverage** -- How many tasks have automated test scripts vs. rubric-only?
-- **Estimated eval cost** -- Rough token estimate for running all tasks
+- **Ground truth coverage** -- How many tasks have targeted test scripts vs. generic stubs?
+- **Quality warnings** -- Any issues found in Phase 4
 
 ---
 
-## Phase 3: Next Steps
+## Phase 6: Next Steps
 
 ```
 Tasks mined successfully. Next steps:
 
-  1. Run the eval:
+  1. Review and enrich task instructions (recommended):
+     Look up the original PR for each task and add problem context
+
+  2. Run the eval:
      codeprobe run {REPO_PATH} --agent claude
 
-  2. Try a different model:
+  3. Try a different model:
      codeprobe run {REPO_PATH} --agent claude --model claude-sonnet-4-6
 
-  3. Set a cost budget:
+  4. Set a cost budget:
      codeprobe run {REPO_PATH} --agent claude --max-cost-usd 5.00
 
-  4. Mine more tasks for better statistical confidence:
-     codeprobe mine {REPO_PATH} --count 15
+  5. Mine more tasks for better statistical confidence:
+     codeprobe mine {REPO_PATH} --count 15 --min-files {MIN_FILES}
 ```
 
 ---
 
 ## Quick Reference
 
-| User says | What happens |
-|-----------|-------------|
-| `/mine-tasks` | Mine from current directory, interactive Q&A |
-| `/mine-tasks /path/to/repo` | Mine from specific repo |
-| "mine 10 tasks from this repo" | Mine with `--count 10` |
-| "find eval tasks" | Same as `/mine-tasks` |
-| "benchmark my repo" | Assess + mine pipeline |
+| User says                            | What happens                                 |
+| ------------------------------------ | -------------------------------------------- |
+| `/mine-tasks`                        | Mine from current directory, interactive Q&A |
+| `/mine-tasks /path/to/repo`          | Mine from specific repo                      |
+| "mine hard tasks for MCP comparison" | Mine with `--min-files 6`, bias hard         |
+| "mine 10 tasks from this repo"       | Mine with `--count 10`                       |
+| "find eval tasks"                    | Same as `/mine-tasks`                        |
+| "benchmark my repo"                  | Assess + mine pipeline                       |

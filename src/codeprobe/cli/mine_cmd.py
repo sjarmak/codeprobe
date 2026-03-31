@@ -5,17 +5,21 @@ from __future__ import annotations
 import click
 
 
-def run_mine(path: str, count: int = 5, source: str = "auto") -> None:
+def run_mine(
+    path: str, count: int = 5, source: str = "auto", min_files: int = 0
+) -> None:
     """Mine eval tasks from a repository."""
     from pathlib import Path
 
     from codeprobe.mining import mine_tasks, write_task_dir
 
     repo_path = Path(path).resolve()
-    tasks = mine_tasks(repo_path, count=count, source_hint=source)
+    tasks = mine_tasks(repo_path, count=count, source_hint=source, min_files=min_files)
 
     if not tasks:
-        click.echo("No suitable tasks found. Try a repo with merged PRs that include tests.")
+        click.echo(
+            "No suitable tasks found. Try a repo with merged PRs that include tests."
+        )
         return
 
     tasks_dir = repo_path / ".codeprobe" / "tasks"
