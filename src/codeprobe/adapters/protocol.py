@@ -7,6 +7,24 @@ from typing import Protocol, runtime_checkable
 
 ALLOWED_PERMISSION_MODES = frozenset({"default", "plan", "auto", "acceptEdits"})
 ALLOWED_COST_MODELS = frozenset({"per_token", "subscription", "unknown"})
+ALLOWED_COST_SOURCES = frozenset(
+    {"api_reported", "calculated", "log_parsed", "estimated", "unavailable"}
+)
+
+
+# -- Error hierarchy ----------------------------------------------------------
+
+
+class AdapterError(Exception):
+    """Base exception for all adapter errors."""
+
+
+class AdapterSetupError(AdapterError):
+    """Binary not found, auth missing, or other pre-run setup failure."""
+
+
+class AdapterExecutionError(AdapterError):
+    """Unrecoverable failure during agent execution."""
 
 
 @dataclass(frozen=True)
@@ -23,6 +41,8 @@ class AgentOutput:
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
     cost_model: str = "unknown"
+    error: str | None = None
+    cost_source: str = "unavailable"
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:
@@ -32,6 +52,11 @@ class AgentOutput:
             )
         if self.cost_model == "per_token" and self.cost_usd is None:
             raise ValueError("cost_usd is required when cost_model is 'per_token'")
+        if self.cost_source not in ALLOWED_COST_SOURCES:
+            raise ValueError(
+                f"Unknown cost_source: {self.cost_source!r}. "
+                f"Expected one of: {sorted(ALLOWED_COST_SOURCES)}"
+            )
 
 
 @dataclass(frozen=True)
@@ -61,19 +86,11 @@ class AgentAdapter(Protocol):
         """Human-readable agent name."""
         ...
 
-    def find_binary(self) -> str | None:
-        """Return path to the agent CLI binary, or None if not found."""
-        ...
-
     def preflight(self, config: AgentConfig) -> list[str]:
         """Validate that the agent is ready to run.
 
         Returns a list of issues (empty = ready).
         """
-        ...
-
-    def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
-        """Build the shell command to execute the agent."""
         ...
 
     def run(self, prompt: str, config: AgentConfig) -> AgentOutput:

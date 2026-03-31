@@ -1,11 +1,19 @@
 """Tests for agent adapter protocol and implementations."""
 
+import subprocess
+from unittest.mock import patch
+
 import pytest
 
+from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.copilot import CopilotAdapter
 from codeprobe.adapters.protocol import (
     ALLOWED_COST_MODELS,
+    ALLOWED_COST_SOURCES,
+    AdapterError,
+    AdapterExecutionError,
+    AdapterSetupError,
     AgentAdapter,
     AgentConfig,
     AgentOutput,
@@ -164,3 +172,177 @@ class TestAgentOutputValidation:
                 duration_seconds=1.0,
                 cost_model="per_token",
             )
+
+
+# -- Narrowed Protocol --------------------------------------------------------
+
+
+class TestNarrowedProtocol:
+    def test_minimal_adapter_satisfies_protocol(self) -> None:
+        """A class with only name/preflight/run satisfies AgentAdapter."""
+
+        class MinimalAdapter:
+            @property
+            def name(self) -> str:
+                return "minimal"
+
+            def preflight(self, config: AgentConfig) -> list[str]:
+                return []
+
+            def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+                return AgentOutput(
+                    stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1
+                )
+
+        adapter = MinimalAdapter()
+        assert isinstance(adapter, AgentAdapter)
+        assert adapter.name == "minimal"
+
+
+# -- AgentOutput error / cost_source fields ------------------------------------
+
+
+class TestAgentOutputErrorField:
+    def test_default_is_none(self) -> None:
+        output = AgentOutput(
+            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0
+        )
+        assert output.error is None
+
+    def test_can_set_error(self) -> None:
+        output = AgentOutput(
+            stdout="", stderr=None, exit_code=1, duration_seconds=1.0,
+            error="Agent timed out after 300s",
+        )
+        assert output.error == "Agent timed out after 300s"
+
+
+class TestAgentOutputCostSource:
+    def test_default_is_unavailable(self) -> None:
+        output = AgentOutput(
+            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0
+        )
+        assert output.cost_source == "unavailable"
+
+    @pytest.mark.parametrize("source", sorted(ALLOWED_COST_SOURCES))
+    def test_valid_values_accepted(self, source: str) -> None:
+        output = AgentOutput(
+            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0,
+            cost_source=source,
+        )
+        assert output.cost_source == source
+
+    def test_invalid_cost_source_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown cost_source"):
+            AgentOutput(
+                stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0,
+                cost_source="magic",
+            )
+
+
+# -- AdapterError hierarchy ----------------------------------------------------
+
+
+class TestAdapterErrorHierarchy:
+    def test_all_subclasses_are_adapter_error(self) -> None:
+        assert issubclass(AdapterSetupError, AdapterError)
+        assert issubclass(AdapterExecutionError, AdapterError)
+
+    def test_adapter_error_is_exception(self) -> None:
+        assert issubclass(AdapterError, Exception)
+
+    def test_can_catch_subclass_as_adapter_error(self) -> None:
+        with pytest.raises(AdapterError):
+            raise AdapterSetupError("binary missing")
+
+
+# -- BaseAdapter run() error handling ------------------------------------------
+
+
+class _StubAdapter(BaseAdapter):
+    """Minimal concrete adapter for testing BaseAdapter.run()."""
+
+    _binary_name = "fake-agent"
+    _install_hint = "Install fake-agent"
+
+    def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+        return ["/usr/bin/fake-agent", "-p", prompt]
+
+
+class TestBaseAdapterRunErrors:
+    def test_timeout_returns_error_output(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
+        exc.stdout = "partial out"
+        exc.stderr = "partial err"
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test prompt", config)
+        assert output.error == "Agent timed out after 5s"
+        assert output.exit_code == -1
+        assert output.stdout == "partial out"
+        assert output.stderr == "partial err"
+
+    def test_timeout_handles_none_output(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=10)
+        exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=10)
+        exc.stdout = None
+        exc.stderr = None
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test", config)
+        assert output.stdout == ""
+        assert output.stderr is None
+        assert output.error is not None
+
+    def test_file_not_found_raises_setup_error(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig()
+        with patch("subprocess.run", side_effect=FileNotFoundError("/usr/bin/fake-agent")):
+            with pytest.raises(AdapterSetupError, match="Binary not found"):
+                adapter.run("test", config)
+
+    def test_require_binary_raises_setup_error(self) -> None:
+        adapter = _StubAdapter()
+        with patch.object(adapter, "find_binary", return_value=None):
+            with pytest.raises(AdapterSetupError, match="CLI not found"):
+                adapter._require_binary()
+
+
+# -- BaseAdapter parse_output() ------------------------------------------------
+
+
+class TestParseOutput:
+    def test_default_maps_fields(self) -> None:
+        adapter = _StubAdapter()
+        result = subprocess.CompletedProcess(
+            args=["fake-agent"], returncode=0, stdout="hello", stderr=""
+        )
+        output = adapter.parse_output(result, duration=2.5)
+        assert output.stdout == "hello"
+        assert output.stderr is None  # empty string → None
+        assert output.exit_code == 0
+        assert output.duration_seconds == 2.5
+
+    def test_parse_failure_returns_output_with_error(self) -> None:
+        class BrokenParser(BaseAdapter):
+            _binary_name = "broken"
+            _install_hint = "n/a"
+
+            def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+                return ["broken"]
+
+            def parse_output(
+                self, result: subprocess.CompletedProcess[str], duration: float
+            ) -> AgentOutput:
+                raise ValueError("bad JSON")
+
+        adapter = BrokenParser()
+        config = AgentConfig()
+        fake_result = subprocess.CompletedProcess(
+            args=["broken"], returncode=0, stdout="raw output", stderr="err"
+        )
+        with patch("subprocess.run", return_value=fake_result):
+            output = adapter.run("test", config)
+        assert "Output parse failed" in output.error
+        assert output.stdout == "raw output"
