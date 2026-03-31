@@ -51,3 +51,30 @@ def test_agent_config_defaults():
     config = AgentConfig()
     assert config.permission_mode == "default"
     assert config.timeout_seconds == 300
+
+
+def test_claude_permission_mode_passed():
+    adapter = ClaudeAdapter()
+    config = AgentConfig(permission_mode="plan")
+    if adapter.find_binary():
+        cmd = adapter.build_command("test", config)
+        assert "--permission-mode" in cmd
+        idx = cmd.index("--permission-mode")
+        assert cmd[idx + 1] == "plan"
+
+
+def test_claude_default_permission_mode_omitted():
+    adapter = ClaudeAdapter()
+    config = AgentConfig(permission_mode="default")
+    if adapter.find_binary():
+        cmd = adapter.build_command("test", config)
+        assert "--permission-mode" not in cmd
+
+
+def test_claude_rejects_bypass_permissions():
+    import pytest
+    adapter = ClaudeAdapter()
+    config = AgentConfig(permission_mode="bypassPermissions")
+    if adapter.find_binary():
+        with pytest.raises(ValueError, match="Unsafe permission_mode"):
+            adapter.build_command("test", config)

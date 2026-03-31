@@ -132,26 +132,17 @@ def _count_lines(text: str) -> int:
 
 def _detect_test_frameworks(repo_path: Path) -> list[str]:
     """Detect test frameworks from config files."""
-    frameworks: list[str] = []
+    found: set[str] = set()
 
     # pytest — pyproject.toml or setup.cfg
-    pyproject = repo_path / "pyproject.toml"
-    setup_cfg = repo_path / "setup.cfg"
-    if pyproject.is_file():
-        try:
-            content = pyproject.read_text()
-            if "pytest" in content:
-                frameworks.append("pytest")
-        except OSError:
-            pass
-    if setup_cfg.is_file():
-        try:
-            content = setup_cfg.read_text()
-            if "pytest" in content or "tool:pytest" in content:
-                if "pytest" not in frameworks:
-                    frameworks.append("pytest")
-        except OSError:
-            pass
+    for config_file in (repo_path / "pyproject.toml", repo_path / "setup.cfg"):
+        if config_file.is_file():
+            try:
+                content = config_file.read_text()
+                if "pytest" in content:
+                    found.add("pytest")
+            except OSError:
+                pass
 
     # jest / mocha / vitest — package.json
     package_json = repo_path / "package.json"
@@ -162,26 +153,23 @@ def _detect_test_frameworks(repo_path: Path) -> list[str]:
                 *data.get("dependencies", {}).keys(),
                 *data.get("devDependencies", {}).keys(),
             }
-            for fw in ("jest", "mocha", "vitest", "ava", "jasmine"):
-                if fw in all_deps:
-                    frameworks.append(fw)
+            js_frameworks = {"jest", "mocha", "vitest", "ava", "jasmine"}
+            found.update(all_deps & js_frameworks)
             # Also check scripts for jest/vitest
-            scripts = data.get("scripts", {})
-            for val in scripts.values():
-                if isinstance(val, str):
-                    if "jest" in val and "jest" not in frameworks:
-                        frameworks.append("jest")
-                    if "vitest" in val and "vitest" not in frameworks:
-                        frameworks.append("vitest")
+            script_values = " ".join(
+                v for v in data.get("scripts", {}).values() if isinstance(v, str)
+            )
+            for fw in ("jest", "vitest"):
+                if fw in script_values:
+                    found.add(fw)
         except (OSError, json.JSONDecodeError):
             pass
 
     # go test — any *_test.go file
-    go_test_files = _run_git(["ls-files", "--", "*_test.go"], cwd=repo_path)
-    if go_test_files:
-        frameworks.append("go test")
+    if _run_git(["ls-files", "--", "*_test.go"], cwd=repo_path):
+        found.add("go test")
 
-    return frameworks
+    return sorted(found)
 
 
 def _detect_primary_languages(file_list: str) -> list[str]:

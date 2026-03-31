@@ -15,7 +15,13 @@ def test_experiment_config_defaults():
     config = ExperimentConfig(label="baseline")
     assert config.agent == "claude"
     assert config.model is None
+    assert config.permission_mode == "default"
     assert config.mcp_config is None
+
+
+def test_experiment_config_permission_mode():
+    config = ExperimentConfig(label="safe", permission_mode="plan")
+    assert config.permission_mode == "plan"
 
 
 def test_completed_task_score():

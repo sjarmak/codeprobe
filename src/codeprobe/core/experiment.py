@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -17,12 +18,27 @@ from codeprobe.models.experiment import (
 
 logger = logging.getLogger(__name__)
 
+_SAFE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _validate_path_component(value: str, field: str) -> None:
+    """Validate that *value* is a safe path component (no traversal)."""
+    if not _SAFE_NAME.match(value):
+        raise ValueError(
+            f"Unsafe {field}: {value!r}. "
+            "Use only letters, digits, hyphens, underscores, and dots."
+        )
+
 
 def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
     """Create the experiment directory structure and write experiment.json.
 
     Returns the experiment directory path.
     """
+    _validate_path_component(experiment.name, "experiment name")
+    for config in experiment.configs:
+        _validate_path_component(config.label, "config label")
+
     exp_dir = base_dir / experiment.name
     (exp_dir / "tasks").mkdir(parents=True, exist_ok=True)
 
@@ -65,6 +81,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
             label=c["label"],
             agent=c.get("agent", "claude"),
             model=c.get("model"),
+            permission_mode=c.get("permission_mode", "default"),
             mcp_config=c.get("mcp_config"),
             instruction_variant=c.get("instruction_variant"),
             extra=c.get("extra", {}),
@@ -72,11 +89,18 @@ def load_experiment(exp_dir: Path) -> Experiment:
         for c in data.get("configs", [])
     ]
 
+    tasks_dir = data.get("tasks_dir", "tasks")
+    # Validate all path components from the untrusted experiment.json
+    _validate_path_component(name, "experiment name")
+    _validate_path_component(tasks_dir, "tasks_dir")
+    for c in configs:
+        _validate_path_component(c.label, "config label")
+
     return Experiment(
         name=name,
         description=data.get("description", ""),
         configs=configs,
-        tasks_dir=data.get("tasks_dir", "tasks"),
+        tasks_dir=tasks_dir,
     )
 
 

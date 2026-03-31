@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.core.executor import execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
@@ -61,9 +61,18 @@ def run_eval(
     for exp_config in configs_to_run:
         click.echo(f"\nRunning config: {exp_config.label} ({len(task_dirs)} tasks)")
 
+        perm = exp_config.permission_mode
+        if perm not in ALLOWED_PERMISSION_MODES:
+            click.echo(
+                f"Error: invalid permission_mode {perm!r} in config "
+                f"{exp_config.label!r}. Allowed: {', '.join(sorted(ALLOWED_PERMISSION_MODES))}",
+                err=True,
+            )
+            raise SystemExit(1)
+
         agent_config = AgentConfig(
             model=exp_config.model or model,
-            permission_mode="default",
+            permission_mode=perm,
             timeout_seconds=300,
             mcp_config=exp_config.mcp_config,
         )

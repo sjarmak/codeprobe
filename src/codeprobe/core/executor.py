@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from codeprobe.core.experiment import append_checkpoint, load_checkpoint, load_checkpoint_entries
+from codeprobe.core.experiment import append_checkpoint, load_checkpoint_entries
 from codeprobe.core.scoring import sanitize_secrets, score_task_output
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
@@ -33,7 +33,9 @@ def load_instruction(task_dir: Path, variant: str | None = None) -> str:
     Raises FileNotFoundError if no instruction file is found.
     """
     if variant:
-        variant_path = task_dir / variant
+        variant_path = (task_dir / variant).resolve()
+        if not str(variant_path).startswith(str(task_dir.resolve())):
+            raise ValueError(f"instruction_variant escapes task directory: {variant!r}")
         if variant_path.is_file():
             return variant_path.read_text(encoding="utf-8").strip()
 
@@ -118,17 +120,15 @@ def execute_config(
 
     Resumes from checkpoint if provided. Calls on_task_complete after each task.
     """
+    results: list[CompletedTask] = []
     checkpointed_ids: set[str] = set()
-    prior_results: list[CompletedTask] = []
     if checkpoint_path is not None:
         for entry in load_checkpoint_entries(checkpoint_path):
             checkpointed_ids.add(entry["task_id"])
-            prior_results.append(CompletedTask(
+            results.append(CompletedTask(
                 task_id=entry["task_id"],
                 automated_score=entry.get("automated_score", 0.0),
             ))
-
-    results: list[CompletedTask] = list(prior_results)
 
     for task_dir in task_dirs:
         task_id = task_dir.name

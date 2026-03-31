@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+ALLOWED_PERMISSION_MODES = frozenset({"default", "plan", "auto", "acceptEdits"})
+
 
 @dataclass(frozen=True)
 class AgentOutput:

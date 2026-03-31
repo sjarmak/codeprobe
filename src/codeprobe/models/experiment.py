@@ -12,6 +12,7 @@ class ExperimentConfig:
     label: str
     agent: str = "claude"
     model: str | None = None
+    permission_mode: str = "default"
     mcp_config: dict | None = None
     instruction_variant: str | None = None
     extra: dict = field(default_factory=dict)

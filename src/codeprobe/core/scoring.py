@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -43,26 +44,52 @@ def sanitize_secrets(text: str) -> str:
     return _TOKEN_PATTERN.sub("[REDACTED]", text)
 
 
+_SAFE_ENV_KEYS = frozenset({"PATH", "HOME", "LANG", "TERM", "TMPDIR", "LC_ALL"})
+
+
+def _safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a filtered environment with only safe keys.
+
+    Prevents secret leakage via inherited environment variables.
+    """
+    env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    if extra:
+        env.update(extra)
+    return env
+
+
 def score_task_output(agent_output: str, task_dir: Path) -> ScoreResult:
     """Run tests/test.sh with the agent output and return a ScoreResult.
 
-    Writes agent_output to a temp file and sets the AGENT_OUTPUT env var
-    to its path before invoking bash tests/test.sh.
+    Security measures:
+    - Copies task dir to a temp directory (filesystem isolation)
+    - Filters environment to safe keys only (secret leak prevention)
+    - Sets cwd to the temp copy (cwd isolation)
+    - Enforces a 30-second timeout
     """
     test_sh = task_dir / "tests" / "test.sh"
     if not test_sh.is_file():
         return ScoreResult(score=0.0, passed=False, error="tests/test.sh not found")
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False
-    ) as tmp:
-        tmp.write(agent_output)
-        tmp_path = tmp.name
-
+    sandbox_dir = None
     try:
+        # Copy task directory to a temp sandbox (symlinks=True to avoid
+        # following symlinks that point outside the task tree)
+        sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
+        sandbox_task = sandbox_dir / "task"
+        shutil.copytree(task_dir, sandbox_task, symlinks=True)
+        sandbox_test_sh = sandbox_task / "tests" / "test.sh"
+
+        # Write agent output inside the sandbox boundary
+        output_file = sandbox_dir / "agent_output.txt"
+        output_file.write_text(agent_output, encoding="utf-8")
+
+        env = _safe_env({"AGENT_OUTPUT": str(output_file)})
+
         result = subprocess.run(
-            ["bash", str(test_sh)],
-            env={**os.environ, "AGENT_OUTPUT": tmp_path},
+            ["bash", str(sandbox_test_sh)],
+            env=env,
+            cwd=str(sandbox_task),
             capture_output=True,
             text=True,
             timeout=SCORE_TIMEOUT_SECONDS,
@@ -79,4 +106,5 @@ def score_task_output(agent_output: str, task_dir: Path) -> ScoreResult:
     except OSError as exc:
         return ScoreResult(score=0.0, passed=False, error=str(exc))
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        if sandbox_dir is not None:
+            shutil.rmtree(sandbox_dir, ignore_errors=True)

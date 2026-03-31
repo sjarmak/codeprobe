@@ -72,6 +72,19 @@ def test_load_instruction_missing(tmp_path: Path):
         load_instruction(task_dir)
 
 
+def test_load_instruction_variant_path_traversal(tmp_path: Path):
+    """instruction_variant must not escape the task directory."""
+    task_dir = tmp_path / "task-005"
+    task_dir.mkdir()
+    (task_dir / "instruction.md").write_text("default")
+    # Create a file outside task_dir
+    (tmp_path / "secret.md").write_text("secret content")
+
+    import pytest
+    with pytest.raises(ValueError, match="escapes task directory"):
+        load_instruction(task_dir, variant="../secret.md")
+
+
 def test_execute_task_success(tmp_path: Path):
     task_dir = _make_task(tmp_path / "task-001", passing=True)
     adapter = FakeAdapter(stdout="correct answer")
