@@ -36,7 +36,7 @@ verification_modes = ["artifact"]
 [verification]
 type = "test"
 command = "bash /tests/test.sh"
-reward_type = "score"
+reward_type = "checkpoint"
 description = "Security Compliance Audit verification"
 """
 
@@ -120,7 +120,7 @@ class TestLoadTomlCcxFormat:
         p.write_text(CCX_TOML)
         task = load_task(p)
 
-        assert task.verification.reward_type == "score"
+        assert task.verification.reward_type == "checkpoint"
         assert task.verification.type == "test"
         assert task.verification.command == "bash /tests/test.sh"
 

@@ -7,9 +7,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from codeprobe.core.scoring import VALID_REWARD_TYPES
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-
-_VALID_REWARD_TYPES = frozenset({"binary", "test_ratio", "score", "continuous", "checkpoint"})
 
 
 def load_task(path: Path) -> Task:
@@ -37,10 +36,10 @@ def _build_task(
 ) -> Task:
     """Build a Task from normalized dicts. Shared by TOML and JSON loaders."""
     reward_type = verif.get("reward_type", "binary")
-    if reward_type not in _VALID_REWARD_TYPES:
+    if reward_type not in VALID_REWARD_TYPES:
         raise ValueError(
             f"Unknown reward_type: {reward_type!r}. "
-            f"Expected one of: {sorted(_VALID_REWARD_TYPES)}"
+            f"Expected one of: {sorted(VALID_REWARD_TYPES)}"
         )
 
     tags_raw = meta.get("tags", ())

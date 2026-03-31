@@ -95,7 +95,20 @@ def execute_task(
             metadata={"error": sanitize_secrets(error_msg)},
         )
 
-    scorer = get_scorer(reward_type)
+    try:
+        scorer = get_scorer(reward_type)
+    except ValueError as exc:
+        return CompletedTask(
+            task_id=task_id,
+            automated_score=0.0,
+            status="error",
+            duration_seconds=output.duration_seconds,
+            token_count=output.token_count,
+            cost_usd=output.cost_usd,
+            cost_model=output.cost_model,
+            metadata={"error": f"Invalid reward_type: {exc}"},
+        )
+
     score_result = scorer.score(output.stdout, task_dir)
 
     return CompletedTask(

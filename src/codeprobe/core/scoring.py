@@ -143,29 +143,20 @@ def _run_in_sandbox(
             text=True,
             timeout=timeout,
         )
+        if cleanup:
+            shutil.rmtree(sandbox_dir, ignore_errors=True)
+            sandbox_dir = None
         return _SandboxRun(
             returncode=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
-            sandbox_dir=None if cleanup else sandbox_dir,
+            sandbox_dir=sandbox_dir,
         )
-    except subprocess.TimeoutExpired:
-        # Always clean up on error — even when cleanup=False (caller wants
-        # sandbox only on success, not leaked on failure).
+    except (subprocess.TimeoutExpired, OSError) as exc:
         if sandbox_dir is not None:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
-        return _SandboxRun(
-            returncode=-1, stdout="", stderr="", error="Scoring timed out",
-        )
-    except OSError as exc:
-        if sandbox_dir is not None:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
-        return _SandboxRun(
-            returncode=-1, stdout="", stderr="", error=str(exc),
-        )
-    else:
-        if cleanup and sandbox_dir is not None:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
+        error = "Scoring timed out" if isinstance(exc, subprocess.TimeoutExpired) else str(exc)
+        return _SandboxRun(returncode=-1, stdout="", stderr="", error=error)
 
 
 # ---------------------------------------------------------------------------
@@ -390,10 +381,10 @@ _SCORER_REGISTRY: dict[str, type] = {
     "binary": BinaryScorer,
     "continuous": ContinuousScorer,
     "checkpoint": CheckpointScorer,
-    # Aliases for backward compat with loader vocabulary
-    "test_ratio": ContinuousScorer,
-    "score": CheckpointScorer,
+    "test_ratio": ContinuousScorer,  # loader backward compat
 }
+
+VALID_REWARD_TYPES: frozenset[str] = frozenset(_SCORER_REGISTRY)
 
 
 def get_scorer(reward_type: str) -> BinaryScorer | ContinuousScorer | CheckpointScorer:
