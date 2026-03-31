@@ -42,6 +42,11 @@ claude = "codeprobe.adapters.claude:ClaudeAdapter"
 codex = "codeprobe.adapters.codex:CodexAdapter"
 copilot = "codeprobe.adapters.copilot:CopilotAdapter"
 
+[project.entry-points."codeprobe.sessions"]
+claude = "codeprobe.adapters.session:ClaudeSessionCollector"
+codex = "codeprobe.adapters.session:CodexSessionCollector"
+copilot = "codeprobe.adapters.session:CopilotSessionCollector"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

@@ -16,6 +16,14 @@ CODEX_PRICING: dict[str, tuple[float, float]] = {
     "codex-mini-latest": (1.50, 6.00),
 }
 
+# Claude pricing per 1M tokens: (input, output, cache_read, cache_creation)
+# Cache creation is billed at 1.25x the input rate.
+CLAUDE_PRICING: dict[str, tuple[float, float, float, float]] = {
+    "claude-opus-4-6": (15.00, 75.00, 1.50, 18.75),
+    "claude-sonnet-4-6": (3.00, 15.00, 0.30, 3.75),
+    "claude-haiku-4-5": (0.80, 4.00, 0.08, 1.00),
+}
+
 
 @dataclass(frozen=True)
 class UsageData:
