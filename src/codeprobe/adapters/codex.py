@@ -12,17 +12,16 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.adapters.telemetry import ApiResponseCollector
 
 logger = logging.getLogger(__name__)
-
-# Pricing per 1M tokens: (input, output)
-_PRICING: dict[str, tuple[float, float]] = {
-    "codex-mini-latest": (1.50, 6.00),
-}
 
 
 class CodexAdapter:
     """Adapter for OpenAI Codex API (responses.create)."""
+
+    def __init__(self) -> None:
+        self._collector = ApiResponseCollector()
 
     @property
     def name(self) -> str:
@@ -65,41 +64,26 @@ class CodexAdapter:
         duration = time.monotonic() - start
         stdout = response.output_text or ""
 
-        if response.usage is None:
-            return AgentOutput(
-                stdout=stdout,
-                stderr=None,
-                exit_code=0,
-                duration_seconds=duration,
-                error="OpenAI response contained no usage data",
-            )
+        # Collect telemetry via the collector
+        input_tokens = getattr(response.usage, "input_tokens", None) if response.usage else None
+        output_tokens = getattr(response.usage, "output_tokens", None) if response.usage else None
 
-        input_tokens = response.usage.input_tokens
-        output_tokens = response.usage.output_tokens
-        model_name = config.model or "codex-mini-latest"
-        pricing = _PRICING.get(model_name)
-
-        if pricing is not None:
-            cost_usd = (
-                input_tokens * pricing[0] / 1_000_000
-                + output_tokens * pricing[1] / 1_000_000
-            )
-            cost_model = "per_token"
-            cost_source = "calculated"
-        else:
-            logger.warning("No pricing data for model %r; cost_usd unavailable", model_name)
-            cost_usd = None
-            cost_model = "unknown"
-            cost_source = "unavailable"
+        usage = self._collector.collect(
+            stdout,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model=model,
+        )
 
         return AgentOutput(
             stdout=stdout,
             stderr=None,
             exit_code=0,
             duration_seconds=duration,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=cost_usd,
-            cost_model=cost_model,
-            cost_source=cost_source,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cost_usd=usage.cost_usd,
+            cost_model=usage.cost_model,
+            cost_source=usage.cost_source,
+            error=usage.error,
         )

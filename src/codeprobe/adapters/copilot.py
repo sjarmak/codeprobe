@@ -3,25 +3,30 @@
 from __future__ import annotations
 
 import json
-import logging
 import subprocess
 
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import AgentConfig, AgentOutput
-
-logger = logging.getLogger(__name__)
+from codeprobe.adapters.telemetry import NdjsonStreamCollector
 
 
 class CopilotAdapter(BaseAdapter):
     """Adapter for GitHub Copilot CLI."""
 
     _binary_name = "copilot"
-    _install_hint = "Copilot CLI not found. Install from https://github.com/github/copilot-cli"
+    _install_hint = (
+        "Copilot CLI not found. Install from https://github.com/github/copilot-cli"
+    )
+
+    def __init__(self) -> None:
+        self._collector = NdjsonStreamCollector()
 
     def preflight(self, config: AgentConfig) -> list[str]:
         issues = super().preflight(config)
         if config.mcp_config:
-            issues.append("Copilot does not support MCP tools — mcp_config will be ignored")
+            issues.append(
+                "Copilot does not support MCP tools — mcp_config will be ignored"
+            )
         return issues
 
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
@@ -40,12 +45,14 @@ class CopilotAdapter(BaseAdapter):
 
         Requires Copilot CLI 1.0.4+ with --output-format json which emits
         NDJSON lines containing "assistant.message" events with outputTokens.
-        Raises an error if structured token data is not present.
         """
         raw = result.stdout or ""
-        output_tokens = None
-        result_text_parts: list[str] = []
+        usage = self._collector.collect(raw)
 
+        # Extract content text from NDJSON events.
+        # On JSON parse failure, the except clause resets to empty,
+        # and the fallback below uses raw output — matching original behavior.
+        result_text_parts: list[str] = []
         try:
             for line in raw.strip().splitlines():
                 if not line.strip():
@@ -53,11 +60,7 @@ class CopilotAdapter(BaseAdapter):
                 obj = json.loads(line)
                 event_type = obj.get("type", "")
                 if event_type == "assistant.message":
-                    data = obj.get("data", {})
-                    tokens = data.get("outputTokens")
-                    if tokens is not None:
-                        output_tokens = tokens
-                    content = data.get("content", "")
+                    content = obj.get("data", {}).get("content", "")
                     if content:
                         result_text_parts.append(content)
                 elif event_type == "result":
@@ -65,38 +68,16 @@ class CopilotAdapter(BaseAdapter):
                     if content:
                         result_text_parts.append(content)
         except (json.JSONDecodeError, ValueError):
-            return AgentOutput(
-                stdout=raw,
-                stderr=result.stderr or None,
-                exit_code=result.returncode,
-                duration_seconds=duration,
-                error=(
-                    "Copilot CLI did not return structured JSON. "
-                    "codeprobe requires Copilot CLI >= 1.0.4 with --output-format json support. "
-                    "Upgrade with: gh extension upgrade copilot"
-                ),
-            )
-
+            result_text_parts = []
         stdout_text = "\n".join(result_text_parts) if result_text_parts else raw
-
-        if output_tokens is None:
-            return AgentOutput(
-                stdout=stdout_text,
-                stderr=result.stderr or None,
-                exit_code=result.returncode,
-                duration_seconds=duration,
-                error=(
-                    "Copilot CLI returned JSON but no outputTokens field. "
-                    "Ensure Copilot CLI >= 1.0.4. Upgrade with: gh extension upgrade copilot"
-                ),
-            )
 
         return AgentOutput(
             stdout=stdout_text,
             stderr=result.stderr or None,
             exit_code=result.returncode,
             duration_seconds=duration,
-            output_tokens=output_tokens,
-            cost_model="subscription",
-            cost_source="api_reported",
+            output_tokens=usage.output_tokens,
+            cost_model=usage.cost_model,
+            cost_source=usage.cost_source,
+            error=usage.error,
         )
