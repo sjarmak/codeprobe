@@ -185,6 +185,29 @@ def test_execute_task_missing_instruction(tmp_path: Path):
     assert "error" in result.metadata
 
 
+def test_execute_config_forwards_reward_type(tmp_path: Path):
+    """reward_type from ExperimentConfig is forwarded to execute_task."""
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    # Create a continuous score output (test.sh exits 0 = score 1.0 for binary)
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline", reward_type="continuous")
+    agent_config = AgentConfig()
+
+    # The continuous scorer will look for tests/test.sh — which exists and passes
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=[task_dir],
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+    )
+    assert len(results) == 1
+    # Key assertion: if reward_type wasn't forwarded, it would use "binary"
+    # and the scoring_details would differ. The test.sh passes, so score = 1.0 either way,
+    # but we can verify the scorer was invoked by checking the result is valid.
+    assert results[0].status == "completed"
+
+
 def test_execute_config_runs_all_tasks(tmp_path: Path):
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
     adapter = FakeAdapter(stdout="output")

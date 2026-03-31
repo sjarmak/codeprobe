@@ -16,6 +16,7 @@ class ExperimentConfig:
     mcp_config: dict | None = None
     instruction_variant: str | None = None
     preambles: tuple[str, ...] = ()
+    reward_type: str = "binary"
     extra: dict = field(default_factory=dict)
 
 

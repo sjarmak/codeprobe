@@ -223,6 +223,7 @@ def execute_config(
             repo_path=repo_path,
             agent_config=agent_config,
             instruction_variant=experiment_config.instruction_variant,
+            reward_type=experiment_config.reward_type,
             preamble_names=experiment_config.preambles,
             preamble_resolver=preamble_resolver,
         )
