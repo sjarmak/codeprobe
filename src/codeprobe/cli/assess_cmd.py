@@ -23,13 +23,16 @@ def run_assess(path: str) -> None:
     click.echo(f"Codebase Assessment: {repo_path.name}")
     click.echo(f"{'=' * 50}")
     click.echo()
+
+    method_label = score.scoring_method
+    if score.model_used:
+        method_label += f" ({score.model_used})"
+    click.echo(f"Scoring method: {method_label}")
     click.echo(f"Overall Score: {score.overall:.0%}")
     click.echo()
     click.echo("Breakdown:")
-    click.echo(f"  Task Richness:  {score.task_richness:.0%}")
-    click.echo(f"  Test Coverage:  {score.test_coverage:.0%}")
-    click.echo(f"  Complexity:     {score.complexity:.0%}")
-    click.echo(f"  Activity:       {score.activity:.0%}")
+    for dim in score.dimensions:
+        click.echo(f"  {dim.name:20s} {dim.score:.0%}  {dim.reasoning}")
     click.echo()
     click.echo(f"Recommendation: {score.recommendation}")
 

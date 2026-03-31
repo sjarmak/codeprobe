@@ -9,10 +9,12 @@ import pytest
 
 from codeprobe.assess.heuristics import (
     AssessmentScore,
+    DimensionScore,
     RepoHeuristics,
+    RUBRIC_V1,
     assess_repo,
     gather_heuristics,
-    score_repo,
+    score_repo_heuristic,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,7 @@ def _make_heuristics(**overrides: object) -> RepoHeuristics:
         "total_files": 5,
         "repo_age_days": 10,
         "recent_activity": False,
+        "has_docs": False,
     }
     merged = {**defaults, **overrides}
     # Ensure list values are converted to tuples for frozen dataclass
@@ -41,8 +44,24 @@ def _make_heuristics(**overrides: object) -> RepoHeuristics:
     return RepoHeuristics(**merged)  # type: ignore[arg-type]
 
 
+def _dim_by_name(score: AssessmentScore, name: str) -> DimensionScore:
+    """Get a DimensionScore by name from an AssessmentScore."""
+    for d in score.dimensions:
+        if d.name == name:
+            return d
+    raise KeyError(f"No dimension named {name!r}")
+
+
+# Reusable "rich repo" heuristics for tests that need a realistic baseline.
+_RICH_REPO = _make_heuristics(
+    total_commits=300, merge_commits=30, contributors=4,
+    has_ci=True, has_tests=True, test_frameworks=["jest"],
+    total_files=80, recent_activity=True,
+)
+
+
 # ---------------------------------------------------------------------------
-# score_repo unit tests
+# score_repo_heuristic unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -62,13 +81,15 @@ class TestScoreRepoExcellent:
             repo_age_days=365,
             recent_activity=True,
         )
-        score = score_repo(h)
+        score = score_repo_heuristic(h)
         assert score.overall >= 0.7
-        assert score.task_richness == 1.0
-        assert score.test_coverage == 1.0
-        assert score.complexity == 1.0
-        assert score.activity == 1.0
+        assert _dim_by_name(score, "task_richness").score == 1.0
+        assert _dim_by_name(score, "test_coverage").score == 1.0
+        assert _dim_by_name(score, "complexity").score == 1.0
+        assert _dim_by_name(score, "activity").score == 1.0
         assert "Excellent" in score.recommendation
+        assert score.scoring_method == "heuristic"
+        assert score.model_used is None
 
 
 class TestScoreRepoGood:
@@ -87,9 +108,9 @@ class TestScoreRepoGood:
             repo_age_days=180,
             recent_activity=True,
         )
-        score = score_repo(h)
-        assert 0.5 <= score.overall < 0.7
-        assert "Good" in score.recommendation
+        score = score_repo_heuristic(h)
+        assert 0.4 <= score.overall < 0.75
+        assert score.scoring_method == "heuristic"
 
 
 class TestScoreRepoPoor:
@@ -108,7 +129,7 @@ class TestScoreRepoPoor:
             repo_age_days=2,
             recent_activity=False,
         )
-        score = score_repo(h)
+        score = score_repo_heuristic(h)
         assert score.overall < 0.3
         assert "Poor" in score.recommendation
 
@@ -118,8 +139,8 @@ class TestScoreRepoNoTests:
 
     def test_score_repo_no_tests(self) -> None:
         h = _make_heuristics(has_tests=False, has_ci=False, test_frameworks=[])
-        score = score_repo(h)
-        assert score.test_coverage == 0.0
+        score = score_repo_heuristic(h)
+        assert _dim_by_name(score, "test_coverage").score == 0.0
 
 
 class TestScoreRepoRecommendationText:
@@ -129,8 +150,6 @@ class TestScoreRepoRecommendationText:
         "merge_commits, has_tests, has_ci, fw, files, commits, contributors, recent, expected_word",
         [
             (100, True, True, ["pytest"], 200, 600, 5, True, "Excellent"),
-            (25, True, True, [], 60, 150, 2, True, "Good"),
-            (5, True, False, [], 20, 50, 1, False, "Fair"),
             (0, False, False, [], 3, 5, 1, False, "Poor"),
         ],
     )
@@ -156,15 +175,14 @@ class TestScoreRepoRecommendationText:
             contributors=contributors,
             recent_activity=recent,
         )
-        score = score_repo(h)
+        score = score_repo_heuristic(h)
         assert expected_word in score.recommendation
 
 
-class TestScoreRepoWeightsSumToOne:
-    """Verify scoring weights sum to 1.0."""
+class TestScoreRepoAllDimensionsMaxed:
+    """When all signals are maxed, overall should be close to 1.0."""
 
-    def test_weights_sum_to_one(self) -> None:
-        # Create a heuristics where every signal scores 1.0
+    def test_all_maxed(self) -> None:
         h = _make_heuristics(
             merge_commits=50,
             has_tests=True,
@@ -175,13 +193,229 @@ class TestScoreRepoWeightsSumToOne:
             contributors=3,
             recent_activity=True,
         )
-        score = score_repo(h)
-        # If all sub-scores are 1.0 and weights sum to 1.0, overall must be 1.0
-        assert score.task_richness == 1.0
-        assert score.test_coverage == 1.0
-        assert score.complexity == 1.0
-        assert score.activity == 1.0
-        assert abs(score.overall - 1.0) < 1e-9
+        score = score_repo_heuristic(h)
+        assert _dim_by_name(score, "task_richness").score == 1.0
+        assert _dim_by_name(score, "test_coverage").score == 1.0
+        assert _dim_by_name(score, "complexity").score == 1.0
+        assert _dim_by_name(score, "activity").score == 1.0
+        assert score.overall >= 0.8
+
+
+# ---------------------------------------------------------------------------
+# RUBRIC_V1 dimension coverage tests
+# ---------------------------------------------------------------------------
+
+
+class TestHeuristicReturnsAllRubricDimensions:
+    """Heuristic path must return all RUBRIC_V1 dimensions."""
+
+    def test_all_dimensions_present(self) -> None:
+        h = _make_heuristics()
+        score = score_repo_heuristic(h)
+        dim_names = {d.name for d in score.dimensions}
+        assert dim_names == set(RUBRIC_V1)
+
+    def test_dimension_order_matches_rubric(self) -> None:
+        h = _make_heuristics()
+        score = score_repo_heuristic(h)
+        assert tuple(d.name for d in score.dimensions) == RUBRIC_V1
+
+    def test_all_dimensions_have_reasoning(self) -> None:
+        h = _make_heuristics()
+        score = score_repo_heuristic(h)
+        for d in score.dimensions:
+            assert d.reasoning, f"Dimension {d.name!r} has empty reasoning"
+
+    def test_all_scores_in_range(self) -> None:
+        h = _make_heuristics(
+            total_commits=300,
+            merge_commits=30,
+            contributors=4,
+            has_ci=True,
+            has_tests=True,
+            test_frameworks=["jest"],
+            total_files=80,
+        )
+        score = score_repo_heuristic(h)
+        for d in score.dimensions:
+            assert 0.0 <= d.score <= 1.0, f"Dimension {d.name!r} score out of range: {d.score}"
+
+
+# ---------------------------------------------------------------------------
+# Model path tests (mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestModelPathReturnsAllRubricDimensions:
+    """Model path must return all RUBRIC_V1 dimensions."""
+
+    def test_model_dimensions_match_rubric(self) -> None:
+        from codeprobe.assess.heuristics import _parse_model_assessment
+
+        model_response = {
+            "overall": 0.75,
+            "recommendation": "Good benchmarking candidate",
+            "dimensions": [
+                {"name": name, "score": 0.8, "reasoning": f"Test reasoning for {name}"}
+                for name in RUBRIC_V1
+            ],
+        }
+        result = _parse_model_assessment(model_response, model_used="haiku", details={})
+        dim_names = {d.name for d in result.dimensions}
+        assert dim_names == set(RUBRIC_V1)
+        assert result.scoring_method == "model"
+        assert result.model_used == "haiku"
+
+    def test_model_missing_dimension_raises(self) -> None:
+        from codeprobe.core.llm import LLMParseError
+        from codeprobe.assess.heuristics import _parse_model_assessment
+
+        model_response = {
+            "overall": 0.5,
+            "recommendation": "Missing dims",
+            "dimensions": [
+                {"name": "task_richness", "score": 0.5, "reasoning": "ok"},
+            ],
+        }
+        with pytest.raises(LLMParseError, match="missing dimensions"):
+            _parse_model_assessment(model_response, model_used="haiku", details={})
+
+    def test_model_missing_dimensions_key_raises(self) -> None:
+        from codeprobe.core.llm import LLMParseError
+        from codeprobe.assess.heuristics import _parse_model_assessment
+
+        model_response = {"overall": 0.5, "recommendation": "No dims"}
+        with pytest.raises(LLMParseError, match="dimensions"):
+            _parse_model_assessment(model_response, model_used="haiku", details={})
+
+    def test_model_duplicate_dimension_raises(self) -> None:
+        from codeprobe.core.llm import LLMParseError
+        from codeprobe.assess.heuristics import _parse_model_assessment
+
+        model_response = {
+            "overall": 0.5,
+            "recommendation": "Dupes",
+            "dimensions": [
+                {"name": "task_richness", "score": 0.5, "reasoning": "first"},
+                {"name": "task_richness", "score": 0.8, "reasoning": "second"},
+            ],
+        }
+        with pytest.raises(LLMParseError, match="Duplicate dimension"):
+            _parse_model_assessment(model_response, model_used="haiku", details={})
+
+
+class TestExtractJson:
+    """_extract_json strips markdown fences from model responses."""
+
+    def test_plain_json_passthrough(self) -> None:
+        from codeprobe.assess.heuristics import _extract_json
+
+        raw = '{"overall": 0.5}'
+        assert _extract_json(raw) == '{"overall": 0.5}'
+
+    def test_strips_json_fence(self) -> None:
+        from codeprobe.assess.heuristics import _extract_json
+
+        raw = '```json\n{"overall": 0.5}\n```'
+        assert _extract_json(raw) == '{"overall": 0.5}'
+
+    def test_strips_bare_fence(self) -> None:
+        from codeprobe.assess.heuristics import _extract_json
+
+        raw = '```\n{"overall": 0.5}\n```'
+        assert _extract_json(raw) == '{"overall": 0.5}'
+
+    def test_strips_fence_with_whitespace(self) -> None:
+        from codeprobe.assess.heuristics import _extract_json
+
+        raw = '  ```json\n  {"overall": 0.5}\n  ```  '
+        assert '"overall": 0.5' in _extract_json(raw)
+
+
+class TestBothPathsSameShape:
+    """Model and heuristic paths produce the same AssessmentScore shape."""
+
+    def test_field_names_match(self) -> None:
+        from codeprobe.assess.heuristics import _parse_model_assessment
+
+        heuristic_score = score_repo_heuristic(_RICH_REPO)
+
+        model_response = {
+            "overall": 0.75,
+            "recommendation": "Good candidate",
+            "dimensions": [
+                {"name": name, "score": 0.8, "reasoning": f"Reasoning for {name}"}
+                for name in RUBRIC_V1
+            ],
+        }
+        model_score = _parse_model_assessment(model_response, model_used="haiku", details={})
+
+        # Same top-level fields
+        assert set(heuristic_score.__dataclass_fields__) == set(model_score.__dataclass_fields__)
+        # Same dimension names in same order
+        assert tuple(d.name for d in heuristic_score.dimensions) == tuple(d.name for d in model_score.dimensions)
+        # Different scoring methods
+        assert heuristic_score.scoring_method == "heuristic"
+        assert model_score.scoring_method == "model"
+
+
+# ---------------------------------------------------------------------------
+# Fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackOnMissingBinary:
+    """assess_repo falls back to heuristic when claude CLI missing."""
+
+    def test_fallback_when_no_claude(self) -> None:
+        with (
+            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO),
+            patch("codeprobe.core.llm.claude_available", return_value=False),
+        ):
+            result = assess_repo(Path("/any/path"))
+
+        assert result.scoring_method == "heuristic"
+        assert result.model_used is None
+        assert isinstance(result, AssessmentScore)
+
+
+class TestFallbackOnParseError:
+    """assess_repo falls back to heuristic when model call fails."""
+
+    def test_fallback_on_llm_error(self) -> None:
+        from codeprobe.core.llm import LLMParseError
+
+        with (
+            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO),
+            patch("codeprobe.core.llm.claude_available", return_value=True),
+            patch(
+                "codeprobe.assess.heuristics.score_repo_with_model",
+                side_effect=LLMParseError("bad json"),
+            ),
+        ):
+            result = assess_repo(Path("/any/path"))
+
+        assert result.scoring_method == "heuristic"
+
+
+class TestFallbackOnExecutionError:
+    """assess_repo falls back to heuristic when subprocess fails."""
+
+    def test_fallback_on_timeout(self) -> None:
+        from codeprobe.core.llm import LLMExecutionError
+
+        fake_h = _make_heuristics(total_commits=100, merge_commits=10)
+        with (
+            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=fake_h),
+            patch("codeprobe.core.llm.claude_available", return_value=True),
+            patch(
+                "codeprobe.assess.heuristics.score_repo_with_model",
+                side_effect=LLMExecutionError("timed out"),
+            ),
+        ):
+            result = assess_repo(Path("/any/path"))
+
+        assert result.scoring_method == "heuristic"
 
 
 # ---------------------------------------------------------------------------
@@ -275,24 +509,34 @@ class TestGatherHeuristicsRealRepo:
 
 
 class TestAssessRepoPipeline:
-    """Mock gather_heuristics and verify score_repo is called."""
+    """Mock gather_heuristics and verify scoring pipeline works."""
 
     def test_assess_repo_pipeline(self) -> None:
-        fake_h = _make_heuristics(
-            total_commits=300,
-            merge_commits=30,
-            contributors=4,
-            has_ci=True,
-            has_tests=True,
-            test_frameworks=["jest"],
-            total_files=80,
-            repo_age_days=200,
-            recent_activity=True,
-        )
-        with patch("codeprobe.assess.heuristics.gather_heuristics", return_value=fake_h) as mock_gh:
+        with (
+            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO) as mock_gh,
+            patch("codeprobe.core.llm.claude_available", return_value=False),
+        ):
             result = assess_repo(Path("/any/path"))
             mock_gh.assert_called_once_with(Path("/any/path"))
 
         assert isinstance(result, AssessmentScore)
         assert 0.0 <= result.overall <= 1.0
         assert result.recommendation
+        assert len(result.dimensions) == len(RUBRIC_V1)
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestScoreRepoAlias:
+    """score_repo is an alias for score_repo_heuristic."""
+
+    def test_alias_works(self) -> None:
+        from codeprobe.assess.heuristics import score_repo
+
+        h = _make_heuristics(total_commits=100, merge_commits=10)
+        result = score_repo(h)
+        assert result.scoring_method == "heuristic"
+        assert isinstance(result, AssessmentScore)

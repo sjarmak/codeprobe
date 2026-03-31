@@ -45,16 +45,16 @@ This project is AI-orchestration code — ZFC applies at two levels:
 ### Compliant
 
 - `core/scoring.py` — delegates pass/fail to test.sh (gold standard ZFC)
+- `core/llm.py` — shared Claude CLI utility for model-based judgment (pure IO + mechanical parsing)
 - `analysis/ranking.py` — deterministic arithmetic with explicit tiebreakers
 - `adapters/` — mechanical parsing, honest about data quality via `cost_source`
 - `analysis/stats.py` — arithmetic aggregation (deterministic math, not judgment)
+- `assess/heuristics.py:score_repo_with_model()` — delegates scoring to Claude via fixed RUBRIC_V1; model judges quality, code does IO
 
 ### Known violations (tracked for refactoring)
 
-- `assess/heuristics.py:264-354` — hardcoded repo quality scoring with unjustified weights (0.35/0.30/0.20/0.15) and cliff thresholds (49 commits → 0.7, 50 → 1.0). Replace with model call: "given these repo stats, assess benchmarking potential"
 - `mining/extractor.py:80-87` — file-count difficulty estimation (≤3 → easy, >10 → hard). A 20-file rename is "hard" while a critical 1-file security fix is "easy". Replace with model-assessed difficulty or user-provided metadata
-- `assess/heuristics.py:133-172` — regex framework detection. Structural file-glob part is OK, but "does this repo have good test coverage?" is semantic — delegate to model
-- `assess/heuristics.py:325-332` — hardcoded recommendation strings from if-else chain. Replace with model call using structured output
+- `assess/heuristics.py:_detect_test_frameworks()` — regex framework detection. Structural file-glob part is OK, but "does this repo have good test coverage?" is semantic — delegate to model
 
 ### Justified exceptions
 

@@ -69,6 +69,24 @@ _TEST_GLOBS: list[str] = [
     "*.spec.js",
 ]
 
+# ---------------------------------------------------------------------------
+# Fixed rubric — model scores against these, doesn't invent them
+# ---------------------------------------------------------------------------
+
+RUBRIC_V1: tuple[str, ...] = (
+    "task_richness",
+    "test_coverage",
+    "complexity",
+    "activity",
+    "documentation",
+    "ci_maturity",
+)
+
+
+# ---------------------------------------------------------------------------
+# Dataclasses
+# ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class RepoHeuristics:
@@ -84,18 +102,27 @@ class RepoHeuristics:
     total_files: int
     repo_age_days: int
     recent_activity: bool
+    has_docs: bool
+
+
+@dataclass(frozen=True)
+class DimensionScore:
+    """A single scoring dimension with reasoning."""
+
+    name: str
+    score: float
+    reasoning: str
 
 
 @dataclass(frozen=True)
 class AssessmentScore:
-    """Benchmarking potential score with breakdown."""
+    """Benchmarking potential score with per-dimension breakdown."""
 
     overall: float
-    task_richness: float
-    test_coverage: float
-    complexity: float
-    activity: float
     recommendation: str
+    dimensions: tuple[DimensionScore, ...]
+    scoring_method: str  # "model" or "heuristic"
+    model_used: str | None = None
     details: dict[str, object] = field(default_factory=dict)
 
 
@@ -206,6 +233,16 @@ def _has_ci(repo_path: Path) -> bool:
     return False
 
 
+def _has_docs(repo_path: Path) -> bool:
+    """Check whether the repo has documentation files."""
+    for name in ("README.md", "README.rst", "README.txt", "README"):
+        if (repo_path / name).is_file():
+            return True
+    if (repo_path / "docs").is_dir():
+        return True
+    return False
+
+
 def _repo_age_days(cwd: Path) -> int:
     """Return the number of days between the first and last commit."""
     first = _run_git(["log", "--reverse", "--format=%aI", "--max-count=1"], cwd=cwd)
@@ -224,6 +261,38 @@ def _recent_activity(cwd: Path) -> bool:
     """Return True if there are commits in the last 30 days."""
     out = _run_git(["log", "--since=30.days", "--oneline", "--max-count=1"], cwd=cwd)
     return bool(out)
+
+
+def _extract_json(text: str) -> str:
+    """Extract JSON from model response, stripping markdown fences if present."""
+    stripped = text.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        # Remove first line (```json or ```) and last line (```)
+        if lines[-1].strip() == "```":
+            lines = lines[1:-1]
+        else:
+            lines = lines[1:]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
+def _heuristics_to_dict(h: RepoHeuristics) -> dict[str, object]:
+    """Serialize RepoHeuristics to a plain dict for JSON encoding."""
+    return {
+        "total_commits": h.total_commits,
+        "merge_commits": h.merge_commits,
+        "contributors": h.contributors,
+        "has_ci": h.has_ci,
+        "has_tests": h.has_tests,
+        "test_frameworks": list(h.test_frameworks),
+        "primary_languages": list(h.primary_languages),
+        "total_files": h.total_files,
+        "repo_age_days": h.repo_age_days,
+        "recent_activity": h.recent_activity,
+        "has_docs": h.has_docs,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -258,70 +327,91 @@ def gather_heuristics(repo_path: Path) -> RepoHeuristics:
         total_files=total_files,
         repo_age_days=_repo_age_days(repo_path),
         recent_activity=_recent_activity(repo_path),
+        has_docs=_has_docs(repo_path),
     )
 
 
-def score_repo(heuristics: RepoHeuristics) -> AssessmentScore:
+def score_repo_heuristic(heuristics: RepoHeuristics) -> AssessmentScore:
     """Score a repo's benchmarking potential from heuristics.
 
-    Returns an ``AssessmentScore`` with per-signal breakdown and a
-    weighted overall score between 0.0 and 1.0.
+    Returns an ``AssessmentScore`` with per-dimension breakdown using
+    the fixed ``RUBRIC_V1`` dimensions.  This is the fallback path when
+    the Claude CLI is unavailable or the model call fails.
     """
-    # --- task_richness (weight 0.35) ---
+    # --- task_richness ---
     mc = heuristics.merge_commits
     if mc >= 50:
-        task_richness = 1.0
+        tr_score, tr_reason = 1.0, f"{mc} merge commits — rich task history"
     elif mc >= 20:
-        task_richness = 0.7
+        tr_score, tr_reason = 0.7, f"{mc} merge commits — moderate task variety"
     elif mc >= 5:
-        task_richness = 0.4
+        tr_score, tr_reason = 0.4, f"{mc} merge commits — limited tasks"
     else:
-        task_richness = 0.1
+        tr_score, tr_reason = 0.1, f"Only {mc} merge commits — very few mineable tasks"
 
-    # --- test_coverage (weight 0.30) ---
+    # --- test_coverage ---
     has_tests = heuristics.has_tests
     has_ci = heuristics.has_ci
     has_fw = len(heuristics.test_frameworks) > 0
     if has_tests and has_ci and has_fw:
-        test_coverage = 1.0
+        tc_score, tc_reason = 1.0, f"Tests + CI + framework ({', '.join(heuristics.test_frameworks)})"
     elif has_tests and (has_ci or has_fw):
-        test_coverage = 0.7
+        tc_score, tc_reason = 0.7, "Tests present with partial CI/framework support"
     elif has_tests:
-        test_coverage = 0.4
+        tc_score, tc_reason = 0.4, "Tests present but no CI or recognized framework"
     else:
-        test_coverage = 0.0
+        tc_score, tc_reason = 0.0, "No tests detected"
 
-    # --- complexity (weight 0.20) ---
+    # --- complexity ---
     tf = heuristics.total_files
     tc = heuristics.total_commits
     if tf >= 100 and tc >= 500:
-        complexity = 1.0
+        cx_score, cx_reason = 1.0, f"{tf} files, {tc} commits — substantial codebase"
     elif tf >= 50 and tc >= 100:
-        complexity = 0.7
+        cx_score, cx_reason = 0.7, f"{tf} files, {tc} commits — moderate complexity"
     elif tf >= 20 and tc >= 50:
-        complexity = 0.4
+        cx_score, cx_reason = 0.4, f"{tf} files, {tc} commits — small codebase"
     else:
-        complexity = 0.2
+        cx_score, cx_reason = 0.2, f"{tf} files, {tc} commits — minimal codebase"
 
-    # --- activity (weight 0.15) ---
+    # --- activity ---
     ra = heuristics.recent_activity
     co = heuristics.contributors
     if ra and co >= 3:
-        activity = 1.0
+        ac_score, ac_reason = 1.0, f"Active ({co} contributors, recent commits)"
     elif ra or co >= 2:
-        activity = 0.6
+        ac_score, ac_reason = 0.6, f"Moderate activity ({co} contributors)"
     else:
-        activity = 0.2
+        ac_score, ac_reason = 0.2, "Low activity — single contributor or stale"
 
-    # --- overall ---
-    overall = (
-        0.35 * task_richness
-        + 0.30 * test_coverage
-        + 0.20 * complexity
-        + 0.15 * activity
+    # --- documentation ---
+    if heuristics.has_docs and has_ci:
+        doc_score, doc_reason = 0.8, "Documentation and CI present"
+    elif heuristics.has_docs:
+        doc_score, doc_reason = 0.5, "README or docs/ directory present"
+    else:
+        doc_score, doc_reason = 0.1, "No documentation detected"
+
+    # --- ci_maturity ---
+    if has_ci and has_fw:
+        ci_score, ci_reason = 1.0, "CI pipeline with test framework integration"
+    elif has_ci:
+        ci_score, ci_reason = 0.6, "CI present but no recognized test framework"
+    else:
+        ci_score, ci_reason = 0.0, "No CI configuration detected"
+
+    dimensions = (
+        DimensionScore(name="task_richness", score=tr_score, reasoning=tr_reason),
+        DimensionScore(name="test_coverage", score=tc_score, reasoning=tc_reason),
+        DimensionScore(name="complexity", score=cx_score, reasoning=cx_reason),
+        DimensionScore(name="activity", score=ac_score, reasoning=ac_reason),
+        DimensionScore(name="documentation", score=doc_score, reasoning=doc_reason),
+        DimensionScore(name="ci_maturity", score=ci_score, reasoning=ci_reason),
     )
 
-    # --- recommendation ---
+    # Equal weights for heuristic path (model path lets the model weight them).
+    overall = sum(d.score for d in dimensions) / len(dimensions)
+
     if overall >= 0.7:
         recommendation = "Excellent benchmarking candidate — rich history with tests"
     elif overall >= 0.5:
@@ -333,27 +423,122 @@ def score_repo(heuristics: RepoHeuristics) -> AssessmentScore:
 
     return AssessmentScore(
         overall=overall,
-        task_richness=task_richness,
-        test_coverage=test_coverage,
-        complexity=complexity,
-        activity=activity,
         recommendation=recommendation,
-        details={
-            "merge_commits": heuristics.merge_commits,
-            "total_commits": heuristics.total_commits,
-            "total_files": heuristics.total_files,
-            "contributors": heuristics.contributors,
-            "has_ci": heuristics.has_ci,
-            "has_tests": heuristics.has_tests,
-            "test_frameworks": heuristics.test_frameworks,
-            "primary_languages": heuristics.primary_languages,
-            "repo_age_days": heuristics.repo_age_days,
-            "recent_activity": heuristics.recent_activity,
-        },
+        dimensions=dimensions,
+        scoring_method="heuristic",
+        model_used=None,
+        details=_heuristics_to_dict(heuristics),
     )
 
 
+# Backward-compatible alias.
+score_repo = score_repo_heuristic
+
+
+def _parse_model_assessment(
+    parsed: dict[str, object],
+    model_used: str | None,
+    details: dict[str, object],
+) -> AssessmentScore:
+    """Validate and convert model JSON response to AssessmentScore."""
+    from codeprobe.core.llm import LLMParseError
+
+    if not isinstance(parsed.get("dimensions"), list):
+        raise LLMParseError("Model response missing 'dimensions' list")
+
+    dim_by_name: dict[str, DimensionScore] = {}
+    for item in parsed["dimensions"]:
+        if not isinstance(item, dict):
+            raise LLMParseError(f"Dimension entry is not an object: {item!r}")
+        name = item.get("name", "")
+        if name not in RUBRIC_V1:
+            continue  # ignore extra dimensions
+        if name in dim_by_name:
+            raise LLMParseError(f"Duplicate dimension in model response: {name!r}")
+        score_val = float(item.get("score", 0))
+        score_val = max(0.0, min(1.0, score_val))
+        reasoning = str(item.get("reasoning", ""))
+        dim_by_name[name] = DimensionScore(name=name, score=score_val, reasoning=reasoning)
+
+    missing = set(RUBRIC_V1) - set(dim_by_name)
+    if missing:
+        raise LLMParseError(f"Model response missing dimensions: {', '.join(sorted(missing))}")
+
+    dimensions = tuple(dim_by_name[name] for name in RUBRIC_V1)
+
+    overall_raw = parsed.get("overall")
+    if isinstance(overall_raw, (int, float)):
+        overall = max(0.0, min(1.0, float(overall_raw)))
+    else:
+        overall = sum(d.score for d in dimensions) / len(dimensions)
+
+    recommendation = str(parsed.get("recommendation", ""))
+    if not recommendation:
+        recommendation = "Model did not provide a recommendation"
+
+    return AssessmentScore(
+        overall=overall,
+        recommendation=recommendation,
+        dimensions=dimensions,
+        scoring_method="model",
+        model_used=model_used,
+        details=details,
+    )
+
+
+def score_repo_with_model(heuristics: RepoHeuristics) -> AssessmentScore:
+    """Score repo by sending raw stats to Claude for judgment."""
+    from codeprobe.core.llm import LLMRequest, call_claude
+
+    details = _heuristics_to_dict(heuristics)
+    stats_json = json.dumps(details, indent=2)
+
+    rubric_list = ", ".join(RUBRIC_V1)
+    prompt = (
+        "You are evaluating a code repository's suitability for AI agent benchmarking.\n\n"
+        f"Here are the raw repository statistics:\n{stats_json}\n\n"
+        f"Score this repository on each of these dimensions (0.0 to 1.0):\n{rubric_list}\n\n"
+        "Respond with ONLY valid JSON matching this exact schema:\n"
+        "{\n"
+        '  "overall": <float 0.0-1.0>,\n'
+        '  "recommendation": "<1-2 sentence recommendation>",\n'
+        '  "dimensions": [\n'
+        '    {"name": "<dimension>", "score": <float>, "reasoning": "<1 sentence>"}\n'
+        "  ]\n"
+        "}\n\n"
+        "Every dimension from the list must appear exactly once in dimensions."
+    )
+
+    request = LLMRequest(prompt=prompt, model="haiku", timeout_seconds=60)
+    response = call_claude(request)
+    text = _extract_json(response.text)
+
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        from codeprobe.core.llm import LLMParseError
+
+        raise LLMParseError(f"Model returned invalid JSON: {exc}") from exc
+
+    return _parse_model_assessment(parsed, model_used=response.model, details=details)
+
+
 def assess_repo(repo_path: Path) -> AssessmentScore:
-    """Main entry: gather heuristics and score the repo."""
+    """Main entry: gather heuristics and score the repo.
+
+    Attempts model-based scoring via Claude CLI.  Falls back to heuristic
+    scoring when the CLI is unavailable or the model call fails.
+    """
+    from codeprobe.core.llm import LLMError, claude_available
+
     heuristics = gather_heuristics(repo_path)
-    return score_repo(heuristics)
+
+    if claude_available():
+        try:
+            return score_repo_with_model(heuristics)
+        except LLMError as exc:
+            logger.warning("Model scoring failed (%s), falling back to heuristics", exc)
+    else:
+        logger.info("Claude CLI not found; using heuristic scoring")
+
+    return score_repo_heuristic(heuristics)
