@@ -12,7 +12,12 @@ from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_COMMANDS = frozenset({"bash tests/test.sh"})
+_ALLOWED_COMMAND_PREFIXES = (
+    "bash tests/test.sh",
+    "pytest ",
+    "go test ",
+    "npm test ",
+)
 
 
 def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
@@ -42,17 +47,19 @@ def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
     instruction = (
         f"# {task.metadata.name}\n\n"
         f"{task.metadata.description}\n\n"
-        "Reproduce the changes from this merged PR. "
+        "---\n\n"
+        "Reproduce the changes described above. "
         "The test script will verify correctness.\n"
     )
     instruction_path = task_dir / "instruction.md"
     instruction_path.write_text(instruction, encoding="utf-8")
 
-    # Write tests/test.sh — use shlex.quote to prevent shell injection
-    if task.verification.command not in _ALLOWED_COMMANDS:
-        raise ValueError(
-            f"Verification command not in allowlist: {task.verification.command!r}"
-        )
+    # Write tests/test.sh — validate command against allowlist prefixes
+    cmd = task.verification.command
+    if not any(
+        cmd == prefix or cmd.startswith(prefix) for prefix in _ALLOWED_COMMAND_PREFIXES
+    ):
+        raise ValueError(f"Verification command not in allowlist: {cmd!r}")
     test_script = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
