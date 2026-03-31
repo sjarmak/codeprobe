@@ -1,0 +1,2 @@
+This is plain text output from an older copilot version without JSON support.
+It should fall back to heuristic estimation.

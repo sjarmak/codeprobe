@@ -24,7 +24,8 @@ dependencies = [
 
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0,<7"]
-all = ["pyyaml>=6.0,<7"]
+codex = ["openai>=1.66"]
+all = ["pyyaml>=6.0,<7", "openai>=1.66"]
 dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
@@ -38,6 +39,7 @@ codeprobe = "codeprobe.cli:main"
 
 [project.entry-points."codeprobe.agents"]
 claude = "codeprobe.adapters.claude:ClaudeAdapter"
+codex = "codeprobe.adapters.codex:CodexAdapter"
 copilot = "codeprobe.adapters.copilot:CopilotAdapter"
 
 [build-system]

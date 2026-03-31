@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 _BUILTINS: dict[str, str] = {
     "claude": "codeprobe.adapters.claude:ClaudeAdapter",
+    "codex": "codeprobe.adapters.codex:CodexAdapter",
     "copilot": "codeprobe.adapters.copilot:CopilotAdapter",
 }
 

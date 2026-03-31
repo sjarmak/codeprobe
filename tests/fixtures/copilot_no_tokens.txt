@@ -1,0 +1,2 @@
+{"type":"assistant.message","data":{"content":"Simple response without token count"}}
+{"type":"result","usage":{"premiumRequests":1}}
