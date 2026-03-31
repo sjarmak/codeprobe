@@ -167,3 +167,159 @@ class TestToExperiment:
         assert len(experiment.configs) == 2
         labels = {c.label for c in experiment.configs}
         assert labels == {"claude", "copilot"}
+
+    def test_explicit_config_extracts_reward_type(self) -> None:
+        """reward_type is extracted from explicit configs."""
+        evalrc = EvalrcConfig(
+            name="reward",
+            configs={
+                "continuous": {"agent": "claude", "reward_type": "continuous"},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].reward_type == "continuous"
+
+    def test_explicit_config_reward_type_defaults_to_binary(self) -> None:
+        """reward_type defaults to binary when not specified."""
+        evalrc = EvalrcConfig(
+            name="default-reward",
+            configs={"baseline": {"agent": "claude"}},
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].reward_type == "binary"
+
+
+class TestDimensions:
+    """Test dimensions-based cross-product config generation."""
+
+    def test_dimensions_models_only(self) -> None:
+        """Single models axis produces one config per model."""
+        evalrc = EvalrcConfig(
+            name="dim-models",
+            dimensions={"models": {"sonnet": "claude-sonnet-4-6", "opus": "claude-opus-4-6"}},
+        )
+        experiment = to_experiment(evalrc)
+        assert len(experiment.configs) == 2
+        labels = {c.label for c in experiment.configs}
+        assert labels == {"sonnet", "opus"}
+        sonnet = next(c for c in experiment.configs if c.label == "sonnet")
+        assert sonnet.model == "claude-sonnet-4-6"
+
+    def test_dimensions_cross_product(self) -> None:
+        """models × tools × prompts produces full cross-product."""
+        evalrc = EvalrcConfig(
+            name="dim-cross",
+            dimensions={
+                "models": {"sonnet": "claude-sonnet-4-6"},
+                "tools": {
+                    "baseline": None,
+                    "with-sg": {"sourcegraph": {"command": "npx"}},
+                },
+                "prompts": {"default": "instruction.md", "mcp": "instruction_mcp.md"},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        # 1 model × 2 tools × 2 prompts = 4 configs
+        assert len(experiment.configs) == 4
+        labels = {c.label for c in experiment.configs}
+        assert "baseline-default" in labels
+        assert "baseline-mcp" in labels
+        assert "with-sg-default" in labels
+        assert "with-sg-mcp" in labels
+
+    def test_dimensions_prompts_as_instruction_variant(self) -> None:
+        """String prompt values set instruction_variant."""
+        evalrc = EvalrcConfig(
+            name="dim-prompts",
+            dimensions={
+                "models": {"sonnet": "claude-sonnet-4-6"},
+                "prompts": {"mcp": "instruction_mcp.md"},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert len(experiment.configs) == 1
+        assert experiment.configs[0].instruction_variant == "instruction_mcp.md"
+
+    def test_dimensions_prompts_as_preamble_list(self) -> None:
+        """List prompt values set preambles tuple."""
+        evalrc = EvalrcConfig(
+            name="dim-preambles",
+            dimensions={
+                "models": {"sonnet": "claude-sonnet-4-6"},
+                "prompts": {"guided": ["tdd", "sourcegraph"]},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert len(experiment.configs) == 1
+        assert experiment.configs[0].preambles == ("tdd", "sourcegraph")
+
+    def test_dimensions_single_value_axis_omitted_from_label(self) -> None:
+        """Axes with a single value are omitted from the label."""
+        evalrc = EvalrcConfig(
+            name="dim-label",
+            dimensions={
+                "models": {"sonnet": "claude-sonnet-4-6"},
+                "tools": {"baseline": None, "with-sg": {"sg": {}}},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        # models has 1 entry, tools has 2 — label uses only tool axis
+        labels = {c.label for c in experiment.configs}
+        assert labels == {"baseline", "with-sg"}
+
+    def test_dimensions_overrides_legacy_matrix(self) -> None:
+        """dimensions takes priority over legacy agents × models matrix."""
+        evalrc = EvalrcConfig(
+            name="dim-override",
+            agents=["claude", "copilot"],
+            models=["sonnet", "opus"],
+            dimensions={"models": {"haiku": "claude-haiku-4-5"}},
+        )
+        experiment = to_experiment(evalrc)
+        # Should use dimensions (1 config), not legacy matrix (4 configs)
+        assert len(experiment.configs) == 1
+        assert experiment.configs[0].label == "haiku"
+
+    def test_dimensions_empty_is_noop(self) -> None:
+        """Empty dimensions dict falls through to legacy resolution."""
+        evalrc = EvalrcConfig(
+            name="dim-empty",
+            agents=["claude"],
+            models=["sonnet"],
+            dimensions={},
+        )
+        experiment = to_experiment(evalrc)
+        # Should use legacy matrix
+        assert len(experiment.configs) == 1
+        assert experiment.configs[0].label == "claude-sonnet"
+
+    def test_dimensions_tools_sets_mcp_config(self) -> None:
+        """Tools dimension values set mcp_config on ExperimentConfig."""
+        evalrc = EvalrcConfig(
+            name="dim-tools",
+            dimensions={
+                "models": {"sonnet": "claude-sonnet-4-6"},
+                "tools": {"with-sg": {"sourcegraph": {"command": "npx"}}},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].mcp_config == {"sourcegraph": {"command": "npx"}}
+
+    def test_dimensions_unknown_axis_raises(self) -> None:
+        """Unknown dimension axis names raise ValueError."""
+        evalrc = EvalrcConfig(
+            name="dim-unknown",
+            dimensions={"model": {"sonnet": "claude-sonnet-4-6"}},  # typo: "model" not "models"
+        )
+        with pytest.raises(ValueError, match="Unknown dimension axes"):
+            to_experiment(evalrc)
+
+    def test_dimensions_uses_first_agent(self) -> None:
+        """Dimensions configs use the first agent from the evalrc."""
+        evalrc = EvalrcConfig(
+            name="dim-agent",
+            agents=["copilot", "claude"],
+            dimensions={"models": {"sonnet": "claude-sonnet-4-6"}},
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].agent == "copilot"

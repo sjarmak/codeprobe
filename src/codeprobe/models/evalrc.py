@@ -15,3 +15,4 @@ class EvalrcConfig:
     agents: list[str] = field(default_factory=lambda: ["claude"])
     models: list[str] = field(default_factory=list)
     configs: dict = field(default_factory=dict)
+    dimensions: dict = field(default_factory=dict)
