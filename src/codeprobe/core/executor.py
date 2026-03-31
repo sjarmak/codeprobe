@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codeprobe.core.experiment import append_checkpoint, load_checkpoint_entries
+from codeprobe.core.preamble import PreambleResolver, compose_instruction
 from codeprobe.core.scoring import get_scorer, sanitize_secrets
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
@@ -53,6 +54,8 @@ def execute_task(
     agent_config: AgentConfig,
     instruction_variant: str | None = None,
     reward_type: str = "binary",
+    preamble_names: tuple[str, ...] = (),
+    preamble_resolver: PreambleResolver | None = None,
 ) -> CompletedTask:
     """Execute a single task and return a CompletedTask.
 
@@ -70,7 +73,35 @@ def execute_task(
             metadata={"error": str(exc)},
         )
 
-    prompt = build_prompt(instruction, repo_path)
+    resolved_preambles: list[dict[str, str]] = []
+    if preamble_names and preamble_resolver is None:
+        return CompletedTask(
+            task_id=task_id,
+            automated_score=0.0,
+            status="error",
+            metadata={
+                "error": f"preambles={preamble_names!r} requested but no "
+                "preamble_resolver provided"
+            },
+        )
+    if preamble_names and preamble_resolver is not None:
+        try:
+            prompt, resolved_preambles = compose_instruction(
+                instruction,
+                repo_path,
+                preamble_names=list(preamble_names),
+                resolver=preamble_resolver,
+                task_id=task_id,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            return CompletedTask(
+                task_id=task_id,
+                automated_score=0.0,
+                status="error",
+                metadata={"error": f"Preamble resolution failed: {exc}"},
+            )
+    else:
+        prompt = build_prompt(instruction, repo_path)
 
     try:
         output = adapter.run(prompt, agent_config)
@@ -111,6 +142,10 @@ def execute_task(
 
     score_result = scorer.score(output.stdout, task_dir)
 
+    metadata: dict = {}
+    if resolved_preambles:
+        metadata["resolved_preambles"] = resolved_preambles
+
     return CompletedTask(
         task_id=task_id,
         automated_score=score_result.score,
@@ -120,6 +155,7 @@ def execute_task(
         cost_usd=output.cost_usd,
         cost_model=output.cost_model,
         scoring_details={"passed": score_result.passed, "error": score_result.error},
+        metadata=metadata,
     )
 
 
@@ -136,6 +172,7 @@ def execute_config(
     checkpoint_path: Path | None = None,
     on_task_complete: Callable[[CompletedTask], None] | None = None,
     max_cost_usd: float | None = None,
+    preamble_resolver: PreambleResolver | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -186,6 +223,8 @@ def execute_config(
             repo_path=repo_path,
             agent_config=agent_config,
             instruction_variant=experiment_config.instruction_variant,
+            preamble_names=experiment_config.preambles,
+            preamble_resolver=preamble_resolver,
         )
 
         results.append(result)

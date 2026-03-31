@@ -141,8 +141,10 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             permission_mode=cfg.get("permission_mode", "default"),
             mcp_config=cfg.get("mcp_config"),
             instruction_variant=cfg.get("instruction_variant"),
+            preambles=tuple(cfg.get("preambles", ())),
             extra={k: v for k, v in cfg.items() if k not in {
                 "agent", "model", "permission_mode", "mcp_config", "instruction_variant",
+                "preambles",
             }},
         )
         for label, cfg in configs_dict.items()

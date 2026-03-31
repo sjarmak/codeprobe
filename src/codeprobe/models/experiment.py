@@ -15,6 +15,7 @@ class ExperimentConfig:
     permission_mode: str = "default"
     mcp_config: dict | None = None
     instruction_variant: str | None = None
+    preambles: tuple[str, ...] = ()
     extra: dict = field(default_factory=dict)
 
 

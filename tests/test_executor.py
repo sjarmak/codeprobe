@@ -12,6 +12,7 @@ from codeprobe.core.executor import (
     execute_task,
     load_instruction,
 )
+from codeprobe.core.preamble import DefaultPreambleResolver
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
@@ -96,6 +97,61 @@ def test_execute_task_success(tmp_path: Path):
     assert result.automated_score == 1.0
     assert result.status == "completed"
     assert len(adapter.run_calls) == 1
+
+
+def test_execute_task_with_preambles(tmp_path: Path):
+    """Preambles are composed into the prompt and stored in metadata."""
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    preambles_dir = task_dir / "preambles"
+    preambles_dir.mkdir()
+    (preambles_dir / "tdd.md").write_text("Write tests first.")
+
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+    adapter = FakeAdapter(stdout="correct answer")
+    config = AgentConfig()
+
+    result = execute_task(
+        adapter, task_dir, Path("/repo"), config,
+        preamble_names=("tdd",), preamble_resolver=resolver,
+    )
+    assert result.status == "completed"
+    assert result.automated_score == 1.0
+    # Preamble content was composed into prompt
+    prompt_sent = adapter.run_calls[0][0]
+    assert "Write tests first." in prompt_sent
+    # Resolved preambles stored for reproducibility
+    assert "resolved_preambles" in result.metadata
+    assert result.metadata["resolved_preambles"][0]["name"] == "tdd"
+
+
+def test_execute_task_preamble_missing_errors(tmp_path: Path):
+    """Missing preamble returns error, not crash."""
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+    adapter = FakeAdapter(stdout="output")
+    config = AgentConfig()
+
+    result = execute_task(
+        adapter, task_dir, Path("/repo"), config,
+        preamble_names=("nonexistent",), preamble_resolver=resolver,
+    )
+    assert result.status == "error"
+    assert "Preamble resolution failed" in result.metadata["error"]
+
+
+def test_execute_task_preambles_without_resolver_errors(tmp_path: Path):
+    """Requesting preambles without a resolver returns error (validate-or-die)."""
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    adapter = FakeAdapter(stdout="output")
+    config = AgentConfig()
+
+    result = execute_task(
+        adapter, task_dir, Path("/repo"), config,
+        preamble_names=("tdd",), preamble_resolver=None,
+    )
+    assert result.status == "error"
+    assert "no preamble_resolver provided" in result.metadata["error"]
 
 
 def test_execute_task_failing_test(tmp_path: Path):
