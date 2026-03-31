@@ -64,14 +64,13 @@ class SequentialCostAdapter(FakeAdapter):
         self._call_index = 0
 
     def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
-        self.run_calls.append((prompt, config))
+        if self._call_index >= len(self._costs):
+            raise AssertionError(
+                f"SequentialCostAdapter: run() called {self._call_index + 1} times "
+                f"but only {len(self._costs)} costs were provided"
+            )
         cost_usd, cost_model = self._costs[self._call_index]
         self._call_index += 1
-        return AgentOutput(
-            stdout=self._stdout,
-            stderr=self._stderr,
-            exit_code=self._exit_code,
-            duration_seconds=self._duration,
-            cost_usd=cost_usd,
-            cost_model=cost_model,
-        )
+        self._cost_usd = cost_usd
+        self._cost_model = cost_model
+        return super().run(prompt, config)

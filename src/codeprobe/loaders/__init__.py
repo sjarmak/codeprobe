@@ -9,7 +9,7 @@ from typing import Any
 
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
-_VALID_REWARD_TYPES = frozenset({"binary", "test_ratio", "score"})
+_VALID_REWARD_TYPES = frozenset({"binary", "test_ratio", "score", "continuous", "checkpoint"})
 
 
 def load_task(path: Path) -> Task:

@@ -98,9 +98,12 @@ class _SandboxRun:
     returncode: int
     stdout: str
     stderr: str
-    sandbox_task: Path | None
-    sandbox_dir: Path | None
+    sandbox_dir: Path | None = None
     error: str | None = None
+
+    @property
+    def sandbox_task(self) -> Path | None:
+        return self.sandbox_dir / "task" if self.sandbox_dir else None
 
 
 def _run_in_sandbox(
@@ -124,7 +127,6 @@ def _run_in_sandbox(
         sandbox_task = sandbox_dir / "task"
         shutil.copytree(task_dir, sandbox_task, symlinks=True)
 
-        # Resolve the script path relative to the sandbox copy
         rel = script_path.relative_to(task_dir)
         sandbox_script = sandbox_task / rel
 
@@ -141,37 +143,29 @@ def _run_in_sandbox(
             text=True,
             timeout=timeout,
         )
-        run = _SandboxRun(
+        return _SandboxRun(
             returncode=result.returncode,
             stdout=result.stdout,
             stderr=result.stderr,
-            sandbox_task=sandbox_task,
-            sandbox_dir=sandbox_dir,
+            sandbox_dir=None if cleanup else sandbox_dir,
         )
-        if cleanup:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
-            return _SandboxRun(
-                returncode=run.returncode,
-                stdout=run.stdout,
-                stderr=run.stderr,
-                sandbox_task=None,
-                sandbox_dir=None,
-            )
-        return run
     except subprocess.TimeoutExpired:
-        if sandbox_dir is not None and cleanup:
+        # Always clean up on error — even when cleanup=False (caller wants
+        # sandbox only on success, not leaked on failure).
+        if sandbox_dir is not None:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
         return _SandboxRun(
-            returncode=-1, stdout="", stderr="", sandbox_task=None,
-            sandbox_dir=None, error="Scoring timed out",
+            returncode=-1, stdout="", stderr="", error="Scoring timed out",
         )
     except OSError as exc:
-        if sandbox_dir is not None and cleanup:
+        if sandbox_dir is not None:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
         return _SandboxRun(
-            returncode=-1, stdout="", stderr="", sandbox_task=None,
-            sandbox_dir=None, error=str(exc),
+            returncode=-1, stdout="", stderr="", error=str(exc),
         )
+    else:
+        if cleanup and sandbox_dir is not None:
+            shutil.rmtree(sandbox_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -350,8 +344,10 @@ class CheckpointScorer:
             verifier_path = task_dir / "tests" / "verifiers" / verifier_name
 
             if not verifier_path.is_file():
-                logger.warning("Verifier %s not found, scoring 0.0", verifier_name)
-                continue
+                return ScoreResult(
+                    score=0.0, passed=False,
+                    error=f"Verifier not found: {verifier_name}",
+                )
 
             cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
             weighted_score += cp_score * weight
@@ -390,10 +386,13 @@ class CheckpointScorer:
 # Registry
 # ---------------------------------------------------------------------------
 
-_SCORER_REGISTRY: dict[str, type[BinaryScorer | ContinuousScorer | CheckpointScorer]] = {
+_SCORER_REGISTRY: dict[str, type] = {
     "binary": BinaryScorer,
     "continuous": ContinuousScorer,
     "checkpoint": CheckpointScorer,
+    # Aliases for backward compat with loader vocabulary
+    "test_ratio": ContinuousScorer,
+    "score": CheckpointScorer,
 }
 
 
