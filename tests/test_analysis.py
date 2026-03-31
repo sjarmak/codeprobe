@@ -1,0 +1,449 @@
+"""Tests for the analysis module."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from codeprobe.analysis import (
+    ConfigSummary,
+    PairwiseComparison,
+    RankedConfig,
+    Report,
+    compare_configs,
+    format_json_report,
+    format_text_report,
+    generate_report,
+    rank_configs,
+    summarize_config,
+)
+from codeprobe.models.experiment import CompletedTask, ConfigResults
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _task(
+    task_id: str,
+    score: float,
+    *,
+    status: str = "completed",
+    duration: float = 10.0,
+    cost: float | None = None,
+    tokens: int | None = None,
+) -> CompletedTask:
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=score,
+        status=status,
+        duration_seconds=duration,
+        cost_usd=cost,
+        token_count=tokens,
+    )
+
+
+# ---------------------------------------------------------------------------
+# summarize_config
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeConfig:
+    def test_basic(self) -> None:
+        """3 tasks, mix of scores, verify all summary fields."""
+        results = ConfigResults(
+            config="baseline",
+            completed=[
+                _task("t1", 1.0, duration=10.0),
+                _task("t2", 0.5, duration=20.0),
+                _task("t3", 0.0, duration=30.0),
+            ],
+        )
+        s = summarize_config(results)
+
+        assert s.label == "baseline"
+        assert s.total_tasks == 3
+        assert s.completed == 3
+        assert s.errored == 0
+        assert s.pass_rate == pytest.approx(2 / 3)
+        assert s.mean_score == pytest.approx(0.5)
+        assert s.median_score == pytest.approx(0.5)
+        assert s.total_duration_sec == pytest.approx(60.0)
+        assert s.mean_duration_sec == pytest.approx(20.0)
+        assert s.total_cost_usd is None
+        assert s.total_tokens is None
+
+    def test_empty(self) -> None:
+        """No tasks produce zeros."""
+        results = ConfigResults(config="empty", completed=[])
+        s = summarize_config(results)
+
+        assert s.label == "empty"
+        assert s.total_tasks == 0
+        assert s.completed == 0
+        assert s.errored == 0
+        assert s.pass_rate == 0.0
+        assert s.mean_score == 0.0
+        assert s.median_score == 0.0
+        assert s.total_duration_sec == 0.0
+        assert s.mean_duration_sec == 0.0
+        assert s.total_cost_usd is None
+        assert s.total_tokens is None
+
+    def test_with_costs(self) -> None:
+        """Tasks with cost_usd and token_count are aggregated."""
+        results = ConfigResults(
+            config="expensive",
+            completed=[
+                _task("t1", 1.0, duration=5.0, cost=0.10, tokens=500),
+                _task("t2", 0.8, duration=8.0, cost=0.20, tokens=1000),
+                _task("t3", 0.6, duration=7.0, cost=0.12, tokens=750),
+            ],
+        )
+        s = summarize_config(results)
+
+        assert s.total_cost_usd == pytest.approx(0.42)
+        assert s.total_tokens == 2250
+        assert s.pass_rate == pytest.approx(1.0)
+
+    def test_errored_tasks(self) -> None:
+        """Tasks with non-completed status count as errored."""
+        results = ConfigResults(
+            config="mixed",
+            completed=[
+                _task("t1", 1.0),
+                _task("t2", 0.0, status="error"),
+            ],
+        )
+        s = summarize_config(results)
+
+        assert s.total_tasks == 2
+        assert s.completed == 1
+        assert s.errored == 1
+
+
+# ---------------------------------------------------------------------------
+# compare_configs
+# ---------------------------------------------------------------------------
+
+
+class TestCompareConfigs:
+    def test_clear_winner(self) -> None:
+        """One config clearly better in all dimensions."""
+        a = ConfigSummary(
+            label="good",
+            total_tasks=3,
+            completed=3,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.9,
+            median_score=0.9,
+            total_duration_sec=30.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.30,
+            total_tokens=1500,
+        )
+        b = ConfigSummary(
+            label="bad",
+            total_tasks=3,
+            completed=2,
+            errored=1,
+            pass_rate=0.5,
+            mean_score=0.4,
+            median_score=0.4,
+            total_duration_sec=60.0,
+            mean_duration_sec=20.0,
+            total_cost_usd=0.50,
+            total_tokens=2500,
+        )
+        cmp = compare_configs(a, b)
+
+        assert cmp.config_a == "good"
+        assert cmp.config_b == "bad"
+        assert cmp.score_diff == pytest.approx(0.5)
+        assert cmp.cost_diff == pytest.approx(-0.20)
+        assert cmp.speed_diff == pytest.approx(-10.0)
+        assert cmp.winner == "good"
+        assert "good" in cmp.summary
+        assert "bad" in cmp.summary
+
+    def test_cost_tradeoff(self) -> None:
+        """One config has better score, other has lower cost."""
+        a = ConfigSummary(
+            label="accurate",
+            total_tasks=3,
+            completed=3,
+            errored=0,
+            pass_rate=0.9,
+            mean_score=0.85,
+            median_score=0.85,
+            total_duration_sec=45.0,
+            mean_duration_sec=15.0,
+            total_cost_usd=0.60,
+            total_tokens=3000,
+        )
+        b = ConfigSummary(
+            label="cheap",
+            total_tasks=3,
+            completed=3,
+            errored=0,
+            pass_rate=0.7,
+            mean_score=0.70,
+            median_score=0.70,
+            total_duration_sec=30.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.20,
+            total_tokens=1000,
+        )
+        cmp = compare_configs(a, b)
+
+        # Score wins: accurate is the winner
+        assert cmp.winner == "accurate"
+        assert cmp.score_diff == pytest.approx(0.15)
+        assert cmp.cost_diff == pytest.approx(0.40)
+
+    def test_same_score_cost_wins(self) -> None:
+        """When scores are equal, lower cost wins."""
+        base = dict(
+            total_tasks=3,
+            completed=3,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.8,
+            median_score=0.8,
+            total_duration_sec=30.0,
+            mean_duration_sec=10.0,
+            total_tokens=1000,
+        )
+        a = ConfigSummary(label="a", total_cost_usd=0.50, **base)
+        b = ConfigSummary(label="b", total_cost_usd=0.30, **base)
+        cmp = compare_configs(a, b)
+
+        assert cmp.winner == "b"
+
+
+# ---------------------------------------------------------------------------
+# rank_configs
+# ---------------------------------------------------------------------------
+
+
+class TestRankConfigs:
+    def test_single(self) -> None:
+        """Single config gets rank 1."""
+        s = ConfigSummary(
+            label="only",
+            total_tasks=5,
+            completed=5,
+            errored=0,
+            pass_rate=0.8,
+            mean_score=0.75,
+            median_score=0.8,
+            total_duration_sec=50.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.25,
+            total_tokens=2000,
+        )
+        ranked = rank_configs([s])
+
+        assert len(ranked) == 1
+        assert ranked[0].rank == 1
+        assert ranked[0].label == "only"
+        assert "Best overall" in ranked[0].recommendation
+
+    def test_multiple(self) -> None:
+        """3 configs ranked correctly by score."""
+        high = ConfigSummary(
+            label="high",
+            total_tasks=5,
+            completed=5,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.9,
+            median_score=0.9,
+            total_duration_sec=50.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.50,
+            total_tokens=2500,
+        )
+        mid = ConfigSummary(
+            label="mid",
+            total_tasks=5,
+            completed=4,
+            errored=1,
+            pass_rate=0.6,
+            mean_score=0.5,
+            median_score=0.5,
+            total_duration_sec=40.0,
+            mean_duration_sec=8.0,
+            total_cost_usd=0.30,
+            total_tokens=1500,
+        )
+        low = ConfigSummary(
+            label="low",
+            total_tasks=5,
+            completed=2,
+            errored=3,
+            pass_rate=0.0,
+            mean_score=0.0,
+            median_score=0.0,
+            total_duration_sec=60.0,
+            mean_duration_sec=12.0,
+            total_cost_usd=0.10,
+            total_tokens=500,
+        )
+        ranked = rank_configs([mid, low, high])
+
+        assert ranked[0].rank == 1
+        assert ranked[0].label == "high"
+        assert "Best overall" in ranked[0].recommendation
+
+        assert ranked[1].rank == 2
+        assert ranked[1].label == "mid"
+
+        assert ranked[2].rank == 3
+        assert ranked[2].label == "low"
+        assert "Not recommended" in ranked[2].recommendation
+
+    def test_empty(self) -> None:
+        """Empty list returns empty."""
+        assert rank_configs([]) == []
+
+    def test_cost_efficiency_recommendation(self) -> None:
+        """Cheapest config within 10% of best score gets cost-efficiency tag."""
+        best = ConfigSummary(
+            label="best",
+            total_tasks=5,
+            completed=5,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.90,
+            median_score=0.90,
+            total_duration_sec=50.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=1.00,
+            total_tokens=5000,
+        )
+        cheap = ConfigSummary(
+            label="cheap",
+            total_tasks=5,
+            completed=5,
+            errored=0,
+            pass_rate=0.9,
+            mean_score=0.85,  # within 10% of 0.90
+            median_score=0.85,
+            total_duration_sec=40.0,
+            mean_duration_sec=8.0,
+            total_cost_usd=0.20,
+            total_tokens=1000,
+        )
+        ranked = rank_configs([best, cheap])
+
+        assert ranked[0].label == "best"
+        assert ranked[1].label == "cheap"
+        assert "cost-efficiency" in ranked[1].recommendation.lower()
+
+
+# ---------------------------------------------------------------------------
+# generate_report
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateReport:
+    def test_full_pipeline(self) -> None:
+        """Full pipeline from ConfigResults to Report."""
+        results_a = ConfigResults(
+            config="config-a",
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.10, tokens=500),
+                _task("t2", 0.7, duration=15.0, cost=0.12, tokens=600),
+            ],
+        )
+        results_b = ConfigResults(
+            config="config-b",
+            completed=[
+                _task("t1", 0.5, duration=8.0, cost=0.05, tokens=300),
+                _task("t2", 0.3, duration=12.0, cost=0.09, tokens=400),
+            ],
+        )
+
+        report = generate_report("my-experiment", [results_a, results_b])
+
+        assert isinstance(report, Report)
+        assert report.experiment_name == "my-experiment"
+        assert len(report.summaries) == 2
+        assert len(report.rankings) == 2
+        assert len(report.comparisons) == 1
+
+        assert report.rankings[0].label == "config-a"
+        assert report.comparisons[0].winner == "config-a"
+
+
+# ---------------------------------------------------------------------------
+# format_text_report
+# ---------------------------------------------------------------------------
+
+
+class TestFormatTextReport:
+    def test_contains_key_sections(self) -> None:
+        """Verify text output contains key sections."""
+        results = ConfigResults(
+            config="alpha",
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.20),
+                _task("t2", 0.8, duration=15.0, cost=0.22),
+            ],
+        )
+        report = generate_report("test-exp", [results])
+        text = format_text_report(report)
+
+        assert "## Experiment: test-exp" in text
+        assert "### Rankings" in text
+        assert "### Recommendation" in text
+        assert "alpha" in text
+        assert "pass rate" in text
+
+
+# ---------------------------------------------------------------------------
+# format_json_report
+# ---------------------------------------------------------------------------
+
+
+class TestFormatJsonReport:
+    def test_valid_json_with_expected_keys(self) -> None:
+        """Verify valid JSON with expected keys."""
+        results = ConfigResults(
+            config="beta",
+            completed=[
+                _task("t1", 0.9, duration=12.0, cost=0.15, tokens=800),
+            ],
+        )
+        report = generate_report("json-exp", [results])
+        text = format_json_report(report)
+
+        data = json.loads(text)
+        assert data["experiment_name"] == "json-exp"
+        assert "summaries" in data
+        assert "rankings" in data
+        assert "comparisons" in data
+
+        assert len(data["summaries"]) == 1
+        assert data["summaries"][0]["label"] == "beta"
+        assert data["rankings"][0]["rank"] == 1
+
+    def test_multiple_configs_json(self) -> None:
+        """Multiple configs produce correct JSON structure."""
+        results_a = ConfigResults(
+            config="a",
+            completed=[_task("t1", 1.0, duration=10.0)],
+        )
+        results_b = ConfigResults(
+            config="b",
+            completed=[_task("t1", 0.5, duration=20.0)],
+        )
+        report = generate_report("multi", [results_a, results_b])
+        data = json.loads(format_json_report(report))
+
+        assert len(data["summaries"]) == 2
+        assert len(data["rankings"]) == 2
+        assert len(data["comparisons"]) == 1
