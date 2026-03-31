@@ -10,9 +10,15 @@ import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli import main
+from codeprobe.cli.wizard import (
+    ask_custom,
+    ask_mcp_comparison,
+    ask_model_comparison,
+    ask_prompt_comparison,
+    validate_experiment_name,
+)
 from codeprobe.cli.yaml_writer import write_evalrc
 from codeprobe.models.evalrc import EvalrcConfig
-
 
 # ---------------------------------------------------------------------------
 # yaml_writer tests
@@ -67,14 +73,6 @@ class TestWriteEvalrc:
 # wizard tests (goal-specific questionnaire functions)
 # ---------------------------------------------------------------------------
 
-from codeprobe.cli.wizard import (
-    ask_custom,
-    ask_model_comparison,
-    ask_mcp_comparison,
-    ask_prompt_comparison,
-    validate_experiment_name,
-)
-
 
 class TestValidation:
     """Tests for input validation."""
@@ -98,6 +96,7 @@ class TestValidation:
 
     def test_load_json_missing_file(self, tmp_path: Path) -> None:
         import click
+
         from codeprobe.cli.wizard import _load_json
 
         with pytest.raises(click.BadParameter, match="File not found"):
@@ -105,6 +104,7 @@ class TestValidation:
 
     def test_load_json_invalid_json(self, tmp_path: Path) -> None:
         import click
+
         from codeprobe.cli.wizard import _load_json
 
         bad_file = tmp_path / "bad.json"
@@ -114,6 +114,7 @@ class TestValidation:
 
     def test_load_json_not_dict(self, tmp_path: Path) -> None:
         import click
+
         from codeprobe.cli.wizard import _load_json
 
         arr_file = tmp_path / "array.json"

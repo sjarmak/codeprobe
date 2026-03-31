@@ -20,7 +20,7 @@ def write_evalrc(target_dir: Path, config: EvalrcConfig) -> Path:
     return path
 
 
-_EMPTY = (None, "", [], {})
+_EMPTY: tuple[object, ...] = (None, "", [], {})
 
 
 def _strip_defaults(data: dict) -> dict:

@@ -7,12 +7,12 @@ import click
 
 def run_interpret(path: str, fmt: str = "text") -> None:
     """Analyze eval results and generate report."""
-    from pathlib import Path as P
+    from pathlib import Path
 
     from codeprobe.analysis import format_json_report, format_text_report, generate_report
     from codeprobe.core.experiment import load_config_results, load_experiment
 
-    exp_dir = P(path).resolve()
+    exp_dir = Path(path).resolve()
     experiment = load_experiment(exp_dir)
 
     all_results = []

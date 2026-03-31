@@ -87,7 +87,8 @@ def run_init(path: str) -> None:
 def _prompt_agent(agents: list[str]) -> str:
     """Prompt for agent selection."""
     agents_str = ", ".join(agents)
-    return click.prompt(f"Agent ({agents_str})", default=agents[0])
+    result: str = click.prompt(f"Agent ({agents_str})", default=agents[0])
+    return result
 
 
 def _prompt_model() -> str | None:

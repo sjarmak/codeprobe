@@ -7,11 +7,11 @@ import click
 
 def run_mine(path: str, count: int = 5, source: str = "auto") -> None:
     """Mine eval tasks from a repository."""
-    from pathlib import Path as P
+    from pathlib import Path
 
     from codeprobe.mining import mine_tasks, write_task_dir
 
-    repo_path = P(path).resolve()
+    repo_path = Path(path).resolve()
     tasks = mine_tasks(repo_path, count=count, source_hint=source)
 
     if not tasks:

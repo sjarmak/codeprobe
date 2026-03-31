@@ -1,8 +1,8 @@
 """Tests for agent adapter protocol and implementations."""
 
-from codeprobe.adapters.protocol import AgentAdapter, AgentConfig, AgentOutput
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.copilot import CopilotAdapter
+from codeprobe.adapters.protocol import AgentAdapter, AgentConfig, AgentOutput
 
 
 def test_claude_adapter_is_agent_adapter():

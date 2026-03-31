@@ -7,10 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from codeprobe.mining.extractor import (
-    MergedPR,
     extract_task_from_merge,
     list_merged_prs,
     mine_tasks,
@@ -18,7 +15,6 @@ from codeprobe.mining.extractor import (
 from codeprobe.mining.sources import RepoSource, detect_source
 from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-
 
 # ---------------------------------------------------------------------------
 # detect_source tests

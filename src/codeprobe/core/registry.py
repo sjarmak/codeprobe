@@ -19,7 +19,7 @@ def _import_class(dotted: str) -> type:
     """Import a class from a 'module.path:ClassName' string."""
     module_path, class_name = dotted.rsplit(":", 1)
     module = importlib.import_module(module_path)
-    return getattr(module, class_name)
+    return getattr(module, class_name)  # type: ignore[no-any-return]
 
 
 def resolve(name: str) -> AgentAdapter:
@@ -30,13 +30,13 @@ def resolve(name: str) -> AgentAdapter:
     """
     if name in _BUILTINS:
         cls = _import_class(_BUILTINS[name])
-        return cls()
+        return cls()  # type: ignore[no-any-return]
 
     eps = importlib.metadata.entry_points(group="codeprobe.agents")
     for ep in eps:
         if ep.name == name:
             cls = ep.load()
-            return cls()
+            return cls()  # type: ignore[no-any-return]
 
     raise KeyError(
         f"Unknown agent adapter: {name!r}. "

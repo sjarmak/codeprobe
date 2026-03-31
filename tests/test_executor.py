@@ -182,7 +182,7 @@ def test_execute_config_calls_callback(tmp_path: Path):
 
     callback_results: list[CompletedTask] = []
 
-    results = execute_config(
+    execute_config(
         adapter=adapter,
         task_dirs=tasks,
         repo_path=Path("/repo"),

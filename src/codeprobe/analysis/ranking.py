@@ -55,7 +55,7 @@ def rank_configs(summaries: list[ConfigSummary]) -> list[RankedConfig]:
     configs_with_cost = [s for s in sorted_summaries if s.total_cost_usd is not None]
     lowest_cost_label: str | None = None
     if configs_with_cost:
-        lowest_cost = min(configs_with_cost, key=lambda s: s.total_cost_usd)  # type: ignore[arg-type]
+        lowest_cost = min(configs_with_cost, key=lambda s: s.total_cost_usd or 0.0)
         lowest_cost_label = lowest_cost.label
 
     ranked: list[RankedConfig] = []

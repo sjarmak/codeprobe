@@ -8,8 +8,6 @@ import pytest
 
 from codeprobe.analysis import (
     ConfigSummary,
-    PairwiseComparison,
-    RankedConfig,
     Report,
     compare_configs,
     format_json_report,
@@ -19,7 +17,6 @@ from codeprobe.analysis import (
     summarize_config,
 )
 from codeprobe.models.experiment import CompletedTask, ConfigResults
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -7,11 +7,11 @@ import click
 
 def run_assess(path: str) -> None:
     """Assess a codebase for AI agent benchmarking potential."""
-    from pathlib import Path as P
+    from pathlib import Path
 
     from codeprobe.assess import assess_repo
 
-    repo_path = P(path).resolve()
+    repo_path = Path(path).resolve()
     if not repo_path.is_dir():
         click.echo(f"Error: {repo_path} is not a directory.", err=True)
         raise SystemExit(1)

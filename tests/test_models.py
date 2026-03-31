@@ -1,7 +1,7 @@
 """Tests for core data models."""
 
+from codeprobe.models.experiment import CompletedTask, ConfigResults, Experiment, ExperimentConfig
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-from codeprobe.models.experiment import Experiment, ExperimentConfig, CompletedTask, ConfigResults
 
 
 def test_task_is_frozen():
@@ -41,6 +41,13 @@ def test_config_results():
     assert len(results.completed) == 2
     avg = sum(t.automated_score for t in results.completed) / len(results.completed)
     assert avg == 0.5
+
+
+def test_task_verification_defaults():
+    v = TaskVerification()
+    assert v.type == "test_script"
+    assert v.command == "bash tests/test.sh"
+    assert v.reward_type == "binary"
 
 
 def test_experiment():

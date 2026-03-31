@@ -15,7 +15,6 @@ from codeprobe.assess.heuristics import (
     score_repo,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers to build RepoHeuristics with sensible defaults
 # ---------------------------------------------------------------------------
