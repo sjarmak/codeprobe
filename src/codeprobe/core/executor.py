@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codeprobe.core.experiment import append_checkpoint, load_checkpoint_entries
-from codeprobe.core.scoring import sanitize_secrets, score_task_output
+from codeprobe.core.scoring import get_scorer, sanitize_secrets
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 if TYPE_CHECKING:
@@ -52,6 +52,7 @@ def execute_task(
     repo_path: Path,
     agent_config: AgentConfig,
     instruction_variant: str | None = None,
+    reward_type: str = "binary",
 ) -> CompletedTask:
     """Execute a single task and return a CompletedTask.
 
@@ -94,7 +95,8 @@ def execute_task(
             metadata={"error": sanitize_secrets(error_msg)},
         )
 
-    score_result = score_task_output(output.stdout, task_dir)
+    scorer = get_scorer(reward_type)
+    score_result = scorer.score(output.stdout, task_dir)
 
     return CompletedTask(
         task_id=task_id,
