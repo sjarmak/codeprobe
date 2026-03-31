@@ -238,6 +238,51 @@ class TestPareto:
         front = pareto_front(configs)
         assert len(front) == 1
 
+    def test_none_cost_excluded_from_pareto(self) -> None:
+        """Agent with cost_usd=None (e.g. subscription) must NOT appear at zero on cost axis."""
+        from codeprobe.contrib.pareto import pareto_front
+
+        configs = [
+            _results("subscription", [_task("t1", 1.0, cost_usd=None), _task("t2", 1.0, cost_usd=None)]),
+            _results("per-token", [_task("t1", 1.0, cost_usd=0.10), _task("t2", 1.0, cost_usd=0.10)]),
+        ]
+        front = pareto_front(configs)
+        labels = {f.label for f in front}
+        # subscription agent has unknown cost — must be excluded from cost-based Pareto
+        assert "subscription" not in labels
+        assert "per-token" in labels
+
+    def test_zero_cost_is_legitimate(self) -> None:
+        """Agent with cost_usd=0.0 (legitimately free) SHOULD appear at zero on cost axis."""
+        from codeprobe.contrib.pareto import pareto_front
+
+        configs = [
+            _results("free-good", [_task("t1", 1.0, cost_usd=0.0), _task("t2", 1.0, cost_usd=0.0)]),
+            _results("paid-good", [_task("t1", 1.0, cost_usd=0.50), _task("t2", 1.0, cost_usd=0.50)]),
+        ]
+        front = pareto_front(configs)
+        labels = {f.label for f in front}
+        # Free agent with same score dominates paid agent
+        assert "free-good" in labels
+
+    def test_mixed_cost_models_only_known_costs_in_pareto(self) -> None:
+        """Only configs with all known costs participate in cost-based Pareto."""
+        from codeprobe.contrib.pareto import pareto_front
+
+        configs = [
+            _results("known-cheap", [_task("t1", 1.0, cost_usd=0.01)]),
+            _results("known-expensive", [_task("t1", 1.0, cost_usd=1.00)]),
+            _results("unknown-cost", [_task("t1", 1.0, cost_usd=None)]),
+            _results("partial-unknown", [_task("t1", 1.0, cost_usd=0.05), _task("t2", 1.0, cost_usd=None)]),
+        ]
+        front = pareto_front(configs)
+        labels = {f.label for f in front}
+        # Configs with any None cost_usd must be excluded
+        assert "unknown-cost" not in labels
+        assert "partial-unknown" not in labels
+        # known-cheap dominates known-expensive (same score, lower cost)
+        assert "known-cheap" in labels
+
 
 # ===========================================================================
 # Adaptive Sampling

@@ -39,8 +39,13 @@ def pareto_front(configs: list[ConfigResults]) -> list[ParetoPoint]:
         n = len(cr.completed)
         if n == 0:
             continue
+        # Skip configs where any task has unknown cost (None).
+        # None means cost is unavailable (e.g. subscription model),
+        # distinct from 0.0 which means legitimately free.
+        if any(t.cost_usd is None for t in cr.completed):
+            continue
         score = sum(1.0 for t in cr.completed if t.automated_score >= _PASS_THRESHOLD) / n
-        cost = sum(t.cost_usd or 0.0 for t in cr.completed)
+        cost = sum(t.cost_usd for t in cr.completed)  # type: ignore[arg-type]
         points.append(ParetoPoint(label=cr.config, score=score, cost=cost))
 
     front: list[ParetoPoint] = []
