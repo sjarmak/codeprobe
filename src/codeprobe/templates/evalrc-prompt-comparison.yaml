@@ -1,0 +1,18 @@
+# .evalrc.yaml — Prompt/instruction comparison
+# Compare different instruction styles on the same tasks and model.
+# Copy to your repo root as .evalrc.yaml, then run: codeprobe run
+
+name: prompt-comparison
+description: "How do different instruction styles affect agent behavior?"
+
+task_source: git-history
+task_count: 10
+
+dimensions:
+  models:
+    sonnet: claude-sonnet-4-6
+
+  prompts:
+    default: instruction.md
+    detailed: instruction_detailed.md
+    minimal: instruction_minimal.md

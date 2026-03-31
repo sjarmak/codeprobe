@@ -1,0 +1,18 @@
+# .evalrc.yaml — Model comparison
+# Compare different Claude models on the same tasks.
+# Copy to your repo root as .evalrc.yaml, then run: codeprobe run
+
+name: model-comparison
+description: "Which model handles my codebase best?"
+
+task_source: git-history
+task_count: 10
+
+dimensions:
+  models:
+    sonnet: claude-sonnet-4-6
+    opus: claude-opus-4-6
+    haiku: claude-haiku-4-5
+
+  prompts:
+    default: instruction.md

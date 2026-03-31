@@ -49,6 +49,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"codeprobe.preambles" = ["*.md"]
+"codeprobe.templates" = ["*.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codeprobe.core.experiment import append_checkpoint, load_checkpoint_entries
-from codeprobe.core.preamble import PreambleResolver, compose_instruction
+from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
 from codeprobe.core.scoring import get_scorer, sanitize_secrets
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
@@ -16,15 +16,6 @@ if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
 
 logger = logging.getLogger(__name__)
-
-
-def build_prompt(instruction: str, repo_path: Path) -> str:
-    """Build the prompt sent to an agent."""
-    return (
-        f"You are working on the repository at {repo_path}. "
-        "Follow the instruction below.\n\n"
-        f"{instruction}"
-    )
 
 
 def load_instruction(task_dir: Path, variant: str | None = None) -> str:
@@ -84,6 +75,7 @@ def execute_task(
                 "preamble_resolver provided"
             },
         )
+
     if preamble_names and preamble_resolver is not None:
         try:
             prompt, resolved_preambles = compose_instruction(
@@ -101,7 +93,7 @@ def execute_task(
                 metadata={"error": f"Preamble resolution failed: {exc}"},
             )
     else:
-        prompt = build_prompt(instruction, repo_path)
+        prompt = _base_prompt(instruction, repo_path)
 
     try:
         output = adapter.run(prompt, agent_config)

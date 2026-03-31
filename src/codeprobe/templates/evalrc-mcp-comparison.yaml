@@ -1,0 +1,28 @@
+# .evalrc.yaml — MCP tool comparison
+# Compare agent performance with and without an MCP server.
+# Copy to your repo root as .evalrc.yaml, then run: codeprobe run
+
+name: mcp-comparison
+description: "Does adding an MCP tool (Sourcegraph) improve agent performance?"
+
+task_source: git-history
+task_count: 10
+
+dimensions:
+  models:
+    sonnet: claude-sonnet-4-6
+
+  tools:
+    baseline: null
+    with-sourcegraph:
+      sourcegraph:
+        command: npx
+        args: ["-y", "@sourcegraph/mcp-server"]
+        env:
+          SRC_ACCESS_TOKEN: "${SRC_ACCESS_TOKEN}"
+          SOURCEGRAPH_URL: "${SOURCEGRAPH_URL}"
+
+  prompts:
+    default: instruction.md
+    with-mcp-hints:
+      - sourcegraph

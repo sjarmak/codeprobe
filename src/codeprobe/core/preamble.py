@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from codeprobe.models.preamble import PreambleBlock
+from codeprobe.preambles import get_builtin
 
 
 @runtime_checkable
@@ -64,10 +65,25 @@ class DefaultPreambleResolver:
                     name=name,
                     template=path.read_text(encoding="utf-8").strip(),
                 )
+        # Fall back to built-in preambles shipped with codeprobe
+        try:
+            return get_builtin(name)
+        except KeyError:
+            pass
+
         raise FileNotFoundError(
             f"Preamble {name!r} not found in search paths: "
             f"{[str(d) for d in self._search_dirs]}"
         )
+
+
+def _base_prompt(instruction: str, repo_path: Path) -> str:
+    """Build the base prompt wrapper shared across prompt-building paths."""
+    return (
+        f"You are working on the repository at {repo_path}. "
+        "Follow the instruction below.\n\n"
+        f"{instruction}"
+    )
 
 
 def compose_instruction(
@@ -82,11 +98,7 @@ def compose_instruction(
     Returns ``(prompt, resolved_preambles)`` where resolved_preambles is a
     list of dicts with ``name`` and ``content`` keys for reproducibility.
     """
-    base = (
-        f"You are working on the repository at {repo_path}. "
-        "Follow the instruction below.\n\n"
-        f"{instruction}"
-    )
+    base = _base_prompt(instruction, repo_path)
 
     context = {
         "repo_path": str(repo_path),

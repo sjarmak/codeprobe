@@ -1,10 +1,11 @@
-"""Tests for preamble model, resolver, and compose_instruction."""
+"""Tests for preamble model, resolver, compose_instruction, and built-ins."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+import yaml
 
 from codeprobe.models.preamble import PreambleBlock
 
@@ -247,3 +248,89 @@ def test_compose_instruction_returns_resolved_content(tmp_path: Path):
     assert len(resolved) == 1
     assert resolved[0]["name"] == "hint"
     assert resolved[0]["content"] == "Be careful."
+
+
+# -- Built-in preamble tests --------------------------------------------------
+
+from codeprobe.preambles import get_builtin, list_builtins
+
+
+def test_builtin_sourcegraph_preamble_exists():
+    """The sourcegraph preamble ships as a built-in."""
+    block = get_builtin("sourcegraph")
+    assert block.name == "sourcegraph"
+    assert "sg_keyword_search" in block.template
+    assert "{{repo_path}}" in block.template
+
+
+def test_builtin_preamble_renders_variables():
+    """Built-in preamble template variables resolve correctly."""
+    block = get_builtin("sourcegraph")
+    rendered = block.render({"repo_path": "/my/repo", "task_id": "task-42"})
+    assert "/my/repo" in rendered
+    assert "{{repo_path}}" not in rendered
+
+
+def test_builtin_nonexistent_raises():
+    """get_builtin raises KeyError for unknown names."""
+    with pytest.raises(KeyError, match="no-such-preamble"):
+        get_builtin("no-such-preamble")
+
+
+def test_list_builtins_includes_sourcegraph():
+    """list_builtins returns at least the sourcegraph preamble."""
+    names = list_builtins()
+    assert "sourcegraph" in names
+
+
+# -- Resolver built-in fallback tests -----------------------------------------
+
+
+def test_resolver_falls_back_to_builtin(tmp_path: Path):
+    """Resolver finds built-in preamble when not in any search directory."""
+    task_dir = tmp_path / "task-001"
+    task_dir.mkdir(parents=True)
+
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+    blocks = resolver.resolve(["sourcegraph"])
+    assert len(blocks) == 1
+    assert blocks[0].name == "sourcegraph"
+    assert "sg_keyword_search" in blocks[0].template
+
+
+def test_resolver_local_overrides_builtin(tmp_path: Path):
+    """Task-local preamble takes precedence over built-in."""
+    task_dir = tmp_path / "task-001"
+    preambles = task_dir / "preambles"
+    preambles.mkdir(parents=True)
+    (preambles / "sourcegraph.md").write_text("Custom sourcegraph preamble.")
+
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+    blocks = resolver.resolve(["sourcegraph"])
+    assert len(blocks) == 1
+    assert blocks[0].template == "Custom sourcegraph preamble."
+
+
+# -- Template file tests ------------------------------------------------------
+
+
+def test_template_files_are_valid_yaml():
+    """All shipped evalrc template YAML files parse without error."""
+    templates_dir = Path(__file__).resolve().parent.parent / "src" / "codeprobe" / "templates"
+    yaml_files = list(templates_dir.glob("*.yaml"))
+    assert len(yaml_files) >= 3, f"Expected at least 3 templates, found {len(yaml_files)}"
+
+    for yaml_file in yaml_files:
+        content = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
+        assert isinstance(content, dict), f"{yaml_file.name} did not parse as dict"
+        assert "name" in content, f"{yaml_file.name} missing 'name' field"
+        assert "dimensions" in content, f"{yaml_file.name} missing 'dimensions' field"
+
+
+def test_mcp_template_references_sourcegraph_preamble():
+    """MCP comparison template uses the built-in sourcegraph preamble."""
+    templates_dir = Path(__file__).resolve().parent.parent / "src" / "codeprobe" / "templates"
+    content = yaml.safe_load((templates_dir / "evalrc-mcp-comparison.yaml").read_text())
+    prompts = content["dimensions"]["prompts"]
+    assert "with-mcp-hints" in prompts
+    assert "sourcegraph" in prompts["with-mcp-hints"]

@@ -7,11 +7,11 @@ from pathlib import Path
 
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core.executor import (
-    build_prompt,
     execute_config,
     execute_task,
     load_instruction,
 )
+from codeprobe.core.preamble import _base_prompt
 from codeprobe.core.preamble import DefaultPreambleResolver
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
@@ -30,8 +30,8 @@ def _make_task(task_dir: Path, instruction: str = "Fix the bug.", *, passing: bo
     return task_dir
 
 
-def test_build_prompt():
-    prompt = build_prompt("Fix the bug.", Path("/repo"))
+def test_base_prompt():
+    prompt = _base_prompt("Fix the bug.", Path("/repo"))
     assert "Fix the bug." in prompt
     assert "/repo" in prompt
 
