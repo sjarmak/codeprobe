@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
 
-from codeprobe.core.scoring import sanitize_secrets, score_task_output
+import pytest
+
+from codeprobe.core.scoring import (
+    BinaryScorer,
+    CheckpointScorer,
+    ContinuousScorer,
+    ScoreResult,
+    Scorer,
+    get_scorer,
+    sanitize_secrets,
+    score_task_output,
+)
 
 
 def _make_test_sh(task_dir: Path, script: str) -> None:
@@ -147,3 +159,291 @@ def test_score_timeout_enforced(tmp_path: Path):
         assert result.error == "Scoring timed out"
     finally:
         scoring_mod.SCORE_TIMEOUT_SECONDS = original
+
+
+# ---------------------------------------------------------------------------
+# Scorer protocol conformance
+# ---------------------------------------------------------------------------
+
+
+def _make_task_dir(tmp_path: Path, name: str, script: str) -> Path:
+    """Create a task dir with test.sh and return its path."""
+    task_dir = tmp_path / name
+    _make_test_sh(task_dir, script)
+    return task_dir
+
+
+class TestScorerProtocol:
+    """Verify that all scorer implementations satisfy the Scorer protocol."""
+
+    def test_binary_scorer_is_scorer(self) -> None:
+        assert isinstance(BinaryScorer(), Scorer)
+
+    def test_continuous_scorer_is_scorer(self) -> None:
+        assert isinstance(ContinuousScorer(), Scorer)
+
+    def test_checkpoint_scorer_is_scorer(self) -> None:
+        assert isinstance(CheckpointScorer(), Scorer)
+
+
+# ---------------------------------------------------------------------------
+# BinaryScorer
+# ---------------------------------------------------------------------------
+
+
+class TestBinaryScorer:
+    """BinaryScorer wraps existing score_task_output() behaviour."""
+
+    def test_pass_on_exit_zero(self, tmp_path: Path) -> None:
+        task_dir = _make_task_dir(tmp_path, "bin-pass", "#!/bin/bash\nexit 0\n")
+        result = BinaryScorer().score("any output", task_dir)
+        assert result.score == 1.0
+        assert result.passed is True
+        assert result.error is None
+
+    def test_fail_on_exit_nonzero(self, tmp_path: Path) -> None:
+        task_dir = _make_task_dir(tmp_path, "bin-fail", "#!/bin/bash\nexit 1\n")
+        result = BinaryScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+
+    def test_missing_test_sh(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "bin-missing"
+        task_dir.mkdir(parents=True)
+        result = BinaryScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+        assert result.error is not None
+
+    def test_sandbox_isolation(self, tmp_path: Path) -> None:
+        task_dir = _make_task_dir(
+            tmp_path, "bin-sandbox",
+            '#!/bin/bash\ntouch "$PWD/side_effect.txt"\nexit 0\n',
+        )
+        result = BinaryScorer().score("output", task_dir)
+        assert result.passed is True
+        assert not (task_dir / "side_effect.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# ContinuousScorer
+# ---------------------------------------------------------------------------
+
+
+class TestContinuousScorer:
+    """ContinuousScorer reads float from reward.txt written by test.sh."""
+
+    def test_reads_reward_txt(self, tmp_path: Path) -> None:
+        # test.sh writes a reward.txt in the sandbox
+        script = (
+            '#!/bin/bash\n'
+            'echo "0.75" > "$PWD/reward.txt"\n'
+            'exit 0\n'
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-reward", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == pytest.approx(0.75)
+        assert result.passed is True
+        assert result.error is None
+
+    def test_reads_score_from_stdout_fallback(self, tmp_path: Path) -> None:
+        # No reward.txt — falls back to last line of stdout
+        script = (
+            '#!/bin/bash\n'
+            'echo "some debug output"\n'
+            'echo "0.42"\n'
+            'exit 0\n'
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-stdout", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == pytest.approx(0.42)
+        assert result.passed is True
+
+    def test_zero_score_means_not_passed(self, tmp_path: Path) -> None:
+        script = (
+            '#!/bin/bash\n'
+            'echo "0.0" > "$PWD/reward.txt"\n'
+            'exit 0\n'
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-zero", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+
+    def test_exit_nonzero_returns_zero_score(self, tmp_path: Path) -> None:
+        script = (
+            '#!/bin/bash\n'
+            'echo "0.8" > "$PWD/reward.txt"\n'
+            'exit 1\n'
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-exit1", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+
+    def test_invalid_reward_value(self, tmp_path: Path) -> None:
+        script = (
+            '#!/bin/bash\n'
+            'echo "not_a_number" > "$PWD/reward.txt"\n'
+            'exit 0\n'
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-invalid", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+        assert result.error is not None
+
+    def test_clamps_score_to_range(self, tmp_path: Path) -> None:
+        script = (
+            '#!/bin/bash\n'
+            'echo "1.5" > "$PWD/reward.txt"\n'
+            'exit 0\n'
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-clamp", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == 1.0
+        assert result.passed is True
+
+    def test_missing_test_sh(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "cont-missing"
+        task_dir.mkdir(parents=True)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+
+
+# ---------------------------------------------------------------------------
+# CheckpointScorer
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointScorer:
+    """CheckpointScorer runs multiple weighted checkpoint verifiers."""
+
+    def _make_checkpoint_task(
+        self,
+        tmp_path: Path,
+        name: str,
+        checkpoints: list[dict],
+        verifier_scripts: dict[str, str],
+    ) -> Path:
+        """Create a task dir with checkpoints.json and verifier scripts."""
+        task_dir = tmp_path / name
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write checkpoints.json
+        (tests_dir / "checkpoints.json").write_text(
+            json.dumps(checkpoints), encoding="utf-8"
+        )
+
+        # Write verifier scripts
+        verifiers_dir = tests_dir / "verifiers"
+        verifiers_dir.mkdir(exist_ok=True)
+        for script_name, script_content in verifier_scripts.items():
+            script_path = verifiers_dir / script_name
+            script_path.write_text(script_content)
+            script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+
+        return task_dir
+
+    def test_all_checkpoints_pass(self, tmp_path: Path) -> None:
+        checkpoints = [
+            {"name": "cp1", "weight": 0.6, "verifier": "check1.sh"},
+            {"name": "cp2", "weight": 0.4, "verifier": "check2.sh"},
+        ]
+        verifiers = {
+            "check1.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+            "check2.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+        }
+        task_dir = self._make_checkpoint_task(tmp_path, "cp-all-pass", checkpoints, verifiers)
+        result = CheckpointScorer().score("output", task_dir)
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is True
+
+    def test_partial_credit(self, tmp_path: Path) -> None:
+        checkpoints = [
+            {"name": "cp1", "weight": 0.6, "verifier": "check1.sh"},
+            {"name": "cp2", "weight": 0.4, "verifier": "check2.sh"},
+        ]
+        verifiers = {
+            "check1.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+            "check2.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+        }
+        task_dir = self._make_checkpoint_task(tmp_path, "cp-partial", checkpoints, verifiers)
+        result = CheckpointScorer().score("output", task_dir)
+        assert result.score == pytest.approx(0.6)
+        assert result.passed is True  # partial credit > 0
+
+    def test_all_fail(self, tmp_path: Path) -> None:
+        checkpoints = [
+            {"name": "cp1", "weight": 0.5, "verifier": "check1.sh"},
+            {"name": "cp2", "weight": 0.5, "verifier": "check2.sh"},
+        ]
+        verifiers = {
+            "check1.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+            "check2.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+        }
+        task_dir = self._make_checkpoint_task(tmp_path, "cp-all-fail", checkpoints, verifiers)
+        result = CheckpointScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+
+    def test_weights_must_sum_to_one(self, tmp_path: Path) -> None:
+        checkpoints = [
+            {"name": "cp1", "weight": 0.3, "verifier": "check1.sh"},
+            {"name": "cp2", "weight": 0.3, "verifier": "check2.sh"},
+        ]
+        verifiers = {
+            "check1.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+            "check2.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+        }
+        task_dir = self._make_checkpoint_task(tmp_path, "cp-bad-weights", checkpoints, verifiers)
+        result = CheckpointScorer().score("output", task_dir)
+        assert result.passed is False
+        assert result.error is not None
+        assert "sum to 1.0" in result.error.lower() or "weight" in result.error.lower()
+
+    def test_verifier_exit_nonzero_fallback(self, tmp_path: Path) -> None:
+        """Verifier exits nonzero without JSON — treat as score=0, passed=False."""
+        checkpoints = [
+            {"name": "cp1", "weight": 1.0, "verifier": "check1.sh"},
+        ]
+        verifiers = {
+            "check1.sh": '#!/bin/bash\nexit 1\n',
+        }
+        task_dir = self._make_checkpoint_task(tmp_path, "cp-fallback", checkpoints, verifiers)
+        result = CheckpointScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+
+    def test_missing_checkpoints_json(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "cp-no-json"
+        task_dir.mkdir(parents=True)
+        (task_dir / "tests").mkdir(parents=True)
+        result = CheckpointScorer().score("output", task_dir)
+        assert result.score == 0.0
+        assert result.passed is False
+        assert result.error is not None
+
+
+# ---------------------------------------------------------------------------
+# get_scorer registry
+# ---------------------------------------------------------------------------
+
+
+class TestGetScorer:
+    """Registry dispatches by reward_type string."""
+
+    def test_binary(self) -> None:
+        assert isinstance(get_scorer("binary"), BinaryScorer)
+
+    def test_continuous(self) -> None:
+        assert isinstance(get_scorer("continuous"), ContinuousScorer)
+
+    def test_checkpoint(self) -> None:
+        assert isinstance(get_scorer("checkpoint"), CheckpointScorer)
+
+    def test_unknown_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown reward_type"):
+            get_scorer("exotic")
