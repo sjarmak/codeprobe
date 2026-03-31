@@ -24,6 +24,7 @@ def run_eval(
     agent: str = "claude",
     model: str | None = None,
     config: str | None = None,
+    max_cost_usd: float | None = None,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -85,6 +86,9 @@ def run_eval(
         checkpoint_path = exp_dir / "runs" / exp_config.label / "checkpoint.jsonl"
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
+        if max_cost_usd is not None:
+            click.echo(f"  Budget: ${max_cost_usd:.2f}")
+
         results = execute_config(
             adapter=adapter,
             task_dirs=task_dirs,
@@ -93,6 +97,7 @@ def run_eval(
             agent_config=agent_config,
             checkpoint_path=checkpoint_path,
             on_task_complete=_on_task_complete,
+            max_cost_usd=max_cost_usd,
         )
 
         save_config_results(exp_dir, exp_config.label, results)

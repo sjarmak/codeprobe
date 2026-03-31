@@ -25,3 +25,11 @@ def test_cli_commands_registered():
     result = runner.invoke(main, ["--help"])
     for cmd in ("init", "mine", "run", "interpret", "assess"):
         assert cmd in result.output, f"Command '{cmd}' not found in help output"
+
+
+def test_cli_run_has_max_cost_option():
+    runner = CliRunner()
+    result = runner.invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--max-cost-usd" in result.output
+    assert "CODEPROBE_MAX_COST_USD" in result.output

@@ -15,12 +15,16 @@ class FakeAdapter:
         stderr: str | None = None,
         exit_code: int = 0,
         duration: float = 1.0,
+        cost_usd: float | None = None,
+        cost_model: str = "unknown",
         binary: str | None = "/usr/bin/fake-agent",
     ) -> None:
         self._stdout = stdout
         self._stderr = stderr
         self._exit_code = exit_code
         self._duration = duration
+        self._cost_usd = cost_usd
+        self._cost_model = cost_model
         self._binary = binary
         self.run_calls: list[tuple[str, AgentConfig]] = []
 
@@ -46,4 +50,28 @@ class FakeAdapter:
             stderr=self._stderr,
             exit_code=self._exit_code,
             duration_seconds=self._duration,
+            cost_usd=self._cost_usd,
+            cost_model=self._cost_model,
+        )
+
+
+class SequentialCostAdapter(FakeAdapter):
+    """FakeAdapter that returns different costs for each run call."""
+
+    def __init__(self, costs: list[tuple[float | None, str]], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._costs = costs
+        self._call_index = 0
+
+    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+        self.run_calls.append((prompt, config))
+        cost_usd, cost_model = self._costs[self._call_index]
+        self._call_index += 1
+        return AgentOutput(
+            stdout=self._stdout,
+            stderr=self._stderr,
+            exit_code=self._exit_code,
+            duration_seconds=self._duration,
+            cost_usd=cost_usd,
+            cost_model=cost_model,
         )

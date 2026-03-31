@@ -28,6 +28,7 @@ class CompletedTask:
     duration_seconds: float = 0.0
     token_count: int | None = None
     cost_usd: float | None = None
+    cost_model: str = "unknown"
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 

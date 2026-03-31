@@ -90,6 +90,7 @@ def execute_task(
             duration_seconds=output.duration_seconds,
             token_count=output.token_count,
             cost_usd=output.cost_usd,
+            cost_model=output.cost_model,
             metadata={"error": sanitize_secrets(error_msg)},
         )
 
@@ -102,8 +103,12 @@ def execute_task(
         duration_seconds=output.duration_seconds,
         token_count=output.token_count,
         cost_usd=output.cost_usd,
+        cost_model=output.cost_model,
         scoring_details={"passed": score_result.passed, "error": score_result.error},
     )
+
+
+_BILLABLE_COST_MODELS = frozenset({"per_token"})
 
 
 def execute_config(
@@ -115,10 +120,17 @@ def execute_config(
     *,
     checkpoint_path: Path | None = None,
     on_task_complete: Callable[[CompletedTask], None] | None = None,
+    max_cost_usd: float | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
     Resumes from checkpoint if provided. Calls on_task_complete after each task.
+
+    If *max_cost_usd* is set, the executor accumulates ``cost_usd`` from
+    completed tasks whose ``cost_model`` is billable (currently ``per_token``).
+    Once cumulative cost exceeds the budget, execution halts and partial
+    results are returned.  Tasks with ``unknown`` or ``subscription``
+    cost models are skipped in accumulation.
     """
     results: list[CompletedTask] = []
     checkpointed_ids: set[str] = set()
@@ -130,12 +142,26 @@ def execute_config(
                 automated_score=entry.get("automated_score", 0.0),
             ))
 
+    cumulative_cost = 0.0
+
     for task_dir in task_dirs:
         task_id = task_dir.name
 
         if task_id in checkpointed_ids:
             logger.info("Skipping %s (checkpointed)", task_id)
             continue
+
+        # Check budget *before* dispatching the next task
+        if max_cost_usd is not None and cumulative_cost > max_cost_usd:
+            logger.warning(
+                "Cost circuit-breaker: cumulative $%.2f exceeds budget $%.2f — "
+                "halting after %d/%d tasks",
+                cumulative_cost,
+                max_cost_usd,
+                len(results) - len(checkpointed_ids),
+                len(task_dirs),
+            )
+            break
 
         logger.info("[%s] Running %s", experiment_config.label, task_id)
 
@@ -154,5 +180,9 @@ def execute_config(
 
         if on_task_complete is not None:
             on_task_complete(result)
+
+        # Accumulate cost only for billable cost models with known cost
+        if result.cost_model in _BILLABLE_COST_MODELS and result.cost_usd is not None:
+            cumulative_cost += result.cost_usd
 
     return results

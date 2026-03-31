@@ -13,7 +13,7 @@ from codeprobe.core.executor import (
     load_instruction,
 )
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
-from tests.conftest import FakeAdapter
+from tests.conftest import FakeAdapter, SequentialCostAdapter
 
 
 def _make_task(task_dir: Path, instruction: str = "Fix the bug.", *, passing: bool = True) -> Path:
@@ -192,3 +192,191 @@ def test_execute_config_calls_callback(tmp_path: Path):
     )
     assert len(callback_results) == 1
     assert callback_results[0].task_id == "task-000"
+
+
+# --- Cost circuit-breaker tests ---
+
+
+def test_execute_config_halts_at_budget(tmp_path: Path):
+    """Executor stops running tasks when cumulative cost exceeds max_cost_usd."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(5)]
+    # Each task costs $1.00, budget is $2.50 -> should run 3 tasks (0+1+1=2 after first,
+    # then 2+1=3 after third which exceeds 2.50, so halt before 4th)
+    adapter = FakeAdapter(stdout="output", cost_usd=1.0, cost_model="per_token")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        max_cost_usd=2.50,
+    )
+    # Should have run 3 tasks: after task 3, cumulative = $3.00 > $2.50, halt
+    assert len(results) == 3
+    assert len(adapter.run_calls) == 3
+
+
+def test_execute_config_no_budget_runs_all(tmp_path: Path):
+    """Without max_cost_usd, all tasks run regardless of cost."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(5)]
+    adapter = FakeAdapter(stdout="output", cost_usd=10.0, cost_model="per_token")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+    )
+    assert len(results) == 5
+
+
+def test_execute_config_skips_unknown_cost_model_in_accumulation(tmp_path: Path):
+    """Tasks with unknown or subscription cost_model are not counted toward budget."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(4)]
+    # Task 0: $1.00 per_token, Task 1: unknown (skipped), Task 2: $1.00 per_token,
+    # Task 3: $1.00 per_token -> cumulative at task 2 = $2.00, task 3 = $3.00 > $2.50
+    adapter = SequentialCostAdapter(
+        costs=[
+            (1.0, "per_token"),
+            (None, "unknown"),
+            (1.0, "per_token"),
+            (1.0, "per_token"),
+        ],
+        stdout="output",
+    )
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        max_cost_usd=2.50,
+    )
+    # Tasks 0, 1, 2 run (cumulative per_token = $2.00), task 3 would push to $3.00 -> halt
+    assert len(results) == 4
+    assert len(adapter.run_calls) == 4
+
+
+def test_execute_config_skips_subscription_cost_model(tmp_path: Path):
+    """Tasks with subscription cost_model are not counted toward budget."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = SequentialCostAdapter(
+        costs=[
+            (0.0, "subscription"),
+            (0.0, "subscription"),
+            (0.0, "subscription"),
+        ],
+        stdout="output",
+    )
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        max_cost_usd=0.01,  # Tiny budget, but subscription costs are skipped
+    )
+    assert len(results) == 3
+
+
+def test_execute_config_budget_saves_partial_results(tmp_path: Path):
+    """Partial results from budget halt are valid CompletedTask objects."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(5)]
+    adapter = FakeAdapter(stdout="output", cost_usd=2.0, cost_model="per_token")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        max_cost_usd=3.0,
+    )
+    # $2.00 after task 0, $4.00 after task 1 -> halt
+    assert len(results) == 2
+    assert all(isinstance(r, CompletedTask) for r in results)
+    assert all(r.status == "completed" for r in results)
+
+
+def test_execute_config_budget_with_checkpoint(tmp_path: Path):
+    """Checkpointed tasks don't count toward budget (they were already paid for)."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(4)]
+    adapter = FakeAdapter(stdout="output", cost_usd=1.5, cost_model="per_token")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    # Checkpoint task-000
+    import json
+    checkpoint = tmp_path / "checkpoint.jsonl"
+    checkpoint.write_text(json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n")
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        checkpoint_path=checkpoint,
+        max_cost_usd=2.0,
+    )
+    # task-000 is checkpointed (free), task-001 costs $1.50, task-002 would be $3.00 -> halt
+    assert len(adapter.run_calls) == 2
+    # Results include checkpoint + 2 new
+    assert len(results) == 3
+
+
+def test_execute_config_budget_callback_fires_for_partial(tmp_path: Path):
+    """on_task_complete fires for each completed task before budget halt."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(5)]
+    adapter = FakeAdapter(stdout="output", cost_usd=3.0, cost_model="per_token")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    callback_results: list[CompletedTask] = []
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        max_cost_usd=5.0,
+        on_task_complete=callback_results.append,
+    )
+    # $3 after task 0, $6 after task 1 -> halt after 2
+    assert len(results) == 2
+    assert len(callback_results) == 2
+
+
+def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
+    """Tasks where cost_usd is None (per_token but None shouldn't happen, but
+    cost_usd=None with unknown model) are skipped in accumulation."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = FakeAdapter(stdout="output", cost_usd=None, cost_model="unknown")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        max_cost_usd=0.01,
+    )
+    # All tasks run since no per_token costs to accumulate
+    assert len(results) == 3

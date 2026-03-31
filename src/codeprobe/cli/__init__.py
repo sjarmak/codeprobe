@@ -48,7 +48,14 @@ def mine(path: str, count: int, source: str) -> None:
 @click.option("--agent", default="claude", help="Agent to evaluate: claude, copilot.")
 @click.option("--model", default=None, help="Model override (e.g., claude-sonnet-4-6).")
 @click.option("--config", default=None, help="Path to .evalrc.yaml or experiment directory.")
-def run(path: str, agent: str, model: str | None, config: str | None) -> None:
+@click.option(
+    "--max-cost-usd",
+    default=None,
+    type=float,
+    envvar="CODEPROBE_MAX_COST_USD",
+    help="Maximum cumulative cost in USD before halting. Env: CODEPROBE_MAX_COST_USD.",
+)
+def run(path: str, agent: str, model: str | None, config: str | None, max_cost_usd: float | None) -> None:
     """Run eval tasks against an AI coding agent.
 
     Spawns isolated agent sessions for each task, scores results with
@@ -56,7 +63,7 @@ def run(path: str, agent: str, model: str | None, config: str | None) -> None:
     """
     from codeprobe.cli.run_cmd import run_eval
 
-    run_eval(path, agent=agent, model=model, config=config)
+    run_eval(path, agent=agent, model=model, config=config, max_cost_usd=max_cost_usd)
 
 
 @main.command()
