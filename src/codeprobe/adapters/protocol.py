@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 ALLOWED_PERMISSION_MODES = frozenset({"default", "plan", "auto", "acceptEdits"})
+ALLOWED_COST_MODELS = frozenset({"per_token", "subscription", "unknown"})
 
 
 @dataclass(frozen=True)
@@ -18,6 +19,19 @@ class AgentOutput:
     duration_seconds: float
     token_count: int | None = None
     cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cost_model: str = "unknown"
+
+    def __post_init__(self) -> None:
+        if self.cost_model not in ALLOWED_COST_MODELS:
+            raise ValueError(
+                f"Unknown cost_model: {self.cost_model!r}. "
+                f"Expected one of: {sorted(ALLOWED_COST_MODELS)}"
+            )
+        if self.cost_model == "per_token" and self.cost_usd is None:
+            raise ValueError("cost_usd is required when cost_model is 'per_token'")
 
 
 @dataclass(frozen=True)

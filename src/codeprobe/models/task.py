@@ -16,6 +16,8 @@ class TaskMetadata:
     language: str = ""
     category: str = "sdlc"
     org_scale: bool = False
+    mcp_suite: str | None = None
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,3 +40,4 @@ class Task:
     instruction_path: str = "instruction.md"
     instruction_variant_path: str | None = None
     time_limit_sec: int = 300
+    verification_modes: tuple[str, ...] = ()

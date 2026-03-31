@@ -19,18 +19,18 @@ classifiers = [
     "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-    "click>=8.0",
+    "click>=8.0,<9",
 ]
 
 [project.optional-dependencies]
-yaml = ["pyyaml>=6.0"]
-all = ["pyyaml>=6.0"]
+yaml = ["pyyaml>=6.0,<7"]
+all = ["pyyaml>=6.0,<7"]
 dev = [
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
-    "types-PyYAML>=6.0",
+    "pytest>=8.0,<9",
+    "pytest-cov>=5.0,<6",
+    "ruff>=0.4,<1",
+    "mypy>=1.10,<2",
+    "types-PyYAML>=6.0,<7",
 ]
 
 [project.scripts]
