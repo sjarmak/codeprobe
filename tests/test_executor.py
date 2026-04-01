@@ -467,6 +467,39 @@ def test_execute_config_budget_callback_fires_for_partial(tmp_path: Path):
     assert len(callback_results) == 2
 
 
+def test_execute_config_retries_error_checkpointed(tmp_path: Path):
+    """Tasks checkpointed with status='error' should be retried, not skipped."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    from codeprobe.core.checkpoint import CheckpointStore
+    from codeprobe.models.experiment import CompletedTask as CT
+
+    checkpoint_db = tmp_path / "checkpoint.db"
+    store = CheckpointStore(checkpoint_db, config_name="baseline")
+    # task-000 completed successfully — should be skipped
+    store.append(CT(task_id="task-000", automated_score=1.0, status="completed"))
+    # task-001 errored — should be retried
+    store.append(CT(task_id="task-001", automated_score=0.0, status="error"))
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        checkpoint_store=store,
+    )
+    # Should skip task-000, retry task-001, run task-002
+    assert len(adapter.run_calls) == 2
+    # Results: 1 from checkpoint + 2 newly run
+    assert len(results) == 3
+    assert results[0].task_id == "task-000"
+    assert results[0].automated_score == 1.0
+
+
 def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
     """Tasks where cost_usd is None (per_token but None shouldn't happen, but
     cost_usd=None with unknown model) are skipped in accumulation."""

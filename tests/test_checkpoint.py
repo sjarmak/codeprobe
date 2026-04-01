@@ -246,3 +246,76 @@ class TestCorruptRecovery:
         # Should work fine after recovery
         store.append(_make_task("t-001"))
         assert store.load_ids() == {"t-001"}
+
+    def test_error_status_excluded_from_load_ids(self, tmp_path: Path) -> None:
+        """Tasks with status='error' should not appear in load_ids."""
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(task_id="t-ok", automated_score=1.0, status="completed")
+        )
+        store.append(
+            CompletedTask(task_id="t-err", automated_score=0.0, status="error")
+        )
+
+        assert store.load_ids() == {"t-ok"}
+
+    def test_error_status_excluded_from_load_entries(self, tmp_path: Path) -> None:
+        """Tasks with status='error' should not appear in load_entries."""
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(task_id="t-ok", automated_score=1.0, status="completed")
+        )
+        store.append(
+            CompletedTask(task_id="t-err", automated_score=0.0, status="error")
+        )
+
+        entries = store.load_entries()
+        assert len(entries) == 1
+        assert entries[0]["task_id"] == "t-ok"
+
+    def test_error_overwritten_on_retry(self, tmp_path: Path) -> None:
+        """A successful retry should overwrite the error checkpoint."""
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(task_id="t-001", automated_score=0.0, status="error")
+        )
+        assert store.load_ids() == set()
+
+        store.append(
+            CompletedTask(task_id="t-001", automated_score=1.0, status="completed")
+        )
+        assert store.load_ids() == {"t-001"}
+
+    def test_schema_migration_adds_status_column(self, tmp_path: Path) -> None:
+        """Opening an old DB without status column should auto-migrate."""
+        import sqlite3
+
+        db_path = tmp_path / "checkpoint.db"
+        # Create a DB with the old schema (no status column)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE checkpoints ("
+            "  task_id TEXT NOT NULL,"
+            "  config_name TEXT NOT NULL,"
+            "  automated_score REAL NOT NULL,"
+            "  completed_at TEXT NOT NULL,"
+            "  metadata TEXT NOT NULL DEFAULT '{}',"
+            "  PRIMARY KEY (task_id, config_name)"
+            ")"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints VALUES ('t-old', 'default', 1.0, '2025-01-01', '{}')"
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening should auto-migrate
+        store = CheckpointStore(db_path, config_name="default")
+        ids = store.load_ids()
+        assert "t-old" in ids

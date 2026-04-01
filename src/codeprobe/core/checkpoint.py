@@ -21,11 +21,16 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     task_id       TEXT NOT NULL,
     config_name   TEXT NOT NULL,
     automated_score REAL NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'completed',
     completed_at  TEXT NOT NULL,
     metadata      TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (task_id, config_name)
 )
 """
+
+_MIGRATE_STATUS_COLUMN = (
+    "ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+)
 
 
 class CheckpointStore:
@@ -49,32 +54,47 @@ class CheckpointStore:
         now = datetime.now(timezone.utc).isoformat()
         metadata_json = json.dumps(task.metadata) if task.metadata else "{}"
         self._conn.execute(
-            "INSERT INTO checkpoints (task_id, config_name, automated_score, completed_at, metadata) "
-            "VALUES (?, ?, ?, ?, ?) "
+            "INSERT INTO checkpoints (task_id, config_name, automated_score, status, completed_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (task_id, config_name) DO UPDATE SET "
             "  automated_score = excluded.automated_score, "
+            "  status = excluded.status, "
             "  completed_at = excluded.completed_at, "
             "  metadata = excluded.metadata",
-            (task.task_id, self._config_name, task.automated_score, now, metadata_json),
+            (
+                task.task_id,
+                self._config_name,
+                task.automated_score,
+                task.status,
+                now,
+                metadata_json,
+            ),
         )
         self._conn.commit()
 
     def load_ids(self) -> set[str]:
-        """Return the set of completed task IDs for this config."""
+        """Return the set of successfully completed task IDs for this config.
+
+        Tasks with status ``'error'`` are excluded so they get retried.
+        """
         rows = self._conn.execute(
-            "SELECT task_id FROM checkpoints WHERE config_name = ?",
+            "SELECT task_id FROM checkpoints "
+            "WHERE config_name = ? AND status != 'error'",
             (self._config_name,),
         ).fetchall()
         return {row[0] for row in rows}
 
     def load_entries(self) -> list[dict]:
-        """Return all checkpoint entries for this config as dicts.
+        """Return checkpoint entries for this config as dicts.
 
+        Only returns successfully completed entries (status != 'error')
+        so that failed tasks are retried on the next run.
         Ordered by insertion (rowid).
         """
         rows = self._conn.execute(
-            "SELECT task_id, automated_score, completed_at, metadata "
-            "FROM checkpoints WHERE config_name = ? ORDER BY rowid",
+            "SELECT task_id, automated_score, completed_at, metadata, status "
+            "FROM checkpoints WHERE config_name = ? AND status != 'error' "
+            "ORDER BY rowid",
             (self._config_name,),
         ).fetchall()
         return [
@@ -83,6 +103,7 @@ class CheckpointStore:
                 "automated_score": row[1],
                 "completed_at": row[2],
                 "metadata": json.loads(row[3]) if row[3] else {},
+                "status": row[4],
             }
             for row in rows
         ]
@@ -125,12 +146,14 @@ class CheckpointStore:
         """Open (or create) the SQLite database with WAL mode.
 
         If the file is corrupt, it is removed and recreated.
+        Automatically migrates the schema for older databases.
         """
         db_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             conn = sqlite3.connect(str(db_path), timeout=10)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(_CREATE_TABLE)
+            self._migrate_schema(conn)
             conn.commit()
             return conn
         except sqlite3.DatabaseError:
@@ -144,8 +167,19 @@ class CheckpointStore:
             conn = sqlite3.connect(str(db_path), timeout=10)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(_CREATE_TABLE)
+            self._migrate_schema(conn)
             conn.commit()
             return conn
+
+    @staticmethod
+    def _migrate_schema(conn: sqlite3.Connection) -> None:
+        """Add columns introduced after the initial schema."""
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(checkpoints)").fetchall()
+        }
+        if "status" not in cols:
+            conn.execute(_MIGRATE_STATUS_COLUMN)
+            logger.info("Migrated checkpoint schema: added 'status' column")
 
     def _migrate_jsonl(self, jsonl_path: Path) -> None:
         """Import entries from a legacy JSONL checkpoint file."""
