@@ -38,9 +38,11 @@ dev = [
 codeprobe = "codeprobe.cli:main"
 
 [project.entry-points."codeprobe.agents"]
+aider = "codeprobe.adapters.aider:AiderAdapter"
 claude = "codeprobe.adapters.claude:ClaudeAdapter"
 codex = "codeprobe.adapters.codex:CodexAdapter"
 copilot = "codeprobe.adapters.copilot:CopilotAdapter"
+openai = "codeprobe.adapters.openai_compat:OpenAICompatAdapter"
 
 [project.entry-points."codeprobe.sessions"]
 claude = "codeprobe.adapters.session:ClaudeSessionCollector"

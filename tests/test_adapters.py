@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codeprobe.adapters._base import BaseAdapter
+from codeprobe.adapters.aider import AiderAdapter
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.copilot import CopilotAdapter
 from codeprobe.adapters.protocol import (
@@ -929,3 +930,259 @@ class TestCodexAdapter:
                 AdapterExecutionError, match="not available on Responses or"
             ):
                 adapter.run("test", config)
+
+    def test_run_chat_fallback_no_usage(self) -> None:
+        """Chat Completions fallback with no usage data returns error in output."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_message = MagicMock()
+        mock_message.content = "response without usage"
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
+        mock_chat_response = MagicMock()
+        mock_chat_response.choices = [mock_choice]
+        mock_chat_response.usage = None
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "model not found"
+        )
+        mock_client_instance.chat.completions.create.return_value = mock_chat_response
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig()
+            output = adapter.run("test", config)
+
+        assert output.stdout == "response without usage"
+        assert output.error is not None
+        assert "usage" in output.error.lower()
+        assert output.cost_usd is None
+
+    def test_run_chat_fallback_empty_choices(self) -> None:
+        """Chat Completions fallback with empty choices returns empty stdout."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_usage = MagicMock()
+        mock_usage.prompt_tokens = 500
+        mock_usage.completion_tokens = 200
+
+        mock_chat_response = MagicMock()
+        mock_chat_response.choices = []
+        mock_chat_response.usage = mock_usage
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "model not found"
+        )
+        mock_client_instance.chat.completions.create.return_value = mock_chat_response
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig()
+            output = adapter.run("test", config)
+
+        assert output.stdout == ""
+        assert output.input_tokens == 500
+        assert output.output_tokens == 200
+
+    def test_run_chat_fallback_codex_latest_pricing(self) -> None:
+        """Chat Completions fallback with codex-latest model uses correct pricing."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_chat_usage = MagicMock()
+        mock_chat_usage.prompt_tokens = 1000
+        mock_chat_usage.completion_tokens = 500
+
+        mock_message = MagicMock()
+        mock_message.content = "codex-latest response"
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
+        mock_chat_response = MagicMock()
+        mock_chat_response.choices = [mock_choice]
+        mock_chat_response.usage = mock_chat_usage
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "model not found"
+        )
+        mock_client_instance.chat.completions.create.return_value = mock_chat_response
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig(model="codex-latest")
+            output = adapter.run("test", config)
+
+        assert output.stdout == "codex-latest response"
+        assert output.input_tokens == 1000
+        assert output.output_tokens == 500
+        # codex-latest: $2.00/1M input + $8.00/1M output
+        expected_cost = 1000 * 2.00 / 1_000_000 + 500 * 8.00 / 1_000_000
+        assert output.cost_usd == pytest.approx(expected_cost)
+        assert output.cost_model == "per_token"
+        assert output.cost_source == "calculated"
+
+
+# -- AiderAdapter --------------------------------------------------------------
+
+
+class TestAiderAdapter:
+    def test_is_agent_adapter(self) -> None:
+        adapter = AiderAdapter()
+        assert isinstance(adapter, AgentAdapter)
+
+    def test_name(self) -> None:
+        assert AiderAdapter().name == "aider"
+
+    def test_preflight_binary_missing(self) -> None:
+        adapter = AiderAdapter()
+        config = AgentConfig()
+        with patch.object(adapter, "find_binary", return_value=None):
+            issues = adapter.preflight(config)
+        assert any("aider" in i.lower() or "pip install" in i.lower() for i in issues)
+
+    def test_preflight_binary_found(self) -> None:
+        adapter = AiderAdapter()
+        config = AgentConfig()
+        with patch.object(adapter, "find_binary", return_value="/usr/bin/aider"):
+            issues = adapter.preflight(config)
+        assert issues == []
+
+    def test_build_command_basic(self) -> None:
+        adapter = AiderAdapter()
+        config = AgentConfig()
+        with patch.object(adapter, "find_binary", return_value="/usr/bin/aider"):
+            cmd = adapter.build_command("fix the bug", config)
+        assert cmd[0] == "/usr/bin/aider"
+        assert "--message" in cmd
+        assert "fix the bug" in cmd
+        assert "--yes-always" in cmd
+        assert "--no-git" in cmd
+
+    def test_build_command_with_model(self) -> None:
+        adapter = AiderAdapter()
+        config = AgentConfig(model="gpt-4o")
+        with patch.object(adapter, "find_binary", return_value="/usr/bin/aider"):
+            cmd = adapter.build_command("test", config)
+        assert "--model" in cmd
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "gpt-4o"
+
+    def test_build_command_without_model(self) -> None:
+        adapter = AiderAdapter()
+        config = AgentConfig()
+        with patch.object(adapter, "find_binary", return_value="/usr/bin/aider"):
+            cmd = adapter.build_command("test", config)
+        assert "--model" not in cmd
+
+
+class TestAiderParseOutput:
+    """Tests for AiderAdapter.parse_output() — cost/token extraction from output."""
+
+    @staticmethod
+    def _load_fixture(name: str) -> str:
+        return (FIXTURE_DIR / name).read_text()
+
+    def _make_aider_result(
+        self, stdout: str = "", stderr: str = "", returncode: int = 0
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["aider", "--message", "test"],
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def test_normal_cost_parsing(self) -> None:
+        """Parse cost and tokens from normal Aider output."""
+        adapter = AiderAdapter()
+        fixture = self._load_fixture("aider_normal.txt")
+        result = self._make_aider_result(stdout=fixture)
+        output = adapter.parse_output(result, duration=2.5)
+
+        assert output.input_tokens == 1200
+        assert output.output_tokens == 856
+        assert output.cost_usd == pytest.approx(0.0034)
+        assert output.cost_model == "per_token"
+        assert output.cost_source == "log_parsed"
+        assert output.error is None
+
+    def test_large_token_counts(self) -> None:
+        """Parse k-suffixed token counts like 45.3k."""
+        adapter = AiderAdapter()
+        fixture = self._load_fixture("aider_large_tokens.txt")
+        result = self._make_aider_result(stdout=fixture)
+        output = adapter.parse_output(result, duration=5.0)
+
+        assert output.input_tokens == 45300
+        assert output.output_tokens == 12800
+        assert output.cost_usd == pytest.approx(0.1523)
+        assert output.cost_model == "per_token"
+        assert output.cost_source == "log_parsed"
+
+    def test_no_cost_line(self) -> None:
+        """When no cost summary is present, tokens and cost are None."""
+        adapter = AiderAdapter()
+        fixture = self._load_fixture("aider_no_cost.txt")
+        result = self._make_aider_result(stdout=fixture)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens is None
+        assert output.output_tokens is None
+        assert output.cost_usd is None
+        assert output.cost_source == "unavailable"
+        assert output.error is None
+
+    def test_error_output(self) -> None:
+        """Aider error output still produces valid AgentOutput."""
+        adapter = AiderAdapter()
+        fixture = self._load_fixture("aider_error.txt")
+        result = self._make_aider_result(stdout=fixture, returncode=1)
+        output = adapter.parse_output(result, duration=0.5)
+
+        assert output.exit_code == 1
+        assert output.input_tokens is None
+        assert output.cost_usd is None
+
+    def test_empty_output(self) -> None:
+        """Empty output produces valid AgentOutput with no tokens."""
+        adapter = AiderAdapter()
+        fixture = self._load_fixture("aider_empty.txt")
+        result = self._make_aider_result(stdout=fixture)
+        output = adapter.parse_output(result, duration=0.1)
+
+        assert output.input_tokens is None
+        assert output.output_tokens is None
+        assert output.cost_usd is None
+
+    def test_cost_in_stderr(self) -> None:
+        """Cost summary found in stderr is also parsed."""
+        adapter = AiderAdapter()
+        result = self._make_aider_result(
+            stdout="Fixed the bug",
+            stderr="Tokens: 500 sent, 200 received. Cost: $0.0012 message, $0.0012 session.",
+        )
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens == 500
+        assert output.output_tokens == 200
+        assert output.cost_usd == pytest.approx(0.0012)
+        assert output.cost_source == "log_parsed"
+
+    def test_session_cost_used_for_cost_usd(self) -> None:
+        """The message cost (not session cost) is used for cost_usd."""
+        adapter = AiderAdapter()
+        result = self._make_aider_result(
+            stdout="",
+            stderr="Tokens: 1k sent, 500 received. Cost: $0.005 message, $0.050 session.",
+        )
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.cost_usd == pytest.approx(0.005)

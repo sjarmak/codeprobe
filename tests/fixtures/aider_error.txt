@@ -1,0 +1,4 @@
+Aider v0.82.1
+Model: claude-sonnet-4-20250514 with diff edit format
+
+Can't initialize git repo in /tmp/test

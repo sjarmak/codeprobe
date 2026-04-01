@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # Pricing per 1M tokens: (input, output)
 CODEX_PRICING: dict[str, tuple[float, float]] = {
     "codex-mini-latest": (1.50, 6.00),
+    "codex-latest": (2.00, 8.00),
 }
 
 # Claude pricing per 1M tokens: (input, output, cache_read, cache_creation)

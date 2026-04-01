@@ -192,6 +192,22 @@ class TestApiResponseCollector:
         usage = self.collector.collect("", input_tokens=100)
         assert usage.error is not None
 
+    def test_codex_latest_pricing(self):
+        usage = self.collector.collect(
+            "",
+            input_tokens=1000,
+            output_tokens=500,
+            model="codex-latest",
+        )
+        assert usage.input_tokens == 1000
+        assert usage.output_tokens == 500
+        # codex-latest: $2.00/1M input + $8.00/1M output
+        expected_cost = 1000 * 2.00 / 1_000_000 + 500 * 8.00 / 1_000_000
+        assert usage.cost_usd == pytest.approx(expected_cost)
+        assert usage.cost_model == "per_token"
+        assert usage.cost_source == "calculated"
+        assert usage.error is None
+
     def test_custom_pricing(self):
         custom = ApiResponseCollector(pricing={"my-model": (2.0, 8.0)})
         usage = custom.collect(
