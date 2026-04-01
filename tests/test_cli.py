@@ -27,6 +27,21 @@ def test_cli_commands_registered():
         assert cmd in result.output, f"Command '{cmd}' not found in help output"
 
 
+def test_main_module_runnable():
+    """Verify `python -m codeprobe --version` works (needed for pipx run)."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "codeprobe", "--version"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert "0.1.0a1" in result.stdout
+
+
 def test_cli_run_has_max_cost_option():
     runner = CliRunner()
     result = runner.invoke(main, ["run", "--help"])

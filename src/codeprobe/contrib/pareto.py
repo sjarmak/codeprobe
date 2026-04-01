@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from codeprobe.contrib._shared import PASS_THRESHOLD as _PASS_THRESHOLD
 from codeprobe.models.experiment import ConfigResults
-
-_PASS_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
@@ -44,14 +43,18 @@ def pareto_front(configs: list[ConfigResults]) -> list[ParetoPoint]:
         # distinct from 0.0 which means legitimately free.
         if any(t.cost_usd is None for t in cr.completed):
             continue
-        score = sum(1.0 for t in cr.completed if t.automated_score >= _PASS_THRESHOLD) / n
+        score = (
+            sum(1.0 for t in cr.completed if t.automated_score >= _PASS_THRESHOLD) / n
+        )
         cost = sum(t.cost_usd for t in cr.completed)  # type: ignore[arg-type]
         points.append(ParetoPoint(label=cr.config, score=score, cost=cost))
 
     front: list[ParetoPoint] = []
     for p in points:
         dominated = any(
-            other.score >= p.score and other.cost <= p.cost and (other.score > p.score or other.cost < p.cost)
+            other.score >= p.score
+            and other.cost <= p.cost
+            and (other.score > p.score or other.cost < p.cost)
             for other in points
             if other.label != p.label
         )

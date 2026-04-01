@@ -6,6 +6,7 @@ Higher score wins. Updates ratings using standard Elo formula.
 
 from __future__ import annotations
 
+from codeprobe.contrib._shared import build_score_maps
 from codeprobe.models.experiment import ConfigResults
 
 _DEFAULT_RATING = 1500.0
@@ -29,10 +30,7 @@ def compute_elo_ratings(
     """
     ratings: dict[str, float] = {cr.config: initial_rating for cr in configs}
 
-    score_maps: dict[str, dict[str, float]] = {}
-    for cr in configs:
-        score_maps[cr.config] = {t.task_id: t.automated_score for t in cr.completed}
-
+    score_maps = build_score_maps(configs)
     labels = list(score_maps.keys())
     for i, a in enumerate(labels):
         for b in labels[i + 1 :]:

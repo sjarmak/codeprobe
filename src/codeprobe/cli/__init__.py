@@ -222,3 +222,8 @@ main.add_command(ratings)
 from codeprobe.cli.scaffold_cmd import scaffold  # noqa: E402
 
 main.add_command(scaffold)
+
+# Register the probe command
+from codeprobe.cli.probe_cmd import probe  # noqa: E402
+
+main.add_command(probe)

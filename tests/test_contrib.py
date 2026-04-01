@@ -28,7 +28,9 @@ class TestSPRT:
 
         wins = [1.0] * 20
         losses = [0.0] * 5
-        result = sprt_test(wins + losses, theta_0=0.5, theta_1=0.7, alpha=0.05, beta=0.2)
+        result = sprt_test(
+            wins + losses, theta_0=0.5, theta_1=0.7, alpha=0.05, beta=0.2
+        )
         assert result.decision in ("accept", "reject", "continue")
 
     def test_not_enough_data(self) -> None:
@@ -197,14 +199,20 @@ class TestDecisionTree:
         from codeprobe.contrib.decision_tree import build_decision_tree
 
         configs = [
-            _results("A", [
-                _task("t1", 1.0, metadata={"difficulty": "easy"}),
-                _task("t2", 0.0, metadata={"difficulty": "hard"}),
-            ]),
-            _results("B", [
-                _task("t1", 0.0, metadata={"difficulty": "easy"}),
-                _task("t2", 1.0, metadata={"difficulty": "hard"}),
-            ]),
+            _results(
+                "A",
+                [
+                    _task("t1", 1.0, metadata={"difficulty": "easy"}),
+                    _task("t2", 0.0, metadata={"difficulty": "hard"}),
+                ],
+            ),
+            _results(
+                "B",
+                [
+                    _task("t1", 0.0, metadata={"difficulty": "easy"}),
+                    _task("t2", 1.0, metadata={"difficulty": "hard"}),
+                ],
+            ),
         ]
         tree = build_decision_tree(configs, feature_key="difficulty")
         assert isinstance(tree, dict)
@@ -221,10 +229,22 @@ class TestPareto:
         from codeprobe.contrib.pareto import pareto_front
 
         configs = [
-            _results("cheap-bad", [_task("t1", 0.0, cost_usd=0.01), _task("t2", 0.0, cost_usd=0.01)]),
-            _results("mid-mid", [_task("t1", 1.0, cost_usd=0.05), _task("t2", 0.0, cost_usd=0.05)]),
-            _results("expensive-good", [_task("t1", 1.0, cost_usd=0.50), _task("t2", 1.0, cost_usd=0.50)]),
-            _results("expensive-bad", [_task("t1", 0.0, cost_usd=0.50), _task("t2", 0.0, cost_usd=0.50)]),
+            _results(
+                "cheap-bad",
+                [_task("t1", 0.0, cost_usd=0.01), _task("t2", 0.0, cost_usd=0.01)],
+            ),
+            _results(
+                "mid-mid",
+                [_task("t1", 1.0, cost_usd=0.05), _task("t2", 0.0, cost_usd=0.05)],
+            ),
+            _results(
+                "expensive-good",
+                [_task("t1", 1.0, cost_usd=0.50), _task("t2", 1.0, cost_usd=0.50)],
+            ),
+            _results(
+                "expensive-bad",
+                [_task("t1", 0.0, cost_usd=0.50), _task("t2", 0.0, cost_usd=0.50)],
+            ),
         ]
         front = pareto_front(configs)
         labels = {f.label for f in front}
@@ -243,8 +263,14 @@ class TestPareto:
         from codeprobe.contrib.pareto import pareto_front
 
         configs = [
-            _results("subscription", [_task("t1", 1.0, cost_usd=None), _task("t2", 1.0, cost_usd=None)]),
-            _results("per-token", [_task("t1", 1.0, cost_usd=0.10), _task("t2", 1.0, cost_usd=0.10)]),
+            _results(
+                "subscription",
+                [_task("t1", 1.0, cost_usd=None), _task("t2", 1.0, cost_usd=None)],
+            ),
+            _results(
+                "per-token",
+                [_task("t1", 1.0, cost_usd=0.10), _task("t2", 1.0, cost_usd=0.10)],
+            ),
         ]
         front = pareto_front(configs)
         labels = {f.label for f in front}
@@ -257,8 +283,14 @@ class TestPareto:
         from codeprobe.contrib.pareto import pareto_front
 
         configs = [
-            _results("free-good", [_task("t1", 1.0, cost_usd=0.0), _task("t2", 1.0, cost_usd=0.0)]),
-            _results("paid-good", [_task("t1", 1.0, cost_usd=0.50), _task("t2", 1.0, cost_usd=0.50)]),
+            _results(
+                "free-good",
+                [_task("t1", 1.0, cost_usd=0.0), _task("t2", 1.0, cost_usd=0.0)],
+            ),
+            _results(
+                "paid-good",
+                [_task("t1", 1.0, cost_usd=0.50), _task("t2", 1.0, cost_usd=0.50)],
+            ),
         ]
         front = pareto_front(configs)
         labels = {f.label for f in front}
@@ -273,7 +305,10 @@ class TestPareto:
             _results("known-cheap", [_task("t1", 1.0, cost_usd=0.01)]),
             _results("known-expensive", [_task("t1", 1.0, cost_usd=1.00)]),
             _results("unknown-cost", [_task("t1", 1.0, cost_usd=None)]),
-            _results("partial-unknown", [_task("t1", 1.0, cost_usd=0.05), _task("t2", 1.0, cost_usd=None)]),
+            _results(
+                "partial-unknown",
+                [_task("t1", 1.0, cost_usd=0.05), _task("t2", 1.0, cost_usd=None)],
+            ),
         ]
         front = pareto_front(configs)
         labels = {f.label for f in front}
@@ -293,14 +328,64 @@ class TestAdaptiveSampling:
     def test_suggest_next(self) -> None:
         from codeprobe.contrib.adaptive import suggest_next_tasks
 
-        completed = [_task("t1", 1.0), _task("t2", 0.0)]
         available = ["t3", "t4", "t5"]
-        suggested = suggest_next_tasks(completed, available, count=2, seed=42)
+        suggested = suggest_next_tasks(available, count=2, seed=42)
         assert len(suggested) <= 2
         assert all(t in available for t in suggested)
 
     def test_suggest_empty_available(self) -> None:
         from codeprobe.contrib.adaptive import suggest_next_tasks
 
-        suggested = suggest_next_tasks([], [], count=3)
+        suggested = suggest_next_tasks([], count=3)
         assert suggested == []
+
+    def test_suggest_no_completed_param(self) -> None:
+        """suggest_next_tasks should not accept a 'completed' keyword (removed)."""
+        import inspect
+
+        from codeprobe.contrib.adaptive import suggest_next_tasks
+
+        params = inspect.signature(suggest_next_tasks).parameters
+        assert "completed" not in params
+
+
+# ===========================================================================
+# Shared constants
+# ===========================================================================
+
+
+class TestShared:
+    def test_pass_threshold_value(self) -> None:
+        from codeprobe.contrib._shared import PASS_THRESHOLD
+
+        assert PASS_THRESHOLD == 0.5
+
+    def test_build_score_maps(self) -> None:
+        from codeprobe.contrib._shared import build_score_maps
+
+        configs = [
+            _results("A", [_task("t1", 1.0), _task("t2", 0.5)]),
+            _results("B", [_task("t1", 0.0)]),
+        ]
+        maps = build_score_maps(configs)
+        assert maps == {
+            "A": {"t1": 1.0, "t2": 0.5},
+            "B": {"t1": 0.0},
+        }
+
+    def test_build_score_maps_empty(self) -> None:
+        from codeprobe.contrib._shared import build_score_maps
+
+        assert build_score_maps([]) == {}
+
+    def test_modules_import_from_shared(self) -> None:
+        """All modules with _PASS_THRESHOLD should import from _shared."""
+        from codeprobe.contrib._shared import PASS_THRESHOLD
+        from codeprobe.contrib.counterfactual import _PASS_THRESHOLD as cf_pt
+        from codeprobe.contrib.debate import _PASS_THRESHOLD as deb_pt
+        from codeprobe.contrib.decision_tree import _PASS_THRESHOLD as dt_pt
+        from codeprobe.contrib.mutation import _PASS_THRESHOLD as mut_pt
+        from codeprobe.contrib.pareto import _PASS_THRESHOLD as par_pt
+
+        for val in (cf_pt, deb_pt, dt_pt, mut_pt, par_pt):
+            assert val == PASS_THRESHOLD

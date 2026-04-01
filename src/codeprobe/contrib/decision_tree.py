@@ -6,9 +6,8 @@ best in each group, revealing where different setups excel.
 
 from __future__ import annotations
 
+from codeprobe.contrib._shared import PASS_THRESHOLD as _PASS_THRESHOLD
 from codeprobe.models.experiment import ConfigResults
-
-_PASS_THRESHOLD = 0.5
 
 
 def build_decision_tree(

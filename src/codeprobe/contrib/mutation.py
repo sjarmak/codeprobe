@@ -9,9 +9,8 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
+from codeprobe.contrib._shared import PASS_THRESHOLD as _PASS_THRESHOLD
 from codeprobe.models.experiment import CompletedTask
-
-_PASS_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)

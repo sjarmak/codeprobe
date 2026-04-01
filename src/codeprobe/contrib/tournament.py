@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from codeprobe.contrib._shared import build_score_maps
 from codeprobe.models.experiment import ConfigResults
 
 
@@ -27,10 +28,7 @@ def round_robin(configs: list[ConfigResults]) -> list[Standing]:
     Compares each pair on their shared tasks. Returns standings
     sorted by wins descending, then losses ascending.
     """
-    score_maps: dict[str, dict[str, float]] = {}
-    for cr in configs:
-        score_maps[cr.config] = {t.task_id: t.automated_score for t in cr.completed}
-
+    score_maps = build_score_maps(configs)
     records: dict[str, list[int]] = {cr.config: [0, 0, 0] for cr in configs}  # W, L, D
 
     labels = list(score_maps.keys())
