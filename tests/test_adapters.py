@@ -1201,7 +1201,9 @@ class TestCopilotMcpConfig:
             cmd = adapter.build_command("test", config)
             assert "--additional-mcp-config" in cmd
             idx = cmd.index("--additional-mcp-config")
-            path = cmd[idx + 1]
+            arg = cmd[idx + 1]
+            assert arg.startswith("@"), "Copilot MCP config must use @filepath syntax"
+            path = arg[1:]  # strip @ prefix
             with open(path) as f:
                 payload = json.load(f)
             assert payload == mcp

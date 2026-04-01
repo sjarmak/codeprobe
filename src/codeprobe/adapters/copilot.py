@@ -47,7 +47,7 @@ class CopilotAdapter(BaseAdapter):
 
         mcp_path = self._write_mcp_config(config)
         if mcp_path:
-            cmd.extend(["--additional-mcp-config", mcp_path])
+            cmd.extend(["--additional-mcp-config", f"@{mcp_path}"])
 
         return cmd
 
