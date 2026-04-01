@@ -66,13 +66,18 @@ class BaseAdapter:
         )
 
     def _write_mcp_config(self, config: AgentConfig) -> str | None:
-        """Write MCP config to a temp file if present. Returns path or None."""
+        """Write MCP config to a temp file if present. Returns path or None.
+
+        Expands ``${VAR}`` references in string values from the environment
+        so experiment.json can reference secrets without hardcoding them.
+        """
         if not config.mcp_config:
             return None
+        expanded = json.loads(os.path.expandvars(json.dumps(config.mcp_config)))
         tmp = tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", prefix="codeprobe-mcp-", delete=False
         )
-        json.dump(config.mcp_config, tmp)
+        json.dump(expanded, tmp)
         tmp.close()
         return tmp.name
 
