@@ -25,17 +25,45 @@ class Report:
     summaries: tuple[ConfigSummary, ...]
     rankings: tuple[RankedConfig, ...]
     comparisons: tuple[PairwiseComparison, ...]
+    is_partial: bool = False
+    tasks_expected: int | None = None
+    completion_ratio: float | None = None
 
 
-def generate_report(experiment_name: str, all_results: list[ConfigResults]) -> Report:
+def _compute_partial_metadata(
+    summaries: list[ConfigSummary], total_tasks: int | None
+) -> tuple[bool, int | None, float | None]:
+    """Compute report-level partial metadata from summaries and total_tasks.
+
+    Returns (is_partial, tasks_expected, completion_ratio).
+    """
+    if total_tasks is None:
+        return False, None, None
+
+    # Sum completed tasks across all configs (take max per config for ratio)
+    tasks_completed = max((s.total_tasks for s in summaries), default=0)
+    is_partial = tasks_completed < total_tasks
+    completion_ratio = tasks_completed / total_tasks if total_tasks > 0 else 0.0
+    return is_partial, total_tasks, completion_ratio
+
+
+def generate_report(
+    experiment_name: str,
+    all_results: list[ConfigResults],
+    *,
+    total_tasks: int | None = None,
+) -> Report:
     """Generate a full report from config results.
+
+    When *total_tasks* is provided and exceeds completed tasks, the report
+    is flagged as partial with a completion ratio.
 
     1. summarize_config() for each
     2. rank_configs()
     3. compare_configs() for all pairs
     4. Return Report
     """
-    summaries = [summarize_config(r) for r in all_results]
+    summaries = [summarize_config(r, total_tasks=total_tasks) for r in all_results]
     rankings = rank_configs(summaries)
 
     comparisons: list[PairwiseComparison] = []
@@ -43,17 +71,26 @@ def generate_report(experiment_name: str, all_results: list[ConfigResults]) -> R
         for b in summaries[i + 1 :]:
             comparisons.append(compare_configs(a, b))
 
+    is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
+        summaries, total_tasks
+    )
+
     return Report(
         experiment_name=experiment_name,
         summaries=tuple(summaries),
         rankings=tuple(rankings),
         comparisons=tuple(comparisons),
+        is_partial=is_partial,
+        tasks_expected=tasks_expected,
+        completion_ratio=completion_ratio,
     )
 
 
 def generate_report_streaming(
     experiment_name: str,
     config_task_pairs: Iterator[tuple[str, Iterator[CompletedTask]]],
+    *,
+    total_tasks: int | None = None,
 ) -> Report:
     """Generate a report by streaming tasks per config.
 
@@ -61,9 +98,13 @@ def generate_report_streaming(
     Tasks are consumed in a single pass via summarize_completed_tasks(),
     avoiding loading all results into memory at once. Ranking and comparison
     operate on the resulting summaries (O(configs), not O(tasks)).
+
+    When *total_tasks* is provided and exceeds completed tasks, the report
+    is flagged as partial with a completion ratio.
     """
     summaries = [
-        summarize_completed_tasks(label, tasks) for label, tasks in config_task_pairs
+        summarize_completed_tasks(label, tasks, total_tasks=total_tasks)
+        for label, tasks in config_task_pairs
     ]
     rankings = rank_configs(summaries)
 
@@ -72,11 +113,18 @@ def generate_report_streaming(
         for b in summaries[i + 1 :]:
             comparisons.append(compare_configs(a, b))
 
+    is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
+        summaries, total_tasks
+    )
+
     return Report(
         experiment_name=experiment_name,
         summaries=tuple(summaries),
         rankings=tuple(rankings),
         comparisons=tuple(comparisons),
+        is_partial=is_partial,
+        tasks_expected=tasks_expected,
+        completion_ratio=completion_ratio,
     )
 
 
@@ -86,6 +134,12 @@ def format_text_report(report: Report) -> str:
 
     lines.append(f"## Experiment: {report.experiment_name}")
     lines.append("")
+
+    if report.is_partial and report.tasks_expected is not None:
+        tasks_done = max((s.total_tasks for s in report.summaries), default=0)
+        pct = int((report.completion_ratio or 0.0) * 100)
+        lines.append(f"**PARTIAL** {tasks_done}/{report.tasks_expected} tasks ({pct}%)")
+        lines.append("")
 
     # Rankings
     lines.append("### Rankings")
@@ -128,8 +182,11 @@ def format_text_report(report: Report) -> str:
 
 def format_json_report(report: Report) -> str:
     """Format report as JSON string."""
-    data = {
+    data: dict = {
         "experiment_name": report.experiment_name,
+        "is_partial": report.is_partial,
+        "tasks_expected": report.tasks_expected,
+        "completion_ratio": report.completion_ratio,
         "summaries": [asdict(s) for s in report.summaries],
         "rankings": [
             {

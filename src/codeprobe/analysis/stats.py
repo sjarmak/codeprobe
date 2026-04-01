@@ -30,6 +30,8 @@ class ConfigSummary:
     mean_duration_sec: float
     total_cost_usd: float | None
     total_tokens: int | None
+    is_partial: bool = False
+    tasks_expected: int | None = None
 
 
 @dataclass(frozen=True)
@@ -45,10 +47,18 @@ class PairwiseComparison:
     summary: str
 
 
-def summarize_config(results: ConfigResults) -> ConfigSummary:
-    """Compute summary statistics for a single config's results."""
+def summarize_config(
+    results: ConfigResults, *, total_tasks: int | None = None
+) -> ConfigSummary:
+    """Compute summary statistics for a single config's results.
+
+    When *total_tasks* is provided and exceeds the number of completed tasks,
+    the summary is flagged as partial.
+    """
     tasks = results.completed
     total = len(tasks)
+
+    is_partial = total_tasks is not None and total < total_tasks
 
     if total == 0:
         return ConfigSummary(
@@ -63,6 +73,8 @@ def summarize_config(results: ConfigResults) -> ConfigSummary:
             mean_duration_sec=0.0,
             total_cost_usd=None,
             total_tokens=None,
+            is_partial=is_partial,
+            tasks_expected=total_tasks,
         )
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
@@ -97,11 +109,16 @@ def summarize_config(results: ConfigResults) -> ConfigSummary:
         mean_duration_sec=mean_duration,
         total_cost_usd=total_cost,
         total_tokens=total_tokens,
+        is_partial=is_partial,
+        tasks_expected=total_tasks,
     )
 
 
 def summarize_completed_tasks(
-    label: str, tasks: Iterator[CompletedTask]
+    label: str,
+    tasks: Iterator[CompletedTask],
+    *,
+    total_tasks: int | None = None,
 ) -> ConfigSummary:
     """Compute summary statistics from an iterator of tasks (single-pass).
 
@@ -109,6 +126,9 @@ def summarize_completed_tasks(
     this accepts an arbitrary iterator and accumulates in one pass without
     buffering all tasks in memory. Produces identical output to
     summarize_config() for the same data.
+
+    When *total_tasks* is provided and exceeds the number of consumed tasks,
+    the summary is flagged as partial.
     """
     total = 0
     completed_count = 0
@@ -140,6 +160,8 @@ def summarize_completed_tasks(
             token_sum += task.token_count
             has_tokens = True
 
+    is_partial = total_tasks is not None and total < total_tasks
+
     if total == 0:
         return ConfigSummary(
             label=label,
@@ -153,6 +175,8 @@ def summarize_completed_tasks(
             mean_duration_sec=0.0,
             total_cost_usd=None,
             total_tokens=None,
+            is_partial=is_partial,
+            tasks_expected=total_tasks,
         )
 
     total_duration = sum(durations)
@@ -170,6 +194,8 @@ def summarize_completed_tasks(
         mean_duration_sec=statistics.mean(durations),
         total_cost_usd=total_cost,
         total_tokens=token_sum if has_tokens else None,
+        is_partial=is_partial,
+        tasks_expected=total_tasks,
     )
 
 

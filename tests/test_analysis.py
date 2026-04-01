@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -569,3 +570,202 @@ class TestGenerateReportStreaming:
         assert len(report.summaries) == 1
         assert len(report.rankings) == 1
         assert report.rankings[0].label == "solo"
+
+
+# ---------------------------------------------------------------------------
+# Partial results: ConfigSummary fields
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSummaryPartialFields:
+    def test_defaults_not_partial(self) -> None:
+        """ConfigSummary defaults to is_partial=False, tasks_expected=None."""
+        results = ConfigResults(
+            config="full",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        s = summarize_config(results)
+        assert s.is_partial is False
+        assert s.tasks_expected is None
+
+    def test_streaming_defaults_not_partial(self) -> None:
+        """summarize_completed_tasks defaults to is_partial=False."""
+        tasks = [_task("t1", 1.0, duration=5.0)]
+        s = summarize_completed_tasks("test", iter(tasks))
+        assert s.is_partial is False
+        assert s.tasks_expected is None
+
+    def test_streaming_with_total_tasks(self) -> None:
+        """When total_tasks > completed, summary is marked partial."""
+        tasks = [_task("t1", 1.0, duration=5.0), _task("t2", 0.8, duration=3.0)]
+        s = summarize_completed_tasks("test", iter(tasks), total_tasks=5)
+        assert s.is_partial is True
+        assert s.tasks_expected == 5
+        assert s.total_tasks == 2
+
+    def test_streaming_complete_when_all_done(self) -> None:
+        """When total_tasks == completed, summary is NOT partial."""
+        tasks = [_task("t1", 1.0, duration=5.0), _task("t2", 0.8, duration=3.0)]
+        s = summarize_completed_tasks("test", iter(tasks), total_tasks=2)
+        assert s.is_partial is False
+        assert s.tasks_expected == 2
+
+    def test_summarize_config_with_total_tasks(self) -> None:
+        """summarize_config also accepts total_tasks."""
+        results = ConfigResults(
+            config="partial",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        s = summarize_config(results, total_tasks=10)
+        assert s.is_partial is True
+        assert s.tasks_expected == 10
+
+
+# ---------------------------------------------------------------------------
+# Partial results: Report metadata
+# ---------------------------------------------------------------------------
+
+
+class TestPartialReport:
+    def test_report_not_partial_by_default(self) -> None:
+        """Report without total_tasks is not partial."""
+        results = ConfigResults(
+            config="full",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        report = generate_report("test", [results])
+        assert report.is_partial is False
+        assert report.completion_ratio is None
+        assert report.tasks_expected is None
+
+    def test_report_partial_with_total_tasks(self) -> None:
+        """Report with total_tasks > completed is partial."""
+        results = ConfigResults(
+            config="partial",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        report = generate_report("test", [results], total_tasks=5)
+        assert report.is_partial is True
+        assert report.tasks_expected == 5
+        assert report.completion_ratio == pytest.approx(0.2)
+
+    def test_report_complete_when_all_done(self) -> None:
+        """Report where tasks == total_tasks is not partial."""
+        results = ConfigResults(
+            config="done",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        report = generate_report("test", [results], total_tasks=1)
+        assert report.is_partial is False
+        assert report.tasks_expected == 1
+        assert report.completion_ratio == pytest.approx(1.0)
+
+    def test_streaming_report_partial(self) -> None:
+        """Streaming report also supports partial metadata."""
+        tasks = [_task("t1", 1.0, duration=5.0)]
+
+        def stream() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+            yield ("cfg", iter(tasks))
+
+        report = generate_report_streaming("test", stream(), total_tasks=10)
+        assert report.is_partial is True
+        assert report.tasks_expected == 10
+        assert report.completion_ratio == pytest.approx(0.1)
+
+
+# ---------------------------------------------------------------------------
+# Partial results: text format
+# ---------------------------------------------------------------------------
+
+
+class TestPartialTextReport:
+    def test_partial_header_shown(self) -> None:
+        """Partial report text includes N/M tasks (X%) header."""
+        results = ConfigResults(
+            config="alpha",
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.20),
+                _task("t2", 0.8, duration=15.0, cost=0.22),
+            ],
+        )
+        report = generate_report("test-exp", [results], total_tasks=10)
+        text = format_text_report(report)
+
+        assert "2/10 tasks (20%)" in text
+        assert "PARTIAL" in text
+
+    def test_complete_report_no_partial_header(self) -> None:
+        """Complete report does not show partial header."""
+        results = ConfigResults(
+            config="alpha",
+            completed=[_task("t1", 1.0, duration=10.0)],
+        )
+        report = generate_report("test-exp", [results])
+        text = format_text_report(report)
+
+        assert "PARTIAL" not in text
+
+
+# ---------------------------------------------------------------------------
+# Partial results: JSON format
+# ---------------------------------------------------------------------------
+
+
+class TestPartialJsonReport:
+    def test_partial_metadata_in_json(self) -> None:
+        """Partial report JSON includes partial metadata."""
+        results = ConfigResults(
+            config="beta",
+            completed=[_task("t1", 0.9, duration=12.0, cost=0.15, tokens=800)],
+        )
+        report = generate_report("json-exp", [results], total_tasks=5)
+        text = format_json_report(report)
+        data = json.loads(text)
+
+        assert data["is_partial"] is True
+        assert data["tasks_expected"] == 5
+        assert data["completion_ratio"] == pytest.approx(0.2)
+
+    def test_complete_json_metadata(self) -> None:
+        """Complete report JSON has is_partial=False."""
+        results = ConfigResults(
+            config="beta",
+            completed=[_task("t1", 0.9, duration=12.0)],
+        )
+        report = generate_report("json-exp", [results])
+        text = format_json_report(report)
+        data = json.loads(text)
+
+        assert data["is_partial"] is False
+        assert data["tasks_expected"] is None
+        assert data["completion_ratio"] is None
+
+
+# ---------------------------------------------------------------------------
+# interpret_cmd: incomplete sweep detection
+# ---------------------------------------------------------------------------
+
+
+class TestInterpretPartialDetection:
+    """Test that interpret_cmd detects incomplete sweeps."""
+
+    def test_detects_partial_from_checkpoint(self, tmp_path: Path) -> None:
+        """When checkpoint has fewer tasks than manifest, report is partial."""
+        from codeprobe.cli.interpret_cmd import _count_expected_tasks
+
+        # Create a tasks directory with 5 task subdirs
+        tasks_dir = tmp_path / "tasks"
+        for i in range(5):
+            task_dir = tasks_dir / f"task-{i}"
+            task_dir.mkdir(parents=True)
+            (task_dir / "instruction.md").write_text(f"Task {i}")
+
+        count = _count_expected_tasks(tasks_dir)
+        assert count == 5
+
+    def test_no_tasks_dir_returns_none(self, tmp_path: Path) -> None:
+        """Missing tasks directory returns None."""
+        from codeprobe.cli.interpret_cmd import _count_expected_tasks
+
+        count = _count_expected_tasks(tmp_path / "nonexistent")
+        assert count is None
