@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,12 +25,16 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     status        TEXT NOT NULL DEFAULT 'completed',
     completed_at  TEXT NOT NULL,
     metadata      TEXT NOT NULL DEFAULT '{}',
+    result_json   TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (task_id, config_name)
 )
 """
 
 _MIGRATE_STATUS_COLUMN = (
     "ALTER TABLE checkpoints ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'"
+)
+_MIGRATE_RESULT_JSON_COLUMN = (
+    "ALTER TABLE checkpoints ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'"
 )
 
 
@@ -53,14 +58,17 @@ class CheckpointStore:
         """Insert or update a checkpoint entry for the given task."""
         now = datetime.now(timezone.utc).isoformat()
         metadata_json = json.dumps(task.metadata) if task.metadata else "{}"
+        result_json = json.dumps(asdict(task))
         self._conn.execute(
-            "INSERT INTO checkpoints (task_id, config_name, automated_score, status, completed_at, metadata) "
-            "VALUES (?, ?, ?, ?, ?, ?) "
+            "INSERT INTO checkpoints "
+            "(task_id, config_name, automated_score, status, completed_at, metadata, result_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT (task_id, config_name) DO UPDATE SET "
             "  automated_score = excluded.automated_score, "
             "  status = excluded.status, "
             "  completed_at = excluded.completed_at, "
-            "  metadata = excluded.metadata",
+            "  metadata = excluded.metadata, "
+            "  result_json = excluded.result_json",
             (
                 task.task_id,
                 self._config_name,
@@ -68,6 +76,7 @@ class CheckpointStore:
                 task.status,
                 now,
                 metadata_json,
+                result_json,
             ),
         )
         self._conn.commit()
@@ -90,23 +99,35 @@ class CheckpointStore:
         Only returns successfully completed entries (status != 'error')
         so that failed tasks are retried on the next run.
         Ordered by insertion (rowid).
+
+        When ``result_json`` is present (new schema), returns the full
+        CompletedTask fields.  Falls back to minimal fields for old rows.
         """
         rows = self._conn.execute(
-            "SELECT task_id, automated_score, completed_at, metadata, status "
+            "SELECT task_id, automated_score, completed_at, metadata, status, result_json "
             "FROM checkpoints WHERE config_name = ? AND status != 'error' "
             "ORDER BY rowid",
             (self._config_name,),
         ).fetchall()
-        return [
-            {
-                "task_id": row[0],
-                "automated_score": row[1],
-                "completed_at": row[2],
-                "metadata": json.loads(row[3]) if row[3] else {},
-                "status": row[4],
-            }
-            for row in rows
-        ]
+        entries: list[dict] = []
+        for row in rows:
+            result_json = row[5] if len(row) > 5 else "{}"
+            result_data = json.loads(result_json) if result_json else {}
+            if result_data and "task_id" in result_data:
+                # Full CompletedTask stored — use it directly
+                entries.append(result_data)
+            else:
+                # Legacy row — minimal fields only
+                entries.append(
+                    {
+                        "task_id": row[0],
+                        "automated_score": row[1],
+                        "completed_at": row[2],
+                        "metadata": json.loads(row[3]) if row[3] else {},
+                        "status": row[4],
+                    }
+                )
+        return entries
 
     def close(self) -> None:
         """Close the underlying database connection."""
@@ -180,6 +201,9 @@ class CheckpointStore:
         if "status" not in cols:
             conn.execute(_MIGRATE_STATUS_COLUMN)
             logger.info("Migrated checkpoint schema: added 'status' column")
+        if "result_json" not in cols:
+            conn.execute(_MIGRATE_RESULT_JSON_COLUMN)
+            logger.info("Migrated checkpoint schema: added 'result_json' column")
 
     def _migrate_jsonl(self, jsonl_path: Path) -> None:
         """Import entries from a legacy JSONL checkpoint file."""

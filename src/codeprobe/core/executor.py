@@ -245,6 +245,17 @@ def execute_config(
                 CompletedTask(
                     task_id=entry["task_id"],
                     automated_score=entry.get("automated_score", 0.0),
+                    status=entry.get("status", "completed"),
+                    duration_seconds=entry.get("duration_seconds", 0.0),
+                    token_count=entry.get("token_count"),
+                    input_tokens=entry.get("input_tokens"),
+                    output_tokens=entry.get("output_tokens"),
+                    cache_read_tokens=entry.get("cache_read_tokens"),
+                    cost_usd=entry.get("cost_usd"),
+                    cost_model=entry.get("cost_model", "unknown"),
+                    cost_source=entry.get("cost_source", "unavailable"),
+                    scoring_details=entry.get("scoring_details", {}),
+                    metadata=entry.get("metadata", {}),
                 )
             )
 

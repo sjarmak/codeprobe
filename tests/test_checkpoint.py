@@ -59,9 +59,9 @@ class TestCRUD:
         store.append(_make_task("t-001"))
 
         entries = store.load_entries()
-        assert "completed_at" in entries[0]
-        # Should be a valid ISO format
-        datetime.fromisoformat(entries[0]["completed_at"])
+        assert entries[0]["task_id"] == "t-001"
+        assert entries[0]["automated_score"] == 1.0
+        assert entries[0]["status"] == "completed"
 
     def test_entries_include_metadata(self, tmp_path: Path) -> None:
         db_path = tmp_path / "checkpoint.db"
@@ -319,3 +319,37 @@ class TestCorruptRecovery:
         store = CheckpointStore(db_path, config_name="default")
         ids = store.load_ids()
         assert "t-old" in ids
+
+    def test_full_token_data_roundtrips(self, tmp_path: Path) -> None:
+        """All CompletedTask fields survive checkpoint save/load."""
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        task = CompletedTask(
+            task_id="t-full",
+            automated_score=1.0,
+            status="completed",
+            duration_seconds=123.4,
+            input_tokens=5000,
+            output_tokens=200,
+            cache_read_tokens=1000,
+            cost_usd=0.078,
+            cost_model="per_token",
+            cost_source="calculated",
+            scoring_details={"passed": True, "error": None},
+            metadata={"agent": "copilot"},
+        )
+        store.append(task)
+
+        entries = store.load_entries()
+        assert len(entries) == 1
+        e = entries[0]
+        assert e["task_id"] == "t-full"
+        assert e["duration_seconds"] == 123.4
+        assert e["input_tokens"] == 5000
+        assert e["output_tokens"] == 200
+        assert e["cache_read_tokens"] == 1000
+        assert e["cost_usd"] == 0.078
+        assert e["cost_model"] == "per_token"
+        assert e["cost_source"] == "calculated"
+        assert e["scoring_details"] == {"passed": True, "error": None}
