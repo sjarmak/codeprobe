@@ -131,9 +131,11 @@ def run_experiment(
 
         adapter = resolve(exp_config.agent)
 
+        timeout = exp_config.extra.get("timeout_seconds", 300)
         agent_config = AgentConfig(
             model=exp_config.model,
             permission_mode=perm,
+            timeout_seconds=timeout,
             mcp_config=exp_config.mcp_config,
             cwd=str(experiment_dir.resolve()),
         )
