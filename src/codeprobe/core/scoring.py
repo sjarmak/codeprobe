@@ -27,19 +27,19 @@ logger = logging.getLogger(__name__)
 
 _TOKEN_PATTERN = re.compile(
     r"("
-    r"ghp_[A-Za-z0-9]{36}"           # GitHub personal access token
-    r"|gho_[A-Za-z0-9]{36}"          # GitHub OAuth token
-    r"|github_pat_[A-Za-z0-9_]{80,}" # GitHub fine-grained PAT
-    r"|sk-[A-Za-z0-9]{32,}"          # OpenAI / Anthropic API key
-    r"|sk-ant-[A-Za-z0-9\-]{80,}"    # Anthropic API key (long form)
-    r"|AKIA[0-9A-Z]{16}"             # AWS access key ID
-    r"|Bearer\s+\S{20,}"             # Authorization bearer tokens
-    r"|token\s+\S{20,}"              # Generic token patterns
+    r"ghp_[A-Za-z0-9]{36}"  # GitHub personal access token
+    r"|gho_[A-Za-z0-9]{36}"  # GitHub OAuth token
+    r"|github_pat_[A-Za-z0-9_]{80,}"  # GitHub fine-grained PAT
+    r"|sk-[A-Za-z0-9]{32,}"  # OpenAI / Anthropic API key
+    r"|sk-ant-[A-Za-z0-9\-]{80,}"  # Anthropic API key (long form)
+    r"|AKIA[0-9A-Z]{16}"  # AWS access key ID
+    r"|Bearer\s+\S{20,}"  # Authorization bearer tokens
+    r"|token\s+\S{20,}"  # Generic token patterns
     r")",
     re.IGNORECASE,
 )
 
-SCORE_TIMEOUT_SECONDS = 30
+SCORE_TIMEOUT_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,31 @@ def sanitize_secrets(text: str) -> str:
     return _TOKEN_PATTERN.sub("[REDACTED]", text)
 
 
-_SAFE_ENV_KEYS = frozenset({"PATH", "HOME", "LANG", "TERM", "TMPDIR", "LC_ALL"})
+_SAFE_ENV_KEYS = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "LANG",
+        "TERM",
+        "TMPDIR",
+        "LC_ALL",
+        # Go toolchain
+        "GOPATH",
+        "GOROOT",
+        "GOMODCACHE",
+        "GOCACHE",
+        "GOFLAGS",
+        # Rust toolchain
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        # Node/npm
+        "NODE_PATH",
+        "NPM_CONFIG_PREFIX",
+        # Python
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+    }
+)
 
 
 def _safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -111,7 +135,7 @@ def _run_in_sandbox(
     agent_output: str,
     task_dir: Path,
     *,
-    timeout: int = SCORE_TIMEOUT_SECONDS,
+    timeout: int | None = None,
     cleanup: bool = True,
 ) -> _SandboxRun:
     """Execute *script_path* inside a sandboxed copy of *task_dir*.
@@ -121,6 +145,8 @@ def _run_in_sandbox(
     True the sandbox is removed before returning; set to False when the
     caller needs to read sandbox artefacts (caller must clean up).
     """
+    if timeout is None:
+        timeout = SCORE_TIMEOUT_SECONDS
     sandbox_dir = None
     try:
         sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
@@ -155,7 +181,11 @@ def _run_in_sandbox(
     except (subprocess.TimeoutExpired, OSError) as exc:
         if sandbox_dir is not None:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
-        error = "Scoring timed out" if isinstance(exc, subprocess.TimeoutExpired) else str(exc)
+        error = (
+            "Scoring timed out"
+            if isinstance(exc, subprocess.TimeoutExpired)
+            else str(exc)
+        )
         return _SandboxRun(returncode=-1, stdout="", stderr="", error=error)
 
 
@@ -252,7 +282,8 @@ class ContinuousScorer:
 
             if raw_score is None:
                 return ScoreResult(
-                    score=0.0, passed=False,
+                    score=0.0,
+                    passed=False,
                     error="No valid score found in reward.txt or stdout",
                 )
 
@@ -306,7 +337,8 @@ class CheckpointScorer:
         checkpoints_file = task_dir / "tests" / "checkpoints.json"
         if not checkpoints_file.is_file():
             return ScoreResult(
-                score=0.0, passed=False,
+                score=0.0,
+                passed=False,
                 error="tests/checkpoints.json not found",
             )
 
@@ -316,7 +348,8 @@ class CheckpointScorer:
             )
         except (json.JSONDecodeError, OSError) as exc:
             return ScoreResult(
-                score=0.0, passed=False,
+                score=0.0,
+                passed=False,
                 error=f"Invalid checkpoints.json: {exc}",
             )
 
@@ -324,7 +357,8 @@ class CheckpointScorer:
         total_weight = sum(cp.get("weight", 0.0) for cp in checkpoints)
         if abs(total_weight - 1.0) > self._WEIGHT_TOLERANCE:
             return ScoreResult(
-                score=0.0, passed=False,
+                score=0.0,
+                passed=False,
                 error=f"Checkpoint weights must sum to 1.0, got {total_weight:.4f}",
             )
 
@@ -336,7 +370,8 @@ class CheckpointScorer:
 
             if not verifier_path.is_file():
                 return ScoreResult(
-                    score=0.0, passed=False,
+                    score=0.0,
+                    passed=False,
                     error=f"Verifier not found: {verifier_name}",
                 )
 

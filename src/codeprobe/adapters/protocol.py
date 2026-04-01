@@ -68,6 +68,7 @@ class AgentConfig:
     timeout_seconds: int = 300
     mcp_config: dict | None = None
     extra: dict | None = None
+    cwd: str | None = None
 
 
 @runtime_checkable

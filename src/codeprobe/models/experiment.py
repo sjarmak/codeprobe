@@ -29,8 +29,12 @@ class CompletedTask:
     status: str = "completed"
     duration_seconds: float = 0.0
     token_count: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
     cost_usd: float | None = None
     cost_model: str = "unknown"
+    cost_source: str = "unavailable"
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 

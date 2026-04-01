@@ -7,6 +7,7 @@ from pathlib import Path
 
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core.executor import (
+    TaskResult,
     execute_config,
     execute_task,
     load_instruction,
@@ -17,7 +18,9 @@ from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
 
-def _make_task(task_dir: Path, instruction: str = "Fix the bug.", *, passing: bool = True) -> Path:
+def _make_task(
+    task_dir: Path, instruction: str = "Fix the bug.", *, passing: bool = True
+) -> Path:
     """Create a minimal task directory with instruction and test.sh."""
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "instruction.md").write_text(instruction)
@@ -69,6 +72,7 @@ def test_load_instruction_missing(tmp_path: Path):
     task_dir.mkdir()
 
     import pytest
+
     with pytest.raises(FileNotFoundError):
         load_instruction(task_dir)
 
@@ -82,6 +86,7 @@ def test_load_instruction_variant_path_traversal(tmp_path: Path):
     (tmp_path / "secret.md").write_text("secret content")
 
     import pytest
+
     with pytest.raises(ValueError, match="escapes task directory"):
         load_instruction(task_dir, variant="../secret.md")
 
@@ -91,12 +96,15 @@ def test_execute_task_success(tmp_path: Path):
     adapter = FakeAdapter(stdout="correct answer")
     config = AgentConfig()
 
-    result = execute_task(adapter, task_dir, Path("/repo"), config)
+    task_result = execute_task(adapter, task_dir, Path("/repo"), config)
+    assert isinstance(task_result, TaskResult)
+    result = task_result.completed
     assert isinstance(result, CompletedTask)
     assert result.task_id == "task-001"
     assert result.automated_score == 1.0
     assert result.status == "completed"
     assert len(adapter.run_calls) == 1
+    assert task_result.agent_stdout == "correct answer"
 
 
 def test_execute_task_with_preambles(tmp_path: Path):
@@ -111,9 +119,13 @@ def test_execute_task_with_preambles(tmp_path: Path):
     config = AgentConfig()
 
     result = execute_task(
-        adapter, task_dir, Path("/repo"), config,
-        preamble_names=("tdd",), preamble_resolver=resolver,
-    )
+        adapter,
+        task_dir,
+        Path("/repo"),
+        config,
+        preamble_names=("tdd",),
+        preamble_resolver=resolver,
+    ).completed
     assert result.status == "completed"
     assert result.automated_score == 1.0
     # Preamble content was composed into prompt
@@ -133,9 +145,13 @@ def test_execute_task_preamble_missing_errors(tmp_path: Path):
     config = AgentConfig()
 
     result = execute_task(
-        adapter, task_dir, Path("/repo"), config,
-        preamble_names=("nonexistent",), preamble_resolver=resolver,
-    )
+        adapter,
+        task_dir,
+        Path("/repo"),
+        config,
+        preamble_names=("nonexistent",),
+        preamble_resolver=resolver,
+    ).completed
     assert result.status == "error"
     assert "Preamble resolution failed" in result.metadata["error"]
 
@@ -147,9 +163,13 @@ def test_execute_task_preambles_without_resolver_errors(tmp_path: Path):
     config = AgentConfig()
 
     result = execute_task(
-        adapter, task_dir, Path("/repo"), config,
-        preamble_names=("tdd",), preamble_resolver=None,
-    )
+        adapter,
+        task_dir,
+        Path("/repo"),
+        config,
+        preamble_names=("tdd",),
+        preamble_resolver=None,
+    ).completed
     assert result.status == "error"
     assert "no preamble_resolver provided" in result.metadata["error"]
 
@@ -159,7 +179,7 @@ def test_execute_task_failing_test(tmp_path: Path):
     adapter = FakeAdapter(stdout="wrong answer")
     config = AgentConfig()
 
-    result = execute_task(adapter, task_dir, Path("/repo"), config)
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
     assert result.automated_score == 0.0
     assert result.status == "completed"
 
@@ -169,7 +189,7 @@ def test_execute_task_agent_error(tmp_path: Path):
     adapter = FakeAdapter(stdout="", exit_code=1, stderr="agent crashed")
     config = AgentConfig()
 
-    result = execute_task(adapter, task_dir, Path("/repo"), config)
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
     assert result.automated_score == 0.0
     assert result.metadata.get("error") is not None
 
@@ -180,7 +200,7 @@ def test_execute_task_missing_instruction(tmp_path: Path):
     adapter = FakeAdapter()
     config = AgentConfig()
 
-    result = execute_task(adapter, task_dir, Path("/repo"), config)
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
     assert result.automated_score == 0.0
     assert "error" in result.metadata
 
@@ -235,7 +255,10 @@ def test_execute_config_skips_checkpointed(tmp_path: Path):
     # Write a checkpoint with task-000 already done
     checkpoint = tmp_path / "checkpoint.jsonl"
     import json
-    checkpoint.write_text(json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n")
+
+    checkpoint.write_text(
+        json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n"
+    )
 
     results = execute_config(
         adapter=adapter,
@@ -400,8 +423,11 @@ def test_execute_config_budget_with_checkpoint(tmp_path: Path):
 
     # Checkpoint task-000
     import json
+
     checkpoint = tmp_path / "checkpoint.jsonl"
-    checkpoint.write_text(json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n")
+    checkpoint.write_text(
+        json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n"
+    )
 
     results = execute_config(
         adapter=adapter,

@@ -100,7 +100,9 @@ def test_claude_rejects_bypass_permissions():
 
 class TestAgentOutputTokenFields:
     def test_default_token_fields_are_none(self) -> None:
-        output = AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0)
+        output = AgentOutput(
+            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0
+        )
         assert output.input_tokens is None
         assert output.output_tokens is None
         assert output.cache_read_tokens is None
@@ -212,7 +214,10 @@ class TestAgentOutputErrorField:
 
     def test_can_set_error(self) -> None:
         output = AgentOutput(
-            stdout="", stderr=None, exit_code=1, duration_seconds=1.0,
+            stdout="",
+            stderr=None,
+            exit_code=1,
+            duration_seconds=1.0,
             error="Agent timed out after 300s",
         )
         assert output.error == "Agent timed out after 300s"
@@ -228,7 +233,10 @@ class TestAgentOutputCostSource:
     @pytest.mark.parametrize("source", sorted(ALLOWED_COST_SOURCES))
     def test_valid_values_accepted(self, source: str) -> None:
         output = AgentOutput(
-            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0,
+            stdout="ok",
+            stderr=None,
+            exit_code=0,
+            duration_seconds=1.0,
             cost_source=source,
         )
         assert output.cost_source == source
@@ -236,7 +244,10 @@ class TestAgentOutputCostSource:
     def test_invalid_cost_source_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown cost_source"):
             AgentOutput(
-                stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0,
+                stdout="ok",
+                stderr=None,
+                exit_code=0,
+                duration_seconds=1.0,
                 cost_source="magic",
             )
 
@@ -299,7 +310,9 @@ class TestBaseAdapterRunErrors:
     def test_file_not_found_raises_setup_error(self) -> None:
         adapter = _StubAdapter()
         config = AgentConfig()
-        with patch("subprocess.run", side_effect=FileNotFoundError("/usr/bin/fake-agent")):
+        with patch(
+            "subprocess.run", side_effect=FileNotFoundError("/usr/bin/fake-agent")
+        ):
             with pytest.raises(AdapterSetupError, match="Binary not found"):
                 adapter.run("test", config)
 
@@ -499,7 +512,107 @@ class TestCopilotParseOutput:
         assert output.output_tokens is None
 
 
+class TestCopilotInputTokens:
+    """Tests for Copilot input_tokens extraction from NDJSON usage events and process logs."""
+
+    @staticmethod
+    def _load_fixture(name: str) -> str:
+        return (FIXTURE_DIR / name).read_text()
+
+    def _make_copilot_result(self, stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["copilot"], returncode=0, stdout=stdout, stderr=""
+        )
+
+    def test_input_tokens_from_ndjson_usage_event(self) -> None:
+        """When NDJSON stream contains a usage event with inputTokens, extract it."""
+        adapter = CopilotAdapter()
+        stdout = self._load_fixture("copilot_with_usage.txt")
+        result = self._make_copilot_result(stdout)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens == 1234
+        assert output.output_tokens == 87
+        assert output.cost_source == "api_reported"
+        assert output.cost_model == "subscription"
+        assert output.error is None
+
+    def test_input_tokens_from_process_log(self) -> None:
+        """When NDJSON has no input tokens, fall back to process log parsing."""
+        adapter = CopilotAdapter()
+        stdout = self._load_fixture("copilot_normal.txt")
+        result = self._make_copilot_result(stdout)
+
+        # Mock the log parsing to return a value
+        with patch.object(adapter, "_extract_tokens_from_logs", return_value=999):
+            output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens == 999
+        assert output.output_tokens == 87
+        assert output.cost_source == "log_parsed"
+
+    def test_missing_log_returns_none_gracefully(self) -> None:
+        """When no log file exists, input_tokens remains None with no crash."""
+        adapter = CopilotAdapter()
+        stdout = self._load_fixture("copilot_normal.txt")
+        result = self._make_copilot_result(stdout)
+
+        # Mock log dirs as nonexistent
+        with patch("os.path.isdir", return_value=False):
+            output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens is None
+        assert output.output_tokens == 87
+        assert output.cost_source == "api_reported"
+        assert output.error is None
+
+    def test_extract_tokens_from_logs_parses_usage(self) -> None:
+        """_extract_tokens_from_logs reads process log files for token usage."""
+        import tempfile
+        import os
+
+        adapter = CopilotAdapter()
+        log_content = '{"usage":{"prompt_tokens":2048,"completion_tokens":512}}\n'
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_file = os.path.join(tmpdir, "process-001.log")
+            with open(log_file, "w") as f:
+                f.write(log_content)
+
+            with patch("codeprobe.adapters.copilot._COPILOT_LOG_PATHS", [tmpdir]):
+                tokens = adapter._extract_tokens_from_logs()
+
+        assert tokens == 2048
+
+    def test_extract_tokens_from_logs_no_dirs(self) -> None:
+        """Returns None when no log directories exist."""
+        adapter = CopilotAdapter()
+        with patch(
+            "codeprobe.adapters.copilot._COPILOT_LOG_PATHS",
+            ["/nonexistent/path1", "/nonexistent/path2"],
+        ):
+            tokens = adapter._extract_tokens_from_logs()
+        assert tokens is None
+
+
 # -- CodexAdapter --------------------------------------------------------------
+
+
+def _mock_openai_module(**overrides: object) -> MagicMock:
+    """Build a mock openai module with all exception types pre-configured.
+
+    Pass ``client=<mock>`` to set the return value of ``openai.OpenAI()``.
+    """
+    m = MagicMock()
+    m.NotFoundError = type("NotFoundError", (Exception,), {})
+    m.AuthenticationError = type("AuthenticationError", (Exception,), {})
+    m.RateLimitError = type("RateLimitError", (Exception,), {})
+    m.APIError = type("APIError", (Exception,), {})
+    if "client" in overrides:
+        m.OpenAI.return_value = overrides.pop("client")
+    for k, v in overrides.items():
+        setattr(m, k, v)
+    return m
 
 
 class TestCodexAdapter:
@@ -557,8 +670,7 @@ class TestCodexAdapter:
         mock_client_instance = MagicMock()
         mock_client_instance.responses.create.return_value = mock_response
 
-        mock_openai = MagicMock()
-        mock_openai.OpenAI.return_value = mock_client_instance
+        mock_openai = _mock_openai_module(client=mock_client_instance)
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
@@ -579,13 +691,11 @@ class TestCodexAdapter:
     def test_run_auth_error(self) -> None:
         from codeprobe.adapters.codex import CodexAdapter
 
-        mock_openai = MagicMock()
-        mock_exc = type("AuthenticationError", (Exception,), {})
-        mock_openai.AuthenticationError = mock_exc
-        mock_openai.RateLimitError = type("RateLimitError", (Exception,), {})
-        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai = _mock_openai_module()
         mock_client_instance = MagicMock()
-        mock_client_instance.responses.create.side_effect = mock_exc("invalid key")
+        mock_client_instance.responses.create.side_effect = (
+            mock_openai.AuthenticationError("invalid key")
+        )
         mock_openai.OpenAI.return_value = mock_client_instance
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -597,13 +707,11 @@ class TestCodexAdapter:
     def test_run_rate_limit_error(self) -> None:
         from codeprobe.adapters.codex import CodexAdapter
 
-        mock_openai = MagicMock()
-        mock_openai.AuthenticationError = type("AuthenticationError", (Exception,), {})
-        mock_exc = type("RateLimitError", (Exception,), {})
-        mock_openai.RateLimitError = mock_exc
-        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai = _mock_openai_module()
         mock_client_instance = MagicMock()
-        mock_client_instance.responses.create.side_effect = mock_exc("too many requests")
+        mock_client_instance.responses.create.side_effect = mock_openai.RateLimitError(
+            "too many requests"
+        )
         mock_openai.OpenAI.return_value = mock_client_instance
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -615,13 +723,11 @@ class TestCodexAdapter:
     def test_run_api_error(self) -> None:
         from codeprobe.adapters.codex import CodexAdapter
 
-        mock_openai = MagicMock()
-        mock_openai.AuthenticationError = type("AuthenticationError", (Exception,), {})
-        mock_openai.RateLimitError = type("RateLimitError", (Exception,), {})
-        mock_exc = type("APIError", (Exception,), {})
-        mock_openai.APIError = mock_exc
+        mock_openai = _mock_openai_module()
         mock_client_instance = MagicMock()
-        mock_client_instance.responses.create.side_effect = mock_exc("server error")
+        mock_client_instance.responses.create.side_effect = mock_openai.APIError(
+            "server error"
+        )
         mock_openai.OpenAI.return_value = mock_client_instance
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -648,9 +754,7 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_client_instance.responses.create.return_value = mock_response
-
-        mock_openai = MagicMock()
-        mock_openai.OpenAI.return_value = mock_client_instance
+        mock_openai = _mock_openai_module(client=mock_client_instance)
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
@@ -676,9 +780,7 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_client_instance.responses.create.return_value = mock_response
-
-        mock_openai = MagicMock()
-        mock_openai.OpenAI.return_value = mock_client_instance
+        mock_openai = _mock_openai_module(client=mock_client_instance)
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
@@ -690,3 +792,101 @@ class TestCodexAdapter:
         assert output.cost_usd is None
         assert output.cost_model == "unknown"
         assert output.cost_source == "unavailable"
+
+    def test_run_responses_api_fallback_to_chat_completions(self) -> None:
+        """When responses.create raises NotFoundError, fall back to chat.completions."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_chat_usage = MagicMock()
+        mock_chat_usage.prompt_tokens = 800
+        mock_chat_usage.completion_tokens = 400
+
+        mock_message = MagicMock()
+        mock_message.content = "Fixed via chat completions"
+
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+
+        mock_chat_response = MagicMock()
+        mock_chat_response.choices = [mock_choice]
+        mock_chat_response.usage = mock_chat_usage
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "model not found"
+        )
+        mock_client_instance.chat.completions.create.return_value = mock_chat_response
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig()
+            output = adapter.run("fix the bug", config)
+
+        assert output.stdout == "Fixed via chat completions"
+        assert output.input_tokens == 800
+        assert output.output_tokens == 400
+        expected_cost = 800 * 1.50 / 1_000_000 + 400 * 6.00 / 1_000_000
+        assert output.cost_usd == pytest.approx(expected_cost)
+        assert output.cost_model == "per_token"
+        assert output.cost_source == "calculated"
+        assert output.exit_code == 0
+
+    def test_run_chat_completions_auth_error(self) -> None:
+        """Auth errors from the chat completions fallback path raise AdapterSetupError."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "not found"
+        )
+        mock_client_instance.chat.completions.create.side_effect = (
+            mock_openai.AuthenticationError("bad key")
+        )
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig()
+            with pytest.raises(AdapterSetupError, match="OPENAI_API_KEY"):
+                adapter.run("test", config)
+
+    def test_run_chat_completions_rate_limit_error(self) -> None:
+        """Rate limit errors from the chat completions fallback raise AdapterExecutionError."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "not found"
+        )
+        mock_client_instance.chat.completions.create.side_effect = (
+            mock_openai.RateLimitError("too many")
+        )
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig()
+            with pytest.raises(AdapterExecutionError, match="Rate limited"):
+                adapter.run("test", config)
+
+    def test_run_double_not_found_error(self) -> None:
+        """Model not on either API raises AdapterExecutionError with clear message."""
+        from codeprobe.adapters.codex import CodexAdapter
+
+        mock_client_instance = MagicMock()
+        mock_openai = _mock_openai_module(client=mock_client_instance)
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
+            "not on responses"
+        )
+        mock_client_instance.chat.completions.create.side_effect = (
+            mock_openai.NotFoundError("not on chat either")
+        )
+
+        with patch.dict("sys.modules", {"openai": mock_openai}):
+            adapter = CodexAdapter()
+            config = AgentConfig()
+            with pytest.raises(
+                AdapterExecutionError, match="not available on Responses or"
+            ):
+                adapter.run("test", config)

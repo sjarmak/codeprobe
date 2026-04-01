@@ -17,8 +17,22 @@ from codeprobe.adapters.telemetry import ApiResponseCollector
 logger = logging.getLogger(__name__)
 
 
+def _usage_fields(
+    usage: object | None, input_attr: str, output_attr: str
+) -> tuple[int | None, int | None]:
+    """Extract input/output token counts from an API usage object."""
+    if usage is None:
+        return None, None
+    return getattr(usage, input_attr, None), getattr(usage, output_attr, None)
+
+
 class CodexAdapter:
-    """Adapter for OpenAI Codex API (responses.create)."""
+    """Adapter for OpenAI Codex API.
+
+    Tries the Responses API (responses.create) first. If the model is not
+    available on that endpoint (NotFoundError), falls back to the Chat
+    Completions API (chat.completions.create).
+    """
 
     def __init__(self) -> None:
         self._collector = ApiResponseCollector()
@@ -53,7 +67,35 @@ class CodexAdapter:
         start = time.monotonic()
 
         try:
-            response = client.responses.create(model=model, input=prompt)
+            try:
+                response = client.responses.create(model=model, input=prompt)
+                stdout = response.output_text or ""
+                input_tokens, output_tokens = _usage_fields(
+                    response.usage, "input_tokens", "output_tokens"
+                )
+            except openai.NotFoundError:
+                logger.info(
+                    "Model %s not found on Responses API, falling back to "
+                    "Chat Completions API",
+                    model,
+                )
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                except openai.NotFoundError as exc:
+                    raise AdapterExecutionError(
+                        f"Model {model!r} not available on Responses or "
+                        f"Chat Completions API: {exc}"
+                    ) from exc
+                content = (
+                    response.choices[0].message.content if response.choices else None
+                )
+                stdout = content or ""
+                input_tokens, output_tokens = _usage_fields(
+                    response.usage, "prompt_tokens", "completion_tokens"
+                )
         except openai.AuthenticationError as exc:
             raise AdapterSetupError(f"OPENAI_API_KEY invalid: {exc}") from exc
         except openai.RateLimitError as exc:
@@ -62,11 +104,6 @@ class CodexAdapter:
             raise AdapterExecutionError(f"OpenAI API error: {exc}") from exc
 
         duration = time.monotonic() - start
-        stdout = response.output_text or ""
-
-        # Collect telemetry via the collector
-        input_tokens = getattr(response.usage, "input_tokens", None) if response.usage else None
-        output_tokens = getattr(response.usage, "output_tokens", None) if response.usage else None
 
         usage = self._collector.collect(
             stdout,

@@ -121,6 +121,7 @@ class NdjsonStreamCollector:
     def collect(self, raw_output: str, **context: Any) -> UsageData:
         raw = raw_output or ""
         output_tokens = None
+        input_tokens = None
 
         try:
             for line in raw.strip().splitlines():
@@ -128,11 +129,14 @@ class NdjsonStreamCollector:
                     continue
                 obj = json.loads(line)
                 event_type = obj.get("type", "")
-                if event_type == "assistant.message":
+                if event_type in ("usage", "assistant.message"):
                     data = obj.get("data", {})
-                    tokens = data.get("outputTokens")
-                    if tokens is not None:
-                        output_tokens = tokens
+                    in_tok = data.get("inputTokens")
+                    if in_tok is not None:
+                        input_tokens = in_tok
+                    out_tok = data.get("outputTokens")
+                    if out_tok is not None:
+                        output_tokens = out_tok
         except (json.JSONDecodeError, ValueError):
             return UsageData(
                 error=(
@@ -153,6 +157,7 @@ class NdjsonStreamCollector:
             )
 
         return UsageData(
+            input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_model="subscription",
             cost_source="api_reported",

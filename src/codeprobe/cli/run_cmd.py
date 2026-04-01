@@ -74,8 +74,8 @@ def run_eval(
         agent_config = AgentConfig(
             model=exp_config.model or model,
             permission_mode=perm,
-            timeout_seconds=300,
             mcp_config=exp_config.mcp_config,
+            cwd=str(Path(path).resolve()),
         )
 
         issues = adapter.preflight(agent_config)
@@ -83,8 +83,9 @@ def run_eval(
             for issue in issues:
                 click.echo(f"  Warning: {issue}", err=True)
 
-        checkpoint_path = exp_dir / "runs" / exp_config.label / "checkpoint.jsonl"
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        config_runs_dir = exp_dir / "runs" / exp_config.label
+        config_runs_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = config_runs_dir / "checkpoint.jsonl"
 
         if max_cost_usd is not None:
             click.echo(f"  Budget: ${max_cost_usd:.2f}")
@@ -96,6 +97,7 @@ def run_eval(
             experiment_config=exp_config,
             agent_config=agent_config,
             checkpoint_path=checkpoint_path,
+            runs_dir=config_runs_dir,
             on_task_complete=_on_task_complete,
             max_cost_usd=max_cost_usd,
         )

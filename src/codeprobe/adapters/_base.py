@@ -46,8 +46,7 @@ class BaseAdapter:
         return issues
 
     @abstractmethod
-    def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
-        ...
+    def build_command(self, prompt: str, config: AgentConfig) -> list[str]: ...
 
     def parse_output(
         self, result: subprocess.CompletedProcess[str], duration: float
@@ -73,6 +72,7 @@ class BaseAdapter:
                 capture_output=True,
                 text=True,
                 timeout=config.timeout_seconds,
+                cwd=config.cwd,
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start
@@ -84,9 +84,7 @@ class BaseAdapter:
                 error=f"Agent timed out after {config.timeout_seconds}s",
             )
         except FileNotFoundError as exc:
-            raise AdapterSetupError(
-                f"Binary not found at runtime: {exc}"
-            ) from exc
+            raise AdapterSetupError(f"Binary not found at runtime: {exc}") from exc
 
         duration = time.monotonic() - start
 

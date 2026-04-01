@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json as _json
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +18,15 @@ if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TaskResult:
+    """Completed task plus raw agent output for trace storage."""
+
+    completed: CompletedTask
+    agent_stdout: str = ""
+    agent_stderr: str = ""
 
 
 def load_instruction(task_dir: Path, variant: str | None = None) -> str:
@@ -47,33 +58,33 @@ def execute_task(
     reward_type: str = "binary",
     preamble_names: tuple[str, ...] = (),
     preamble_resolver: PreambleResolver | None = None,
-) -> CompletedTask:
-    """Execute a single task and return a CompletedTask.
+) -> TaskResult:
+    """Execute a single task and return a TaskResult with trace data.
 
     Never raises — errors are captured in the result metadata.
     """
     task_id = task_dir.name
 
+    def _error_result(error: str) -> TaskResult:
+        return TaskResult(
+            completed=CompletedTask(
+                task_id=task_id,
+                automated_score=0.0,
+                status="error",
+                metadata={"error": error},
+            ),
+        )
+
     try:
         instruction = load_instruction(task_dir, variant=instruction_variant)
     except FileNotFoundError as exc:
-        return CompletedTask(
-            task_id=task_id,
-            automated_score=0.0,
-            status="error",
-            metadata={"error": str(exc)},
-        )
+        return _error_result(str(exc))
 
     resolved_preambles: list[dict[str, str]] = []
     if preamble_names and preamble_resolver is None:
-        return CompletedTask(
-            task_id=task_id,
-            automated_score=0.0,
-            status="error",
-            metadata={
-                "error": f"preambles={preamble_names!r} requested but no "
-                "preamble_resolver provided"
-            },
+        return _error_result(
+            f"preambles={preamble_names!r} requested but no "
+            "preamble_resolver provided"
         )
 
     if preamble_names and preamble_resolver is not None:
@@ -86,50 +97,54 @@ def execute_task(
                 task_id=task_id,
             )
         except (FileNotFoundError, ValueError) as exc:
-            return CompletedTask(
-                task_id=task_id,
-                automated_score=0.0,
-                status="error",
-                metadata={"error": f"Preamble resolution failed: {exc}"},
-            )
+            return _error_result(f"Preamble resolution failed: {exc}")
     else:
         prompt = _base_prompt(instruction, repo_path)
 
     try:
         output = adapter.run(prompt, agent_config)
     except Exception as exc:
-        return CompletedTask(
-            task_id=task_id,
-            automated_score=0.0,
-            status="error",
-            metadata={"error": sanitize_secrets(str(exc))},
+        return _error_result(sanitize_secrets(str(exc)))
+
+    def _output_fields() -> dict:
+        return dict(
+            duration_seconds=output.duration_seconds,
+            token_count=output.token_count,
+            input_tokens=output.input_tokens,
+            output_tokens=output.output_tokens,
+            cache_read_tokens=output.cache_read_tokens,
+            cost_usd=output.cost_usd,
+            cost_model=output.cost_model,
+            cost_source=output.cost_source,
         )
 
     if output.exit_code != 0 and not output.stdout.strip():
         error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
-        return CompletedTask(
-            task_id=task_id,
-            automated_score=0.0,
-            status="error",
-            duration_seconds=output.duration_seconds,
-            token_count=output.token_count,
-            cost_usd=output.cost_usd,
-            cost_model=output.cost_model,
-            metadata={"error": sanitize_secrets(error_msg)},
+        return TaskResult(
+            completed=CompletedTask(
+                task_id=task_id,
+                automated_score=0.0,
+                status="error",
+                metadata={"error": sanitize_secrets(error_msg)},
+                **_output_fields(),
+            ),
+            agent_stdout=output.stdout,
+            agent_stderr=output.stderr or "",
         )
 
     try:
         scorer = get_scorer(reward_type)
     except ValueError as exc:
-        return CompletedTask(
-            task_id=task_id,
-            automated_score=0.0,
-            status="error",
-            duration_seconds=output.duration_seconds,
-            token_count=output.token_count,
-            cost_usd=output.cost_usd,
-            cost_model=output.cost_model,
-            metadata={"error": f"Invalid reward_type: {exc}"},
+        return TaskResult(
+            completed=CompletedTask(
+                task_id=task_id,
+                automated_score=0.0,
+                status="error",
+                metadata={"error": f"Invalid reward_type: {exc}"},
+                **_output_fields(),
+            ),
+            agent_stdout=output.stdout,
+            agent_stderr=output.stderr or "",
         )
 
     score_result = scorer.score(output.stdout, task_dir)
@@ -138,20 +153,62 @@ def execute_task(
     if resolved_preambles:
         metadata["resolved_preambles"] = resolved_preambles
 
-    return CompletedTask(
-        task_id=task_id,
-        automated_score=score_result.score,
-        status="completed",
-        duration_seconds=output.duration_seconds,
-        token_count=output.token_count,
-        cost_usd=output.cost_usd,
-        cost_model=output.cost_model,
-        scoring_details={"passed": score_result.passed, "error": score_result.error},
-        metadata=metadata,
+    return TaskResult(
+        completed=CompletedTask(
+            task_id=task_id,
+            automated_score=score_result.score,
+            status="completed",
+            scoring_details={
+                "passed": score_result.passed,
+                "error": score_result.error,
+            },
+            metadata=metadata,
+            **_output_fields(),
+        ),
+        agent_stdout=output.stdout,
+        agent_stderr=output.stderr or "",
     )
 
 
 _BILLABLE_COST_MODELS = frozenset({"per_token"})
+
+
+def _save_task_artifacts(
+    runs_dir: Path,
+    task_id: str,
+    task_result: TaskResult,
+) -> None:
+    """Save per-task agent output and scoring artifacts.
+
+    Creates runs/{config_label}/{task_id}/ with:
+      - agent_output.txt  — raw agent stdout (for trace/debug)
+      - agent_error.txt   — raw agent stderr (only if non-empty)
+      - scoring.json      — scoring details
+    """
+    task_dir = runs_dir / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    completed = task_result.completed
+
+    # Agent trace
+    if task_result.agent_stdout:
+        (task_dir / "agent_output.txt").write_text(
+            sanitize_secrets(task_result.agent_stdout), encoding="utf-8"
+        )
+    if task_result.agent_stderr:
+        (task_dir / "agent_error.txt").write_text(
+            sanitize_secrets(task_result.agent_stderr), encoding="utf-8"
+        )
+
+    # Scoring details
+    scoring = {
+        "score": completed.automated_score,
+        "status": completed.status,
+        **completed.scoring_details,
+    }
+    (task_dir / "scoring.json").write_text(
+        _json.dumps(scoring, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def execute_config(
@@ -162,6 +219,7 @@ def execute_config(
     agent_config: AgentConfig,
     *,
     checkpoint_path: Path | None = None,
+    runs_dir: Path | None = None,
     on_task_complete: Callable[[CompletedTask], None] | None = None,
     max_cost_usd: float | None = None,
     preamble_resolver: PreambleResolver | None = None,
@@ -169,6 +227,8 @@ def execute_config(
     """Execute all tasks for a single experiment configuration.
 
     Resumes from checkpoint if provided. Calls on_task_complete after each task.
+    Saves per-task artifacts (agent_output.txt, scoring.json) alongside the
+    checkpoint file.
 
     If *max_cost_usd* is set, the executor accumulates ``cost_usd`` from
     completed tasks whose ``cost_model`` is billable (currently ``per_token``).
@@ -181,10 +241,12 @@ def execute_config(
     if checkpoint_path is not None:
         for entry in load_checkpoint_entries(checkpoint_path):
             checkpointed_ids.add(entry["task_id"])
-            results.append(CompletedTask(
-                task_id=entry["task_id"],
-                automated_score=entry.get("automated_score", 0.0),
-            ))
+            results.append(
+                CompletedTask(
+                    task_id=entry["task_id"],
+                    automated_score=entry.get("automated_score", 0.0),
+                )
+            )
 
     cumulative_cost = 0.0
 
@@ -209,7 +271,7 @@ def execute_config(
 
         logger.info("[%s] Running %s", experiment_config.label, task_id)
 
-        result = execute_task(
+        task_result = execute_task(
             adapter=adapter,
             task_dir=task_dir,
             repo_path=repo_path,
@@ -220,7 +282,12 @@ def execute_config(
             preamble_resolver=preamble_resolver,
         )
 
+        result = task_result.completed
         results.append(result)
+
+        # Save per-task artifacts
+        if runs_dir is not None:
+            _save_task_artifacts(runs_dir, task_id, task_result)
 
         if checkpoint_path is not None:
             append_checkpoint(checkpoint_path, result)

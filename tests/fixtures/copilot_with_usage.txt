@@ -1,0 +1,3 @@
+{"type":"assistant.message","data":{"content":"Here is the fix","outputTokens":87}}
+{"type":"usage","data":{"inputTokens":1234,"outputTokens":87}}
+{"type":"result","data":{"content":"Done"}}

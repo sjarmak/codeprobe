@@ -104,12 +104,74 @@ def load_experiment(exp_dir: Path) -> Experiment:
     )
 
 
+def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
+    """Compute aggregate summary from completed tasks.
+
+    Follows the MCP-Eval-Tasks pattern: mean score, total cost, total tokens.
+    Single-pass over the sequence.
+    """
+    if not completed:
+        return {}
+
+    n = 0
+    score_sum = 0.0
+    cost_sum = 0.0
+    has_cost = False
+    input_sum = 0
+    has_input = False
+    output_sum = 0
+    has_output = False
+    cache_sum = 0
+    has_cache = False
+    dur_sum = 0.0
+
+    for t in completed:
+        n += 1
+        score_sum += t.automated_score
+        dur_sum += t.duration_seconds
+        if t.cost_usd is not None:
+            cost_sum += t.cost_usd
+            has_cost = True
+        if t.input_tokens is not None:
+            input_sum += t.input_tokens
+            has_input = True
+        if t.output_tokens is not None:
+            output_sum += t.output_tokens
+            has_output = True
+        if t.cache_read_tokens is not None:
+            cache_sum += t.cache_read_tokens
+            has_cache = True
+
+    mean_score = score_sum / n
+    total_cost = cost_sum if has_cost else None
+
+    summary: dict = {
+        "tasks_completed": n,
+        "mean_automated_score": round(mean_score, 4),
+        "total_duration_seconds": round(dur_sum, 1),
+        "total_tokens": {
+            "input": input_sum if has_input else None,
+            "output": output_sum if has_output else None,
+            "cache_read": cache_sum if has_cache else None,
+        },
+        "total_cost_usd": round(total_cost, 6) if total_cost is not None else None,
+    }
+
+    if total_cost and total_cost > 0:
+        summary["score_per_dollar"] = round(mean_score / (total_cost / n), 2)
+
+    return summary
+
+
 def save_config_results(
     exp_dir: Path,
     config_label: str,
     completed: Sequence[CompletedTask],
 ) -> Path:
     """Write results.json for a configuration.
+
+    Includes a summary block with aggregate metrics (mean score, total cost,
+    total tokens) following the MCP-Eval-Tasks pattern.
 
     Returns the path to the written file.
     """
@@ -119,6 +181,7 @@ def save_config_results(
     data = {
         "config": config_label,
         "completed": [asdict(t) for t in completed],
+        "summary": _compute_summary(completed),
     }
 
     path = results_dir / "results.json"
@@ -144,7 +207,12 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
             status=t.get("status", "completed"),
             duration_seconds=t.get("duration_seconds", 0.0),
             token_count=t.get("token_count"),
+            input_tokens=t.get("input_tokens"),
+            output_tokens=t.get("output_tokens"),
+            cache_read_tokens=t.get("cache_read_tokens"),
             cost_usd=t.get("cost_usd"),
+            cost_model=t.get("cost_model", "unknown"),
+            cost_source=t.get("cost_source", "unavailable"),
             scoring_details=t.get("scoring_details", {}),
             metadata=t.get("metadata", {}),
         )
