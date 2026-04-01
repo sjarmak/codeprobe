@@ -42,7 +42,26 @@ def init(path: str) -> None:
     type=int,
     help="Minimum changed files per task. Use 4+ to bias toward harder tasks.",
 )
-def mine(path: str, count: int, source: str, min_files: int) -> None:
+@click.option(
+    "--subsystem",
+    multiple=True,
+    default=(),
+    help="Filter to subsystem prefixes. Repeatable: --subsystem pkg/ --subsystem cmd/",
+)
+@click.option(
+    "--discover-subsystems",
+    is_flag=True,
+    default=False,
+    help="List subsystems from merge history and pick interactively.",
+)
+def mine(
+    path: str,
+    count: int,
+    source: str,
+    min_files: int,
+    subsystem: tuple[str, ...],
+    discover_subsystems: bool,
+) -> None:
     """Mine eval tasks from a repository's history.
 
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
@@ -50,7 +69,14 @@ def mine(path: str, count: int, source: str, min_files: int) -> None:
     """
     from codeprobe.cli.mine_cmd import run_mine
 
-    run_mine(path, count=count, source=source, min_files=min_files)
+    run_mine(
+        path,
+        count=count,
+        source=source,
+        min_files=min_files,
+        subsystems=subsystem,
+        discover_subsystems=discover_subsystems,
+    )
 
 
 @main.command()

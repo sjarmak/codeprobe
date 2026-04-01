@@ -8,9 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codeprobe.mining.extractor import (
+    MergedPR,
     PRMetadata,
     _build_test_command,
     _format_task_description,
+    extract_subsystems,
     extract_task_from_merge,
     list_merged_prs,
     mine_tasks,
@@ -175,46 +177,111 @@ def _mock_diff_name_only(files: list[str]):
     return _mock_subprocess(stdout=stdout)
 
 
+def _mock_with_commit_body(files: list[str], commit_body: str):
+    """Mock subprocess.run for both git diff (file list) and git log (commit body)."""
+    file_stdout = "\n".join(files) + "\n" if files else ""
+
+    def _side_effect(cmd, **kwargs):
+        if "log" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, commit_body, "")
+        return subprocess.CompletedProcess(cmd, 0, file_stdout, "")
+
+    return _side_effect
+
+
 class TestExtractTaskFromMerge:
     @patch("codeprobe.mining.extractor.subprocess.run")
-    def test_extract_with_tests(self, mock_run: object) -> None:
+    def test_extract_with_enriched_source(self, mock_run: object) -> None:
         files = ["src/auth.py", "tests/test_auth.py", "README.md"]
-        mock_run.side_effect = _mock_diff_name_only(files)
+        mock_run.side_effect = _mock_with_commit_body(
+            files, "Fix auth\n\nTokens expired silently on 401."
+        )
+        source = RepoSource(host="local", owner="", repo="myrepo", remote_url="")
 
-        task = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
+        result = extract_task_from_merge(
+            "abc12345deadbeef",
+            Path("/fake/myrepo"),
+            source=source,
+            merge_title="Fix auth",
+        )
 
-        assert task is not None
+        assert result is not None
+        task, pr_meta = result
         assert task.id == "abc12345"
         assert task.repo == "myrepo"
         assert task.metadata.difficulty == "easy"
         assert task.metadata.language == "python"
+        assert pr_meta.source_tier == "commit_message"
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_extract_bare_metadata_filtered(self, mock_run: object) -> None:
+        """Tasks with no PR body or commit message body are rejected."""
+        files = ["src/auth.py", "tests/test_auth.py", "README.md"]
+        mock_run.side_effect = _mock_diff_name_only(files)
+
+        # No source → bare metadata → filtered
+        result = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
+        assert result is None
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_extract_stub_test_command_filtered(self, mock_run: object) -> None:
+        """Tasks with unsupported languages get stub test commands and are rejected."""
+        # Rust files — unsupported language → _DEFAULT_TEST_COMMAND
+        files = ["src/auth.rs", "tests/test_auth.rs"]
+        mock_run.side_effect = _mock_with_commit_body(
+            files, "Fix auth\n\nTokens expired silently."
+        )
+        source = RepoSource(host="local", owner="", repo="r", remote_url="")
+
+        result = extract_task_from_merge(
+            "abc12345deadbeef", Path("/fake/r"), source=source, merge_title="Fix auth"
+        )
+        assert result is None
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_extract_no_tests_filtered(self, mock_run: object) -> None:
         files = ["src/auth.py", "src/models.py", "README.md"]
         mock_run.side_effect = _mock_diff_name_only(files)
 
-        task = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
-        assert task is None
+        result = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
+        assert result is None
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_extract_medium_difficulty(self, mock_run: object) -> None:
         files = [f"src/file{i}.py" for i in range(5)] + ["tests/test_all.py"]
-        mock_run.side_effect = _mock_diff_name_only(files)
+        mock_run.side_effect = _mock_with_commit_body(
+            files, "Big refactor\n\nRestructured modules for clarity."
+        )
+        source = RepoSource(host="local", owner="", repo="repo", remote_url="")
 
-        task = extract_task_from_merge("deadbeefcafebabe", Path("/fake/repo"))
+        result = extract_task_from_merge(
+            "deadbeefcafebabe",
+            Path("/fake/repo"),
+            source=source,
+            merge_title="Big refactor",
+        )
 
-        assert task is not None
+        assert result is not None
+        task, _ = result
         assert task.metadata.difficulty == "medium"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_extract_hard_difficulty(self, mock_run: object) -> None:
         files = [f"src/file{i}.py" for i in range(12)] + ["tests/test_big.py"]
-        mock_run.side_effect = _mock_diff_name_only(files)
+        mock_run.side_effect = _mock_with_commit_body(
+            files, "Major feature\n\nAdded distributed caching layer."
+        )
+        source = RepoSource(host="local", owner="", repo="repo", remote_url="")
 
-        task = extract_task_from_merge("1111222233334444", Path("/fake/repo"))
+        result = extract_task_from_merge(
+            "1111222233334444",
+            Path("/fake/repo"),
+            source=source,
+            merge_title="Major feature",
+        )
 
-        assert task is not None
+        assert result is not None
+        task, _ = result
         assert task.metadata.difficulty == "hard"
 
 
@@ -275,6 +342,80 @@ class TestMineTasks:
         mock_extractor_run.side_effect = _extractor_side_effect
 
         tasks = mine_tasks(Path("/fake/repo"), count=5)
+        assert tasks == []
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_mine_tasks_filters_low_quality(
+        self, mock_sources_run: object, mock_extractor_run: object
+    ) -> None:
+        """Tasks below the min_quality threshold are excluded from results."""
+        # Two merges: one with PR context (#1 ref + body), one bare/generic
+        merge_log = (
+            "aaaa1111bbbb2222 Merge pull request #1 from fix/auth\n"
+            "cccc3333dddd4444 Squash merge of cleanup branch\n"
+        )
+        good_files = "src/auth.py\ntests/test_auth.py\n"
+        bare_files = "src/misc.py\ntests/test_other.py\n"
+
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+
+        diff_call = {"n": 0}
+
+        def _extractor_side_effect(cmd, **kwargs):
+            if "log" in cmd:
+                # For merge log listing, return the log
+                if "--merges" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+                # For commit body: first commit has body, second is bare
+                if "aaaa1111" in str(cmd):
+                    return subprocess.CompletedProcess(
+                        cmd, 0, "Fix auth\n\nTokens expired on 401.", ""
+                    )
+                # Bare commit — empty body
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            if "diff" in cmd:
+                diff_call["n"] += 1
+                if diff_call["n"] == 1:
+                    return subprocess.CompletedProcess(cmd, 0, good_files, "")
+                return subprocess.CompletedProcess(cmd, 0, bare_files, "")
+            # gh pr view
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        mock_extractor_run.side_effect = _extractor_side_effect
+
+        # Default min_quality filters out the bare task
+        tasks = mine_tasks(Path("/fake/repo"), count=5)
+        assert len(tasks) == 1
+        assert tasks[0].id == "aaaa1111"
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_mine_tasks_bare_metadata_hard_gated(
+        self, mock_sources_run: object, mock_extractor_run: object
+    ) -> None:
+        """Tasks with bare metadata are rejected even with min_quality=0."""
+        merge_log = "aaaa1111bbbb2222 Squash merge\n"
+        diff_files = "src/code.py\ntests/test_code.py\n"
+
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+
+        def _extractor_side_effect(cmd, **kwargs):
+            if "log" in cmd:
+                if "--merges" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+                # No commit body → bare metadata
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            if "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, diff_files, "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        mock_extractor_run.side_effect = _extractor_side_effect
+
+        # Even min_quality=0 can't bypass hard gates
+        tasks = mine_tasks(Path("/fake/repo"), count=5, min_quality=0.0)
         assert tasks == []
 
     @patch("codeprobe.mining.extractor.subprocess.run")
@@ -466,17 +607,17 @@ class TestBuildTestCommand:
 
 class TestScorePRQuality:
     def test_perfect_pr(self) -> None:
-        """PR with issue ref, description body, and targeted tests scores 1.0."""
+        """PR with issue ref in body, description, and targeted tests scores 1.0."""
         score = score_pr_quality(
-            title="Fix auth redirect (#42)",
-            body="Tokens were not refreshed on 401 responses. This caused silent logout.",
+            title="Fix auth redirect",
+            body="Fixes #42. Tokens were not refreshed on 401 responses. This caused silent logout.",
             changed_files=["src/auth.py", "src/middleware.py", "tests/test_auth.py"],
             test_files=["tests/test_auth.py"],
         )
         assert score == pytest.approx(1.0)
 
     def test_no_issue_ref(self) -> None:
-        """PR without issue reference loses that signal."""
+        """PR without issue reference in body loses that signal."""
         score = score_pr_quality(
             title="Fix auth redirect",
             body="Tokens were not refreshed on 401 responses.",
@@ -485,25 +626,37 @@ class TestScorePRQuality:
         )
         assert score == pytest.approx(2 / 3, abs=0.01)
 
-    def test_empty_body(self) -> None:
-        """PR with empty body loses that signal."""
+    def test_issue_ref_in_title_only_not_counted(self) -> None:
+        """Issue ref only in title is noise (GitHub merge titles always have #N)."""
         score = score_pr_quality(
             title="Fix auth redirect (#42)",
             body="",
             changed_files=["src/auth.py", "tests/test_auth.py"],
             test_files=["tests/test_auth.py"],
         )
-        assert score == pytest.approx(2 / 3, abs=0.01)
+        # Only test overlap signal — title #N is ignored, body is empty
+        assert score == pytest.approx(1 / 3, abs=0.01)
+
+    def test_empty_body(self) -> None:
+        """PR with empty body loses body and issue ref signals."""
+        score = score_pr_quality(
+            title="Fix auth redirect",
+            body="",
+            changed_files=["src/auth.py", "tests/test_auth.py"],
+            test_files=["tests/test_auth.py"],
+        )
+        # Only test overlap signal
+        assert score == pytest.approx(1 / 3, abs=0.01)
 
     def test_unrelated_tests(self) -> None:
-        """Test files that don't share source dirs get no test coverage signal."""
+        """Test files that don't share source stems get no test coverage signal."""
         score = score_pr_quality(
-            title="Fix auth redirect (#42)",
-            body="Good description of the problem and fix.",
+            title="Fix auth redirect",
+            body="Fixes #42. Good description of the problem and fix.",
             changed_files=["src/auth.py", "tests/test_unrelated.py"],
             test_files=["tests/test_unrelated.py"],
         )
-        # Issue ref + body present, but test file dir (tests/) doesn't overlap src dir (src/)
+        # Issue ref in body + body present, but no test/source overlap
         assert score == pytest.approx(2 / 3, abs=0.01)
 
     def test_zero_score(self) -> None:
@@ -530,13 +683,13 @@ class TestScorePRQuality:
     def test_short_body_not_meaningful(self) -> None:
         """Body under 20 chars is not considered meaningful."""
         score = score_pr_quality(
-            title="Fix bug (#1)",
+            title="Fix bug",
             body="short",
             changed_files=["src/auth.py", "tests/test_auth.py"],
             test_files=["tests/test_auth.py"],
         )
-        # Issue ref + targeted tests, but body too short
-        assert score == pytest.approx(2 / 3, abs=0.01)
+        # Only test overlap — body too short for signal 2, no issue ref in body
+        assert score == pytest.approx(1 / 3, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -731,23 +884,213 @@ class TestExtractTaskFromMergeEnriched:
         mock_run.side_effect = _side_effect
         source = RepoSource(host="local", owner="", repo="r", remote_url="")
 
-        task = extract_task_from_merge(
+        result = extract_task_from_merge(
             "abc12345deadbeef",
             Path("/fake/myrepo"),
             source=source,
             merge_title="Fix auth",
         )
 
-        assert task is not None
+        assert result is not None
+        task, pr_meta = result
         assert "expired silently" in task.metadata.description
+        assert pr_meta.source_tier == "commit_message"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
-    def test_without_source_bare_description(self, mock_run: object) -> None:
-        """Backward compat: no source → bare description like before."""
+    def test_without_source_returns_none(self, mock_run: object) -> None:
+        """No source → bare metadata → hard-gated out."""
         files = ["src/auth.py", "tests/test_auth.py"]
         mock_run.side_effect = _mock_diff_name_only(files)
 
-        task = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
+        result = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
+        assert result is None
 
-        assert task is not None
-        assert "abc12345" in task.metadata.description
+
+# ---------------------------------------------------------------------------
+# extract_subsystems tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSubsystems:
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_basic_subsystem_extraction(self, mock_run: object) -> None:
+        """Two merges touching different dirs yield correct prefix counts."""
+        prs = [
+            MergedPR(sha="aaa", title="PR1", merge_commit="aaa"),
+            MergedPR(sha="bbb", title="PR2", merge_commit="bbb"),
+        ]
+        files_a = "pkg/scheduler/algo.go\npkg/scheduler/algo_test.go\n"
+        files_b = "cmd/server/main.go\npkg/scheduler/queue.go\n"
+
+        call = {"n": 0}
+
+        def _side_effect(cmd, **kwargs):
+            call["n"] += 1
+            if call["n"] == 1:
+                return subprocess.CompletedProcess(cmd, 0, files_a, "")
+            return subprocess.CompletedProcess(cmd, 0, files_b, "")
+
+        mock_run.side_effect = _side_effect
+
+        result = extract_subsystems(prs, Path("/fake"))
+
+        assert result["pkg/scheduler/"] == 2  # both merges touch it
+        assert result["cmd/server/"] == 1
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_depth_1(self, mock_run: object) -> None:
+        """Depth=1 gives coarser prefixes."""
+        prs = [MergedPR(sha="aaa", title="PR1", merge_commit="aaa")]
+        files = "pkg/scheduler/algo.go\npkg/api/types.go\ncmd/server/main.go\n"
+        mock_run.side_effect = _mock_subprocess(stdout=files)
+
+        result = extract_subsystems(prs, Path("/fake"), depth=1)
+
+        assert "pkg/" in result
+        assert "cmd/" in result
+        assert "pkg/scheduler/" not in result
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_root_level_files_skipped(self, mock_run: object) -> None:
+        """Files at repo root (no directory) are excluded."""
+        prs = [MergedPR(sha="aaa", title="PR1", merge_commit="aaa")]
+        files = "README.md\nMakefile\npkg/auth/auth.go\n"
+        mock_run.side_effect = _mock_subprocess(stdout=files)
+
+        result = extract_subsystems(prs, Path("/fake"))
+
+        assert "pkg/auth/" in result
+        assert len(result) == 1  # only pkg/auth/, root files skipped
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_empty_merge(self, mock_run: object) -> None:
+        """Merge with no changed files contributes nothing."""
+        prs = [MergedPR(sha="aaa", title="PR1", merge_commit="aaa")]
+        mock_run.side_effect = _mock_subprocess(stdout="")
+
+        result = extract_subsystems(prs, Path("/fake"))
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# mine_tasks subsystem filter tests
+# ---------------------------------------------------------------------------
+
+
+class TestMineTasksSubsystemFilter:
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_subsystem_filter(
+        self, mock_sources_run: object, mock_extractor_run: object
+    ) -> None:
+        """Only merges touching the requested subsystem are included."""
+        merge_log = (
+            "aaaa1111bbbb2222 Merge pull request #1 from fix/auth\n"
+            "cccc3333dddd4444 Merge pull request #2 from fix/server\n"
+        )
+        auth_files = "pkg/auth/auth.go\ntests/test_auth.go\n"
+        server_files = "cmd/server/main.go\ncmd/server/main_test.go\n"
+
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+
+        diff_call = {"n": 0}
+
+        def _extractor_side_effect(cmd, **kwargs):
+            if "log" in cmd:
+                if "--merges" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+                # Commit body for PR metadata
+                return subprocess.CompletedProcess(
+                    cmd, 0, "Fix something\n\nDetailed description of the fix.", ""
+                )
+            if "diff" in cmd:
+                diff_call["n"] += 1
+                if diff_call["n"] == 1:
+                    return subprocess.CompletedProcess(cmd, 0, auth_files, "")
+                return subprocess.CompletedProcess(cmd, 0, server_files, "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        mock_extractor_run.side_effect = _extractor_side_effect
+
+        # Filter to only pkg/ subsystem
+        tasks = mine_tasks(
+            Path("/fake/repo"), count=5, subsystems=("pkg/",), min_quality=0.0
+        )
+
+        assert len(tasks) == 1
+        assert tasks[0].metadata.language == "go"
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_empty_subsystem_no_filter(
+        self, mock_sources_run: object, mock_extractor_run: object
+    ) -> None:
+        """Empty subsystems tuple means no filtering (backward compatible)."""
+        merge_log = "aaaa1111bbbb2222 Merge pull request #1 from fix/auth\n"
+        diff_files = "pkg/auth/auth.go\ntests/test_auth.go\n"
+
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+
+        def _extractor_side_effect(cmd, **kwargs):
+            if "log" in cmd:
+                if "--merges" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+                return subprocess.CompletedProcess(
+                    cmd, 0, "Fix auth\n\nDetailed description.", ""
+                )
+            if "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, diff_files, "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        mock_extractor_run.side_effect = _extractor_side_effect
+
+        tasks = mine_tasks(Path("/fake/repo"), count=5, subsystems=(), min_quality=0.0)
+        assert len(tasks) == 1
+
+
+# ---------------------------------------------------------------------------
+# run_mine stale-task clearing tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunMineClearsStale:
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_clears_stale_tasks(
+        self, mock_sources_run: object, mock_extractor_run: object, tmp_path: Path
+    ) -> None:
+        """Prior task directories are removed before writing new tasks."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        # Create a stale task directory
+        stale_dir = tmp_path / ".codeprobe" / "tasks" / "old-stale-task"
+        stale_dir.mkdir(parents=True)
+        (stale_dir / "instruction.md").write_text("stale")
+
+        merge_log = "aaaa1111bbbb2222 Merge pull request #1 from fix/auth\n"
+        diff_files = "src/auth.py\ntests/test_auth.py\n"
+
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+
+        def _extractor_side_effect(cmd, **kwargs):
+            if "log" in cmd:
+                if "--merges" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+                return subprocess.CompletedProcess(
+                    cmd, 0, "Fix auth\n\nTokens expired on 401.", ""
+                )
+            if "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, diff_files, "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        mock_extractor_run.side_effect = _extractor_side_effect
+
+        run_mine(str(tmp_path), count=5)
+
+        tasks_dir = tmp_path / ".codeprobe" / "tasks"
+        task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
+
+        # Stale task gone, only new task present
+        assert not stale_dir.exists()
+        assert len(task_dirs) == 1
+        assert task_dirs[0].name == "aaaa1111"

@@ -99,6 +99,37 @@ def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
     return [f for f in result.stdout.strip().splitlines() if f.strip()]
 
 
+def extract_subsystems(
+    prs: list[MergedPR],
+    repo_path: Path,
+    depth: int = 2,
+) -> dict[str, int]:
+    """Extract top-level directory prefixes from merge commit changed files.
+
+    Returns a dict mapping subsystem prefix to merge count (how many distinct
+    merges touched files under that prefix), sorted by count descending.
+
+    ZFC compliant: purely structural directory-name extraction.
+    """
+    from collections import Counter
+
+    prefix_counts: Counter[str] = Counter()
+    for pr in prs:
+        changed = _get_changed_files(pr.merge_commit, repo_path)
+        pr_prefixes: set[str] = set()
+        for f in changed:
+            parts = Path(f).parts
+            if len(parts) < 2:
+                # Root-level file (no directory) — skip
+                continue
+            n = min(depth, len(parts) - 1)
+            prefix = "/".join(parts[:n]) + "/"
+            pr_prefixes.add(prefix)
+        prefix_counts.update(pr_prefixes)
+
+    return dict(prefix_counts.most_common())
+
+
 def _estimate_difficulty(changed_files: list[str]) -> str:
     """Estimate task difficulty based on the number of changed files."""
     count = len(changed_files)
@@ -299,10 +330,10 @@ def score_pr_quality(
     ZFC compliant: checks structural presence, not semantic quality.
     """
     score = 0.0
-    text = f"{title}\n{body}"
 
-    # Signal 1: Issue/ticket reference
-    if _ISSUE_REF_PATTERN.search(text):
+    # Signal 1: Issue/ticket reference in body (not title — GitHub merge
+    # titles always contain "#N" which is noise, not a quality indicator)
+    if body and _ISSUE_REF_PATTERN.search(body):
         score += 1 / 3
 
     # Signal 2: Non-empty body with meaningful length
@@ -324,11 +355,12 @@ def extract_task_from_merge(
     changed_files: list[str] | None = None,
     source: RepoSource | None = None,
     merge_title: str = "",
-) -> Task | None:
+) -> tuple[Task, PRMetadata] | None:
     """Extract an eval task from a merge commit.
 
     Returns None if the merge has no test files (can't verify the task).
     Pass *changed_files* to avoid a redundant git-diff call.
+    Returns (task, pr_metadata) so callers can score against raw PR body.
     """
     if changed_files is None:
         changed_files = _get_changed_files(merge_sha, repo_path)
@@ -354,6 +386,25 @@ def extract_task_from_merge(
             title=f"Reproduce changes from merge commit {short_sha}",
             source_tier="bare",
         )
+
+    # Hard gate: bare metadata means no useful instruction context — skip
+    if pr_meta.source_tier == "bare":
+        logger.debug(
+            "Skipping %s: bare metadata (no PR body or commit message)", short_sha
+        )
+        return None
+
+    # Build a verification command targeted to the detected test files and language
+    test_command = _build_test_command(language, test_files)
+
+    # Hard gate: stub test command means verification is meaningless — skip
+    if test_command == _DEFAULT_TEST_COMMAND:
+        logger.debug(
+            "Skipping %s: stub test command (unsupported language or no test mapping)",
+            short_sha,
+        )
+        return None
+
     description = _format_task_description(pr_meta)
 
     metadata = TaskMetadata(
@@ -364,20 +415,19 @@ def extract_task_from_merge(
         category="sdlc",
     )
 
-    # Build a verification command targeted to the detected test files and language
-    test_command = _build_test_command(language, test_files)
     verification = TaskVerification(
         type="test_script",
         command=test_command,
         reward_type="binary",
     )
 
-    return Task(
+    task = Task(
         id=short_sha,
         repo=repo_path.name,
         metadata=metadata,
         verification=verification,
     )
+    return task, pr_meta
 
 
 def _guess_language(extensions: list[str]) -> str:
@@ -404,19 +454,26 @@ def _guess_language(extensions: list[str]) -> str:
     return counts.most_common(1)[0][0]
 
 
+_MIN_QUALITY_SCORE = 2 / 3  # At least two quality signals required
+
+
 def mine_tasks(
     path: Path,
     count: int = 5,
     source_hint: str = "auto",
     min_files: int = 0,
+    min_quality: float = _MIN_QUALITY_SCORE,
+    subsystems: tuple[str, ...] = (),
 ) -> list[Task]:
     """Mine eval tasks from a repository.
 
     1. Detect or use provided source
     2. List merged PRs
-    3. Extract tasks from each merge (respecting min_files threshold)
-    4. Sort by file count descending (larger changes first)
-    5. Return up to *count* tasks
+    3. Filter by subsystem prefixes (if provided)
+    4. Extract tasks from each merge (respecting min_files threshold)
+    5. Filter out tasks below *min_quality* score
+    6. Sort by quality descending, then file count descending
+    7. Return up to *count* tasks
     """
     if source_hint != "auto":
         source = RepoSource(host=source_hint, owner="", repo=path.name, remote_url="")
@@ -436,21 +493,34 @@ def mine_tasks(
         changed_files = _get_changed_files(pr.merge_commit, path)
         if len(changed_files) < min_files:
             continue
+        if subsystems and not any(
+            f.startswith(prefix) for f in changed_files for prefix in subsystems
+        ):
+            continue
         test_files = _find_test_files(changed_files)
-        task = extract_task_from_merge(
+        result = extract_task_from_merge(
             pr.merge_commit,
             path,
             changed_files=changed_files,
             source=source,
             merge_title=pr.title,
         )
-        if task is not None:
+        if result is not None:
+            task, pr_meta = result
             quality = score_pr_quality(
-                title=pr.title,
-                body=task.metadata.description,
+                title=pr_meta.title,
+                body=pr_meta.body,
                 changed_files=changed_files,
                 test_files=test_files,
             )
+            if quality < min_quality:
+                logger.debug(
+                    "Skipping %s: quality %.2f < %.2f threshold",
+                    pr.merge_commit[:8],
+                    quality,
+                    min_quality,
+                )
+                continue
             candidates.append((quality, len(changed_files), task))
 
     # Sort by quality score descending, then file count descending
