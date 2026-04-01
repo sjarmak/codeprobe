@@ -1,0 +1,2 @@
+{"type":"assistant.message","data":{"content":"Here is the fix"}}
+{"type":"result","data":{"content":"Done"},"usage":{"premiumRequests":1,"totalApiDurationMs":2380,"inputTokens":1500,"outputTokens":393}}

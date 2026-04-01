@@ -137,6 +137,18 @@ class NdjsonStreamCollector:
                     out_tok = data.get("outputTokens")
                     if out_tok is not None:
                         output_tokens = out_tok
+                elif event_type == "result":
+                    usage = obj.get("usage", {})
+                    in_tok = usage.get("inputTokens")
+                    if in_tok is None:
+                        in_tok = usage.get("prompt_tokens")
+                    if in_tok is not None and input_tokens is None:
+                        input_tokens = in_tok
+                    out_tok = usage.get("outputTokens")
+                    if out_tok is None:
+                        out_tok = usage.get("completion_tokens")
+                    if out_tok is not None and output_tokens is None:
+                        output_tokens = out_tok
         except (json.JSONDecodeError, ValueError):
             return UsageData(
                 error=(

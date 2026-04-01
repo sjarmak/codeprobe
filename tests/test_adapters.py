@@ -594,6 +594,45 @@ class TestCopilotInputTokens:
             tokens = adapter._extract_tokens_from_logs()
         assert tokens is None
 
+    def test_input_tokens_from_result_event(self) -> None:
+        """When NDJSON has no usage event but result event has token counts, extract them."""
+        adapter = CopilotAdapter()
+        stdout = self._load_fixture("copilot_result_tokens.txt")
+        result = self._make_copilot_result(stdout)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens == 1500
+        assert output.output_tokens == 393
+        assert output.cost_source == "api_reported"
+        assert output.error is None
+
+    def test_input_tokens_prefers_usage_event_over_result(self) -> None:
+        """Usage event inputTokens takes priority over result event usage block."""
+        adapter = CopilotAdapter()
+        stdout = self._load_fixture("copilot_with_usage.txt")
+        result = self._make_copilot_result(stdout)
+        output = adapter.parse_output(result, duration=1.0)
+
+        # copilot_with_usage.txt has usage event with inputTokens=1234
+        assert output.input_tokens == 1234
+        assert output.output_tokens == 87
+        assert output.cost_source == "api_reported"
+
+    def test_result_event_prompt_tokens_fallback(self) -> None:
+        """Result event with prompt_tokens/completion_tokens keys (OpenAI naming)."""
+        adapter = CopilotAdapter()
+        stdout = (
+            '{"type":"assistant.message","data":{"content":"hi"}}\n'
+            '{"type":"result","data":{"content":"done"},'
+            '"usage":{"prompt_tokens":800,"completion_tokens":200}}\n'
+        )
+        result = self._make_copilot_result(stdout)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens == 800
+        assert output.output_tokens == 200
+        assert output.cost_source == "api_reported"
+
 
 # -- CodexAdapter --------------------------------------------------------------
 
