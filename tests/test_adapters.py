@@ -459,11 +459,13 @@ class TestCopilotParseOutput:
         output = adapter.parse_output(result, duration=1.0)
 
         assert "authenticate" in output.stdout
-        assert output.cost_model == "subscription"
-        assert output.cost_source == "api_reported"
+        assert output.cost_model == "per_token"
+        assert output.cost_source == "calculated"
         assert output.output_tokens == 87
         assert output.input_tokens is None
-        assert output.cost_usd is None
+        # Estimated cost from output tokens only (Sonnet pricing: $15/1M output)
+        assert output.cost_usd is not None
+        assert output.cost_usd == pytest.approx(87 * 15.0 / 1_000_000, abs=1e-8)
         assert output.error is None
 
     def test_ndjson_long_output(self) -> None:
@@ -473,8 +475,9 @@ class TestCopilotParseOutput:
         output = adapter.parse_output(result, duration=3.0)
 
         assert "refactoring" in output.stdout
-        assert output.cost_model == "subscription"
-        assert output.cost_source == "api_reported"
+        assert output.cost_model == "per_token"
+        assert output.cost_source == "calculated"
+        assert output.cost_usd == pytest.approx(312 * 15.0 / 1_000_000)
         assert output.output_tokens == 312
         assert output.error is None
 
@@ -535,8 +538,11 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens == 1234
         assert output.output_tokens == 87
-        assert output.cost_source == "api_reported"
-        assert output.cost_model == "subscription"
+        assert output.cost_source == "calculated"
+        assert output.cost_model == "per_token"
+        assert output.cost_usd == pytest.approx(
+            1234 * 3.0 / 1_000_000 + 87 * 15.0 / 1_000_000
+        )
         assert output.error is None
 
     def test_input_tokens_from_process_log(self) -> None:
@@ -565,7 +571,8 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens is None
         assert output.output_tokens == 87
-        assert output.cost_source == "api_reported"
+        assert output.cost_source == "calculated"
+        assert output.cost_usd == pytest.approx(87 * 15.0 / 1_000_000)
         assert output.error is None
 
     def test_extract_tokens_from_logs_parses_usage(self) -> None:
@@ -605,7 +612,10 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens == 1500
         assert output.output_tokens == 393
-        assert output.cost_source == "api_reported"
+        assert output.cost_source == "calculated"
+        assert output.cost_usd == pytest.approx(
+            1500 * 3.0 / 1_000_000 + 393 * 15.0 / 1_000_000
+        )
         assert output.error is None
 
     def test_input_tokens_prefers_usage_event_over_result(self) -> None:
@@ -618,7 +628,10 @@ class TestCopilotInputTokens:
         # copilot_with_usage.txt has usage event with inputTokens=1234
         assert output.input_tokens == 1234
         assert output.output_tokens == 87
-        assert output.cost_source == "api_reported"
+        assert output.cost_source == "calculated"
+        assert output.cost_usd == pytest.approx(
+            1234 * 3.0 / 1_000_000 + 87 * 15.0 / 1_000_000
+        )
 
     def test_result_event_prompt_tokens_fallback(self) -> None:
         """Result event with prompt_tokens/completion_tokens keys (OpenAI naming)."""
@@ -633,7 +646,10 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens == 800
         assert output.output_tokens == 200
-        assert output.cost_source == "api_reported"
+        assert output.cost_source == "calculated"
+        assert output.cost_usd == pytest.approx(
+            800 * 3.0 / 1_000_000 + 200 * 15.0 / 1_000_000
+        )
 
 
 # -- CodexAdapter --------------------------------------------------------------

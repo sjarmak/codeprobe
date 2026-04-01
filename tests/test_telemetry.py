@@ -120,8 +120,9 @@ class TestNdjsonStreamCollector:
         raw = (FIXTURES / "copilot_normal.txt").read_text()
         usage = self.collector.collect(raw)
         assert usage.output_tokens == 87
-        assert usage.cost_model == "subscription"
-        assert usage.cost_source == "api_reported"
+        assert usage.cost_model == "per_token"
+        assert usage.cost_source == "calculated"
+        assert usage.cost_usd == pytest.approx(87 * 15.0 / 1_000_000)
         assert usage.error is None
 
     def test_no_tokens(self):

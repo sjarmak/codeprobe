@@ -169,11 +169,26 @@ class NdjsonStreamCollector:
                 ),
             )
 
+        # Estimate cost from token counts using Sonnet pricing (Copilot's
+        # underlying model).  Even on a subscription plan, token-based cost
+        # estimates allow meaningful comparisons across configs and agents.
+        estimated_cost: float | None = None
+        sonnet_pricing = CLAUDE_PRICING.get("claude-sonnet-4-6")
+        if sonnet_pricing is not None and output_tokens is not None:
+            out_cost = output_tokens * sonnet_pricing[1] / 1_000_000
+            in_cost = (
+                input_tokens * sonnet_pricing[0] / 1_000_000
+                if input_tokens is not None
+                else 0.0
+            )
+            estimated_cost = in_cost + out_cost
+
         return UsageData(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            cost_model="subscription",
-            cost_source="api_reported",
+            cost_usd=estimated_cost,
+            cost_model="per_token" if estimated_cost is not None else "subscription",
+            cost_source="calculated" if estimated_cost is not None else "api_reported",
         )
 
 

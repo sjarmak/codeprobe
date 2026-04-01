@@ -113,6 +113,7 @@ class CopilotAdapter(BaseAdapter):
             duration_seconds=duration,
             input_tokens=input_tokens,
             output_tokens=usage.output_tokens,
+            cost_usd=usage.cost_usd,
             cost_model=usage.cost_model,
             cost_source=cost_source,
             error=usage.error,
