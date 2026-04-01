@@ -108,6 +108,7 @@ def test_load_config_results_missing_raises(tmp_path: Path):
         load_config_results(exp_dir, "nonexistent")
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_append_and_load_checkpoint(tmp_path: Path):
     checkpoint = tmp_path / "checkpoint.jsonl"
 
@@ -121,18 +122,18 @@ def test_append_and_load_checkpoint(tmp_path: Path):
     assert ids == {"t-001", "t-002"}
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_load_checkpoint_empty(tmp_path: Path):
     checkpoint = tmp_path / "checkpoint.jsonl"
     ids = load_checkpoint(checkpoint)
     assert ids == set()
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_load_checkpoint_skips_malformed(tmp_path: Path):
     checkpoint = tmp_path / "checkpoint.jsonl"
     checkpoint.write_text(
-        '{"task_id": "t-001"}\n'
-        'not valid json\n'
-        '{"task_id": "t-002"}\n'
+        '{"task_id": "t-001"}\n' "not valid json\n" '{"task_id": "t-002"}\n'
     )
     ids = load_checkpoint(checkpoint)
     assert ids == {"t-001", "t-002"}

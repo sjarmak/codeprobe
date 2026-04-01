@@ -1,8 +1,20 @@
 """Analysis — run interpretation, statistical comparison, reporting."""
 
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
-from codeprobe.analysis.report import Report, format_json_report, format_text_report, generate_report
-from codeprobe.analysis.stats import ConfigSummary, PairwiseComparison, compare_configs, summarize_config
+from codeprobe.analysis.report import (
+    Report,
+    format_json_report,
+    format_text_report,
+    generate_report,
+    generate_report_streaming,
+)
+from codeprobe.analysis.stats import (
+    ConfigSummary,
+    PairwiseComparison,
+    compare_configs,
+    summarize_completed_tasks,
+    summarize_config,
+)
 
 __all__ = [
     "ConfigSummary",
@@ -13,6 +25,8 @@ __all__ = [
     "format_json_report",
     "format_text_report",
     "generate_report",
+    "generate_report_streaming",
     "rank_configs",
+    "summarize_completed_tasks",
     "summarize_config",
 ]

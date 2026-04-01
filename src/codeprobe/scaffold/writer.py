@@ -32,6 +32,8 @@ class TaskSpec:
     instruction: str = ""
     reward_type: str = "binary"
     tags: tuple[str, ...] = ()
+    estimated_duration_sec: int = 300
+    resource_tier: str = "medium"
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,8 @@ def _generate_task_toml(spec: TaskSpec) -> str:
         f'difficulty = "{spec.difficulty}"',
         f'description = "{_escape_toml(spec.description)}"',
         f'category = "{spec.category}"',
+        f"estimated_duration_sec = {spec.estimated_duration_sec}",
+        f'resource_tier = "{spec.resource_tier}"',
     ]
     if spec.tags:
         lines.append(f"tags = [{tags_str}]")

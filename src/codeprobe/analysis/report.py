@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
@@ -10,9 +11,10 @@ from codeprobe.analysis.stats import (
     ConfigSummary,
     PairwiseComparison,
     compare_configs,
+    summarize_completed_tasks,
     summarize_config,
 )
-from codeprobe.models.experiment import ConfigResults
+from codeprobe.models.experiment import CompletedTask, ConfigResults
 
 
 @dataclass(frozen=True)
@@ -25,9 +27,7 @@ class Report:
     comparisons: tuple[PairwiseComparison, ...]
 
 
-def generate_report(
-    experiment_name: str, all_results: list[ConfigResults]
-) -> Report:
+def generate_report(experiment_name: str, all_results: list[ConfigResults]) -> Report:
     """Generate a full report from config results.
 
     1. summarize_config() for each
@@ -36,6 +36,35 @@ def generate_report(
     4. Return Report
     """
     summaries = [summarize_config(r) for r in all_results]
+    rankings = rank_configs(summaries)
+
+    comparisons: list[PairwiseComparison] = []
+    for i, a in enumerate(summaries):
+        for b in summaries[i + 1 :]:
+            comparisons.append(compare_configs(a, b))
+
+    return Report(
+        experiment_name=experiment_name,
+        summaries=tuple(summaries),
+        rankings=tuple(rankings),
+        comparisons=tuple(comparisons),
+    )
+
+
+def generate_report_streaming(
+    experiment_name: str,
+    config_task_pairs: Iterator[tuple[str, Iterator[CompletedTask]]],
+) -> Report:
+    """Generate a report by streaming tasks per config.
+
+    Each element of *config_task_pairs* is ``(config_label, tasks_iterator)``.
+    Tasks are consumed in a single pass via summarize_completed_tasks(),
+    avoiding loading all results into memory at once. Ranking and comparison
+    operate on the resulting summaries (O(configs), not O(tasks)).
+    """
+    summaries = [
+        summarize_completed_tasks(label, tasks) for label, tasks in config_task_pairs
+    ]
     rankings = rank_configs(summaries)
 
     comparisons: list[PairwiseComparison] = []
@@ -62,7 +91,11 @@ def format_text_report(report: Report) -> str:
     lines.append("### Rankings")
     for rc in report.rankings:
         s = rc.summary
-        cost_str = f"${s.total_cost_usd:.2f} total" if s.total_cost_usd is not None else "no cost data"
+        cost_str = (
+            f"${s.total_cost_usd:.2f} total"
+            if s.total_cost_usd is not None
+            else "no cost data"
+        )
         lines.append(
             f"{rc.rank}. {rc.label} — {s.pass_rate:.0%} pass rate, "
             f"{cost_str} — {rc.recommendation}"
@@ -83,13 +116,10 @@ def format_text_report(report: Report) -> str:
         lines.append(f"Use {best.label} for best results.")
 
         cost_efficient = [
-            r for r in report.rankings
-            if "cost-efficiency" in r.recommendation.lower()
+            r for r in report.rankings if "cost-efficiency" in r.recommendation.lower()
         ]
         if cost_efficient:
-            lines.append(
-                f"Consider {cost_efficient[0].label} if cost is a concern."
-            )
+            lines.append(f"Consider {cost_efficient[0].label} if cost is a concern.")
     else:
         lines.append("No configurations to recommend.")
 

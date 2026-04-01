@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 
 import pytest
 
@@ -16,11 +17,14 @@ from codeprobe.analysis import (
     rank_configs,
     summarize_config,
 )
+from codeprobe.analysis.report import generate_report_streaming
+from codeprobe.analysis.stats import summarize_completed_tasks
 from codeprobe.models.experiment import CompletedTask, ConfigResults
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _task(
     task_id: str,
@@ -444,3 +448,124 @@ class TestFormatJsonReport:
         assert len(data["summaries"]) == 2
         assert len(data["rankings"]) == 2
         assert len(data["comparisons"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# summarize_completed_tasks (streaming)
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeCompletedTasks:
+    def test_matches_batch(self) -> None:
+        """Streaming summarize produces identical output to batch summarize."""
+        tasks = [
+            _task("t1", 1.0, duration=10.0, cost=0.10, tokens=500),
+            _task("t2", 0.5, duration=20.0, cost=0.20, tokens=1000),
+            _task("t3", 0.0, duration=30.0),
+        ]
+        batch_result = summarize_config(ConfigResults(config="test", completed=tasks))
+        stream_result = summarize_completed_tasks("test", iter(tasks))
+
+        assert stream_result == batch_result
+
+    def test_empty_iterator(self) -> None:
+        """Empty iterator produces zero summary."""
+        result = summarize_completed_tasks("empty", iter([]))
+        batch = summarize_config(ConfigResults(config="empty", completed=[]))
+        assert result == batch
+
+    def test_single_pass(self) -> None:
+        """Verify the iterator is consumed exactly once (no rewind)."""
+
+        class OnceIterator:
+            """Iterator that raises on second iteration attempt."""
+
+            def __init__(self, items: list[CompletedTask]) -> None:
+                self._iter = iter(items)
+                self._exhausted = False
+
+            def __iter__(self) -> Iterator[CompletedTask]:
+                if self._exhausted:
+                    raise RuntimeError("Iterator consumed twice")
+                return self
+
+            def __next__(self) -> CompletedTask:
+                try:
+                    return next(self._iter)
+                except StopIteration:
+                    self._exhausted = True
+                    raise
+
+        tasks = [_task("t1", 1.0, duration=5.0)]
+        result = summarize_completed_tasks("once", OnceIterator(tasks))
+        assert result.total_tasks == 1
+
+    def test_large_synthetic(self) -> None:
+        """10K synthetic tasks produce identical results streamed vs batch."""
+        tasks = [
+            _task(
+                f"t{i}",
+                score=(i % 3) / 2.0,
+                duration=float(i % 50),
+                cost=0.01 * (i % 10) if i % 5 != 0 else None,
+                tokens=100 * (i % 20) if i % 7 != 0 else None,
+            )
+            for i in range(10_000)
+        ]
+        batch = summarize_config(ConfigResults(config="big", completed=tasks))
+        stream = summarize_completed_tasks("big", iter(tasks))
+        assert stream == batch
+
+
+# ---------------------------------------------------------------------------
+# generate_report_streaming
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateReportStreaming:
+    def test_matches_batch(self) -> None:
+        """Streaming report matches batch report exactly."""
+        results_a = ConfigResults(
+            config="config-a",
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.10, tokens=500),
+                _task("t2", 0.7, duration=15.0, cost=0.12, tokens=600),
+            ],
+        )
+        results_b = ConfigResults(
+            config="config-b",
+            completed=[
+                _task("t1", 0.5, duration=8.0, cost=0.05, tokens=300),
+                _task("t2", 0.3, duration=12.0, cost=0.09, tokens=400),
+            ],
+        )
+        batch_report = generate_report("test", [results_a, results_b])
+
+        def stream_pairs() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+            yield ("config-a", iter(results_a.completed))
+            yield ("config-b", iter(results_b.completed))
+
+        stream_report = generate_report_streaming("test", stream_pairs())
+
+        assert stream_report.summaries == batch_report.summaries
+        assert stream_report.rankings == batch_report.rankings
+        assert stream_report.comparisons == batch_report.comparisons
+
+    def test_empty_configs(self) -> None:
+        """No configs produces empty report."""
+        report = generate_report_streaming("empty", iter([]))
+        assert report.summaries == ()
+        assert report.rankings == ()
+        assert report.comparisons == ()
+
+    def test_single_config(self) -> None:
+        """Single config streaming produces valid report."""
+        tasks = [_task("t1", 0.9, duration=5.0)]
+
+        def stream() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+            yield ("solo", iter(tasks))
+
+        report = generate_report_streaming("solo-exp", stream())
+        assert len(report.summaries) == 1
+        assert len(report.rankings) == 1
+        assert report.rankings[0].label == "solo"

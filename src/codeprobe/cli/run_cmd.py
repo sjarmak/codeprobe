@@ -7,6 +7,7 @@ from pathlib import Path
 import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
+from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.executor import execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
@@ -85,7 +86,12 @@ def run_eval(
 
         config_runs_dir = exp_dir / "runs" / exp_config.label
         config_runs_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = config_runs_dir / "checkpoint.jsonl"
+        # SQLite checkpoint with auto-migration from legacy JSONL
+        legacy_jsonl = config_runs_dir / "checkpoint.jsonl"
+        checkpoint_db = config_runs_dir / "checkpoint.db"
+        checkpoint_store = CheckpointStore.from_legacy_path(
+            legacy_jsonl, checkpoint_db, config_name=exp_config.label
+        )
 
         if max_cost_usd is not None:
             click.echo(f"  Budget: ${max_cost_usd:.2f}")
@@ -96,7 +102,7 @@ def run_eval(
             repo_path=Path(path).resolve(),
             experiment_config=exp_config,
             agent_config=agent_config,
-            checkpoint_path=checkpoint_path,
+            checkpoint_store=checkpoint_store,
             runs_dir=config_runs_dir,
             on_task_complete=_on_task_complete,
             max_cost_usd=max_cost_usd,

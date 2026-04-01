@@ -23,7 +23,9 @@ def load_task(path: Path) -> Task:
         return _load_toml(path)
     if suffix == ".json":
         return _load_json(path)
-    raise ValueError(f"Unsupported file extension: {suffix!r} (expected .toml or .json)")
+    raise ValueError(
+        f"Unsupported file extension: {suffix!r} (expected .toml or .json)"
+    )
 
 
 def _build_task(
@@ -48,7 +50,17 @@ def _build_task(
 
     modes_raw = verification_modes or ()
     if not isinstance(modes_raw, (list, tuple)):
-        raise ValueError(f"'verification_modes' must be a list, got {type(modes_raw).__name__}")
+        raise ValueError(
+            f"'verification_modes' must be a list, got {type(modes_raw).__name__}"
+        )
+
+    valid_resource_tiers = {"light", "medium", "heavy"}
+    resource_tier = meta.get("resource_tier", "medium")
+    if resource_tier not in valid_resource_tiers:
+        raise ValueError(
+            f"Unknown resource_tier: {resource_tier!r}. "
+            f"Expected one of: {sorted(valid_resource_tiers)}"
+        )
 
     return Task(
         id=task_id,
@@ -63,6 +75,8 @@ def _build_task(
             org_scale=meta.get("org_scale", False),
             mcp_suite=meta.get("mcp_suite"),
             tags=tuple(tags_raw),
+            estimated_duration_sec=meta.get("estimated_duration_sec", 300),
+            resource_tier=resource_tier,
         ),
         verification=TaskVerification(
             type=verif.get("type", "test_script"),
@@ -99,6 +113,8 @@ def _load_toml(path: Path) -> Task:
         "org_scale": task_sec.get("org_scale", False),
         "mcp_suite": task_sec.get("mcp_suite"),
         "tags": task_sec.get("tags", ()),
+        "estimated_duration_sec": task_sec.get("estimated_duration_sec", 300),
+        "resource_tier": task_sec.get("resource_tier", "medium"),
         **meta_sec,
     }
 

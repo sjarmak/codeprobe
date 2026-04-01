@@ -223,7 +223,17 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
 
 
 def append_checkpoint(checkpoint_path: Path, task: CompletedTask) -> None:
-    """Append a completed task as a JSONL line to the checkpoint file."""
+    """Append a completed task as a JSONL line to the checkpoint file.
+
+    .. deprecated:: Use :class:`codeprobe.core.checkpoint.CheckpointStore` instead.
+    """
+    import warnings
+
+    warnings.warn(
+        "append_checkpoint is deprecated, use CheckpointStore.append()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     entry = {"task_id": task.task_id, "automated_score": task.automated_score}
     with open(checkpoint_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -232,8 +242,17 @@ def append_checkpoint(checkpoint_path: Path, task: CompletedTask) -> None:
 def load_checkpoint(checkpoint_path: Path) -> set[str]:
     """Load completed task IDs from a JSONL checkpoint file.
 
+    .. deprecated:: Use :class:`codeprobe.core.checkpoint.CheckpointStore` instead.
+
     Returns an empty set if the file doesn't exist. Skips malformed lines.
     """
+    import warnings
+
+    warnings.warn(
+        "load_checkpoint is deprecated, use CheckpointStore.load_ids()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     entries = load_checkpoint_entries(checkpoint_path)
     return {e["task_id"] for e in entries}
 
@@ -241,8 +260,17 @@ def load_checkpoint(checkpoint_path: Path) -> set[str]:
 def load_checkpoint_entries(checkpoint_path: Path) -> list[dict]:
     """Load all checkpoint entries from a JSONL file.
 
+    .. deprecated:: Use :class:`codeprobe.core.checkpoint.CheckpointStore` instead.
+
     Returns an empty list if the file doesn't exist. Skips malformed lines.
     """
+    import warnings
+
+    warnings.warn(
+        "load_checkpoint_entries is deprecated, use CheckpointStore.load_entries()",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not checkpoint_path.is_file():
         return []
 

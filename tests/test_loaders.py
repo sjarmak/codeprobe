@@ -164,6 +164,123 @@ class TestLoadTomlMinedFormat:
         assert task.metadata.org_scale is False
         assert task.metadata.mcp_suite is None
         assert task.verification_modes == ()
+        assert task.metadata.estimated_duration_sec == 300
+        assert task.metadata.resource_tier == "medium"
+
+
+DURATION_RESOURCE_TOML = """\
+[metadata]
+name = "dur-resource-001"
+difficulty = "hard"
+category = "fix"
+estimated_duration_sec = 600
+resource_tier = "heavy"
+
+[task]
+id = "dur-resource-001"
+repo = "org/repo"
+"""
+
+
+class TestLoadTomlDurationAndResource:
+    def test_explicit_duration_and_resource(self, tmp_path: Path) -> None:
+        p = tmp_path / "task.toml"
+        p.write_text(DURATION_RESOURCE_TOML)
+        task = load_task(p)
+
+        assert task.metadata.estimated_duration_sec == 600
+        assert task.metadata.resource_tier == "heavy"
+
+    def test_defaults_when_absent(self, tmp_path: Path) -> None:
+        p = tmp_path / "task.toml"
+        p.write_text(MINIMAL_TOML)
+        task = load_task(p)
+
+        assert task.metadata.estimated_duration_sec == 300
+        assert task.metadata.resource_tier == "medium"
+
+    def test_duration_in_task_section(self, tmp_path: Path) -> None:
+        toml_text = """\
+[task]
+id = "task-sec-001"
+repo = "org/repo"
+estimated_duration_sec = 120
+resource_tier = "light"
+
+[metadata]
+name = "task-sec"
+"""
+        p = tmp_path / "task.toml"
+        p.write_text(toml_text)
+        task = load_task(p)
+
+        assert task.metadata.estimated_duration_sec == 120
+        assert task.metadata.resource_tier == "light"
+
+    def test_metadata_overrides_task_section(self, tmp_path: Path) -> None:
+        toml_text = """\
+[task]
+id = "override-001"
+repo = "org/repo"
+estimated_duration_sec = 120
+resource_tier = "light"
+
+[metadata]
+name = "override"
+estimated_duration_sec = 900
+resource_tier = "heavy"
+"""
+        p = tmp_path / "task.toml"
+        p.write_text(toml_text)
+        task = load_task(p)
+
+        assert task.metadata.estimated_duration_sec == 900
+        assert task.metadata.resource_tier == "heavy"
+
+    def test_json_with_duration_and_resource(self, tmp_path: Path) -> None:
+        data = {
+            "id": "json-dur-001",
+            "repo": "org/repo",
+            "metadata": {
+                "name": "json-dur",
+                "estimated_duration_sec": 450,
+                "resource_tier": "light",
+            },
+        }
+        p = tmp_path / "task.json"
+        p.write_text(json.dumps(data))
+        task = load_task(p)
+
+        assert task.metadata.estimated_duration_sec == 450
+        assert task.metadata.resource_tier == "light"
+
+    def test_json_defaults_when_absent(self, tmp_path: Path) -> None:
+        data = {
+            "id": "json-nofields",
+            "repo": "org/repo",
+            "metadata": {"name": "json-nofields"},
+        }
+        p = tmp_path / "task.json"
+        p.write_text(json.dumps(data))
+        task = load_task(p)
+
+        assert task.metadata.estimated_duration_sec == 300
+        assert task.metadata.resource_tier == "medium"
+
+    def test_invalid_resource_tier_raises(self, tmp_path: Path) -> None:
+        toml_text = """\
+[task]
+id = "bad-tier"
+repo = "org/repo"
+
+[metadata]
+name = "bad-tier"
+resource_tier = "mega"
+"""
+        p = tmp_path / "task.toml"
+        p.write_text(toml_text)
+        with pytest.raises(ValueError, match="resource_tier"):
+            load_task(p)
 
 
 class TestLoadTomlMinimal:

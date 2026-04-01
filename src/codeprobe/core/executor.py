@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from codeprobe.core.experiment import append_checkpoint, load_checkpoint_entries
+from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
 from codeprobe.core.scoring import get_scorer, sanitize_secrets
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -218,7 +218,7 @@ def execute_config(
     experiment_config: ExperimentConfig,
     agent_config: AgentConfig,
     *,
-    checkpoint_path: Path | None = None,
+    checkpoint_store: CheckpointStore | None = None,
     runs_dir: Path | None = None,
     on_task_complete: Callable[[CompletedTask], None] | None = None,
     max_cost_usd: float | None = None,
@@ -238,8 +238,8 @@ def execute_config(
     """
     results: list[CompletedTask] = []
     checkpointed_ids: set[str] = set()
-    if checkpoint_path is not None:
-        for entry in load_checkpoint_entries(checkpoint_path):
+    if checkpoint_store is not None:
+        for entry in checkpoint_store.load_entries():
             checkpointed_ids.add(entry["task_id"])
             results.append(
                 CompletedTask(
@@ -289,8 +289,8 @@ def execute_config(
         if runs_dir is not None:
             _save_task_artifacts(runs_dir, task_id, task_result)
 
-        if checkpoint_path is not None:
-            append_checkpoint(checkpoint_path, result)
+        if checkpoint_store is not None:
+            checkpoint_store.append(result)
 
         if on_task_complete is not None:
             on_task_complete(result)

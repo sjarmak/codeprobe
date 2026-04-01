@@ -40,6 +40,11 @@ class TestTaskSpec:
         assert spec.reward_type == "binary"
         assert spec.tags == ()
 
+    def test_duration_and_resource_defaults(self) -> None:
+        spec = TaskSpec(task_id="t1", repo="r")
+        assert spec.estimated_duration_sec == 300
+        assert spec.resource_tier == "medium"
+
     def test_custom_values(self) -> None:
         spec = TaskSpec(
             task_id="hard-task",
@@ -51,9 +56,13 @@ class TestTaskSpec:
             instruction="Do the thing.",
             reward_type="test_ratio",
             tags=("python", "security"),
+            estimated_duration_sec=900,
+            resource_tier="heavy",
         )
         assert spec.task_id == "hard-task"
         assert spec.tags == ("python", "security")
+        assert spec.estimated_duration_sec == 900
+        assert spec.resource_tier == "heavy"
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +117,29 @@ class TestWriteTaskDir:
         assert data["metadata"]["category"] == "debug"
         assert data["metadata"]["description"] == "A task"
         assert data["verification"]["reward_type"] == "test_ratio"
+
+    def test_task_toml_includes_duration_and_resource(self, tmp_path: Path) -> None:
+        spec = TaskSpec(
+            task_id="dur-task",
+            repo="org/repo",
+            estimated_duration_sec=600,
+            resource_tier="heavy",
+        )
+        result = write_task_dir(spec, tmp_path)
+        with (result / "task.toml").open("rb") as f:
+            data = tomllib.load(f)
+
+        assert data["metadata"]["estimated_duration_sec"] == 600
+        assert data["metadata"]["resource_tier"] == "heavy"
+
+    def test_task_toml_default_duration_and_resource(self, tmp_path: Path) -> None:
+        spec = TaskSpec(task_id="def-task", repo="org/repo")
+        result = write_task_dir(spec, tmp_path)
+        with (result / "task.toml").open("rb") as f:
+            data = tomllib.load(f)
+
+        assert data["metadata"]["estimated_duration_sec"] == 300
+        assert data["metadata"]["resource_tier"] == "medium"
 
     def test_test_sh_is_executable(self, tmp_path: Path) -> None:
         spec = TaskSpec(task_id="t1", repo="r")

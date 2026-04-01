@@ -18,6 +18,8 @@ class TaskMetadata:
     org_scale: bool = False
     mcp_suite: str | None = None
     tags: tuple[str, ...] = ()
+    estimated_duration_sec: int = 300
+    resource_tier: str = "medium"
 
 
 @dataclass(frozen=True)

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Iterator
 from dataclasses import dataclass
 
-from codeprobe.models.experiment import ConfigResults
+from codeprobe.models.experiment import CompletedTask, ConfigResults
 
 # A task is considered "passed" when its automated_score meets or exceeds
 # this threshold. Scores are typically 0.0 (fail) or 1.0 (pass), but
@@ -99,6 +100,79 @@ def summarize_config(results: ConfigResults) -> ConfigSummary:
     )
 
 
+def summarize_completed_tasks(
+    label: str, tasks: Iterator[CompletedTask]
+) -> ConfigSummary:
+    """Compute summary statistics from an iterator of tasks (single-pass).
+
+    Unlike summarize_config() which requires a ConfigResults with a list,
+    this accepts an arbitrary iterator and accumulates in one pass without
+    buffering all tasks in memory. Produces identical output to
+    summarize_config() for the same data.
+    """
+    total = 0
+    completed_count = 0
+    errored_count = 0
+    passed = 0
+    token_sum = 0
+    has_tokens = False
+    scores: list[float] = []
+    durations: list[float] = []
+    costs: list[float] = []
+
+    for task in tasks:
+        total += 1
+        if task.status == "completed":
+            completed_count += 1
+        else:
+            errored_count += 1
+
+        scores.append(task.automated_score)
+        if task.automated_score >= PASS_THRESHOLD:
+            passed += 1
+
+        durations.append(task.duration_seconds)
+
+        if task.cost_usd is not None:
+            costs.append(task.cost_usd)
+
+        if task.token_count is not None:
+            token_sum += task.token_count
+            has_tokens = True
+
+    if total == 0:
+        return ConfigSummary(
+            label=label,
+            total_tasks=0,
+            completed=0,
+            errored=0,
+            pass_rate=0.0,
+            mean_score=0.0,
+            median_score=0.0,
+            total_duration_sec=0.0,
+            mean_duration_sec=0.0,
+            total_cost_usd=None,
+            total_tokens=None,
+        )
+
+    total_duration = sum(durations)
+    total_cost: float | None = sum(costs) if costs else None
+
+    return ConfigSummary(
+        label=label,
+        total_tasks=total,
+        completed=completed_count,
+        errored=errored_count,
+        pass_rate=passed / total,
+        mean_score=statistics.mean(scores),
+        median_score=statistics.median(scores),
+        total_duration_sec=total_duration,
+        mean_duration_sec=statistics.mean(durations),
+        total_cost_usd=total_cost,
+        total_tokens=token_sum if has_tokens else None,
+    )
+
+
 def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
     """Determine the better config by score, then cost, then speed."""
     if not math.isclose(a.mean_score, b.mean_score, rel_tol=1e-9):
@@ -106,7 +180,11 @@ def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
 
     cost_a = a.total_cost_usd
     cost_b = b.total_cost_usd
-    if cost_a is not None and cost_b is not None and not math.isclose(cost_a, cost_b, rel_tol=1e-9):
+    if (
+        cost_a is not None
+        and cost_b is not None
+        and not math.isclose(cost_a, cost_b, rel_tol=1e-9)
+    ):
         return a.label if cost_a < cost_b else b.label
 
     if not math.isclose(a.mean_duration_sec, b.mean_duration_sec, rel_tol=1e-9):
@@ -136,10 +214,7 @@ def compare_configs(a: ConfigSummary, b: ConfigSummary) -> PairwiseComparison:
     elif speed_diff > 0:
         parts.append(f"{speed_diff:.1f}s slower")
 
-    summary = (
-        f"{a.label} vs {b.label}: {', '.join(parts)} "
-        f"\u2192 {winner} wins"
-    )
+    summary = f"{a.label} vs {b.label}: {', '.join(parts)} " f"\u2192 {winner} wins"
 
     return PairwiseComparison(
         config_a=a.label,

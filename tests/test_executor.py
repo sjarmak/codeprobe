@@ -253,12 +253,12 @@ def test_execute_config_skips_checkpointed(tmp_path: Path):
     agent_config = AgentConfig()
 
     # Write a checkpoint with task-000 already done
-    checkpoint = tmp_path / "checkpoint.jsonl"
-    import json
+    from codeprobe.core.checkpoint import CheckpointStore
+    from codeprobe.models.experiment import CompletedTask as CT
 
-    checkpoint.write_text(
-        json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n"
-    )
+    checkpoint_db = tmp_path / "checkpoint.db"
+    store = CheckpointStore(checkpoint_db, config_name="baseline")
+    store.append(CT(task_id="task-000", automated_score=1.0))
 
     results = execute_config(
         adapter=adapter,
@@ -266,7 +266,7 @@ def test_execute_config_skips_checkpointed(tmp_path: Path):
         repo_path=Path("/repo"),
         experiment_config=exp_config,
         agent_config=agent_config,
-        checkpoint_path=checkpoint,
+        checkpoint_store=store,
     )
     # Should skip task-000, run task-001 and task-002
     assert len(adapter.run_calls) == 2
@@ -422,12 +422,12 @@ def test_execute_config_budget_with_checkpoint(tmp_path: Path):
     agent_config = AgentConfig()
 
     # Checkpoint task-000
-    import json
+    from codeprobe.core.checkpoint import CheckpointStore
+    from codeprobe.models.experiment import CompletedTask as CT
 
-    checkpoint = tmp_path / "checkpoint.jsonl"
-    checkpoint.write_text(
-        json.dumps({"task_id": "task-000", "automated_score": 1.0}) + "\n"
-    )
+    checkpoint_db = tmp_path / "checkpoint.db"
+    store = CheckpointStore(checkpoint_db, config_name="baseline")
+    store.append(CT(task_id="task-000", automated_score=1.0))
 
     results = execute_config(
         adapter=adapter,
@@ -435,7 +435,7 @@ def test_execute_config_budget_with_checkpoint(tmp_path: Path):
         repo_path=Path("/repo"),
         experiment_config=exp_config,
         agent_config=agent_config,
-        checkpoint_path=checkpoint,
+        checkpoint_store=store,
         max_cost_usd=2.0,
     )
     # task-000 is checkpointed (free), task-001 costs $1.50, task-002 would be $3.00 -> halt
