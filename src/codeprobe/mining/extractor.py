@@ -24,6 +24,9 @@ _MAX_LABEL_LEN = 64
 _GH_PR_PATTERN = re.compile(r"[Mm]erge pull request #(\d+)")
 _PR_NUMBER_PATTERN = re.compile(r"#(\d+)")
 _LABEL_SANITIZE = re.compile(r"[^\w\s,./:-]")
+_ISSUE_CLOSE_PATTERN = re.compile(
+    r"(?:fix(?:es)?|close[sd]?|resolve[sd]?)\s+#(\d+)", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,8 @@ class PRMetadata:
     body: str = ""
     labels: tuple[str, ...] = ()
     source_tier: Literal["api", "commit_message", "bare"] = "bare"
+    issue_title: str = ""
+    issue_body: str = ""
 
 
 def list_merged_prs(source: RepoSource, path: Path, limit: int = 20) -> list[MergedPR]:
@@ -177,6 +182,58 @@ def _build_test_command(language: str, test_files: list[str]) -> str:
     return _DEFAULT_TEST_COMMAND
 
 
+def _extract_issue_numbers(body: str) -> list[int]:
+    """Parse PR body for linked issue references (Fixes #N, Closes #N, etc.).
+
+    Returns deduplicated issue numbers ordered by first appearance.
+    """
+    seen: set[int] = set()
+    result: list[int] = []
+    for match in _ISSUE_CLOSE_PATTERN.finditer(body):
+        num = int(match.group(1))
+        if num not in seen:
+            seen.add(num)
+            result.append(num)
+    return result
+
+
+def _fetch_issue_body(repo_path: Path, issue_number: int) -> tuple[str, str] | None:
+    """Fetch issue title and body via ``gh issue view``.
+
+    Returns ``(title, body)`` or *None* on failure.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(issue_number), "--json", "title,body"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_GH_TIMEOUT,
+        )
+        if result.returncode != 0:
+            logger.debug(
+                "gh issue view failed for #%d: %s",
+                issue_number,
+                result.stderr.strip(),
+            )
+            return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        logger.debug("gh issue view error: %s", exc)
+        return None
+
+    try:
+        data = _json.loads(result.stdout)
+    except _json.JSONDecodeError:
+        logger.debug("gh issue view returned invalid JSON for #%d", issue_number)
+        return None
+
+    title = data.get("title") or ""
+    body = data.get("body") or ""
+    if not title:
+        return None
+    return (title, body)
+
+
 def _fetch_pr_metadata_from_api(
     repo_path: Path,
     source: RepoSource,
@@ -224,11 +281,24 @@ def _fetch_pr_metadata_from_api(
         for lbl in raw_labels[:_MAX_LABELS]
         if isinstance(lbl, dict) and "name" in lbl
     )
+
+    # Attempt to fetch linked issue content from PR body
+    pr_body = data.get("body") or ""
+    issue_title = ""
+    issue_body = ""
+    issue_numbers = _extract_issue_numbers(pr_body)
+    if issue_numbers:
+        issue_data = _fetch_issue_body(repo_path, issue_numbers[0])
+        if issue_data is not None:
+            issue_title, issue_body = issue_data
+
     return PRMetadata(
         title=data.get("title") or merge_title,
-        body=data.get("body") or "",
+        body=pr_body,
         labels=labels,
         source_tier="api",
+        issue_title=issue_title,
+        issue_body=issue_body,
     )
 
 
@@ -319,13 +389,16 @@ def score_pr_quality(
     body: str,
     changed_files: list[str],
     test_files: list[str],
+    *,
+    has_linked_issue: bool = False,
 ) -> float:
     """Score a PR's suitability as an eval task (0.0–1.0).
 
-    Three structural signals, equally weighted:
+    Four structural signals, equally weighted:
     1. Issue/ticket reference in title or body (GitHub #N, JIRA PROJ-123)
     2. Meaningful description body (>20 chars)
     3. Test files that share a parent directory with non-test source files
+    4. Linked issue present (issue body fetched successfully)
 
     ZFC compliant: checks structural presence, not semantic quality.
     """
@@ -334,17 +407,21 @@ def score_pr_quality(
     # Signal 1: Issue/ticket reference in body (not title — GitHub merge
     # titles always contain "#N" which is noise, not a quality indicator)
     if body and _ISSUE_REF_PATTERN.search(body):
-        score += 1 / 3
+        score += 1 / 4
 
     # Signal 2: Non-empty body with meaningful length
     if len(body.strip()) >= _MIN_MEANINGFUL_BODY_LEN:
-        score += 1 / 3
+        score += 1 / 4
 
     # Signal 3: Test files target changed source files (name overlap)
     source_stems = {Path(f).stem for f in changed_files if f not in test_files}
     test_names = {Path(f).stem for f in test_files}
     if any(stem in tname for tname in test_names for stem in source_stems):
-        score += 1 / 3
+        score += 1 / 4
+
+    # Signal 4: Linked issue present (problem description available)
+    if has_linked_issue:
+        score += 1 / 4
 
     return score
 
@@ -413,6 +490,8 @@ def extract_task_from_merge(
         description=description,
         language=language,
         category="sdlc",
+        issue_title=pr_meta.issue_title,
+        issue_body=pr_meta.issue_body,
     )
 
     verification = TaskVerification(
@@ -454,7 +533,7 @@ def _guess_language(extensions: list[str]) -> str:
     return counts.most_common(1)[0][0]
 
 
-_MIN_QUALITY_SCORE = 2 / 3  # At least two quality signals required
+_MIN_QUALITY_SCORE = 2 / 4  # At least two quality signals required
 
 
 def mine_tasks(
@@ -512,6 +591,7 @@ def mine_tasks(
                 body=pr_meta.body,
                 changed_files=changed_files,
                 test_files=test_files,
+                has_linked_issue=bool(pr_meta.issue_title),
             )
             if quality < min_quality:
                 logger.debug(

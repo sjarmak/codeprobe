@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import subprocess
+import tempfile
 import time
 from abc import abstractmethod
 
@@ -62,8 +65,30 @@ class BaseAdapter:
             duration_seconds=duration,
         )
 
+    def _write_mcp_config(self, config: AgentConfig) -> str | None:
+        """Write MCP config to a temp file if present. Returns path or None."""
+        if not config.mcp_config:
+            return None
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix="codeprobe-mcp-", delete=False
+        )
+        json.dump(config.mcp_config, tmp)
+        tmp.close()
+        return tmp.name
+
     def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
         cmd = self.build_command(prompt, config)
+        mcp_tmpfile: str | None = None
+
+        # Find and track MCP temp file for cleanup
+        for flag in ("--mcp-config", "--additional-mcp-config"):
+            if flag in cmd:
+                idx = cmd.index(flag)
+                if idx + 1 < len(cmd):
+                    path = cmd[idx + 1]
+                    if path.startswith(tempfile.gettempdir()):
+                        mcp_tmpfile = path
+
         start = time.monotonic()
 
         try:
@@ -85,6 +110,12 @@ class BaseAdapter:
             )
         except FileNotFoundError as exc:
             raise AdapterSetupError(f"Binary not found at runtime: {exc}") from exc
+        finally:
+            if mcp_tmpfile:
+                try:
+                    os.unlink(mcp_tmpfile)
+                except OSError:
+                    pass
 
         duration = time.monotonic() - start
 

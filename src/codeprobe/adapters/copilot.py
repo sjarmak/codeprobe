@@ -33,12 +33,7 @@ class CopilotAdapter(BaseAdapter):
         self._collector = NdjsonStreamCollector()
 
     def preflight(self, config: AgentConfig) -> list[str]:
-        issues = super().preflight(config)
-        if config.mcp_config:
-            issues.append(
-                "Copilot does not support MCP tools — mcp_config will be ignored"
-            )
-        return issues
+        return super().preflight(config)
 
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
         binary = self._require_binary()
@@ -49,6 +44,10 @@ class CopilotAdapter(BaseAdapter):
 
         if config.model:
             cmd.extend(["--model", config.model])
+
+        mcp_path = self._write_mcp_config(config)
+        if mcp_path:
+            cmd.extend(["--additional-mcp-config", mcp_path])
 
         return cmd
 

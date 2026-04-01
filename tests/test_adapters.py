@@ -1,5 +1,6 @@
 """Tests for agent adapter protocol and implementations."""
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -45,12 +46,12 @@ def test_claude_build_command():
         assert "--model" in cmd
 
 
-def test_copilot_preflight_warns_on_mcp():
+def test_copilot_preflight_no_mcp_warning():
     adapter = CopilotAdapter()
     config = AgentConfig(mcp_config={"tools": ["search"]})
     issues = adapter.preflight(config)
     mcp_warnings = [i for i in issues if "MCP" in i]
-    assert len(mcp_warnings) >= 1
+    assert len(mcp_warnings) == 0
 
 
 def test_agent_output_is_frozen():
@@ -1186,3 +1187,71 @@ class TestAiderParseOutput:
         output = adapter.parse_output(result, duration=1.0)
 
         assert output.cost_usd == pytest.approx(0.005)
+
+
+# -- MCP config wiring ---------------------------------------------------------
+
+
+class TestCopilotMcpConfig:
+    def test_build_command_includes_mcp_flag(self) -> None:
+        adapter = CopilotAdapter()
+        mcp = {"servers": {"fetch": {"command": "fetch-mcp"}}}
+        config = AgentConfig(mcp_config=mcp)
+        if adapter.find_binary():
+            cmd = adapter.build_command("test", config)
+            assert "--additional-mcp-config" in cmd
+            idx = cmd.index("--additional-mcp-config")
+            path = cmd[idx + 1]
+            with open(path) as f:
+                payload = json.load(f)
+            assert payload == mcp
+
+    def test_build_command_omits_mcp_flag_when_none(self) -> None:
+        adapter = CopilotAdapter()
+        config = AgentConfig(mcp_config=None)
+        if adapter.find_binary():
+            cmd = adapter.build_command("test", config)
+            assert "--additional-mcp-config" not in cmd
+
+    def test_build_command_omits_mcp_flag_when_empty(self) -> None:
+        adapter = CopilotAdapter()
+        config = AgentConfig(mcp_config={})
+        if adapter.find_binary():
+            cmd = adapter.build_command("test", config)
+            assert "--additional-mcp-config" not in cmd
+
+    def test_preflight_no_longer_warns_on_mcp(self) -> None:
+        adapter = CopilotAdapter()
+        config = AgentConfig(mcp_config={"servers": {"s": {}}})
+        issues = adapter.preflight(config)
+        mcp_warnings = [i for i in issues if "MCP" in i]
+        assert len(mcp_warnings) == 0
+
+
+class TestClaudeMcpConfig:
+    def test_build_command_includes_mcp_flag(self) -> None:
+        adapter = ClaudeAdapter()
+        mcp = {"servers": {"fetch": {"command": "fetch-mcp"}}}
+        config = AgentConfig(mcp_config=mcp)
+        if adapter.find_binary():
+            cmd = adapter.build_command("test", config)
+            assert "--mcp-config" in cmd
+            idx = cmd.index("--mcp-config")
+            path = cmd[idx + 1]
+            with open(path) as f:
+                payload = json.load(f)
+            assert payload == mcp
+
+    def test_build_command_omits_mcp_flag_when_none(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(mcp_config=None)
+        if adapter.find_binary():
+            cmd = adapter.build_command("test", config)
+            assert "--mcp-config" not in cmd
+
+    def test_build_command_omits_mcp_flag_when_empty(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(mcp_config={})
+        if adapter.find_binary():
+            cmd = adapter.build_command("test", config)
+            assert "--mcp-config" not in cmd

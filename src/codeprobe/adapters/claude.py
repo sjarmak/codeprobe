@@ -6,7 +6,11 @@ import json
 import subprocess
 
 from codeprobe.adapters._base import BaseAdapter
-from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig, AgentOutput
+from codeprobe.adapters.protocol import (
+    ALLOWED_PERMISSION_MODES,
+    AgentConfig,
+    AgentOutput,
+)
 from codeprobe.adapters.telemetry import JsonStdoutCollector
 
 
@@ -33,6 +37,10 @@ class ClaudeAdapter(BaseAdapter):
                     f"Allowed: {', '.join(sorted(ALLOWED_PERMISSION_MODES))}"
                 )
             cmd.extend(["--permission-mode", config.permission_mode])
+
+        mcp_path = self._write_mcp_config(config)
+        if mcp_path:
+            cmd.extend(["--mcp-config", mcp_path])
 
         return cmd
 

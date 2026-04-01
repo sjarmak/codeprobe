@@ -11,6 +11,7 @@ from codeprobe.mining.extractor import (
     MergedPR,
     PRMetadata,
     _build_test_command,
+    _extract_issue_numbers,
     _format_task_description,
     extract_subsystems,
     extract_task_from_merge,
@@ -475,7 +476,7 @@ class TestWriteTaskDir:
         # Check instruction.md
         instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
         assert "merge-abc12345" in instruction
-        assert "Reproduce the changes" in instruction
+        assert "Implement the changes" in instruction
 
         # Check tests/test.sh
         test_sh = result_path / "tests" / "test.sh"
@@ -506,7 +507,7 @@ class TestWriteTaskDir:
         assert (result / "instruction.md").is_file()
 
     def test_write_enriched_instruction(self, tmp_path: Path) -> None:
-        """Enriched multi-line description appears in instruction.md."""
+        """Enriched multi-line description appears in instruction.md (fallback path)."""
         task = Task(
             id="enrich01",
             repo="myrepo",
@@ -527,10 +528,9 @@ class TestWriteTaskDir:
         result_path = write_task_dir(task, base_dir, repo_path)
 
         instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
-        assert "Fix auth token refresh" in instruction
-        assert "silent logout" in instruction
-        assert "Labels: bug, auth" in instruction
-        assert "Reproduce the changes" in instruction
+        assert "merge-enrich01" in instruction
+        assert "Tokens were not refreshed" in instruction
+        assert "Implement the changes" in instruction
 
 
 # ---------------------------------------------------------------------------
@@ -607,14 +607,25 @@ class TestBuildTestCommand:
 
 class TestScorePRQuality:
     def test_perfect_pr(self) -> None:
-        """PR with issue ref in body, description, and targeted tests scores 1.0."""
+        """PR with issue ref, description, targeted tests, and linked issue scores 1.0."""
+        score = score_pr_quality(
+            title="Fix auth redirect",
+            body="Fixes #42. Tokens were not refreshed on 401 responses. This caused silent logout.",
+            changed_files=["src/auth.py", "src/middleware.py", "tests/test_auth.py"],
+            test_files=["tests/test_auth.py"],
+            has_linked_issue=True,
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_three_signals_without_linked_issue(self) -> None:
+        """PR with issue ref, description, and targeted tests but no linked issue scores 3/4."""
         score = score_pr_quality(
             title="Fix auth redirect",
             body="Fixes #42. Tokens were not refreshed on 401 responses. This caused silent logout.",
             changed_files=["src/auth.py", "src/middleware.py", "tests/test_auth.py"],
             test_files=["tests/test_auth.py"],
         )
-        assert score == pytest.approx(1.0)
+        assert score == pytest.approx(3 / 4, abs=0.01)
 
     def test_no_issue_ref(self) -> None:
         """PR without issue reference in body loses that signal."""
@@ -624,7 +635,7 @@ class TestScorePRQuality:
             changed_files=["src/auth.py", "tests/test_auth.py"],
             test_files=["tests/test_auth.py"],
         )
-        assert score == pytest.approx(2 / 3, abs=0.01)
+        assert score == pytest.approx(2 / 4, abs=0.01)
 
     def test_issue_ref_in_title_only_not_counted(self) -> None:
         """Issue ref only in title is noise (GitHub merge titles always have #N)."""
@@ -635,7 +646,7 @@ class TestScorePRQuality:
             test_files=["tests/test_auth.py"],
         )
         # Only test overlap signal — title #N is ignored, body is empty
-        assert score == pytest.approx(1 / 3, abs=0.01)
+        assert score == pytest.approx(1 / 4, abs=0.01)
 
     def test_empty_body(self) -> None:
         """PR with empty body loses body and issue ref signals."""
@@ -646,7 +657,7 @@ class TestScorePRQuality:
             test_files=["tests/test_auth.py"],
         )
         # Only test overlap signal
-        assert score == pytest.approx(1 / 3, abs=0.01)
+        assert score == pytest.approx(1 / 4, abs=0.01)
 
     def test_unrelated_tests(self) -> None:
         """Test files that don't share source stems get no test coverage signal."""
@@ -657,7 +668,7 @@ class TestScorePRQuality:
             test_files=["tests/test_unrelated.py"],
         )
         # Issue ref in body + body present, but no test/source overlap
-        assert score == pytest.approx(2 / 3, abs=0.01)
+        assert score == pytest.approx(2 / 4, abs=0.01)
 
     def test_zero_score(self) -> None:
         """PR with no issue, empty body, and unrelated tests scores 0."""
@@ -677,8 +688,8 @@ class TestScorePRQuality:
             changed_files=["src/auth.py", "src/tests/test_auth.py"],
             test_files=["src/tests/test_auth.py"],
         )
-        # Issue ref (in body) + body + targeted tests
-        assert score == pytest.approx(1.0)
+        # Issue ref (in body) + body + targeted tests = 3/4
+        assert score == pytest.approx(3 / 4, abs=0.01)
 
     def test_short_body_not_meaningful(self) -> None:
         """Body under 20 chars is not considered meaningful."""
@@ -689,7 +700,24 @@ class TestScorePRQuality:
             test_files=["tests/test_auth.py"],
         )
         # Only test overlap — body too short for signal 2, no issue ref in body
-        assert score == pytest.approx(1 / 3, abs=0.01)
+        assert score == pytest.approx(1 / 4, abs=0.01)
+
+    def test_linked_issue_adds_signal(self) -> None:
+        """Linked issue present adds the 4th quality signal."""
+        score_without = score_pr_quality(
+            title="Fix auth redirect",
+            body="Tokens were not refreshed on 401 responses.",
+            changed_files=["src/auth.py", "tests/test_auth.py"],
+            test_files=["tests/test_auth.py"],
+        )
+        score_with = score_pr_quality(
+            title="Fix auth redirect",
+            body="Tokens were not refreshed on 401 responses.",
+            changed_files=["src/auth.py", "tests/test_auth.py"],
+            test_files=["tests/test_auth.py"],
+            has_linked_issue=True,
+        )
+        assert score_with - score_without == pytest.approx(1 / 4, abs=0.01)
 
 
 # ---------------------------------------------------------------------------
@@ -1094,3 +1122,127 @@ class TestRunMineClearsStale:
         assert not stale_dir.exists()
         assert len(task_dirs) == 1
         assert task_dirs[0].name == "aaaa1111"
+
+
+# ---------------------------------------------------------------------------
+# _extract_issue_numbers tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractIssueNumbers:
+    def test_fixes_pattern(self) -> None:
+        assert _extract_issue_numbers("Fixes #123") == [123]
+
+    def test_closes_pattern(self) -> None:
+        assert _extract_issue_numbers("Closes #456") == [456]
+
+    def test_resolves_pattern(self) -> None:
+        assert _extract_issue_numbers("Resolves #789") == [789]
+
+    def test_case_insensitive(self) -> None:
+        assert _extract_issue_numbers("fixes #10") == [10]
+        assert _extract_issue_numbers("FIXES #10") == [10]
+        assert _extract_issue_numbers("FiXeS #10") == [10]
+
+    def test_variant_forms(self) -> None:
+        assert _extract_issue_numbers("fix #1") == [1]
+        assert _extract_issue_numbers("close #2") == [2]
+        assert _extract_issue_numbers("closed #3") == [3]
+        assert _extract_issue_numbers("resolve #4") == [4]
+        assert _extract_issue_numbers("resolved #5") == [5]
+
+    def test_multiple_issues(self) -> None:
+        body = "Fixes #10, Closes #20, Resolves #30"
+        assert _extract_issue_numbers(body) == [10, 20, 30]
+
+    def test_deduplicated(self) -> None:
+        body = "Fixes #10. Also fixes #10."
+        assert _extract_issue_numbers(body) == [10]
+
+    def test_no_matches(self) -> None:
+        assert _extract_issue_numbers("No issue refs here") == []
+        assert _extract_issue_numbers("") == []
+
+    def test_mixed_case_multiple(self) -> None:
+        body = "fixes #1\nCloses #2\nRESOLVES #3"
+        assert _extract_issue_numbers(body) == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Issue-based instruction tests
+# ---------------------------------------------------------------------------
+
+
+class TestWriteTaskDirWithIssue:
+    def test_instruction_with_issue(self, tmp_path: Path) -> None:
+        """Writer generates issue-based instruction when issue data present."""
+        task = Task(
+            id="issue01",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-issue01",
+                difficulty="easy",
+                description="Fix auth token refresh",
+                language="python",
+                issue_title="Auth tokens expire silently",
+                issue_body="When the server returns 401, the client should refresh tokens.",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_auth.py",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+
+        result_path = write_task_dir(task, base_dir, repo_path)
+        instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
+
+        # Should use issue title as heading
+        assert "# Auth tokens expire silently" in instruction
+        # Should contain issue body in Problem section
+        assert "## Problem" in instruction
+        assert "refresh tokens" in instruction
+        # Should contain repo and language info
+        assert "**Repository:** myrepo" in instruction
+        assert "**Language:** python" in instruction
+        # Should have task contract
+        assert "TASK_REPO_ROOT=" in instruction
+        # Should NOT contain the PR description (that's the solution)
+        assert "Fix auth token refresh" not in instruction.split("# Auth tokens")[1]
+
+    def test_instruction_without_issue(self, tmp_path: Path) -> None:
+        """Writer generates fallback instruction without issue data."""
+        task = Task(
+            id="noissue1",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-noissue1",
+                difficulty="easy",
+                description="Fix auth redirect\n\nTokens were not refreshed on 401.",
+                language="python",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_auth.py",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+
+        result_path = write_task_dir(task, base_dir, repo_path)
+        instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
+
+        # Should use task name as heading (fallback)
+        assert "# merge-noissue1" in instruction
+        # Should have repo/language
+        assert "**Repository:** myrepo" in instruction
+        assert "**Language:** python" in instruction
+        # Should have Task section
+        assert "## Task" in instruction
+        # Should contain first paragraph hint
+        assert "Tokens were not refreshed" in instruction
+        # Should have task contract
+        assert "TASK_REPO_ROOT=" in instruction
