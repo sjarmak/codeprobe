@@ -454,6 +454,8 @@ class TestCopilotParseOutput:
 
     def test_ndjson_with_tokens(self) -> None:
         adapter = CopilotAdapter()
+        # Mock log extraction to isolate from host state
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
         stdout = self._load_fixture("copilot_normal.txt")
         result = self._make_copilot_result(stdout)
         output = adapter.parse_output(result, duration=1.0)
@@ -470,6 +472,7 @@ class TestCopilotParseOutput:
 
     def test_ndjson_long_output(self) -> None:
         adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
         stdout = self._load_fixture("copilot_long.txt")
         result = self._make_copilot_result(stdout)
         output = adapter.parse_output(result, duration=3.0)
@@ -483,6 +486,7 @@ class TestCopilotParseOutput:
 
     def test_ndjson_without_token_count_errors(self) -> None:
         adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
         stdout = self._load_fixture("copilot_no_tokens.txt")
         result = self._make_copilot_result(stdout)
         output = adapter.parse_output(result, duration=0.5)
@@ -496,6 +500,7 @@ class TestCopilotParseOutput:
 
     def test_plain_text_errors_with_upgrade_hint(self) -> None:
         adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
         stdout = self._load_fixture("copilot_plain.txt")
         result = self._make_copilot_result(stdout)
         output = adapter.parse_output(result, duration=0.5)
@@ -509,6 +514,7 @@ class TestCopilotParseOutput:
 
     def test_empty_output_errors(self) -> None:
         adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
         stdout = self._load_fixture("copilot_empty.txt")
         result = self._make_copilot_result(stdout)
         output = adapter.parse_output(result, duration=0.5)
