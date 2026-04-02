@@ -20,20 +20,21 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.0,<9",
-    "scipy>=1.11,<2",
 ]
 
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0,<7"]
 codex = ["openai>=1.66"]
 tokens = ["tiktoken>=0.7,<1"]
-all = ["pyyaml>=6.0,<7", "openai>=1.66", "tiktoken>=0.7,<1"]
+stats = ["scipy>=1.11,<2"]
+all = ["pyyaml>=6.0,<7", "openai>=1.66", "tiktoken>=0.7,<1", "scipy>=1.11,<2"]
 dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
     "ruff>=0.4,<1",
     "mypy>=1.10,<2",
     "types-PyYAML>=6.0,<7",
+    "scipy>=1.11,<2",
 ]
 
 [project.scripts]

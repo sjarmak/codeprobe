@@ -11,7 +11,11 @@ Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models ma
 ## Quick Start
 
 ```bash
-pip install codeprobe
+pip install codeprobe            # Core (mine + run + interpret)
+pip install codeprobe[stats]     # + statistical tests (scipy)
+pip install codeprobe[tokens]    # + exact Copilot token counting (tiktoken)
+pip install codeprobe[all]       # Everything
+
 cd /path/to/your/repo
 
 codeprobe init          # What do you want to learn?
