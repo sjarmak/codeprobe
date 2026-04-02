@@ -43,3 +43,14 @@ experiments/
 .dolt/
 *.db
 .beads-credential-key
+.beads/
+
+# Internal working documents (PRDs, premortems, agent docs)
+prd_*.md
+premortem_*.md
+AGENTS.md
+
+# RFC-DAG orchestration artifacts
+.claude/rfc-dag-artifacts/
+.claude/rfc-dag.log.md
+.claude/rfc-dag.state.json
