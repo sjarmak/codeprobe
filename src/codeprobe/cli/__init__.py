@@ -95,10 +95,10 @@ def mine(
 )
 @click.option(
     "--parallel",
-    default=1,
+    default=5,
     type=int,
     envvar="CODEPROBE_PARALLEL",
-    help="Max concurrent task executions per config. Env: CODEPROBE_PARALLEL.",
+    help="Max concurrent task executions per config (default: 5). Env: CODEPROBE_PARALLEL.",
 )
 def run(
     path: str,
