@@ -11,12 +11,17 @@ import pytest
 from codeprobe.analysis import (
     ConfigSummary,
     Report,
+    cliffs_delta,
+    cohens_d,
     compare_configs,
     format_json_report,
     format_text_report,
     generate_report,
+    mcnemars_exact_test,
     rank_configs,
     summarize_config,
+    wilcoxon_test,
+    wilson_ci,
 )
 from codeprobe.analysis.report import generate_report_streaming
 from codeprobe.analysis.stats import summarize_completed_tasks
@@ -792,3 +797,286 @@ class TestInterpretPartialDetection:
 
         count = _count_expected_tasks(tmp_path / "nonexistent")
         assert count is None
+
+
+# ---------------------------------------------------------------------------
+# Wilson score confidence interval
+# ---------------------------------------------------------------------------
+
+
+class TestWilsonCI:
+    def test_known_values(self) -> None:
+        """n=20, passed=15 → bounds approximately (0.531, 0.913)."""
+        lo, hi = wilson_ci(15, 20)
+        assert lo == pytest.approx(0.531, abs=0.01)
+        assert hi == pytest.approx(0.888, abs=0.01)
+
+    def test_all_pass(self) -> None:
+        """All passing should have CI upper near 1.0."""
+        lo, hi = wilson_ci(10, 10)
+        assert lo > 0.6
+        assert hi <= 1.0
+
+    def test_none_pass(self) -> None:
+        """None passing should have CI lower near 0.0."""
+        lo, hi = wilson_ci(0, 10)
+        assert lo >= 0.0
+        assert hi < 0.4
+
+    def test_zero_total(self) -> None:
+        """Zero total returns (0.0, 0.0)."""
+        assert wilson_ci(0, 0) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# McNemar's exact test
+# ---------------------------------------------------------------------------
+
+
+class TestMcNemarsExactTest:
+    def test_known_contingency(self) -> None:
+        """Known discordant pairs produce expected p-value."""
+        # 10 paired tasks: a passes all, b fails first 3 and passes rest
+        a_scores = [1.0] * 10
+        b_scores = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        # Discordant: n10=3 (a pass, b fail), n01=0 (a fail, b pass)
+        # n=3, k=min(0,3)=0 → p = 2 * C(3,0)*0.5^3 = 2*0.125 = 0.25
+        p = mcnemars_exact_test(a_scores, b_scores)
+        assert p == pytest.approx(0.25)
+
+    def test_no_discordant_pairs(self) -> None:
+        """Identical outcomes return None."""
+        scores = [1.0, 0.0, 1.0]
+        assert mcnemars_exact_test(scores, scores) is None
+
+    def test_symmetric_discordance(self) -> None:
+        """Equal discordant pairs in both directions → p=1.0."""
+        a = [1.0, 0.0, 1.0, 0.0]
+        b = [0.0, 1.0, 1.0, 0.0]
+        # n10=1, n01=1 → n=2, k=1 → p = 2 * (C(2,0)+C(2,1))*0.25 = 2*0.75 = 1.0 (clamped)
+        p = mcnemars_exact_test(a, b)
+        assert p == pytest.approx(1.0)
+
+    def test_unequal_lengths(self) -> None:
+        """Unequal lengths return None."""
+        assert mcnemars_exact_test([1.0, 0.0], [1.0]) is None
+
+
+# ---------------------------------------------------------------------------
+# Wilcoxon signed-rank test
+# ---------------------------------------------------------------------------
+
+
+class TestWilcoxonTest:
+    def test_different_scores(self) -> None:
+        """Clearly different scores produce a p-value."""
+        a = [0.9, 0.8, 0.85, 0.95, 0.7, 0.88, 0.92, 0.87]
+        b = [0.1, 0.2, 0.15, 0.05, 0.3, 0.12, 0.08, 0.13]
+        p = wilcoxon_test(a, b)
+        assert p is not None
+        assert p < 0.05
+
+    def test_identical_scores(self) -> None:
+        """Identical scores return None (all diffs zero)."""
+        a = [0.5, 0.5, 0.5]
+        assert wilcoxon_test(a, a) is None
+
+    def test_too_few_samples(self) -> None:
+        """Single pair returns None."""
+        assert wilcoxon_test([1.0], [0.0]) is None
+
+
+# ---------------------------------------------------------------------------
+# Cliff's delta
+# ---------------------------------------------------------------------------
+
+
+class TestCliffsDelta:
+    def test_perfect_dominance(self) -> None:
+        """All a > b → delta = 1.0."""
+        assert cliffs_delta([1.0, 1.0, 1.0], [0.0, 0.0, 0.0]) == pytest.approx(1.0)
+
+    def test_reverse_dominance(self) -> None:
+        """All b > a → delta = -1.0."""
+        assert cliffs_delta([0.0, 0.0], [1.0, 1.0]) == pytest.approx(-1.0)
+
+    def test_no_difference(self) -> None:
+        """Equal lists → delta = 0.0."""
+        assert cliffs_delta([0.5, 0.5], [0.5, 0.5]) == pytest.approx(0.0)
+
+    def test_mixed(self) -> None:
+        """Mixed dominance produces expected value."""
+        # a=[1,1,1,0] vs b=[0,0,1,0]
+        # more: (1>0)=6, (1>0)=6, (1>0)=6, none for 0 → count pairs:
+        # a=1 vs b=[0,0,1,0]: 1>0, 1>0, 1=1, 1>0 → 3 more, 0 less
+        # × 3 a=1 elements → 9 more, 0 less
+        # a=0 vs b=[0,0,1,0]: 0=0, 0=0, 0<1, 0=0 → 0 more, 1 less
+        # total: 9 more, 1 less out of 16
+        d = cliffs_delta([1.0, 1.0, 1.0, 0.0], [0.0, 0.0, 1.0, 0.0])
+        assert d == pytest.approx(0.5)
+
+    def test_empty(self) -> None:
+        """Empty input returns 0.0."""
+        assert cliffs_delta([], [1.0]) == 0.0
+        assert cliffs_delta([1.0], []) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Cohen's d
+# ---------------------------------------------------------------------------
+
+
+class TestCohensD:
+    def test_known_values(self) -> None:
+        """Two groups with known means and stds."""
+        # a: mean=0.8, b: mean=0.2, both have some variance
+        a = [0.7, 0.8, 0.9]
+        b = [0.1, 0.2, 0.3]
+        d = cohens_d(a, b)
+        # mean_diff=0.6, var_a=var_b=0.01, pooled_std=0.1
+        assert d == pytest.approx(6.0)
+
+    def test_no_difference(self) -> None:
+        """Identical means → d ≈ 0."""
+        a = [0.5, 0.5, 0.5]
+        b = [0.5, 0.5, 0.5]
+        assert cohens_d(a, b) == pytest.approx(0.0)
+
+    def test_zero_variance(self) -> None:
+        """Zero variance returns 0.0 to avoid division by zero."""
+        a = [1.0, 1.0]
+        b = [1.0, 1.0]
+        assert cohens_d(a, b) == 0.0
+
+    def test_too_few(self) -> None:
+        """Single element returns 0.0."""
+        assert cohens_d([1.0], [0.0]) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# ConfigSummary: Wilson CI and sample-size warning
+# ---------------------------------------------------------------------------
+
+
+class TestConfigSummaryStatFields:
+    def test_wilson_ci_populated(self) -> None:
+        """summarize_config populates ci_lower and ci_upper."""
+        results = ConfigResults(
+            config="ci-test",
+            completed=[
+                _task("t1", 1.0),
+                _task("t2", 1.0),
+                _task("t3", 1.0),
+                _task("t4", 0.0),
+                _task("t5", 1.0),
+            ]
+            * 4,  # 20 tasks, 16 passing
+        )
+        s = summarize_config(results)
+        assert 0.0 < s.ci_lower < s.pass_rate
+        assert s.pass_rate < s.ci_upper <= 1.0
+
+    def test_sample_size_warning_small(self) -> None:
+        """N < 10 triggers warning."""
+        results = ConfigResults(
+            config="small",
+            completed=[_task("t1", 1.0)],
+        )
+        s = summarize_config(results)
+        assert s.sample_size_warning is not None
+        assert "Small sample" in s.sample_size_warning
+
+    def test_no_warning_large_sample(self) -> None:
+        """N >= 10 has no warning."""
+        results = ConfigResults(
+            config="large",
+            completed=[_task(f"t{i}", 1.0) for i in range(10)],
+        )
+        s = summarize_config(results)
+        assert s.sample_size_warning is None
+
+    def test_billing_model(self) -> None:
+        """billing_model reflects dominant cost_model from tasks."""
+        results = ConfigResults(
+            config="billed",
+            completed=[
+                CompletedTask(task_id="t1", automated_score=1.0, cost_model="api"),
+                CompletedTask(task_id="t2", automated_score=1.0, cost_model="api"),
+                CompletedTask(task_id="t3", automated_score=1.0, cost_model="session"),
+            ],
+        )
+        s = summarize_config(results)
+        assert s.billing_model == "api"
+
+    def test_billing_model_unknown_default(self) -> None:
+        """Tasks with no cost_model set default to 'unknown'."""
+        results = ConfigResults(
+            config="default",
+            completed=[_task("t1", 1.0)],
+        )
+        s = summarize_config(results)
+        assert s.billing_model == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# PairwiseComparison: statistical fields
+# ---------------------------------------------------------------------------
+
+
+class TestCompareConfigsStatistical:
+    def _make_summary(self, label: str, **kwargs: object) -> ConfigSummary:
+        defaults: dict[str, object] = dict(
+            total_tasks=5,
+            completed=5,
+            errored=0,
+            pass_rate=0.8,
+            mean_score=0.8,
+            median_score=0.8,
+            total_duration_sec=50.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.50,
+            total_tokens=2000,
+        )
+        defaults.update(kwargs)
+        return ConfigSummary(label=label, **defaults)
+
+    def test_without_scores_defaults_none(self) -> None:
+        """Without raw scores, statistical fields are default."""
+        a = self._make_summary("a", mean_score=0.9)
+        b = self._make_summary("b", mean_score=0.7)
+        cmp = compare_configs(a, b)
+        assert cmp.p_value is None
+        assert cmp.effect_size is None
+        assert cmp.effect_size_method == ""
+
+    def test_binary_scores_uses_mcnemar(self) -> None:
+        """Binary scores trigger McNemar + Cliff's delta."""
+        a = self._make_summary("a", mean_score=0.8)
+        b = self._make_summary("b", mean_score=0.4)
+        a_scores = [1.0, 1.0, 1.0, 1.0, 0.0]
+        b_scores = [0.0, 0.0, 1.0, 1.0, 0.0]
+        cmp = compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
+        assert cmp.effect_size_method == "cliffs_delta"
+        assert cmp.effect_size is not None
+
+    def test_continuous_scores_uses_wilcoxon(self) -> None:
+        """Continuous scores trigger Wilcoxon + Cohen's d."""
+        a = self._make_summary("a", mean_score=0.85)
+        b = self._make_summary("b", mean_score=0.45)
+        a_scores = [0.9, 0.8, 0.85, 0.95, 0.7, 0.88, 0.92, 0.87]
+        b_scores = [0.4, 0.5, 0.45, 0.35, 0.6, 0.42, 0.38, 0.43]
+        cmp = compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
+        assert cmp.effect_size_method == "cohens_d"
+        assert cmp.effect_size is not None
+        assert cmp.p_value is not None
+        assert cmp.p_value < 0.05
+
+    def test_ci_computed(self) -> None:
+        """CI bounds are computed when scores provided."""
+        a = self._make_summary("a")
+        b = self._make_summary("b")
+        a_scores = [0.9, 0.8, 0.85, 0.95, 0.7]
+        b_scores = [0.4, 0.5, 0.45, 0.35, 0.6]
+        cmp = compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
+        assert cmp.ci_lower < cmp.ci_upper
+        assert cmp.ci_lower > 0  # a clearly better
