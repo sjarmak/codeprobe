@@ -1351,3 +1351,232 @@ class TestIsolateSession:
         env_passed = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
         assert env_passed is not None
         assert env_passed["CLAUDE_CONFIG_DIR"] == "/tmp/codeprobe-claude/slot-0"
+
+
+# ---------------------------------------------------------------------------
+# Loud fallbacks — NDJSON parse fallback sets error + emits warning
+# ---------------------------------------------------------------------------
+
+
+class TestCopilotNdjsonFallback:
+    """When NDJSON parsing fails, error field is set and WARNING is logged."""
+
+    def _make_copilot_result(self, stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["copilot"], returncode=0, stdout=stdout, stderr=""
+        )
+
+    def test_ndjson_fallback_sets_error_field(self) -> None:
+        """Non-JSON stdout triggers fallback with error containing 'ndjson_parse_fallback'."""
+        adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
+        raw_text = "This is plain text, not NDJSON"
+        result = self._make_copilot_result(raw_text)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.stdout == raw_text
+        assert output.error is not None
+        assert "ndjson_parse_fallback" in output.error
+
+    def test_ndjson_fallback_emits_warning_log(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """WARNING log is emitted when NDJSON parsing falls back."""
+        import logging
+
+        adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
+        raw_text = "Plain text output, not valid JSON"
+        result = self._make_copilot_result(raw_text)
+
+        with caplog.at_level(logging.WARNING, logger="codeprobe.adapters.copilot"):
+            adapter.parse_output(result, duration=1.0)
+
+        assert any("ndjson_parse_fallback" in rec.message for rec in caplog.records)
+
+    def test_ndjson_fallback_catches_json_decode_error_only(self) -> None:
+        """Verify only json.JSONDecodeError is caught, not broad ValueError."""
+        adapter = CopilotAdapter()
+        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
+        # Malformed JSON triggers JSONDecodeError — should be caught
+        raw_text = '{"type": "assistant.message"'  # missing closing brace
+        result = self._make_copilot_result(raw_text)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.error is not None
+        assert "ndjson_parse_fallback" in output.error
+
+
+# -- Sandbox detection ---------------------------------------------------------
+
+
+from codeprobe.core.sandbox import is_sandboxed
+
+
+class TestSandboxDetection:
+    """Tests for is_sandboxed() — checks /.dockerenv, env var, and cgroup."""
+
+    def test_sandboxed_via_dockerenv(self) -> None:
+        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+            dockerenv_path = MagicMock()
+            dockerenv_path.exists.return_value = True
+
+            def path_factory(p: str) -> MagicMock:
+                return dockerenv_path
+
+            mock_path_cls.side_effect = path_factory
+            env = {
+                k: v
+                for k, v in __import__("os").environ.items()
+                if k != "CODEPROBE_SANDBOX"
+            }
+            with patch.dict("os.environ", env, clear=True):
+                assert is_sandboxed() is True
+
+    def test_sandboxed_via_env_var(self) -> None:
+        with (
+            patch("codeprobe.core.sandbox.Path") as mock_path_cls,
+            patch.dict("os.environ", {"CODEPROBE_SANDBOX": "1"}, clear=False),
+        ):
+            dockerenv_path = MagicMock()
+            dockerenv_path.exists.return_value = False
+
+            def path_factory(p: str) -> MagicMock:
+                return dockerenv_path
+
+            mock_path_cls.side_effect = path_factory
+            assert is_sandboxed() is True
+
+    def test_sandboxed_via_cgroup_docker(self) -> None:
+        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+            dockerenv_path = MagicMock()
+            dockerenv_path.exists.return_value = False
+            cgroup_path = MagicMock()
+            cgroup_path.read_text.return_value = (
+                "12:memory:/docker/abc123\n0::/system.slice/docker-abc.scope\n"
+            )
+
+            def path_factory(p: str) -> MagicMock:
+                if p == "/proc/1/cgroup":
+                    return cgroup_path
+                return dockerenv_path
+
+            mock_path_cls.side_effect = path_factory
+            env = {
+                k: v
+                for k, v in __import__("os").environ.items()
+                if k != "CODEPROBE_SANDBOX"
+            }
+            with patch.dict("os.environ", env, clear=True):
+                assert is_sandboxed() is True
+
+    def test_sandboxed_via_cgroup_containerd(self) -> None:
+        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+            dockerenv_path = MagicMock()
+            dockerenv_path.exists.return_value = False
+            cgroup_path = MagicMock()
+            cgroup_path.read_text.return_value = "0::/system.slice/containerd.service\n"
+
+            def path_factory(p: str) -> MagicMock:
+                if p == "/proc/1/cgroup":
+                    return cgroup_path
+                return dockerenv_path
+
+            mock_path_cls.side_effect = path_factory
+            env = {
+                k: v
+                for k, v in __import__("os").environ.items()
+                if k != "CODEPROBE_SANDBOX"
+            }
+            with patch.dict("os.environ", env, clear=True):
+                assert is_sandboxed() is True
+
+    def test_not_sandboxed_bare_host(self) -> None:
+        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+            dockerenv_path = MagicMock()
+            dockerenv_path.exists.return_value = False
+            cgroup_path = MagicMock()
+            cgroup_path.read_text.return_value = "0::/init.scope\n"
+
+            def path_factory(p: str) -> MagicMock:
+                if p == "/proc/1/cgroup":
+                    return cgroup_path
+                return dockerenv_path
+
+            mock_path_cls.side_effect = path_factory
+            env = {
+                k: v
+                for k, v in __import__("os").environ.items()
+                if k != "CODEPROBE_SANDBOX"
+            }
+            with patch.dict("os.environ", env, clear=True):
+                assert is_sandboxed() is False
+
+    def test_not_sandboxed_cgroup_unreadable(self) -> None:
+        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+            dockerenv_path = MagicMock()
+            dockerenv_path.exists.return_value = False
+            cgroup_path = MagicMock()
+            cgroup_path.read_text.side_effect = PermissionError
+
+            def path_factory(p: str) -> MagicMock:
+                if p == "/proc/1/cgroup":
+                    return cgroup_path
+                return dockerenv_path
+
+            mock_path_cls.side_effect = path_factory
+            env = {
+                k: v
+                for k, v in __import__("os").environ.items()
+                if k != "CODEPROBE_SANDBOX"
+            }
+            with patch.dict("os.environ", env, clear=True):
+                assert is_sandboxed() is False
+
+
+class TestClaudeSandboxGating:
+    """Tests for sandbox gating of dangerously_skip permission mode."""
+
+    def test_preflight_rejects_dangerously_skip_outside_sandbox(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(permission_mode="dangerously_skip")
+        with (
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+            patch("codeprobe.adapters.claude.is_sandboxed", return_value=False),
+        ):
+            issues = adapter.preflight(config)
+        assert any("sandboxed environment" in i for i in issues)
+
+    def test_preflight_allows_dangerously_skip_in_sandbox(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(permission_mode="dangerously_skip")
+        with (
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+            patch("codeprobe.adapters.claude.is_sandboxed", return_value=True),
+        ):
+            issues = adapter.preflight(config)
+        sandbox_issues = [i for i in issues if "sandboxed environment" in i]
+        assert sandbox_issues == []
+
+    def test_build_command_includes_skip_flag_in_sandbox(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(permission_mode="dangerously_skip")
+        with patch("shutil.which", return_value="/usr/bin/claude"):
+            cmd = adapter.build_command("test", config)
+        assert "--dangerously-skip-permissions" in cmd
+        assert "--permission-mode" not in cmd
+
+    def test_build_command_normal_mode_unchanged(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(permission_mode="plan")
+        with patch("shutil.which", return_value="/usr/bin/claude"):
+            cmd = adapter.build_command("test", config)
+        assert "--permission-mode" in cmd
+        idx = cmd.index("--permission-mode")
+        assert cmd[idx + 1] == "plan"
+        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_dangerously_skip_in_allowed_modes(self) -> None:
+        from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES
+
+        assert "dangerously_skip" in ALLOWED_PERMISSION_MODES

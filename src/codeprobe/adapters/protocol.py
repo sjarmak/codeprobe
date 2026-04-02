@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-ALLOWED_PERMISSION_MODES = frozenset({"default", "plan", "auto", "acceptEdits"})
+ALLOWED_PERMISSION_MODES = frozenset(
+    {"default", "plan", "auto", "acceptEdits", "dangerously_skip"}
+)
 ALLOWED_COST_MODELS = frozenset({"per_token", "subscription", "unknown"})
 ALLOWED_COST_SOURCES = frozenset(
     {"api_reported", "calculated", "log_parsed", "estimated", "unavailable"}

@@ -14,6 +14,7 @@ from codeprobe.adapters.protocol import (
     AgentOutput,
 )
 from codeprobe.adapters.telemetry import JsonStdoutCollector
+from codeprobe.core.sandbox import is_sandboxed
 
 
 class ClaudeAdapter(BaseAdapter):
@@ -25,6 +26,15 @@ class ClaudeAdapter(BaseAdapter):
     def __init__(self) -> None:
         self._collector = JsonStdoutCollector()
 
+    def preflight(self, config: AgentConfig) -> list[str]:
+        issues = super().preflight(config)
+        if config.permission_mode == "dangerously_skip" and not is_sandboxed():
+            issues.append(
+                "permission_mode='dangerously_skip' requires a sandboxed environment "
+                "(Docker container or CODEPROBE_SANDBOX=1)"
+            )
+        return issues
+
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
         binary = self._require_binary()
         cmd = [binary, "-p", prompt, "--output-format", "json"]
@@ -32,7 +42,9 @@ class ClaudeAdapter(BaseAdapter):
         if config.model:
             cmd.extend(["--model", config.model])
 
-        if config.permission_mode != "default":
+        if config.permission_mode == "dangerously_skip":
+            cmd.append("--dangerously-skip-permissions")
+        elif config.permission_mode != "default":
             if config.permission_mode not in ALLOWED_PERMISSION_MODES:
                 raise ValueError(
                     f"Unsafe permission_mode: {config.permission_mode!r}. "
