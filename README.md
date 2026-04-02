@@ -24,7 +24,15 @@ You also need:
 - **Git** (for task mining and worktree isolation)
 - **GitHub CLI** (`gh`) — optional, for mining tasks from GitHub PRs with linked issues
 
-The `assess` and `mine --enrich` commands call the **Claude CLI** (`claude -p`) with Haiku for cheap model-based scoring/enrichment. This requires Claude Code installed and `ANTHROPIC_API_KEY` set. Without the CLI, `assess` falls back to heuristic scoring and `--enrich` is unavailable.
+The `assess` and `mine --enrich` commands need an LLM for scoring/enrichment. codeprobe auto-detects the best available backend:
+
+| Priority | Backend       | Install                                          | Env var             |
+| -------- | ------------- | ------------------------------------------------ | ------------------- |
+| 1        | Anthropic SDK | `pip install codeprobe[anthropic]`               | `ANTHROPIC_API_KEY` |
+| 2        | OpenAI SDK    | `pip install codeprobe[codex]`                   | `OPENAI_API_KEY`    |
+| 3        | Claude CLI    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY` |
+
+Override with `CODEPROBE_LLM_BACKEND=anthropic|openai|claude-cli`. Without any backend, `assess` falls back to heuristic scoring.
 
 ## Quick Start
 
