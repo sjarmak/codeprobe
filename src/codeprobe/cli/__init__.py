@@ -100,6 +100,12 @@ def mine(
     envvar="CODEPROBE_PARALLEL",
     help="Max concurrent task executions per config (default: 5). Env: CODEPROBE_PARALLEL.",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Print estimated resource requirements without executing any agents.",
+)
 def run(
     path: str,
     agent: str,
@@ -107,6 +113,7 @@ def run(
     config: str | None,
     max_cost_usd: float | None,
     parallel: int,
+    dry_run: bool,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -122,6 +129,7 @@ def run(
         config=config,
         max_cost_usd=max_cost_usd,
         parallel=parallel,
+        dry_run=dry_run,
     )
 
 

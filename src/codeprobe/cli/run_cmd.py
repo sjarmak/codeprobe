@@ -9,7 +9,7 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.core.checkpoint import CheckpointStore
-from codeprobe.core.executor import execute_config
+from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -21,6 +21,18 @@ def _on_task_complete(result: CompletedTask) -> None:
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
 
 
+def _print_dry_run(estimate: DryRunEstimate) -> None:
+    """Pretty-print a DryRunEstimate to stdout."""
+    cost_lo, cost_hi = estimate.estimated_cost_range
+    click.echo("Dry-run estimate (no agents will be spawned):")
+    click.echo(f"  Total tasks:            {estimate.total_tasks}")
+    click.echo(f"  Total configs:          {estimate.total_configs}")
+    click.echo(f"  Total runs:             {estimate.total_runs}")
+    click.echo(f"  Max concurrent workers: {estimate.max_concurrent}")
+    click.echo(f"  Estimated worktree disk: ~{estimate.estimated_disk_mb} MB")
+    click.echo(f"  Estimated cost range:   ${cost_lo:.2f} - ${cost_hi:.2f}")
+
+
 def run_eval(
     path: str,
     agent: str = "claude",
@@ -29,6 +41,7 @@ def run_eval(
     max_cost_usd: float | None = None,
     parallel: int = 1,
     repeats: int = 1,
+    dry_run: bool = False,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -62,6 +75,17 @@ def run_eval(
     configs_to_run = experiment.configs or [
         ExperimentConfig(label="default", agent=agent, model=model),
     ]
+
+    if dry_run:
+        estimate = dry_run_estimate(
+            task_count=len(task_dirs),
+            configs_count=len(configs_to_run),
+            repeats=repeats,
+            parallel=parallel,
+            repo_path=Path(path).resolve(),
+        )
+        _print_dry_run(estimate)
+        return
 
     def _run_config(exp_config: ExperimentConfig) -> tuple[str, list[CompletedTask]]:
         """Run a single config (called from thread pool or sequentially)."""
