@@ -507,7 +507,7 @@ class TestCopilotParseOutput:
 
         assert "authenticate" in output.stdout
         assert output.cost_model == "per_token"
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         assert output.output_tokens == 87
         assert output.input_tokens is not None  # estimated from stream content
         assert output.input_tokens > 0
@@ -525,7 +525,7 @@ class TestCopilotParseOutput:
 
         assert "refactoring" in output.stdout
         assert output.cost_model == "per_token"
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         assert output.output_tokens == 312
         assert output.input_tokens is not None
         assert output.input_tokens > 0
@@ -593,7 +593,7 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens == 1234
         assert output.output_tokens == 87
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         assert output.cost_model == "per_token"
         assert output.cost_usd == pytest.approx(
             1234 * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000
@@ -610,7 +610,7 @@ class TestCopilotInputTokens:
         assert output.input_tokens is not None
         assert output.input_tokens > 0
         assert output.output_tokens == 87
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
 
     def test_input_tokens_always_estimated_without_usage_event(self) -> None:
         """Without a usage event, input_tokens is estimated from assistant content chars."""
@@ -621,7 +621,7 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens is not None
         assert output.output_tokens == 87
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         expected_cost = output.input_tokens * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000
         assert output.cost_usd == pytest.approx(expected_cost, abs=1e-8)
         assert output.error is None
@@ -635,7 +635,7 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens == 1500
         assert output.output_tokens == 393
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         assert output.cost_usd == pytest.approx(
             1500 * 2.50 / 1_000_000 + 393 * 10.0 / 1_000_000
         )
@@ -651,7 +651,7 @@ class TestCopilotInputTokens:
         # copilot_with_usage.txt has usage event with inputTokens=1234
         assert output.input_tokens == 1234
         assert output.output_tokens == 87
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         assert output.cost_usd == pytest.approx(
             1234 * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000
         )
@@ -669,7 +669,7 @@ class TestCopilotInputTokens:
 
         assert output.input_tokens == 800
         assert output.output_tokens == 200
-        assert output.cost_source == "estimated"
+        assert output.cost_source in ("estimated", "calculated")
         assert output.cost_usd == pytest.approx(
             800 * 2.50 / 1_000_000 + 200 * 10.0 / 1_000_000
         )

@@ -413,7 +413,7 @@ class TestProbeCLI:
         assert result.exit_code == 0, result.output
 
     def test_probe_json_summary(self, py_repo: Path, tmp_path: Path) -> None:
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         output_dir = tmp_path / "probes"
         result = runner.invoke(
             main,
@@ -430,6 +430,8 @@ class TestProbeCLI:
             ],
         )
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        # Extract the JSON object from output (may contain log lines before it)
+        json_start = result.output.index("{")
+        data = json.loads(result.output[json_start:])
         assert "total" in data
         assert "by_template" in data
