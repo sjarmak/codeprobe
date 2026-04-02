@@ -7,11 +7,13 @@ from pathlib import Path
 import pytest
 
 from codeprobe.adapters.telemetry import (
+    COPILOT_PRICING,
     ApiResponseCollector,
     JsonStdoutCollector,
     NdjsonStreamCollector,
     TelemetryCollector,
     UsageData,
+    _PRICING_LAST_VERIFIED,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -123,8 +125,11 @@ class TestNdjsonStreamCollector:
         assert usage.input_tokens is not None
         assert usage.input_tokens > 0
         assert usage.cost_model == "per_token"
-        assert usage.cost_source == "calculated"
-        expected_cost = usage.input_tokens * 3.0 / 1_000_000 + 87 * 15.0 / 1_000_000
+        assert usage.cost_source == "estimated"
+        gpt4o = COPILOT_PRICING["gpt-4o"]
+        expected_cost = (
+            usage.input_tokens * gpt4o[0] / 1_000_000 + 87 * gpt4o[1] / 1_000_000
+        )
         assert usage.cost_usd == pytest.approx(expected_cost, abs=1e-8)
         assert usage.error is None
 
@@ -221,3 +226,60 @@ class TestApiResponseCollector:
             model="my-model",
         )
         assert usage.cost_usd == pytest.approx(10.0)
+
+
+# -- Pricing metadata tests ---------------------------------------------------
+
+
+class TestPricingMetadata:
+    def test_copilot_pricing_has_gpt4o(self):
+        assert "gpt-4o" in COPILOT_PRICING
+        inp, out = COPILOT_PRICING["gpt-4o"]
+        assert inp > 0
+        assert out > 0
+
+    def test_pricing_last_verified_is_date(self):
+        from datetime import date
+
+        assert isinstance(_PRICING_LAST_VERIFIED, date)
+
+    def test_pricing_staleness_constants(self):
+        """Verify staleness detection constants exist and are sensible."""
+        from codeprobe.adapters.telemetry import _PRICING_STALENESS_DAYS
+
+        assert _PRICING_STALENESS_DAYS == 90
+        # The verified date should not be unreasonably far in the past
+        from datetime import date as _date
+
+        age = (_date.today() - _PRICING_LAST_VERIFIED).days
+        assert age >= 0, "Verified date is in the future"
+
+
+class TestNdjsonCostSourceEstimated:
+    """Verify NdjsonStreamCollector uses 'estimated' cost_source."""
+
+    collector = NdjsonStreamCollector()
+
+    def test_estimated_cost_source_with_heuristic_input(self):
+        """When input_tokens come from _estimate_tokens(), cost_source must be 'estimated'."""
+        raw = (
+            '{"type":"user.message","data":{"content":"hello world"}}\n'
+            '{"type":"assistant.message","data":{"content":"hi","outputTokens":10}}\n'
+        )
+        usage = self.collector.collect(raw)
+        assert usage.cost_source == "estimated"
+        assert usage.cost_model == "per_token"
+
+    def test_uses_copilot_pricing_not_claude(self):
+        """Cost should be computed from COPILOT_PRICING, not CLAUDE_PRICING."""
+        raw = (
+            '{"type":"user.message","data":{"content":"test"}}\n'
+            '{"type":"assistant.message","data":{"content":"resp","outputTokens":100}}\n'
+        )
+        usage = self.collector.collect(raw)
+        gpt4o = COPILOT_PRICING["gpt-4o"]
+        assert usage.input_tokens is not None
+        expected = (
+            usage.input_tokens * gpt4o[0] / 1_000_000 + 100 * gpt4o[1] / 1_000_000
+        )
+        assert usage.cost_usd == pytest.approx(expected, abs=1e-10)

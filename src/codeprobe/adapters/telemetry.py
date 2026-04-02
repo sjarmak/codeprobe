@@ -4,12 +4,29 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Protocol, runtime_checkable
 
 from codeprobe.adapters.protocol import ALLOWED_COST_MODELS, ALLOWED_COST_SOURCES
 
 logger = logging.getLogger(__name__)
+
+# Date when pricing tables were last verified against vendor pages.
+# If today is >90 days past this date, a warning is emitted at import time.
+_PRICING_LAST_VERIFIED: date = date(2026, 4, 2)
+
+_PRICING_STALENESS_DAYS = 90
+
+if (date.today() - _PRICING_LAST_VERIFIED).days > _PRICING_STALENESS_DAYS:
+    warnings.warn(
+        f"Pricing tables were last verified on {_PRICING_LAST_VERIFIED}. "
+        f"They may be outdated (>{_PRICING_STALENESS_DAYS} days). "
+        "Update _PRICING_LAST_VERIFIED after re-checking vendor pricing pages.",
+        UserWarning,
+        stacklevel=1,
+    )
 
 # Pricing per 1M tokens: (input, output)
 CODEX_PRICING: dict[str, tuple[float, float]] = {
@@ -23,6 +40,13 @@ CLAUDE_PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-opus-4-6": (15.00, 75.00, 1.50, 18.75),
     "claude-sonnet-4-6": (3.00, 15.00, 0.30, 3.75),
     "claude-haiku-4-5": (0.80, 4.00, 0.08, 1.00),
+}
+
+# Copilot pricing per 1M tokens: (input, output)
+# GPT-4o rates — Copilot's underlying model for code tasks.
+COPILOT_PRICING: dict[str, tuple[float, float]] = {
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
 }
 
 
@@ -212,26 +236,28 @@ class NdjsonStreamCollector:
                 input_chars,
             )
 
-        # Estimate cost from token counts using Sonnet pricing (Copilot's
+        # Estimate cost from token counts using GPT-4o pricing (Copilot's
         # underlying model).  Even on a subscription plan, token-based cost
         # estimates allow meaningful comparisons across configs and agents.
         estimated_cost: float | None = None
-        sonnet_pricing = CLAUDE_PRICING.get("claude-sonnet-4-6")
-        if sonnet_pricing is not None and output_tokens is not None:
-            out_cost = output_tokens * sonnet_pricing[1] / 1_000_000
+        gpt4o_pricing = COPILOT_PRICING.get("gpt-4o")
+        if gpt4o_pricing is not None and output_tokens is not None:
+            out_cost = output_tokens * gpt4o_pricing[1] / 1_000_000
             in_cost = (
-                input_tokens * sonnet_pricing[0] / 1_000_000
+                input_tokens * gpt4o_pricing[0] / 1_000_000
                 if input_tokens is not None
                 else 0.0
             )
             estimated_cost = in_cost + out_cost
 
+        # Input tokens come from _estimate_tokens() heuristic (not API-reported),
+        # and cost is calculated from estimated pricing — so source is 'estimated'.
         return UsageData(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=estimated_cost,
             cost_model="per_token" if estimated_cost is not None else "subscription",
-            cost_source="calculated" if estimated_cost is not None else "api_reported",
+            cost_source="estimated" if estimated_cost is not None else "unavailable",
         )
 
 
