@@ -135,6 +135,32 @@ class JsonStdoutCollector:
         )
 
 
+def _count_tokens_tiktoken(text: str, model: str) -> int | None:
+    """Count tokens using tiktoken if available.
+
+    Returns the exact token count, or ``None`` if tiktoken is not installed
+    or the model encoding cannot be resolved.
+    """
+    try:
+        import tiktoken  # noqa: F811
+    except ImportError:
+        return None
+
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        # Unknown model — fall back to cl100k_base (GPT-4 family default)
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return None
+
+    try:
+        return len(enc.encode(text))
+    except Exception:
+        return None
+
+
 def _estimate_tokens(text: str) -> int:
     """Estimate token count from text using a ~4 chars/token heuristic.
 
@@ -158,6 +184,7 @@ class NdjsonStreamCollector:
         output_tokens = None
         input_tokens = None
         input_chars = 0  # accumulate input content for estimation
+        input_text_parts: list[str] = []  # accumulate raw text for tiktoken
 
         try:
             for line in raw.strip().splitlines():
@@ -178,6 +205,7 @@ class NdjsonStreamCollector:
                     content = data.get("content", "")
                     if content:
                         input_chars += len(content)
+                        input_text_parts.append(content)
                 elif event_type == "usage":
                     in_tok = data.get("inputTokens")
                     if in_tok is not None:
@@ -190,10 +218,14 @@ class NdjsonStreamCollector:
                 elif event_type == "user.message":
                     content = data.get("transformedContent") or data.get("content", "")
                     input_chars += len(content)
+                    if content:
+                        input_text_parts.append(content)
                 elif event_type == "tool.execution_complete":
                     result = data.get("result", {})
                     content = result.get("detailedContent") or result.get("content", "")
                     input_chars += len(content)
+                    if content:
+                        input_text_parts.append(content)
                 elif event_type == "result":
                     usage = obj.get("usage", {})
                     in_tok = usage.get("inputTokens")
@@ -225,16 +257,29 @@ class NdjsonStreamCollector:
                 ),
             )
 
-        # Estimate input tokens from stream content if not natively reported
-        if input_tokens is None and input_chars > 0:
-            input_tokens = _estimate_tokens(
-                "x" * input_chars  # placeholder, only length matters
-            )
-            logger.debug(
-                "Copilot input_tokens=%d estimated from %d stream chars",
-                input_tokens,
-                input_chars,
-            )
+        # Estimate input tokens from stream content if not natively reported.
+        # Try tiktoken first for exact counts, then fall back to heuristic.
+        tiktoken_used = False
+        if input_tokens is None and input_text_parts:
+            combined_text = " ".join(input_text_parts)
+            tiktoken_count = _count_tokens_tiktoken(combined_text, "gpt-4o")
+            if tiktoken_count is not None:
+                input_tokens = tiktoken_count
+                tiktoken_used = True
+                logger.debug(
+                    "Copilot input_tokens=%d counted via tiktoken from %d stream chars",
+                    input_tokens,
+                    input_chars,
+                )
+            elif input_chars > 0:
+                input_tokens = _estimate_tokens(
+                    "x" * input_chars  # placeholder, only length matters
+                )
+                logger.debug(
+                    "Copilot input_tokens=%d estimated from %d stream chars",
+                    input_tokens,
+                    input_chars,
+                )
 
         # Estimate cost from token counts using GPT-4o pricing (Copilot's
         # underlying model).  Even on a subscription plan, token-based cost
@@ -250,14 +295,19 @@ class NdjsonStreamCollector:
             )
             estimated_cost = in_cost + out_cost
 
-        # Input tokens come from _estimate_tokens() heuristic (not API-reported),
-        # and cost is calculated from estimated pricing — so source is 'estimated'.
+        # When tiktoken provides exact input counts, cost_source is 'calculated'.
+        # When using heuristic estimation, cost_source is 'estimated'.
+        if estimated_cost is not None:
+            cost_source = "calculated" if tiktoken_used else "estimated"
+        else:
+            cost_source = "unavailable"
+
         return UsageData(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=estimated_cost,
             cost_model="per_token" if estimated_cost is not None else "subscription",
-            cost_source="estimated" if estimated_cost is not None else "unavailable",
+            cost_source=cost_source,
         )
 
 
