@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -110,7 +111,6 @@ def execute_task(
     def _output_fields() -> dict:
         return dict(
             duration_seconds=output.duration_seconds,
-            token_count=output.token_count,
             input_tokens=output.input_tokens,
             output_tokens=output.output_tokens,
             cache_read_tokens=output.cache_read_tokens,
@@ -174,6 +174,35 @@ def execute_task(
 _BILLABLE_COST_MODELS = frozenset({"per_token"})
 
 
+def _git_reset_workdir(repo_path: Path) -> None:
+    """Reset the working directory to a clean state between sequential tasks.
+
+    Runs ``git checkout -- .`` and ``git clean -fd`` to discard modifications
+    and remove untracked files so task N's leftovers don't corrupt task N+1.
+    """
+    try:
+        subprocess.run(
+            ["git", "checkout", "--", "."],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=repo_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "Git reset failed (exit %d): %s",
+            exc.returncode,
+            exc.stderr.decode(errors="replace") if exc.stderr else "",
+        )
+    except OSError as exc:
+        logger.warning("Git reset failed: %s", exc)
+
+
 def _save_task_artifacts(
     runs_dir: Path,
     task_id: str,
@@ -228,7 +257,6 @@ def _restore_checkpointed(
                 automated_score=entry.get("automated_score", 0.0),
                 status=entry.get("status", "completed"),
                 duration_seconds=entry.get("duration_seconds", 0.0),
-                token_count=entry.get("token_count"),
                 input_tokens=entry.get("input_tokens"),
                 output_tokens=entry.get("output_tokens"),
                 cache_read_tokens=entry.get("cache_read_tokens"),
@@ -318,7 +346,7 @@ def execute_config(
 
     if workers <= 1:
         # Sequential — preserves original behavior and budget checks
-        for task_dir in pending_dirs:
+        for idx, task_dir in enumerate(pending_dirs):
             if max_cost_usd is not None and cumulative_cost > max_cost_usd:
                 logger.warning(
                     "Cost circuit-breaker: $%.2f exceeds budget $%.2f — halting",
@@ -326,6 +354,10 @@ def execute_config(
                     max_cost_usd,
                 )
                 break
+            # Reset working directory between tasks so leftovers from
+            # task N don't corrupt task N+1's results.
+            if idx > 0:
+                _git_reset_workdir(repo_path)
             task_result = _run_one(task_dir)
             _handle_result(task_result)
     else:

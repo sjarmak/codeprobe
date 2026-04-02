@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import stat
 from pathlib import Path
+from unittest.mock import patch, call
 
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core.executor import (
     TaskResult,
+    _git_reset_workdir,
     execute_config,
     execute_task,
     load_instruction,
@@ -518,3 +520,65 @@ def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
     )
     # All tasks run since no per_token costs to accumulate
     assert len(results) == 3
+
+
+# --- Git reset between sequential tasks ---
+
+
+def test_execute_config_resets_workdir_between_sequential_tasks(tmp_path: Path):
+    """Git reset runs between tasks in sequential mode (parallel<=1)."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    with patch("codeprobe.core.executor._git_reset_workdir") as mock_reset:
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=1,
+        )
+        # Reset should be called between tasks (not before first), so 2 times for 3 tasks
+        assert mock_reset.call_count == 2
+        mock_reset.assert_any_call(Path("/repo"))
+
+
+def test_execute_config_no_reset_in_parallel_mode(tmp_path: Path):
+    """Git reset does NOT run between tasks in parallel mode (parallel>1)."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    with patch("codeprobe.core.executor._git_reset_workdir") as mock_reset:
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=3,
+        )
+        mock_reset.assert_not_called()
+
+
+def test_execute_config_no_reset_for_single_task(tmp_path: Path):
+    """No git reset when there's only one task (nothing to reset between)."""
+    tasks = [_make_task(tmp_path / "task-000", passing=True)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    with patch("codeprobe.core.executor._git_reset_workdir") as mock_reset:
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=1,
+        )
+        mock_reset.assert_not_called()
