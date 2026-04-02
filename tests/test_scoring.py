@@ -479,3 +479,62 @@ class TestGetScorer:
     def test_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown reward_type"):
             get_scorer("exotic")
+
+
+# ---------------------------------------------------------------------------
+# Loud fallbacks — _run_in_sandbox OSError logging
+# ---------------------------------------------------------------------------
+
+
+class TestRunInSandboxOSError:
+    """When shutil.copytree raises OSError, _run_in_sandbox logs WARNING and sets error."""
+
+    def test_copytree_oserror_sets_error_field(self, tmp_path: Path) -> None:
+        """OSError from copytree is captured in _SandboxRun.error."""
+        from unittest.mock import patch
+
+        from codeprobe.core.scoring import _run_in_sandbox
+
+        task_dir = tmp_path / "task-oserror"
+        task_dir.mkdir(parents=True)
+        test_sh = task_dir / "tests" / "test.sh"
+        test_sh.parent.mkdir(parents=True)
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        with patch(
+            "codeprobe.core.scoring.shutil.copytree", side_effect=OSError("disk full")
+        ):
+            run = _run_in_sandbox(test_sh, "output", task_dir)
+
+        assert run.returncode == -1
+        assert run.error is not None
+        assert "disk full" in run.error
+
+    def test_copytree_oserror_emits_warning_log(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """WARNING log is emitted when copytree raises OSError."""
+        import logging
+        from unittest.mock import patch
+
+        from codeprobe.core.scoring import _run_in_sandbox
+
+        task_dir = tmp_path / "task-oserror-log"
+        task_dir.mkdir(parents=True)
+        test_sh = task_dir / "tests" / "test.sh"
+        test_sh.parent.mkdir(parents=True)
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="codeprobe.core.scoring"),
+            patch(
+                "codeprobe.core.scoring.shutil.copytree",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            _run_in_sandbox(test_sh, "output", task_dir)
+
+        assert any("disk full" in rec.message for rec in caplog.records)
+        assert any(rec.levelno == logging.WARNING for rec in caplog.records)

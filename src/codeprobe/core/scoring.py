@@ -181,11 +181,11 @@ def _run_in_sandbox(
     except (subprocess.TimeoutExpired, OSError) as exc:
         if sandbox_dir is not None:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
-        error = (
-            "Scoring timed out"
-            if isinstance(exc, subprocess.TimeoutExpired)
-            else str(exc)
-        )
+        if isinstance(exc, subprocess.TimeoutExpired):
+            error = "Scoring timed out"
+        else:
+            error = str(exc)
+            logger.warning("Sandbox setup failed (OSError): %s", error)
         return _SandboxRun(returncode=-1, stdout="", stderr="", error=error)
 
 

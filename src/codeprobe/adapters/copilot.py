@@ -75,9 +75,20 @@ class CopilotAdapter(BaseAdapter):
                     content = obj.get("data", {}).get("content", "")
                     if content:
                         result_text_parts.append(content)
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError:
+            logger.warning(
+                "ndjson_parse_fallback: failed to parse Copilot NDJSON output, "
+                "falling back to raw stdout"
+            )
             result_text_parts = []
         stdout_text = "\n".join(result_text_parts) if result_text_parts else raw
+
+        # When NDJSON parsing fell back to raw output, surface the fallback
+        # in the error field so callers can detect degraded telemetry.
+        error = usage.error
+        if not result_text_parts and raw:
+            fallback_msg = "ndjson_parse_fallback: raw stdout used as output"
+            error = f"{error}; {fallback_msg}" if error else fallback_msg
 
         return AgentOutput(
             stdout=stdout_text,
@@ -89,5 +100,5 @@ class CopilotAdapter(BaseAdapter):
             cost_usd=usage.cost_usd,
             cost_model=usage.cost_model,
             cost_source=usage.cost_source,
-            error=usage.error,
+            error=error,
         )
