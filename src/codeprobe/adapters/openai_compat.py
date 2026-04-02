@@ -73,7 +73,12 @@ class OpenAICompatAdapter:
             issues.append(f"{self._api_key_env} environment variable not set")
         return issues
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         try:
             import openai
         except ImportError:

@@ -129,7 +129,12 @@ class BaseAdapter:
         tmp.close()
         return tmp.name
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         cmd = self.build_command(prompt, config)
         mcp_tmpfile: str | None = None
 
@@ -151,7 +156,7 @@ class BaseAdapter:
                 text=True,
                 timeout=config.timeout_seconds,
                 cwd=config.cwd,
-                env=_adapter_safe_env(),
+                env=_adapter_safe_env(session_env),
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start

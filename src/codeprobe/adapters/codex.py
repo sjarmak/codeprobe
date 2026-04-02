@@ -58,7 +58,12 @@ class CodexAdapter:
         """Codex uses API calls — no session-level isolation needed."""
         return {}
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         try:
             import openai
         except ImportError:

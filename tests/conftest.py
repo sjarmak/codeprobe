@@ -43,7 +43,12 @@ class FakeAdapter:
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
         return ["fake-agent", "-p", prompt]
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         self.run_calls.append((prompt, config))
         return AgentOutput(
             stdout=self._stdout,
@@ -66,7 +71,12 @@ class SequentialCostAdapter(FakeAdapter):
         self._costs = costs
         self._call_index = 0
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         if self._call_index >= len(self._costs):
             raise AssertionError(
                 f"SequentialCostAdapter: run() called {self._call_index + 1} times "
@@ -76,4 +86,4 @@ class SequentialCostAdapter(FakeAdapter):
         self._call_index += 1
         self._cost_usd = cost_usd
         self._cost_model = cost_model
-        return super().run(prompt, config)
+        return super().run(prompt, config, session_env=session_env)

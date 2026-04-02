@@ -1328,3 +1328,26 @@ class TestIsolateSession:
         adapter = AiderAdapter()
         env = adapter.isolate_session(0)
         assert env == {}
+
+    def test_base_adapter_run_passes_session_env_to_subprocess(self) -> None:
+        """session_env passed to run() reaches subprocess.run() via _adapter_safe_env."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=10)
+        session_env = {"CLAUDE_CONFIG_DIR": "/tmp/codeprobe-claude/slot-0"}
+
+        fake_result = MagicMock()
+        fake_result.stdout = '{"result": "ok"}'
+        fake_result.stderr = ""
+        fake_result.returncode = 0
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch("subprocess.run", return_value=fake_result) as mock_run,
+        ):
+            adapter.run("test prompt", config, session_env=session_env)
+
+        # Verify CLAUDE_CONFIG_DIR was passed in the env dict
+        call_kwargs = mock_run.call_args
+        env_passed = call_kwargs.kwargs.get("env") or call_kwargs[1].get("env")
+        assert env_passed is not None
+        assert env_passed["CLAUDE_CONFIG_DIR"] == "/tmp/codeprobe-claude/slot-0"

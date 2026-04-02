@@ -744,3 +744,43 @@ class TestConcurrencySemaphore:
         assert mock_iso.acquire.call_count == 2
         assert mock_iso.release.call_count == 2
         assert mock_iso.cleanup.call_count == 1
+
+    def test_parallel_isolation_passes_session_env_to_adapter(
+        self, tmp_path: Path
+    ) -> None:
+        """When running in parallel with isolation, isolate_session() env
+        reaches adapter.run() via session_env."""
+        tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(2)]
+
+        session_envs_received: list[dict[str, str] | None] = []
+
+        class TrackingAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                session_envs_received.append(session_env)
+                return super().run(prompt, config, session_env=session_env)
+
+            def isolate_session(self, slot_id: int) -> dict[str, str]:
+                return {"CLAUDE_CONFIG_DIR": f"/tmp/codeprobe-claude/slot-{slot_id}"}
+
+        adapter = TrackingAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        mock_iso = MagicMock(spec=WorktreeIsolation)
+        mock_iso.acquire.return_value = Path("/wt/slot-0")
+
+        with patch("codeprobe.core.executor.WorktreeIsolation", return_value=mock_iso):
+            execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=Path("/repo"),
+                experiment_config=exp_config,
+                agent_config=agent_config,
+                parallel=2,
+            )
+
+        assert len(session_envs_received) == 2
+        for env in session_envs_received:
+            assert env is not None
+            assert "CLAUDE_CONFIG_DIR" in env
+            assert env["CLAUDE_CONFIG_DIR"].startswith("/tmp/codeprobe-claude/slot-")

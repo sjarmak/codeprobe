@@ -93,7 +93,12 @@ class AgentAdapter(Protocol):
         """
         ...
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         """Execute the agent with the given prompt and return results."""
         ...
 

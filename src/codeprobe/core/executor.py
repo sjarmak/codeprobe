@@ -81,6 +81,7 @@ def execute_task(
     preamble_names: tuple[str, ...] = (),
     preamble_resolver: PreambleResolver | None = None,
     worktree_path: Path | None = None,
+    session_env: dict[str, str] | None = None,
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -126,7 +127,7 @@ def execute_task(
         prompt = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
 
     try:
-        output = adapter.run(prompt, agent_config)
+        output = adapter.run(prompt, agent_config, session_env=session_env)
     except Exception as exc:
         return _error_result(sanitize_secrets(str(exc)))
 
@@ -335,7 +336,11 @@ def execute_config(
 
     cumulative_cost = 0.0
 
-    def _run_one(task_dir: Path, worktree_path: Path | None = None) -> TaskResult:
+    def _run_one(
+        task_dir: Path,
+        worktree_path: Path | None = None,
+        session_env: dict[str, str] | None = None,
+    ) -> TaskResult:
         logger.info("[%s] Running %s", experiment_config.label, task_dir.name)
         sem = get_concurrency_semaphore()
         if sem is not None:
@@ -351,6 +356,7 @@ def execute_config(
                 preamble_names=experiment_config.preambles,
                 preamble_resolver=preamble_resolver,
                 worktree_path=worktree_path,
+                session_env=session_env,
             )
         finally:
             if sem is not None:
@@ -409,7 +415,14 @@ def execute_config(
         def _run_isolated(task_dir: Path) -> TaskResult:
             wt = active_isolation.acquire()  # type: ignore[union-attr]
             try:
-                return _run_one(task_dir, worktree_path=wt)
+                # Extract slot index from worktree path name (e.g. "slot-0" → 0)
+                slot_name = wt.name
+                try:
+                    slot_id = int(slot_name.rsplit("-", 1)[-1])
+                except (ValueError, IndexError):
+                    slot_id = 0
+                sess_env = adapter.isolate_session(slot_id)
+                return _run_one(task_dir, worktree_path=wt, session_env=sess_env)
             finally:
                 active_isolation.release(wt)  # type: ignore[union-attr]
 
