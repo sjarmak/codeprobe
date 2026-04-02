@@ -22,6 +22,11 @@ dependencies = [
     "click>=8.0,<9",
 ]
 
+[project.urls]
+Homepage = "https://github.com/sjarmak/codeprobe"
+Repository = "https://github.com/sjarmak/codeprobe"
+Issues = "https://github.com/sjarmak/codeprobe/issues"
+
 [project.optional-dependencies]
 yaml = ["pyyaml>=6.0,<7"]
 codex = ["openai>=1.66"]
@@ -53,7 +58,7 @@ codex = "codeprobe.adapters.session:CodexSessionCollector"
 copilot = "codeprobe.adapters.session:CopilotSessionCollector"
 
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
