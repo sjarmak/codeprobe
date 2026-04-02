@@ -73,6 +73,9 @@ class OpenAICompatAdapter:
             issues.append(f"{self._api_key_env} environment variable not set")
         return issues
 
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        return {}
+
     def run(
         self,
         prompt: str,
