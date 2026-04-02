@@ -8,6 +8,24 @@ Mine real tasks from your repo history, run agents against them, and find out wh
 
 Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models may have memorized from training data. codeprobe mines tasks from **your private repo history**, producing benchmarks that are impossible to contaminate.
 
+## Prerequisites
+
+codeprobe orchestrates external AI coding agents — you need at least one installed:
+
+| Agent              | Install                                          | Required env var                |
+| ------------------ | ------------------------------------------------ | ------------------------------- |
+| **Claude Code**    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY`             |
+| **GitHub Copilot** | `npm install -g @github/copilot-cli` (>= 1.0.4)  | GitHub auth via `gh auth login` |
+| **Codex**          | Included via `pip install codeprobe[codex]`      | `OPENAI_API_KEY`                |
+
+You also need:
+
+- **Python 3.11+**
+- **Git** (for task mining and worktree isolation)
+- **GitHub CLI** (`gh`) — optional, for mining tasks from GitHub PRs with linked issues
+
+The `assess` command uses Claude (via `ANTHROPIC_API_KEY`) for model-based scoring. Without it, it falls back to heuristic scoring.
+
 ## Quick Start
 
 ```bash
@@ -18,6 +36,7 @@ pip install codeprobe[all]       # Everything
 
 cd /path/to/your/repo
 
+codeprobe assess .      # Score benchmarking potential (optional)
 codeprobe init          # What do you want to learn?
 codeprobe mine .        # Extract tasks from repo history
 codeprobe run .         # Run agents against tasks
@@ -28,16 +47,28 @@ codeprobe interpret .   # Get recommendations
 
 | Command               | Purpose                                     |
 | --------------------- | ------------------------------------------- |
+| `codeprobe assess`    | Score a codebase's benchmarking potential   |
 | `codeprobe init`      | Interactive wizard — choose what to compare |
 | `codeprobe mine`      | Mine eval tasks from merged PRs/MRs         |
 | `codeprobe run`       | Execute tasks against AI agents             |
 | `codeprobe interpret` | Analyze results, rank configurations        |
-| `codeprobe assess`    | Score a codebase's benchmarking potential   |
+
+### Key flags
+
+```bash
+codeprobe run . --parallel 5     # Run 5 tasks concurrently (worktree-isolated)
+codeprobe run . --repeats 5      # Run each task 5 times for statistical confidence
+codeprobe run . --dry-run        # Estimate resource usage without running
+codeprobe mine . --enrich        # Use LLM to improve weak task instructions
+codeprobe interpret . --format csv   # Export per-task results for pivot tables
+codeprobe interpret . --format html  # Self-contained HTML report for leadership
+```
 
 ## Supported Agents
 
-- **Claude Code** (`--agent claude`)
-- **GitHub Copilot** (`--agent copilot`)
+- **Claude Code** (`--agent claude`) — headless via `claude -p`
+- **GitHub Copilot** (`--agent copilot`) — via Copilot CLI
+- **Codex** (`--agent codex`) — via OpenAI API
 - Custom agents via the `AgentAdapter` protocol
 
 ## Supported Git Hosts
