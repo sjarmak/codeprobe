@@ -37,10 +37,7 @@ Override with `CODEPROBE_LLM_BACKEND=anthropic|openai|claude-cli`. Without any b
 ## Quick Start
 
 ```bash
-pip install codeprobe            # Core (mine + run + interpret)
-pip install codeprobe[stats]     # + statistical tests (scipy)
-pip install codeprobe[tokens]    # + exact Copilot token counting (tiktoken)
-pip install codeprobe[all]       # Everything
+pip install codeprobe
 
 cd /path/to/your/repo
 

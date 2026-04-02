@@ -1,6 +1,6 @@
 [project]
 name = "codeprobe"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Benchmark AI coding agents against your own codebase. Mine real tasks from repo history, run agents, interpret results."
 readme = "README.md"
 license = "Apache-2.0"
@@ -20,6 +20,11 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.0,<9",
+    "pyyaml>=6.0,<7",
+    "anthropic>=0.39",
+    "openai>=1.66",
+    "tiktoken>=0.7,<1",
+    "scipy>=1.11,<2",
 ]
 
 [project.urls]
@@ -28,12 +33,6 @@ Repository = "https://github.com/sjarmak/codeprobe"
 Issues = "https://github.com/sjarmak/codeprobe/issues"
 
 [project.optional-dependencies]
-yaml = ["pyyaml>=6.0,<7"]
-anthropic = ["anthropic>=0.39"]
-codex = ["openai>=1.66"]
-tokens = ["tiktoken>=0.7,<1"]
-stats = ["scipy>=1.11,<2"]
-all = ["pyyaml>=6.0,<7", "anthropic>=0.39", "openai>=1.66", "tiktoken>=0.7,<1", "scipy>=1.11,<2"]
 dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
