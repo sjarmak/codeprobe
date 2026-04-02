@@ -2,6 +2,7 @@
 
 from click.testing import CliRunner
 
+from codeprobe import __version__
 from codeprobe.cli import main
 
 
@@ -10,7 +11,7 @@ def test_cli_version():
     result = runner.invoke(main, ["--version"])
     assert result.exit_code == 0
     assert "codeprobe" in result.output
-    assert "0.1.0a1" in result.output
+    assert __version__ in result.output
 
 
 def test_cli_help():
@@ -39,7 +40,7 @@ def test_main_module_runnable():
         timeout=10,
     )
     assert result.returncode == 0
-    assert "0.1.0a1" in result.stdout
+    assert __version__ in result.stdout
 
 
 def test_cli_run_has_max_cost_option():
