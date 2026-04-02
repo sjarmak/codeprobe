@@ -93,12 +93,20 @@ def mine(
     envvar="CODEPROBE_MAX_COST_USD",
     help="Maximum cumulative cost in USD before halting. Env: CODEPROBE_MAX_COST_USD.",
 )
+@click.option(
+    "--parallel",
+    default=1,
+    type=int,
+    envvar="CODEPROBE_PARALLEL",
+    help="Max concurrent task executions per config. Env: CODEPROBE_PARALLEL.",
+)
 def run(
     path: str,
     agent: str,
     model: str | None,
     config: str | None,
     max_cost_usd: float | None,
+    parallel: int,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -107,7 +115,14 @@ def run(
     """
     from codeprobe.cli.run_cmd import run_eval
 
-    run_eval(path, agent=agent, model=model, config=config, max_cost_usd=max_cost_usd)
+    run_eval(
+        path,
+        agent=agent,
+        model=model,
+        config=config,
+        max_cost_usd=max_cost_usd,
+        parallel=parallel,
+    )
 
 
 @main.command()

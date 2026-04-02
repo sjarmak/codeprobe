@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import logging
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -211,6 +212,36 @@ def _save_task_artifacts(
     )
 
 
+def _restore_checkpointed(
+    checkpoint_store: CheckpointStore | None,
+) -> tuple[set[str], list[CompletedTask]]:
+    """Load checkpointed results, returning (ids, results)."""
+    if checkpoint_store is None:
+        return set(), []
+    ids: set[str] = set()
+    results: list[CompletedTask] = []
+    for entry in checkpoint_store.load_entries():
+        ids.add(entry["task_id"])
+        results.append(
+            CompletedTask(
+                task_id=entry["task_id"],
+                automated_score=entry.get("automated_score", 0.0),
+                status=entry.get("status", "completed"),
+                duration_seconds=entry.get("duration_seconds", 0.0),
+                token_count=entry.get("token_count"),
+                input_tokens=entry.get("input_tokens"),
+                output_tokens=entry.get("output_tokens"),
+                cache_read_tokens=entry.get("cache_read_tokens"),
+                cost_usd=entry.get("cost_usd"),
+                cost_model=entry.get("cost_model", "unknown"),
+                cost_source=entry.get("cost_source", "unavailable"),
+                scoring_details=entry.get("scoring_details", {}),
+                metadata=entry.get("metadata", {}),
+            )
+        )
+    return ids, results
+
+
 def execute_config(
     adapter: AgentAdapter,
     task_dirs: list[Path],
@@ -223,6 +254,7 @@ def execute_config(
     on_task_complete: Callable[[CompletedTask], None] | None = None,
     max_cost_usd: float | None = None,
     preamble_resolver: PreambleResolver | None = None,
+    parallel: int = 1,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -230,59 +262,31 @@ def execute_config(
     Saves per-task artifacts (agent_output.txt, scoring.json) alongside the
     checkpoint file.
 
+    When *parallel* > 1, tasks are dispatched to a thread pool.  Each agent
+    subprocess runs in its own process so threads are IO-bound (waiting for
+    the subprocess to finish).
+
     If *max_cost_usd* is set, the executor accumulates ``cost_usd`` from
     completed tasks whose ``cost_model`` is billable (currently ``per_token``).
     Once cumulative cost exceeds the budget, execution halts and partial
     results are returned.  Tasks with ``unknown`` or ``subscription``
     cost models are skipped in accumulation.
     """
-    results: list[CompletedTask] = []
-    checkpointed_ids: set[str] = set()
-    if checkpoint_store is not None:
-        for entry in checkpoint_store.load_entries():
-            checkpointed_ids.add(entry["task_id"])
-            results.append(
-                CompletedTask(
-                    task_id=entry["task_id"],
-                    automated_score=entry.get("automated_score", 0.0),
-                    status=entry.get("status", "completed"),
-                    duration_seconds=entry.get("duration_seconds", 0.0),
-                    token_count=entry.get("token_count"),
-                    input_tokens=entry.get("input_tokens"),
-                    output_tokens=entry.get("output_tokens"),
-                    cache_read_tokens=entry.get("cache_read_tokens"),
-                    cost_usd=entry.get("cost_usd"),
-                    cost_model=entry.get("cost_model", "unknown"),
-                    cost_source=entry.get("cost_source", "unavailable"),
-                    scoring_details=entry.get("scoring_details", {}),
-                    metadata=entry.get("metadata", {}),
-                )
-            )
+    checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
+
+    pending_dirs = [d for d in task_dirs if d.name not in checkpointed_ids]
+    for skipped in task_dirs:
+        if skipped.name in checkpointed_ids:
+            logger.info("Skipping %s (checkpointed)", skipped.name)
+
+    if not pending_dirs:
+        return results
 
     cumulative_cost = 0.0
 
-    for task_dir in task_dirs:
-        task_id = task_dir.name
-
-        if task_id in checkpointed_ids:
-            logger.info("Skipping %s (checkpointed)", task_id)
-            continue
-
-        # Check budget *before* dispatching the next task
-        if max_cost_usd is not None and cumulative_cost > max_cost_usd:
-            logger.warning(
-                "Cost circuit-breaker: cumulative $%.2f exceeds budget $%.2f — "
-                "halting after %d/%d tasks",
-                cumulative_cost,
-                max_cost_usd,
-                len(results) - len(checkpointed_ids),
-                len(task_dirs),
-            )
-            break
-
-        logger.info("[%s] Running %s", experiment_config.label, task_id)
-
-        task_result = execute_task(
+    def _run_one(task_dir: Path) -> TaskResult:
+        logger.info("[%s] Running %s", experiment_config.label, task_dir.name)
+        return execute_task(
             adapter=adapter,
             task_dir=task_dir,
             repo_path=repo_path,
@@ -293,12 +297,13 @@ def execute_config(
             preamble_resolver=preamble_resolver,
         )
 
+    def _handle_result(task_result: TaskResult) -> None:
+        nonlocal cumulative_cost
         result = task_result.completed
         results.append(result)
 
-        # Save per-task artifacts
         if runs_dir is not None:
-            _save_task_artifacts(runs_dir, task_id, task_result)
+            _save_task_artifacts(runs_dir, result.task_id, task_result)
 
         if checkpoint_store is not None:
             checkpoint_store.append(result)
@@ -306,8 +311,63 @@ def execute_config(
         if on_task_complete is not None:
             on_task_complete(result)
 
-        # Accumulate cost only for billable cost models with known cost
         if result.cost_model in _BILLABLE_COST_MODELS and result.cost_usd is not None:
             cumulative_cost += result.cost_usd
+
+    workers = min(parallel, len(pending_dirs))
+
+    if workers <= 1:
+        # Sequential — preserves original behavior and budget checks
+        for task_dir in pending_dirs:
+            if max_cost_usd is not None and cumulative_cost > max_cost_usd:
+                logger.warning(
+                    "Cost circuit-breaker: $%.2f exceeds budget $%.2f — halting",
+                    cumulative_cost,
+                    max_cost_usd,
+                )
+                break
+            task_result = _run_one(task_dir)
+            _handle_result(task_result)
+    else:
+        # Parallel — dispatch all pending tasks to thread pool
+        logger.info(
+            "[%s] Dispatching %d tasks with %d workers",
+            experiment_config.label,
+            len(pending_dirs),
+            workers,
+        )
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_dir = {pool.submit(_run_one, td): td for td in pending_dirs}
+            for future in as_completed(future_to_dir):
+                task_dir = future_to_dir[future]
+                try:
+                    task_result = future.result()
+                except Exception as exc:
+                    logger.error(
+                        "[%s] %s raised: %s",
+                        experiment_config.label,
+                        task_dir.name,
+                        exc,
+                    )
+                    task_result = TaskResult(
+                        completed=CompletedTask(
+                            task_id=task_dir.name,
+                            automated_score=0.0,
+                            status="error",
+                            metadata={"error": str(exc)},
+                        ),
+                    )
+                _handle_result(task_result)
+
+                if max_cost_usd is not None and cumulative_cost > max_cost_usd:
+                    logger.warning(
+                        "Cost circuit-breaker: $%.2f exceeds budget $%.2f — "
+                        "cancelling remaining tasks",
+                        cumulative_cost,
+                        max_cost_usd,
+                    )
+                    for f in future_to_dir:
+                        f.cancel()
+                    break
 
     return results
