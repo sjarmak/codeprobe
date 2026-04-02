@@ -151,7 +151,7 @@ def _run_in_sandbox(
     try:
         sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
         sandbox_task = sandbox_dir / "task"
-        shutil.copytree(task_dir, sandbox_task, symlinks=True)
+        shutil.copytree(task_dir, sandbox_task, symlinks=False)
 
         rel = script_path.relative_to(task_dir)
         sandbox_script = sandbox_task / rel

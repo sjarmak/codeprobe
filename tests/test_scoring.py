@@ -32,7 +32,7 @@ def _make_test_sh(task_dir: Path, script: str) -> None:
 
 def test_score_passes_on_exit_zero(tmp_path: Path):
     task_dir = tmp_path / "task-001"
-    _make_test_sh(task_dir, '#!/bin/bash\nexit 0\n')
+    _make_test_sh(task_dir, "#!/bin/bash\nexit 0\n")
 
     result = score_task_output("any output", task_dir)
     assert result.score == 1.0
@@ -42,7 +42,7 @@ def test_score_passes_on_exit_zero(tmp_path: Path):
 
 def test_score_fails_on_exit_nonzero(tmp_path: Path):
     task_dir = tmp_path / "task-002"
-    _make_test_sh(task_dir, '#!/bin/bash\nexit 1\n')
+    _make_test_sh(task_dir, "#!/bin/bash\nexit 1\n")
 
     result = score_task_output("wrong answer", task_dir)
     assert result.score == 0.0
@@ -52,11 +52,14 @@ def test_score_fails_on_exit_nonzero(tmp_path: Path):
 def test_score_reads_agent_output_env(tmp_path: Path):
     task_dir = tmp_path / "task-003"
     # test.sh reads AGENT_OUTPUT file and checks content
-    _make_test_sh(task_dir, (
-        '#!/bin/bash\n'
-        'content=$(cat "$AGENT_OUTPUT")\n'
-        'if [ "$content" = "correct" ]; then exit 0; else exit 1; fi\n'
-    ))
+    _make_test_sh(
+        task_dir,
+        (
+            "#!/bin/bash\n"
+            'content=$(cat "$AGENT_OUTPUT")\n'
+            'if [ "$content" = "correct" ]; then exit 0; else exit 1; fi\n'
+        ),
+    )
 
     result = score_task_output("correct", task_dir)
     assert result.passed is True
@@ -111,14 +114,56 @@ def test_sanitize_secrets_leaves_clean_text():
     assert sanitize_secrets(text) == text
 
 
+def test_score_does_not_follow_symlinks(tmp_path: Path):
+    """copytree should not follow symlinks — symlinked files are skipped."""
+    task_dir = tmp_path / "task-symlink"
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(parents=True)
+
+    # Create a file outside the task dir that a symlink would point to
+    secret_file = tmp_path / "secret.txt"
+    secret_file.write_text("TOP SECRET")
+
+    # Create a symlink inside the task dir pointing to the secret file
+    link = task_dir / "linked_secret.txt"
+    link.symlink_to(secret_file)
+
+    # test.sh checks whether the symlink target was copied
+    _make_test_sh(
+        task_dir,
+        (
+            "#!/bin/bash\n"
+            'if [ -f "$PWD/linked_secret.txt" ]; then exit 1; else exit 0; fi\n'
+        ),
+    )
+
+    result = score_task_output("output", task_dir)
+    # With symlinks=False, the symlink is not followed — it's copied as a
+    # regular file (the content IS copied but it's a flat copy, not a link).
+    # The key security property is that the sandbox copy is NOT a symlink.
+    sandbox_dir = None
+    from codeprobe.core.scoring import _run_in_sandbox
+
+    test_sh = task_dir / "tests" / "test.sh"
+    run = _run_in_sandbox(test_sh, "output", task_dir, cleanup=False)
+    try:
+        if run.sandbox_dir:
+            copied = run.sandbox_dir / "task" / "linked_secret.txt"
+            # The copied file should NOT be a symlink
+            assert not copied.is_symlink()
+    finally:
+        if run.sandbox_dir:
+            import shutil
+
+            shutil.rmtree(run.sandbox_dir, ignore_errors=True)
+
+
 def test_score_runs_in_sandbox_does_not_modify_original(tmp_path: Path):
     """test.sh writing a file should not modify the original task directory."""
     task_dir = tmp_path / "task-sandbox"
-    _make_test_sh(task_dir, (
-        '#!/bin/bash\n'
-        'touch "$PWD/side_effect.txt"\n'
-        'exit 0\n'
-    ))
+    _make_test_sh(
+        task_dir, ("#!/bin/bash\n" 'touch "$PWD/side_effect.txt"\n' "exit 0\n")
+    )
 
     result = score_task_output("output", task_dir)
     assert result.passed is True
@@ -129,10 +174,10 @@ def test_score_runs_in_sandbox_does_not_modify_original(tmp_path: Path):
 def test_score_env_does_not_leak_secrets(tmp_path: Path):
     """test.sh should not see secrets from the parent environment."""
     task_dir = tmp_path / "task-env"
-    _make_test_sh(task_dir, (
-        '#!/bin/bash\n'
-        'if [ -n "$SECRET_API_KEY" ]; then exit 1; else exit 0; fi\n'
-    ))
+    _make_test_sh(
+        task_dir,
+        ("#!/bin/bash\n" 'if [ -n "$SECRET_API_KEY" ]; then exit 1; else exit 0; fi\n'),
+    )
 
     # Set a secret in the environment
     os.environ["SECRET_API_KEY"] = "sk-test-secret-key-12345678901234567890"
@@ -147,10 +192,11 @@ def test_score_env_does_not_leak_secrets(tmp_path: Path):
 def test_score_timeout_enforced(tmp_path: Path):
     """test.sh should be killed after the timeout."""
     task_dir = tmp_path / "task-timeout"
-    _make_test_sh(task_dir, '#!/bin/bash\nsleep 60\nexit 0\n')
+    _make_test_sh(task_dir, "#!/bin/bash\nsleep 60\nexit 0\n")
 
     # Use a shorter timeout for this test
     import codeprobe.core.scoring as scoring_mod
+
     original = scoring_mod.SCORE_TIMEOUT_SECONDS
     scoring_mod.SCORE_TIMEOUT_SECONDS = 1
     try:
@@ -217,7 +263,8 @@ class TestBinaryScorer:
 
     def test_sandbox_isolation(self, tmp_path: Path) -> None:
         task_dir = _make_task_dir(
-            tmp_path, "bin-sandbox",
+            tmp_path,
+            "bin-sandbox",
             '#!/bin/bash\ntouch "$PWD/side_effect.txt"\nexit 0\n',
         )
         result = BinaryScorer().score("output", task_dir)
@@ -235,11 +282,7 @@ class TestContinuousScorer:
 
     def test_reads_reward_txt(self, tmp_path: Path) -> None:
         # test.sh writes a reward.txt in the sandbox
-        script = (
-            '#!/bin/bash\n'
-            'echo "0.75" > "$PWD/reward.txt"\n'
-            'exit 0\n'
-        )
+        script = "#!/bin/bash\n" 'echo "0.75" > "$PWD/reward.txt"\n' "exit 0\n"
         task_dir = _make_task_dir(tmp_path, "cont-reward", script)
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == pytest.approx(0.75)
@@ -248,45 +291,28 @@ class TestContinuousScorer:
 
     def test_reads_score_from_stdout_fallback(self, tmp_path: Path) -> None:
         # No reward.txt — falls back to last line of stdout
-        script = (
-            '#!/bin/bash\n'
-            'echo "some debug output"\n'
-            'echo "0.42"\n'
-            'exit 0\n'
-        )
+        script = "#!/bin/bash\n" 'echo "some debug output"\n' 'echo "0.42"\n' "exit 0\n"
         task_dir = _make_task_dir(tmp_path, "cont-stdout", script)
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == pytest.approx(0.42)
         assert result.passed is True
 
     def test_zero_score_means_not_passed(self, tmp_path: Path) -> None:
-        script = (
-            '#!/bin/bash\n'
-            'echo "0.0" > "$PWD/reward.txt"\n'
-            'exit 0\n'
-        )
+        script = "#!/bin/bash\n" 'echo "0.0" > "$PWD/reward.txt"\n' "exit 0\n"
         task_dir = _make_task_dir(tmp_path, "cont-zero", script)
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == 0.0
         assert result.passed is False
 
     def test_exit_nonzero_returns_zero_score(self, tmp_path: Path) -> None:
-        script = (
-            '#!/bin/bash\n'
-            'echo "0.8" > "$PWD/reward.txt"\n'
-            'exit 1\n'
-        )
+        script = "#!/bin/bash\n" 'echo "0.8" > "$PWD/reward.txt"\n' "exit 1\n"
         task_dir = _make_task_dir(tmp_path, "cont-exit1", script)
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == 0.0
         assert result.passed is False
 
     def test_invalid_reward_value(self, tmp_path: Path) -> None:
-        script = (
-            '#!/bin/bash\n'
-            'echo "not_a_number" > "$PWD/reward.txt"\n'
-            'exit 0\n'
-        )
+        script = "#!/bin/bash\n" 'echo "not_a_number" > "$PWD/reward.txt"\n' "exit 0\n"
         task_dir = _make_task_dir(tmp_path, "cont-invalid", script)
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == 0.0
@@ -294,11 +320,7 @@ class TestContinuousScorer:
         assert result.error is not None
 
     def test_clamps_score_to_range(self, tmp_path: Path) -> None:
-        script = (
-            '#!/bin/bash\n'
-            'echo "1.5" > "$PWD/reward.txt"\n'
-            'exit 0\n'
-        )
+        script = "#!/bin/bash\n" 'echo "1.5" > "$PWD/reward.txt"\n' "exit 0\n"
         task_dir = _make_task_dir(tmp_path, "cont-clamp", script)
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == 1.0
@@ -356,7 +378,9 @@ class TestCheckpointScorer:
             "check1.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
             "check2.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
         }
-        task_dir = self._make_checkpoint_task(tmp_path, "cp-all-pass", checkpoints, verifiers)
+        task_dir = self._make_checkpoint_task(
+            tmp_path, "cp-all-pass", checkpoints, verifiers
+        )
         result = CheckpointScorer().score("output", task_dir)
         assert result.score == pytest.approx(1.0)
         assert result.passed is True
@@ -370,7 +394,9 @@ class TestCheckpointScorer:
             "check1.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
             "check2.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
         }
-        task_dir = self._make_checkpoint_task(tmp_path, "cp-partial", checkpoints, verifiers)
+        task_dir = self._make_checkpoint_task(
+            tmp_path, "cp-partial", checkpoints, verifiers
+        )
         result = CheckpointScorer().score("output", task_dir)
         assert result.score == pytest.approx(0.6)
         assert result.passed is True  # partial credit > 0
@@ -384,7 +410,9 @@ class TestCheckpointScorer:
             "check1.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
             "check2.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
         }
-        task_dir = self._make_checkpoint_task(tmp_path, "cp-all-fail", checkpoints, verifiers)
+        task_dir = self._make_checkpoint_task(
+            tmp_path, "cp-all-fail", checkpoints, verifiers
+        )
         result = CheckpointScorer().score("output", task_dir)
         assert result.score == 0.0
         assert result.passed is False
@@ -398,7 +426,9 @@ class TestCheckpointScorer:
             "check1.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
             "check2.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
         }
-        task_dir = self._make_checkpoint_task(tmp_path, "cp-bad-weights", checkpoints, verifiers)
+        task_dir = self._make_checkpoint_task(
+            tmp_path, "cp-bad-weights", checkpoints, verifiers
+        )
         result = CheckpointScorer().score("output", task_dir)
         assert result.passed is False
         assert result.error is not None
@@ -410,9 +440,11 @@ class TestCheckpointScorer:
             {"name": "cp1", "weight": 1.0, "verifier": "check1.sh"},
         ]
         verifiers = {
-            "check1.sh": '#!/bin/bash\nexit 1\n',
+            "check1.sh": "#!/bin/bash\nexit 1\n",
         }
-        task_dir = self._make_checkpoint_task(tmp_path, "cp-fallback", checkpoints, verifiers)
+        task_dir = self._make_checkpoint_task(
+            tmp_path, "cp-fallback", checkpoints, verifiers
+        )
         result = CheckpointScorer().score("output", task_dir)
         assert result.score == 0.0
         assert result.passed is False

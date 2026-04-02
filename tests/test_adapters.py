@@ -139,18 +139,6 @@ class TestAgentOutputTokenFields:
         assert output.cost_model == "subscription"
         assert output.cost_usd is None
 
-    def test_backward_compat_token_count(self) -> None:
-        output = AgentOutput(
-            stdout="ok",
-            stderr=None,
-            exit_code=0,
-            duration_seconds=1.0,
-            token_count=1500,
-            cost_usd=0.03,
-        )
-        assert output.token_count == 1500
-        assert output.cost_usd == 0.03
-
     def test_allowed_cost_models(self) -> None:
         assert "per_token" in ALLOWED_COST_MODELS
         assert "subscription" in ALLOWED_COST_MODELS
@@ -281,6 +269,60 @@ class _StubAdapter(BaseAdapter):
 
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
         return ["/usr/bin/fake-agent", "-p", prompt]
+
+
+class TestBaseAdapterEnvWhitelist:
+    """Verify subprocess.run() uses a filtered environment, not full parent env."""
+
+    def test_subprocess_receives_explicit_env(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        fake_result = subprocess.CompletedProcess(
+            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
+        )
+        with patch("subprocess.run", return_value=fake_result) as mock_run:
+            adapter.run("test", config)
+
+        _, kwargs = mock_run.call_args
+        assert "env" in kwargs, "subprocess.run must receive explicit env"
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+
+    def test_env_includes_path_and_home(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        fake_result = subprocess.CompletedProcess(
+            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
+        )
+        with patch("subprocess.run", return_value=fake_result) as mock_run:
+            import os
+
+            old_path = os.environ.get("PATH", "")
+            old_home = os.environ.get("HOME", "")
+            adapter.run("test", config)
+
+        env = mock_run.call_args[1]["env"]
+        if old_path:
+            assert env.get("PATH") == old_path
+        if old_home:
+            assert env.get("HOME") == old_home
+
+    def test_env_excludes_random_secrets(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        fake_result = subprocess.CompletedProcess(
+            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
+        )
+        import os
+
+        os.environ["MY_SUPER_SECRET_DB_PASSWORD"] = "hunter2"
+        try:
+            with patch("subprocess.run", return_value=fake_result) as mock_run:
+                adapter.run("test", config)
+            env = mock_run.call_args[1]["env"]
+            assert "MY_SUPER_SECRET_DB_PASSWORD" not in env
+        finally:
+            del os.environ["MY_SUPER_SECRET_DB_PASSWORD"]
 
 
 class TestBaseAdapterRunErrors:

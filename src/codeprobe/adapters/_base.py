@@ -16,6 +16,49 @@ from codeprobe.adapters.protocol import (
     AgentOutput,
 )
 
+# Only these env vars are forwarded to agent subprocesses.
+# Keeps secrets (OPENAI_API_KEY, AWS_SECRET_*, etc.) out of the child
+# unless explicitly listed here.
+_ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
+    {
+        # System essentials
+        "PATH",
+        "HOME",
+        "LANG",
+        "TERM",
+        "TMPDIR",
+        "LC_ALL",
+        # Agent-specific API keys (required by the adapters)
+        "ANTHROPIC_API_KEY",
+        "GITHUB_TOKEN",
+        "OPENAI_API_KEY",
+        "COPILOT_API_KEY",
+        # Python toolchain
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+        # Node/npm (for copilot CLI)
+        "NODE_PATH",
+        "NPM_CONFIG_PREFIX",
+        # Go toolchain
+        "GOPATH",
+        "GOROOT",
+        # Rust toolchain
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+    }
+)
+
+
+def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a filtered environment for agent subprocesses.
+
+    Only passes whitelisted vars — prevents leaking secrets from parent env.
+    """
+    env = {k: v for k, v in os.environ.items() if k in _ADAPTER_ENV_WHITELIST}
+    if extra:
+        env.update(extra)
+    return env
+
 
 class BaseAdapter:
     """Base class for CLI-based agent adapters.
@@ -103,6 +146,7 @@ class BaseAdapter:
                 text=True,
                 timeout=config.timeout_seconds,
                 cwd=config.cwd,
+                env=_adapter_safe_env(),
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start
