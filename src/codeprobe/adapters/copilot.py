@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import glob
 import json
 import logging
-import os
-import re
 import subprocess
 
 from codeprobe.adapters._base import BaseAdapter
@@ -14,15 +11,6 @@ from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.adapters.telemetry import NdjsonStreamCollector
 
 logger = logging.getLogger(__name__)
-
-# Common Copilot CLI log paths
-_COPILOT_LOG_PATHS = [
-    os.path.expanduser("~/.copilot/logs"),
-    os.path.expanduser("~/.config/github-copilot/logs"),
-]
-
-
-_COMPACTION_PATTERN = re.compile(r"CompactionProcessor:.*?(\d+)/(\d+)\s+tokens")
 
 
 class CopilotAdapter(BaseAdapter):
@@ -91,98 +79,15 @@ class CopilotAdapter(BaseAdapter):
             result_text_parts = []
         stdout_text = "\n".join(result_text_parts) if result_text_parts else raw
 
-        input_tokens = usage.input_tokens
-        cost_source = usage.cost_source
-        cost_usd = usage.cost_usd
-
-        # Fall back to process log parsing for input tokens
-        if input_tokens is None:
-            log_tokens = self._extract_tokens_from_logs()
-            if log_tokens is not None:
-                input_tokens = log_tokens
-                cost_source = "log_parsed"
-                # Recalculate cost with log-parsed input tokens
-                from codeprobe.adapters.telemetry import CLAUDE_PRICING
-
-                pricing = CLAUDE_PRICING.get("claude-sonnet-4-6")
-                if pricing is not None and usage.output_tokens is not None:
-                    cost_usd = (
-                        input_tokens * pricing[0] / 1_000_000
-                        + usage.output_tokens * pricing[1] / 1_000_000
-                    )
-                logger.debug(
-                    "Copilot input_tokens=%d extracted from process log",
-                    log_tokens,
-                )
-            else:
-                logger.debug(
-                    "Copilot input_tokens unavailable "
-                    "(no NDJSON usage, no process logs)"
-                )
-
         return AgentOutput(
             stdout=stdout_text,
             stderr=result.stderr or None,
             exit_code=result.returncode,
             duration_seconds=duration,
-            input_tokens=input_tokens,
+            input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
-            cost_usd=cost_usd,
+            cost_usd=usage.cost_usd,
             cost_model=usage.cost_model,
-            cost_source=cost_source,
+            cost_source=usage.cost_source,
             error=usage.error,
         )
-
-    def _extract_tokens_from_logs(self) -> int | None:
-        """Extract input token count from the most recent Copilot process log.
-
-        Tries two sources in the log:
-        1. JSON usage events with ``prompt_tokens`` or ``inputTokens``
-        2. CompactionProcessor lines: ``Utilization X% (N/M tokens)``
-           where N is the current context window token count
-
-        Returns the last seen value (most complete snapshot),
-        or None if logs are unavailable or unparseable.
-        """
-        for log_dir in _COPILOT_LOG_PATHS:
-            if not os.path.isdir(log_dir):
-                continue
-            log_files = sorted(
-                glob.glob(os.path.join(log_dir, "process-*.log")),
-                key=os.path.getmtime,
-                reverse=True,
-            )
-            if not log_files:
-                continue
-            # Guard against symlinks pointing outside the log directory
-            log_path = os.path.realpath(log_files[0])
-            if not log_path.startswith(os.path.realpath(log_dir)):
-                continue
-            try:
-                best: int | None = None
-                with open(log_path) as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        # Try JSON usage events first
-                        try:
-                            obj = json.loads(line)
-                            log_usage = obj.get("usage", {})
-                            prompt_tokens = log_usage.get(
-                                "prompt_tokens"
-                            ) or log_usage.get("inputTokens")
-                            if prompt_tokens is not None:
-                                best = int(prompt_tokens)
-                                continue
-                        except (json.JSONDecodeError, ValueError):
-                            pass
-                        # Fall back to CompactionProcessor lines
-                        m = _COMPACTION_PATTERN.search(line)
-                        if m:
-                            best = int(m.group(1))
-                if best is not None:
-                    return best
-            except OSError:
-                continue
-        return None

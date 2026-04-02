@@ -111,18 +111,29 @@ class JsonStdoutCollector:
         )
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimate token count from text using a ~4 chars/token heuristic.
+
+    This is a conservative estimate for Claude/GPT tokenizers.
+    Production systems should use tiktoken for exact counts.
+    """
+    return max(1, len(text) // 4) if text else 0
+
+
 class NdjsonStreamCollector:
     """Extract telemetry from Copilot CLI NDJSON stream on stdout.
 
-    Iterates NDJSON lines looking for ``assistant.message`` events
-    with an ``outputTokens`` field. Always returns
-    ``cost_model="subscription"``, ``cost_source="api_reported"``.
+    Iterates NDJSON lines to extract:
+    - ``outputTokens`` from ``assistant.message`` events
+    - Input tokens estimated from ``user.message`` and ``tool.execution_complete``
+      content (Copilot CLI does not report input tokens natively)
     """
 
     def collect(self, raw_output: str, **context: Any) -> UsageData:
         raw = raw_output or ""
         output_tokens = None
         input_tokens = None
+        input_chars = 0  # accumulate input content for estimation
 
         try:
             for line in raw.strip().splitlines():
@@ -130,14 +141,35 @@ class NdjsonStreamCollector:
                     continue
                 obj = json.loads(line)
                 event_type = obj.get("type", "")
-                if event_type in ("usage", "assistant.message"):
-                    data = obj.get("data", {})
+                data = obj.get("data", {})
+
+                if event_type == "assistant.message":
+                    out_tok = data.get("outputTokens")
+                    if out_tok is not None:
+                        if output_tokens is None:
+                            output_tokens = out_tok
+                        else:
+                            output_tokens += out_tok
+                    # Count assistant content as input for subsequent turns
+                    content = data.get("content", "")
+                    if content:
+                        input_chars += len(content)
+                elif event_type == "usage":
                     in_tok = data.get("inputTokens")
                     if in_tok is not None:
                         input_tokens = in_tok
+                    # usage event outputTokens is a summary total — only use
+                    # it if no output_tokens collected from assistant.message
                     out_tok = data.get("outputTokens")
-                    if out_tok is not None:
+                    if out_tok is not None and output_tokens is None:
                         output_tokens = out_tok
+                elif event_type == "user.message":
+                    content = data.get("transformedContent") or data.get("content", "")
+                    input_chars += len(content)
+                elif event_type == "tool.execution_complete":
+                    result = data.get("result", {})
+                    content = result.get("detailedContent") or result.get("content", "")
+                    input_chars += len(content)
                 elif event_type == "result":
                     usage = obj.get("usage", {})
                     in_tok = usage.get("inputTokens")
@@ -167,6 +199,17 @@ class NdjsonStreamCollector:
                     "Ensure Copilot CLI >= 1.0.4. "
                     "Upgrade with: gh extension upgrade copilot"
                 ),
+            )
+
+        # Estimate input tokens from stream content if not natively reported
+        if input_tokens is None and input_chars > 0:
+            input_tokens = _estimate_tokens(
+                "x" * input_chars  # placeholder, only length matters
+            )
+            logger.debug(
+                "Copilot input_tokens=%d estimated from %d stream chars",
+                input_tokens,
+                input_chars,
             )
 
         # Estimate cost from token counts using Sonnet pricing (Copilot's

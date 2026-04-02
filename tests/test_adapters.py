@@ -464,15 +464,16 @@ class TestCopilotParseOutput:
         assert output.cost_model == "per_token"
         assert output.cost_source == "calculated"
         assert output.output_tokens == 87
-        assert output.input_tokens is None
-        # Estimated cost from output tokens only (Sonnet pricing: $15/1M output)
+        assert output.input_tokens is not None  # estimated from stream content
+        assert output.input_tokens > 0
+        # Estimated cost from both input + output tokens (Sonnet pricing)
         assert output.cost_usd is not None
-        assert output.cost_usd == pytest.approx(87 * 15.0 / 1_000_000, abs=1e-8)
+        expected_cost = output.input_tokens * 3.0 / 1_000_000 + 87 * 15.0 / 1_000_000
+        assert output.cost_usd == pytest.approx(expected_cost, abs=1e-8)
         assert output.error is None
 
     def test_ndjson_long_output(self) -> None:
         adapter = CopilotAdapter()
-        adapter._extract_tokens_from_logs = lambda: None  # type: ignore[assignment]
         stdout = self._load_fixture("copilot_long.txt")
         result = self._make_copilot_result(stdout)
         output = adapter.parse_output(result, duration=3.0)
@@ -480,8 +481,11 @@ class TestCopilotParseOutput:
         assert "refactoring" in output.stdout
         assert output.cost_model == "per_token"
         assert output.cost_source == "calculated"
-        assert output.cost_usd == pytest.approx(312 * 15.0 / 1_000_000)
         assert output.output_tokens == 312
+        assert output.input_tokens is not None
+        assert output.input_tokens > 0
+        expected_cost = output.input_tokens * 3.0 / 1_000_000 + 312 * 15.0 / 1_000_000
+        assert output.cost_usd == pytest.approx(expected_cost, abs=1e-8)
         assert output.error is None
 
     def test_ndjson_without_token_count_errors(self) -> None:
@@ -551,63 +555,31 @@ class TestCopilotInputTokens:
         )
         assert output.error is None
 
-    def test_input_tokens_from_process_log(self) -> None:
-        """When NDJSON has no input tokens, fall back to process log parsing."""
+    def test_input_tokens_estimated_from_stream_content(self) -> None:
+        """When NDJSON has no usage event, input_tokens is estimated from stream chars."""
         adapter = CopilotAdapter()
         stdout = self._load_fixture("copilot_normal.txt")
         result = self._make_copilot_result(stdout)
+        output = adapter.parse_output(result, duration=1.0)
 
-        # Mock the log parsing to return a value
-        with patch.object(adapter, "_extract_tokens_from_logs", return_value=999):
-            output = adapter.parse_output(result, duration=1.0)
-
-        assert output.input_tokens == 999
-        assert output.output_tokens == 87
-        assert output.cost_source == "log_parsed"
-
-    def test_missing_log_returns_none_gracefully(self) -> None:
-        """When no log file exists, input_tokens remains None with no crash."""
-        adapter = CopilotAdapter()
-        stdout = self._load_fixture("copilot_normal.txt")
-        result = self._make_copilot_result(stdout)
-
-        # Mock log dirs as nonexistent
-        with patch("os.path.isdir", return_value=False):
-            output = adapter.parse_output(result, duration=1.0)
-
-        assert output.input_tokens is None
+        assert output.input_tokens is not None
+        assert output.input_tokens > 0
         assert output.output_tokens == 87
         assert output.cost_source == "calculated"
-        assert output.cost_usd == pytest.approx(87 * 15.0 / 1_000_000)
+
+    def test_input_tokens_always_estimated_without_usage_event(self) -> None:
+        """Without a usage event, input_tokens is estimated from assistant content chars."""
+        adapter = CopilotAdapter()
+        stdout = self._load_fixture("copilot_normal.txt")
+        result = self._make_copilot_result(stdout)
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.input_tokens is not None
+        assert output.output_tokens == 87
+        assert output.cost_source == "calculated"
+        expected_cost = output.input_tokens * 3.0 / 1_000_000 + 87 * 15.0 / 1_000_000
+        assert output.cost_usd == pytest.approx(expected_cost, abs=1e-8)
         assert output.error is None
-
-    def test_extract_tokens_from_logs_parses_usage(self) -> None:
-        """_extract_tokens_from_logs reads process log files for token usage."""
-        import tempfile
-        import os
-
-        adapter = CopilotAdapter()
-        log_content = '{"usage":{"prompt_tokens":2048,"completion_tokens":512}}\n'
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            log_file = os.path.join(tmpdir, "process-001.log")
-            with open(log_file, "w") as f:
-                f.write(log_content)
-
-            with patch("codeprobe.adapters.copilot._COPILOT_LOG_PATHS", [tmpdir]):
-                tokens = adapter._extract_tokens_from_logs()
-
-        assert tokens == 2048
-
-    def test_extract_tokens_from_logs_no_dirs(self) -> None:
-        """Returns None when no log directories exist."""
-        adapter = CopilotAdapter()
-        with patch(
-            "codeprobe.adapters.copilot._COPILOT_LOG_PATHS",
-            ["/nonexistent/path1", "/nonexistent/path2"],
-        ):
-            tokens = adapter._extract_tokens_from_logs()
-        assert tokens is None
 
     def test_input_tokens_from_result_event(self) -> None:
         """When NDJSON has no usage event but result event has token counts, extract them."""
