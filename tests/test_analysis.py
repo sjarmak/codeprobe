@@ -1083,3 +1083,219 @@ class TestCompareConfigsStatistical:
         cmp = compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
         assert cmp.ci_lower < cmp.ci_upper
         assert cmp.ci_lower > 0  # a clearly better
+
+
+# ---------------------------------------------------------------------------
+# format_csv_report
+# ---------------------------------------------------------------------------
+
+
+def _csv_strip_comments(text: str) -> str:
+    """Remove comment lines starting with '#' for csv.DictReader."""
+    return "\n".join(line for line in text.splitlines() if not line.startswith("#"))
+
+
+class TestFormatCsvReport:
+    def test_csv_columns(self) -> None:
+        """CSV output has the required columns."""
+        results = ConfigResults(
+            config="alpha",
+            completed=[
+                _task(
+                    f"t{i}",
+                    1.0,
+                    duration=10.0,
+                    cost=0.20,
+                    input_tokens=500,
+                    output_tokens=100,
+                )
+                for i in range(10)
+            ],
+        )
+        report = generate_report("csv-exp", [results])
+        text = format_csv_report(report)
+
+        reader = csv.DictReader(io.StringIO(_csv_strip_comments(text)))
+        expected_cols = {
+            "config",
+            "task_id",
+            "repeat",
+            "score",
+            "pass",
+            "duration_sec",
+            "cost_usd",
+            "cost_source",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cost_model",
+            "ci_lower",
+            "ci_upper",
+        }
+        assert reader.fieldnames is not None
+        assert set(reader.fieldnames) == expected_cols
+
+    def test_csv_data_rows(self) -> None:
+        """CSV has correct data per task."""
+        results = ConfigResults(
+            config="beta",
+            completed=[
+                CompletedTask(
+                    task_id="t1",
+                    automated_score=1.0,
+                    duration_seconds=10.0,
+                    cost_usd=0.15,
+                    cost_source="api",
+                    input_tokens=500,
+                    output_tokens=100,
+                    cache_read_tokens=50,
+                    cost_model="gpt-4o",
+                ),
+                CompletedTask(
+                    task_id="t2",
+                    automated_score=0.0,
+                    duration_seconds=20.0,
+                ),
+            ],
+        )
+        report = generate_report("csv-exp", [results])
+        text = format_csv_report(report)
+
+        rows = list(csv.DictReader(io.StringIO(_csv_strip_comments(text))))
+        assert len(rows) == 2
+
+        assert rows[0]["config"] == "beta"
+        assert rows[0]["task_id"] == "t1"
+        assert rows[0]["repeat"] == "1"
+        assert rows[0]["score"] == "1.0"
+        assert rows[0]["pass"] == "1"
+        assert rows[0]["cost_usd"] == "0.15"
+        assert rows[0]["cost_source"] == "api"
+        assert rows[0]["input_tokens"] == "500"
+        assert rows[0]["cache_read_tokens"] == "50"
+        assert rows[0]["cost_model"] == "gpt-4o"
+
+        assert rows[1]["pass"] == "0"
+        assert rows[1]["cost_usd"] == ""
+
+    def test_csv_warning_comment_small_sample(self) -> None:
+        """CSV includes warning comment when sample size is small."""
+        results = ConfigResults(
+            config="tiny",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        report = generate_report("warn-exp", [results])
+        text = format_csv_report(report)
+
+        assert text.startswith("# SINGLE RUN")
+        assert "no statistical confidence" in text
+
+    def test_csv_no_warning_large_sample(self) -> None:
+        """CSV has no warning when sample is large enough."""
+        results = ConfigResults(
+            config="big",
+            completed=[_task(f"t{i}", 1.0, duration=5.0) for i in range(10)],
+        )
+        report = generate_report("ok-exp", [results])
+        text = format_csv_report(report)
+
+        assert not text.startswith("#")
+
+    def test_csv_multiple_configs(self) -> None:
+        """CSV includes rows from multiple configs."""
+        results_a = ConfigResults(
+            config="a",
+            completed=[_task("t1", 1.0, duration=10.0)],
+        )
+        results_b = ConfigResults(
+            config="b",
+            completed=[_task("t1", 0.5, duration=20.0)],
+        )
+        report = generate_report("multi", [results_a, results_b])
+        text = format_csv_report(report)
+        rows = list(csv.DictReader(io.StringIO(_csv_strip_comments(text))))
+
+        configs = {r["config"] for r in rows}
+        assert configs == {"a", "b"}
+
+
+# ---------------------------------------------------------------------------
+# format_text_report: per-task table
+# ---------------------------------------------------------------------------
+
+
+class TestFormatTextReportPerTask:
+    def test_per_task_table_present(self) -> None:
+        """Text report includes per-task table with task data."""
+        results = ConfigResults(
+            config="alpha",
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.20),
+                _task("t2", 0.0, duration=15.0, cost=0.22),
+            ],
+        )
+        report = generate_report("test-exp", [results])
+        text = format_text_report(report)
+
+        assert "### Per-Task Results" in text
+        assert "t1" in text
+        assert "t2" in text
+        assert "| alpha |" in text
+
+
+# ---------------------------------------------------------------------------
+# format_json_report: per-task data
+# ---------------------------------------------------------------------------
+
+
+class TestFormatJsonReportPerTask:
+    def test_tasks_array_present(self) -> None:
+        """JSON report includes tasks array with per-task data."""
+        results = ConfigResults(
+            config="gamma",
+            completed=[
+                CompletedTask(
+                    task_id="t1",
+                    automated_score=1.0,
+                    duration_seconds=10.0,
+                    cost_usd=0.15,
+                    cost_source="api",
+                    input_tokens=500,
+                    output_tokens=100,
+                    cache_read_tokens=50,
+                    cost_model="gpt-4o",
+                ),
+            ],
+        )
+        report = generate_report("json-exp", [results])
+        data = json.loads(format_json_report(report))
+
+        assert "tasks" in data
+        assert len(data["tasks"]) == 1
+
+        task = data["tasks"][0]
+        assert task["config"] == "gamma"
+        assert task["task_id"] == "t1"
+        assert task["repeat"] == 1
+        assert task["score"] == 1.0
+        assert task["pass"] == 1
+        assert task["duration_sec"] == 10.0
+        assert task["cost_usd"] == 0.15
+        assert task["cost_source"] == "api"
+        assert task["input_tokens"] == 500
+        assert task["output_tokens"] == 100
+        assert task["cache_read_tokens"] == 50
+        assert task["cost_model"] == "gpt-4o"
+        assert "ci_lower" in task
+        assert "ci_upper" in task
+
+    def test_tasks_empty_for_streaming(self) -> None:
+        """Streaming report has empty tasks array (no config_results)."""
+        tasks = [_task("t1", 0.9, duration=5.0)]
+
+        def stream() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+            yield ("solo", iter(tasks))
+
+        report = generate_report_streaming("solo-exp", stream())
+        data = json.loads(format_json_report(report))
+        assert data["tasks"] == []
