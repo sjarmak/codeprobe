@@ -22,6 +22,8 @@ class TaskMetadata:
     resource_tier: str = "medium"
     issue_title: str = ""
     issue_body: str = ""
+    quality_score: float = 0.0
+    enrichment_source: str = ""
 
 
 @dataclass(frozen=True)

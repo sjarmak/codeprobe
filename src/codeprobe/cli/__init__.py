@@ -54,6 +54,12 @@ def init(path: str) -> None:
     default=False,
     help="List subsystems from merge history and pick interactively.",
 )
+@click.option(
+    "--enrich",
+    is_flag=True,
+    default=False,
+    help="Enrich low-quality tasks via LLM (adds problem statement + acceptance criteria).",
+)
 def mine(
     path: str,
     count: int,
@@ -61,6 +67,7 @@ def mine(
     min_files: int,
     subsystem: tuple[str, ...],
     discover_subsystems: bool,
+    enrich: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -76,6 +83,7 @@ def mine(
         min_files=min_files,
         subsystems=subsystem,
         discover_subsystems=discover_subsystems,
+        enrich=enrich,
     )
 
 

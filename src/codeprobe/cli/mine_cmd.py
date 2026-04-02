@@ -91,6 +91,7 @@ def run_mine(
     min_files: int = 0,
     subsystems: tuple[str, ...] = (),
     discover_subsystems: bool = False,
+    enrich: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
     from pathlib import Path
@@ -121,6 +122,13 @@ def run_mine(
             "No suitable tasks found. Try a repo with merged PRs that include tests."
         )
         return
+
+    # LLM enrichment for low-quality tasks when --enrich is passed
+    if enrich:
+        from codeprobe.mining.extractor import enrich_tasks
+
+        click.echo("Enriching low-quality tasks via LLM...")
+        tasks = enrich_tasks(tasks)
 
     # Clear stale tasks from prior runs before writing new ones
     tasks_dir = repo_path / ".codeprobe" / "tasks"

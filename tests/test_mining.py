@@ -13,6 +13,8 @@ from codeprobe.mining.extractor import (
     _build_test_command,
     _extract_issue_numbers,
     _format_task_description,
+    enrich_task,
+    enrich_tasks,
     extract_subsystems,
     extract_task_from_merge,
     list_merged_prs,
@@ -1246,3 +1248,126 @@ class TestWriteTaskDirWithIssue:
         assert "Tokens were not refreshed" in instruction
         # Should have task contract
         assert "TASK_REPO_ROOT=" in instruction
+
+
+# ---------------------------------------------------------------------------
+# LLM enrichment tests
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichment:
+    def _make_task(self, quality_score: float, task_id: str = "t001") -> Task:
+        """Create a task with a given quality_score."""
+        return Task(
+            id=task_id,
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name=f"merge-{task_id}",
+                difficulty="easy",
+                description="Fix auth token refresh\n\nTokens expired silently.",
+                language="python",
+                quality_score=quality_score,
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_auth.py",
+                reward_type="binary",
+            ),
+        )
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_enrich_task_success(self, mock_call: object) -> None:
+        """enrich_task() enriches description and sets enrichment_source='llm'."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"problem_statement": "Auth tokens expire without warning.", '
+            '"acceptance_criteria": "- Tokens refresh on 401\\n- User stays logged in", '
+            '"difficulty": "medium"}'
+        )
+
+        task = self._make_task(quality_score=0.25)
+        enriched = enrich_task(task)
+
+        assert enriched.metadata.enrichment_source == "llm"
+        assert "Auth tokens expire without warning" in enriched.metadata.description
+        assert "Acceptance Criteria" in enriched.metadata.description
+        assert enriched.metadata.difficulty == "medium"
+        # Original description preserved
+        assert "Tokens expired silently" in enriched.metadata.description
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_enrich_task_llm_failure_returns_unchanged(self, mock_call: object) -> None:
+        """On LLM failure, task is returned unchanged."""
+        from codeprobe.core.llm import LLMExecutionError
+
+        mock_call.side_effect = LLMExecutionError("timeout")
+
+        task = self._make_task(quality_score=0.25)
+        result = enrich_task(task)
+
+        assert result.metadata.enrichment_source == ""
+        assert result.metadata.description == task.metadata.description
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_enrich_task_invalid_json_returns_unchanged(
+        self, mock_call: object
+    ) -> None:
+        """On invalid JSON from LLM, task is returned unchanged."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(text="not valid json at all")
+
+        task = self._make_task(quality_score=0.25)
+        result = enrich_task(task)
+
+        assert result.metadata.enrichment_source == ""
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_enrich_tasks_filters_by_quality(self, mock_call: object) -> None:
+        """Only tasks with quality_score < 0.5 are enriched."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"problem_statement": "Enriched.", "acceptance_criteria": "- Done", "difficulty": "easy"}'
+        )
+
+        low_quality = self._make_task(quality_score=0.25, task_id="low1")
+        high_quality = self._make_task(quality_score=0.75, task_id="high1")
+
+        result = enrich_tasks([low_quality, high_quality])
+
+        assert len(result) == 2
+        # Low-quality task was enriched
+        assert result[0].metadata.enrichment_source == "llm"
+        assert "Enriched." in result[0].metadata.description
+        # High-quality task was NOT enriched
+        assert result[1].metadata.enrichment_source == ""
+        assert result[1].metadata.description == high_quality.metadata.description
+        # call_claude was only called once (for the low-quality task)
+        mock_call.assert_called_once()
+
+    def test_quality_score_in_metadata(self) -> None:
+        """TaskMetadata includes quality_score field."""
+        task = self._make_task(quality_score=0.75)
+        assert task.metadata.quality_score == 0.75
+
+    def test_enrichment_source_defaults_empty(self) -> None:
+        """TaskMetadata.enrichment_source defaults to empty string."""
+        meta = TaskMetadata(name="test")
+        assert meta.enrichment_source == ""
+        assert meta.quality_score == 0.0
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_enrich_tasks_all_high_quality_no_calls(self, mock_call: object) -> None:
+        """When all tasks are high quality, call_claude is never invoked."""
+        tasks = [
+            self._make_task(quality_score=0.5, task_id="h1"),
+            self._make_task(quality_score=0.75, task_id="h2"),
+        ]
+
+        result = enrich_tasks(tasks)
+
+        assert len(result) == 2
+        assert all(t.metadata.enrichment_source == "" for t in result)
+        mock_call.assert_not_called()

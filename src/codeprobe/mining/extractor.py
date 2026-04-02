@@ -6,7 +6,7 @@ import json as _json
 import logging
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -601,6 +601,9 @@ def mine_tasks(
                     min_quality,
                 )
                 continue
+            # Persist quality_score in task metadata
+            enriched_metadata = replace(task.metadata, quality_score=quality)
+            task = replace(task, metadata=enriched_metadata)
             candidates.append((quality, len(changed_files), task))
 
     # Sort by quality score descending, then file count descending
@@ -614,3 +617,105 @@ def mine_tasks(
         min_files,
     )
     return tasks
+
+
+# ---------------------------------------------------------------------------
+# LLM enrichment
+# ---------------------------------------------------------------------------
+
+_ENRICHMENT_THRESHOLD = 0.5
+
+_ENRICHMENT_PROMPT_TEMPLATE = """\
+You are an eval-task enrichment assistant. Given the following raw task \
+extracted from a pull request, produce an improved task description.
+
+## Raw Task
+Title: {title}
+Description:
+{description}
+
+## Instructions
+Produce a JSON object with exactly these keys:
+- "problem_statement": A clear 2-3 sentence problem statement.
+- "acceptance_criteria": A bullet list (as a single string) of acceptance criteria.
+- "difficulty": One of "easy", "medium", or "hard".
+
+Respond ONLY with the JSON object, no markdown fences.
+"""
+
+
+def _build_enrichment_prompt(task: Task) -> str:
+    """Build the enrichment prompt for a low-quality task."""
+    return _ENRICHMENT_PROMPT_TEMPLATE.format(
+        title=task.metadata.name,
+        description=task.metadata.description,
+    )
+
+
+def enrich_task(task: Task) -> Task:
+    """Enrich a single task via call_claude().
+
+    Appends LLM-generated problem statement and acceptance criteria to the
+    task description. Sets enrichment_source='llm' in metadata.
+
+    On LLM failure, returns the task unchanged (logs warning).
+    """
+    from codeprobe.core.llm import LLMError, LLMRequest, call_claude
+
+    prompt = _build_enrichment_prompt(task)
+    try:
+        response = call_claude(
+            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+        )
+    except LLMError as exc:
+        logger.warning("LLM enrichment failed for %s: %s", task.id, exc)
+        return task
+
+    # Parse the response — best-effort JSON extraction
+    try:
+        data = _json.loads(response.text)
+    except _json.JSONDecodeError:
+        logger.warning(
+            "LLM returned invalid JSON for %s: %.100s", task.id, response.text
+        )
+        return task
+
+    problem = data.get("problem_statement", "")
+    criteria = data.get("acceptance_criteria", "")
+    difficulty = data.get("difficulty", task.metadata.difficulty)
+
+    if difficulty not in ("easy", "medium", "hard"):
+        difficulty = task.metadata.difficulty
+
+    enriched_description = task.metadata.description
+    if problem:
+        enriched_description += f"\n\n## Problem Statement\n\n{problem}"
+    if criteria:
+        enriched_description += f"\n\n## Acceptance Criteria\n\n{criteria}"
+
+    new_metadata = replace(
+        task.metadata,
+        description=enriched_description,
+        difficulty=difficulty,
+        enrichment_source="llm",
+    )
+    return replace(task, metadata=new_metadata)
+
+
+def enrich_tasks(tasks: list[Task]) -> list[Task]:
+    """Enrich tasks with quality_score below the threshold via LLM.
+
+    Tasks at or above the threshold are passed through unchanged.
+    """
+    result: list[Task] = []
+    for task in tasks:
+        if task.metadata.quality_score < _ENRICHMENT_THRESHOLD:
+            logger.info(
+                "Enriching task %s (quality=%.2f)",
+                task.id,
+                task.metadata.quality_score,
+            )
+            result.append(enrich_task(task))
+        else:
+            result.append(task)
+    return result
