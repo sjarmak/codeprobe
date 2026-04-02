@@ -96,3 +96,11 @@ class AgentAdapter(Protocol):
     def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
         """Execute the agent with the given prompt and return results."""
         ...
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        """Return per-slot env overrides for session isolation.
+
+        Adapters that need session-level isolation (e.g. separate config dirs)
+        return a dict of env vars.  Default: empty dict (no isolation).
+        """
+        ...

@@ -187,6 +187,9 @@ class TestNarrowedProtocol:
                     stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1
                 )
 
+            def isolate_session(self, slot_id: int) -> dict[str, str]:
+                return {}
+
         adapter = MinimalAdapter()
         assert isinstance(adapter, AgentAdapter)
         assert adapter.name == "minimal"
@@ -1293,3 +1296,35 @@ class TestClaudeMcpConfig:
         if adapter.find_binary():
             cmd = adapter.build_command("test", config)
             assert "--mcp-config" not in cmd
+
+
+# -- isolate_session() tests --------------------------------------------------
+
+
+class TestIsolateSession:
+    def test_claude_isolate_session_returns_config_dir(self) -> None:
+        adapter = ClaudeAdapter()
+        env = adapter.isolate_session(0)
+        assert "CLAUDE_CONFIG_DIR" in env
+        assert "slot-0" in env["CLAUDE_CONFIG_DIR"]
+
+    def test_claude_isolate_session_different_slots(self) -> None:
+        adapter = ClaudeAdapter()
+        env0 = adapter.isolate_session(0)
+        env1 = adapter.isolate_session(1)
+        assert env0["CLAUDE_CONFIG_DIR"] != env1["CLAUDE_CONFIG_DIR"]
+
+    def test_base_adapter_isolate_session_returns_empty(self) -> None:
+        adapter = _StubAdapter()
+        env = adapter.isolate_session(42)
+        assert env == {}
+
+    def test_copilot_isolate_session_returns_empty(self) -> None:
+        adapter = CopilotAdapter()
+        env = adapter.isolate_session(0)
+        assert env == {}
+
+    def test_aider_isolate_session_returns_empty(self) -> None:
+        adapter = AiderAdapter()
+        env = adapter.isolate_session(0)
+        assert env == {}

@@ -54,6 +54,10 @@ class CodexAdapter:
             issues.append("OPENAI_API_KEY environment variable not set")
         return issues
 
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        """Codex uses API calls — no session-level isolation needed."""
+        return {}
+
     def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
         try:
             import openai

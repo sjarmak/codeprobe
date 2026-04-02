@@ -54,6 +54,9 @@ class FakeAdapter:
             cost_model=self._cost_model,
         )
 
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        return {}
+
 
 class SequentialCostAdapter(FakeAdapter):
     """FakeAdapter that returns different costs for each run call."""

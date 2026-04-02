@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import stat
+import threading
 from pathlib import Path
-from unittest.mock import patch, call
+from unittest.mock import patch, call, MagicMock
 
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core.executor import (
@@ -12,8 +13,11 @@ from codeprobe.core.executor import (
     _git_reset_workdir,
     execute_config,
     execute_task,
+    get_concurrency_semaphore,
     load_instruction,
+    set_max_concurrency,
 )
+from codeprobe.core.isolation import IsolationStrategy, WorktreeIsolation
 from codeprobe.core.preamble import _base_prompt
 from codeprobe.core.preamble import DefaultPreambleResolver
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -582,3 +586,161 @@ def test_execute_config_no_reset_for_single_task(tmp_path: Path):
             parallel=1,
         )
         mock_reset.assert_not_called()
+
+
+# --- Worktree isolation tests ---
+
+
+class TestWorktreeIsolation:
+    def test_create_pool(self, tmp_path: Path) -> None:
+        """WorktreeIsolation creates worktrees via subprocess."""
+        with patch("subprocess.run") as mock_run:
+            iso = WorktreeIsolation(tmp_path, pool_size=2)
+            # Force pool creation by acquiring
+            iso._base_dir.mkdir(parents=True, exist_ok=True)
+            iso._create_pool()
+            # Should call git worktree add twice
+            assert mock_run.call_count == 2
+            for c in mock_run.call_args_list:
+                assert c[0][0][0:3] == ["git", "worktree", "add"]
+
+    def test_acquire_returns_path(self, tmp_path: Path) -> None:
+        """acquire() returns a worktree path from the pool."""
+        with patch("subprocess.run"):
+            iso = WorktreeIsolation(tmp_path, pool_size=1)
+            iso._create_pool()
+            wt = iso.acquire()
+            assert isinstance(wt, Path)
+            assert "slot-0" in str(wt)
+
+    def test_reset_calls_git_checkout_and_clean(self, tmp_path: Path) -> None:
+        """reset() runs git checkout -- . and git clean -fd."""
+        iso = WorktreeIsolation(tmp_path, pool_size=1)
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        with patch("subprocess.run") as mock_run:
+            iso.reset(wt)
+            assert mock_run.call_count == 2
+            calls = [c[0][0] for c in mock_run.call_args_list]
+            assert calls[0] == ["git", "checkout", "--", "."]
+            assert calls[1] == ["git", "clean", "-fd"]
+
+    def test_release_resets_and_returns_to_pool(self, tmp_path: Path) -> None:
+        """release() resets the worktree and makes it available again."""
+        with patch("subprocess.run"):
+            iso = WorktreeIsolation(tmp_path, pool_size=1)
+            iso._create_pool()
+            wt = iso.acquire()
+        with patch("subprocess.run"):
+            iso.release(wt)
+        # Should be available again
+        assert not iso._available.empty()
+
+    def test_cleanup_removes_worktrees(self, tmp_path: Path) -> None:
+        """cleanup() calls git worktree remove for each worktree."""
+        with patch("subprocess.run"):
+            iso = WorktreeIsolation(tmp_path, pool_size=2)
+            iso._create_pool()
+        with patch("subprocess.run") as mock_run:
+            iso.cleanup()
+            assert mock_run.call_count == 2
+            for c in mock_run.call_args_list:
+                assert c[0][0][0:3] == ["git", "worktree", "remove"]
+
+    def test_pool_size_validation(self) -> None:
+        """pool_size must be >= 1."""
+        import pytest
+
+        with pytest.raises(ValueError, match="pool_size"):
+            WorktreeIsolation(Path("/tmp"), pool_size=0)
+
+    def test_satisfies_protocol(self, tmp_path: Path) -> None:
+        """WorktreeIsolation satisfies IsolationStrategy protocol."""
+        with patch("subprocess.run"):
+            iso = WorktreeIsolation(tmp_path, pool_size=1)
+            assert isinstance(iso, IsolationStrategy)
+
+
+# --- Preamble repo_path rewriting ---
+
+
+class TestPreambleRewriting:
+    def test_base_prompt_uses_worktree_path(self) -> None:
+        """_base_prompt uses worktree_path when provided."""
+        prompt = _base_prompt(
+            "Fix bug.", Path("/repo"), worktree_path=Path("/wt/slot-0")
+        )
+        assert "/wt/slot-0" in prompt
+        assert "/repo" not in prompt
+
+    def test_base_prompt_uses_repo_path_when_no_worktree(self) -> None:
+        """_base_prompt uses repo_path when worktree_path is None."""
+        prompt = _base_prompt("Fix bug.", Path("/repo"), worktree_path=None)
+        assert "/repo" in prompt
+
+    def test_execute_task_passes_worktree_path(self, tmp_path: Path) -> None:
+        """execute_task passes worktree_path through to prompt."""
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        adapter = FakeAdapter(stdout="correct answer")
+        config = AgentConfig()
+        wt_path = Path("/worktrees/slot-0")
+
+        execute_task(adapter, task_dir, Path("/repo"), config, worktree_path=wt_path)
+        prompt = adapter.run_calls[0][0]
+        assert str(wt_path) in prompt
+        assert "/repo" not in prompt
+
+
+# --- Global concurrency semaphore ---
+
+
+class TestConcurrencySemaphore:
+    def test_set_and_get_semaphore(self) -> None:
+        """set_max_concurrency creates a semaphore retrievable via get."""
+        set_max_concurrency(3)
+        sem = get_concurrency_semaphore()
+        assert sem is not None
+        # Verify it's a semaphore with correct count
+        assert isinstance(sem, threading.Semaphore)
+
+    def test_semaphore_limits_concurrency(self) -> None:
+        """Semaphore actually limits concurrent access."""
+        set_max_concurrency(2)
+        sem = get_concurrency_semaphore()
+        assert sem is not None
+
+        # Acquire both slots
+        assert sem.acquire(blocking=False)
+        assert sem.acquire(blocking=False)
+        # Third acquire should fail (non-blocking)
+        assert not sem.acquire(blocking=False)
+        # Release one
+        sem.release()
+        assert sem.acquire(blocking=False)
+        # Clean up
+        sem.release()
+        sem.release()
+
+    def test_executor_uses_isolation_in_parallel(self, tmp_path: Path) -> None:
+        """execute_config uses isolation strategy when parallel > 1."""
+        tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(2)]
+        adapter = FakeAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        mock_iso = MagicMock(spec=WorktreeIsolation)
+        mock_iso.acquire.return_value = Path("/wt/slot-0")
+
+        with patch("codeprobe.core.executor.WorktreeIsolation", return_value=mock_iso):
+            execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=Path("/repo"),
+                experiment_config=exp_config,
+                agent_config=agent_config,
+                parallel=2,
+            )
+        # Isolation should have been used
+        assert mock_iso.acquire.call_count == 2
+        assert mock_iso.release.call_count == 2
+        assert mock_iso.cleanup.call_count == 1

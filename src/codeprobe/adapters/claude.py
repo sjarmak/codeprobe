@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
+from pathlib import Path
 
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import (
@@ -43,6 +45,14 @@ class ClaudeAdapter(BaseAdapter):
             cmd.extend(["--mcp-config", mcp_path])
 
         return cmd
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        """Return a per-slot CLAUDE_CONFIG_DIR for session isolation."""
+        config_dir = (
+            Path(tempfile.gettempdir()) / "codeprobe-claude" / f"slot-{slot_id}"
+        )
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return {"CLAUDE_CONFIG_DIR": str(config_dir)}
 
     def parse_output(
         self, result: subprocess.CompletedProcess[str], duration: float

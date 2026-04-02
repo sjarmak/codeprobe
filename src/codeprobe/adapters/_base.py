@@ -30,6 +30,7 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         "LC_ALL",
         # Agent-specific API keys (required by the adapters)
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CONFIG_DIR",
         "GITHUB_TOKEN",
         "OPENAI_API_KEY",
         "COPILOT_API_KEY",
@@ -90,6 +91,10 @@ class BaseAdapter:
         if self.find_binary() is None:
             issues.append(self._install_hint)
         return issues
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        """Default: no session isolation env overrides."""
+        return {}
 
     @abstractmethod
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]: ...

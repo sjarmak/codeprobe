@@ -55,7 +55,9 @@ class DefaultPreambleResolver:
 
     def _resolve_one(self, name: str) -> PreambleBlock:
         if "/" in name or "\\" in name or ".." in name:
-            raise ValueError(f"Preamble name contains illegal path characters: {name!r}")
+            raise ValueError(
+                f"Preamble name contains illegal path characters: {name!r}"
+            )
         for search_dir in self._search_dirs:
             path = (search_dir / f"{name}.md").resolve()
             if not str(path).startswith(str(search_dir.resolve())):
@@ -77,10 +79,17 @@ class DefaultPreambleResolver:
         )
 
 
-def _base_prompt(instruction: str, repo_path: Path) -> str:
-    """Build the base prompt wrapper shared across prompt-building paths."""
+def _base_prompt(
+    instruction: str, repo_path: Path, *, worktree_path: Path | None = None
+) -> str:
+    """Build the base prompt wrapper shared across prompt-building paths.
+
+    When *worktree_path* is provided (parallel isolation mode), the prompt
+    references the worktree instead of the original repo path.
+    """
+    effective_path = worktree_path if worktree_path is not None else repo_path
     return (
-        f"You are working on the repository at {repo_path}. "
+        f"You are working on the repository at {effective_path}. "
         "Follow the instruction below.\n\n"
         f"{instruction}"
     )
@@ -92,16 +101,19 @@ def compose_instruction(
     preamble_names: list[str],
     resolver: PreambleResolver,
     task_id: str = "",
+    *,
+    worktree_path: Path | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
     """Build the full prompt from instruction + preamble blocks.
 
     Returns ``(prompt, resolved_preambles)`` where resolved_preambles is a
     list of dicts with ``name`` and ``content`` keys for reproducibility.
     """
-    base = _base_prompt(instruction, repo_path)
+    base = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
 
+    effective_path = worktree_path if worktree_path is not None else repo_path
     context = {
-        "repo_path": str(repo_path),
+        "repo_path": str(effective_path),
         "task_id": task_id,
     }
 

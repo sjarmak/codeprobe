@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import subprocess
+import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -12,12 +13,31 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.isolation import IsolationStrategy, WorktreeIsolation
 from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
 from codeprobe.core.scoring import get_scorer, sanitize_secrets
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
+
+# Global concurrency semaphore — caps total active agent subprocesses
+# across all executor instances in the process.
+_global_semaphore: threading.Semaphore | None = None
+_semaphore_lock = threading.Lock()
+
+
+def set_max_concurrency(max_concurrent: int) -> None:
+    """Set the global concurrency cap for agent subprocesses."""
+    global _global_semaphore  # noqa: PLW0603
+    with _semaphore_lock:
+        _global_semaphore = threading.Semaphore(max_concurrent)
+
+
+def get_concurrency_semaphore() -> threading.Semaphore | None:
+    """Return the global semaphore (None if not configured)."""
+    return _global_semaphore
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +80,7 @@ def execute_task(
     reward_type: str = "binary",
     preamble_names: tuple[str, ...] = (),
     preamble_resolver: PreambleResolver | None = None,
+    worktree_path: Path | None = None,
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -97,11 +118,12 @@ def execute_task(
                 preamble_names=list(preamble_names),
                 resolver=preamble_resolver,
                 task_id=task_id,
+                worktree_path=worktree_path,
             )
         except (FileNotFoundError, ValueError) as exc:
             return _error_result(f"Preamble resolution failed: {exc}")
     else:
-        prompt = _base_prompt(instruction, repo_path)
+        prompt = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
 
     try:
         output = adapter.run(prompt, agent_config)
@@ -283,6 +305,7 @@ def execute_config(
     max_cost_usd: float | None = None,
     preamble_resolver: PreambleResolver | None = None,
     parallel: int = 1,
+    isolation: IsolationStrategy | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -312,18 +335,26 @@ def execute_config(
 
     cumulative_cost = 0.0
 
-    def _run_one(task_dir: Path) -> TaskResult:
+    def _run_one(task_dir: Path, worktree_path: Path | None = None) -> TaskResult:
         logger.info("[%s] Running %s", experiment_config.label, task_dir.name)
-        return execute_task(
-            adapter=adapter,
-            task_dir=task_dir,
-            repo_path=repo_path,
-            agent_config=agent_config,
-            instruction_variant=experiment_config.instruction_variant,
-            reward_type=experiment_config.reward_type,
-            preamble_names=experiment_config.preambles,
-            preamble_resolver=preamble_resolver,
-        )
+        sem = get_concurrency_semaphore()
+        if sem is not None:
+            sem.acquire()
+        try:
+            return execute_task(
+                adapter=adapter,
+                task_dir=task_dir,
+                repo_path=repo_path,
+                agent_config=agent_config,
+                instruction_variant=experiment_config.instruction_variant,
+                reward_type=experiment_config.reward_type,
+                preamble_names=experiment_config.preambles,
+                preamble_resolver=preamble_resolver,
+                worktree_path=worktree_path,
+            )
+        finally:
+            if sem is not None:
+                sem.release()
 
     def _handle_result(task_result: TaskResult) -> None:
         nonlocal cumulative_cost
@@ -368,38 +399,58 @@ def execute_config(
             len(pending_dirs),
             workers,
         )
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_dir = {pool.submit(_run_one, td): td for td in pending_dirs}
-            for future in as_completed(future_to_dir):
-                task_dir = future_to_dir[future]
-                try:
-                    task_result = future.result()
-                except Exception as exc:
-                    logger.error(
-                        "[%s] %s raised: %s",
-                        experiment_config.label,
-                        task_dir.name,
-                        exc,
-                    )
-                    task_result = TaskResult(
-                        completed=CompletedTask(
-                            task_id=task_dir.name,
-                            automated_score=0.0,
-                            status="error",
-                            metadata={"error": str(exc)},
-                        ),
-                    )
-                _handle_result(task_result)
+        # Auto-create isolation when parallel > 1 and none provided
+        owns_isolation = False
+        active_isolation = isolation
+        if active_isolation is None:
+            active_isolation = WorktreeIsolation(repo_path, pool_size=workers)
+            owns_isolation = True
 
-                if max_cost_usd is not None and cumulative_cost > max_cost_usd:
-                    logger.warning(
-                        "Cost circuit-breaker: $%.2f exceeds budget $%.2f — "
-                        "cancelling remaining tasks",
-                        cumulative_cost,
-                        max_cost_usd,
-                    )
-                    for f in future_to_dir:
-                        f.cancel()
-                    break
+        def _run_isolated(task_dir: Path) -> TaskResult:
+            wt = active_isolation.acquire()  # type: ignore[union-attr]
+            try:
+                return _run_one(task_dir, worktree_path=wt)
+            finally:
+                active_isolation.release(wt)  # type: ignore[union-attr]
+
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                future_to_dir = {
+                    pool.submit(_run_isolated, td): td for td in pending_dirs
+                }
+                for future in as_completed(future_to_dir):
+                    task_dir = future_to_dir[future]
+                    try:
+                        task_result = future.result()
+                    except Exception as exc:
+                        logger.error(
+                            "[%s] %s raised: %s",
+                            experiment_config.label,
+                            task_dir.name,
+                            exc,
+                        )
+                        task_result = TaskResult(
+                            completed=CompletedTask(
+                                task_id=task_dir.name,
+                                automated_score=0.0,
+                                status="error",
+                                metadata={"error": str(exc)},
+                            ),
+                        )
+                    _handle_result(task_result)
+
+                    if max_cost_usd is not None and cumulative_cost > max_cost_usd:
+                        logger.warning(
+                            "Cost circuit-breaker: $%.2f exceeds budget $%.2f — "
+                            "cancelling remaining tasks",
+                            cumulative_cost,
+                            max_cost_usd,
+                        )
+                        for f in future_to_dir:
+                            f.cancel()
+                        break
+        finally:
+            if owns_isolation:
+                active_isolation.cleanup()  # type: ignore[union-attr]
 
     return results
