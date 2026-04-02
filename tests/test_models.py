@@ -35,6 +35,19 @@ def test_completed_task_score():
     assert task.status == "completed"
 
 
+def test_completed_task_error_category_default():
+    task = CompletedTask(task_id="t-001", automated_score=1.0)
+    assert task.error_category is None
+
+
+def test_completed_task_error_category_values():
+    for category in ("agent", "system", "timeout", "resource"):
+        task = CompletedTask(
+            task_id="t-001", automated_score=0.0, error_category=category
+        )
+        assert task.error_category == category
+
+
 def test_completed_task_repeat_index_default():
     task = CompletedTask(task_id="t-001", automated_score=1.0)
     assert task.repeat_index == 0

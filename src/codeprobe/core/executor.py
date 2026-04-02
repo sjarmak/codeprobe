@@ -21,6 +21,71 @@ from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
 
+
+@dataclass(frozen=True)
+class DryRunEstimate:
+    """Resource estimate for a dry-run (no agents spawned)."""
+
+    total_tasks: int
+    total_configs: int
+    total_runs: int
+    max_concurrent: int
+    estimated_disk_mb: float
+    estimated_cost_range: tuple[float, float]
+
+
+def _estimate_repo_size_mb(repo_path: Path) -> float:
+    """Estimate the on-disk size of a repo in megabytes.
+
+    Uses ``du -sm`` for speed; falls back to a conservative default.
+    """
+    try:
+        result = subprocess.run(
+            ["du", "-sm", str(repo_path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return float(result.stdout.split()[0])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
+        pass
+    return 100.0  # conservative default
+
+
+def dry_run_estimate(
+    *,
+    task_count: int,
+    configs_count: int,
+    repeats: int,
+    parallel: int,
+    repo_path: Path,
+) -> DryRunEstimate:
+    """Compute resource estimates without spawning any agents.
+
+    Returns a frozen dataclass with counts, concurrency, disk, and cost
+    projections.
+    """
+    total_runs = task_count * configs_count * repeats
+    max_concurrent = min(parallel, total_runs)
+    repo_mb = _estimate_repo_size_mb(repo_path)
+    # Each parallel worker needs its own worktree copy
+    estimated_disk_mb = repo_mb * max_concurrent
+
+    # Cost heuristic: $0.02 - $0.15 per run (typical for light coding tasks)
+    cost_low = total_runs * 0.02
+    cost_high = total_runs * 0.15
+
+    return DryRunEstimate(
+        total_tasks=task_count,
+        total_configs=configs_count,
+        total_runs=total_runs,
+        max_concurrent=max_concurrent,
+        estimated_disk_mb=round(estimated_disk_mb, 1),
+        estimated_cost_range=(round(cost_low, 2), round(cost_high, 2)),
+    )
+
+
 # Global concurrency semaphore — caps total active agent subprocesses
 # across all executor instances in the process.
 _global_semaphore: threading.Semaphore | None = None
@@ -40,6 +105,18 @@ def get_concurrency_semaphore() -> threading.Semaphore | None:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_error(exc: BaseException) -> str:
+    """Classify an exception into an error category.
+
+    Returns one of: 'timeout', 'system', 'agent'.
+    """
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(exc, (OSError, MemoryError)):
+        return "system"
+    return "agent"
 
 
 @dataclass(frozen=True)
@@ -89,12 +166,13 @@ def execute_task(
     """
     task_id = task_dir.name
 
-    def _error_result(error: str) -> TaskResult:
+    def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
             completed=CompletedTask(
                 task_id=task_id,
                 automated_score=0.0,
                 status="error",
+                error_category=error_category,
                 metadata={"error": error},
             ),
         )
@@ -129,7 +207,10 @@ def execute_task(
     try:
         output = adapter.run(prompt, agent_config, session_env=session_env)
     except Exception as exc:
-        return _error_result(sanitize_secrets(str(exc)))
+        return _error_result(
+            sanitize_secrets(str(exc)),
+            error_category=_classify_error(exc),
+        )
 
     def _output_fields() -> dict:
         return dict(
@@ -292,6 +373,7 @@ def _restore_checkpointed(
                 cost_usd=entry.get("cost_usd"),
                 cost_model=entry.get("cost_model", "unknown"),
                 cost_source=entry.get("cost_source", "unavailable"),
+                error_category=entry.get("error_category"),
                 scoring_details=entry.get("scoring_details", {}),
                 metadata=entry.get("metadata", {}),
             )
@@ -487,6 +569,7 @@ def execute_config(
                                 automated_score=0.0,
                                 repeat_index=repeat_index,
                                 status="error",
+                                error_category=_classify_error(exc),
                                 metadata={"error": str(exc)},
                             ),
                         )
@@ -505,5 +588,19 @@ def execute_config(
         finally:
             if owns_isolation:
                 active_isolation.cleanup()  # type: ignore[union-attr]
+
+    # Warn if >30% of tasks have system errors (capacity issues)
+    if results:
+        system_errors = sum(1 for r in results if r.error_category == "system")
+        ratio = system_errors / len(results)
+        if ratio > 0.30:
+            logger.warning(
+                "[%s] %.0f%% of tasks (%d/%d) have system errors — "
+                "possible capacity issues",
+                experiment_config.label,
+                ratio * 100,
+                system_errors,
+                len(results),
+            )
 
     return results

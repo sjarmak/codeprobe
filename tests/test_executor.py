@@ -9,8 +9,11 @@ from unittest.mock import patch, call, MagicMock
 
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core.executor import (
+    DryRunEstimate,
     TaskResult,
+    _classify_error,
     _git_reset_workdir,
+    dry_run_estimate,
     execute_config,
     execute_task,
     get_concurrency_semaphore,
@@ -876,3 +879,242 @@ class TestRepeats:
         assert len(results) == 3
         indices = sorted(r.repeat_index for r in results)
         assert indices == [0, 1, 2]
+
+
+# --- Dry-run estimation tests ---
+
+
+class TestDryRunEstimate:
+    def test_returns_correct_counts(self, tmp_path: Path) -> None:
+        """dry_run_estimate computes correct task/run/config counts."""
+        estimate = dry_run_estimate(
+            task_count=5,
+            configs_count=2,
+            repeats=3,
+            parallel=4,
+            repo_path=tmp_path,
+        )
+        assert isinstance(estimate, DryRunEstimate)
+        assert estimate.total_tasks == 5
+        assert estimate.total_configs == 2
+        assert estimate.total_runs == 30  # 5 * 2 * 3
+        assert estimate.max_concurrent == 4  # min(4, 30)
+
+    def test_max_concurrent_capped_by_total_runs(self, tmp_path: Path) -> None:
+        """max_concurrent never exceeds total_runs."""
+        estimate = dry_run_estimate(
+            task_count=2,
+            configs_count=1,
+            repeats=1,
+            parallel=10,
+            repo_path=tmp_path,
+        )
+        assert estimate.total_runs == 2
+        assert estimate.max_concurrent == 2  # min(10, 2)
+
+    def test_cost_range_scales_with_runs(self, tmp_path: Path) -> None:
+        """Estimated cost range scales linearly with total_runs."""
+        estimate = dry_run_estimate(
+            task_count=10,
+            configs_count=1,
+            repeats=1,
+            parallel=1,
+            repo_path=tmp_path,
+        )
+        cost_lo, cost_hi = estimate.estimated_cost_range
+        assert cost_lo == 10 * 0.02
+        assert cost_hi == 10 * 0.15
+
+    def test_disk_estimate_scales_with_concurrency(self, tmp_path: Path) -> None:
+        """Disk estimate = repo_size * max_concurrent."""
+        with patch("codeprobe.core.executor._estimate_repo_size_mb", return_value=50.0):
+            estimate = dry_run_estimate(
+                task_count=10,
+                configs_count=1,
+                repeats=1,
+                parallel=3,
+                repo_path=tmp_path,
+            )
+        assert estimate.estimated_disk_mb == 150.0  # 50 * 3
+
+    def test_no_subprocess_calls(self, tmp_path: Path) -> None:
+        """dry_run_estimate does not spawn agent subprocesses."""
+        with patch("subprocess.run") as mock_run:
+            # Allow du -sm to work normally
+            mock_run.return_value = MagicMock(returncode=0, stdout="50\t/tmp")
+            dry_run_estimate(
+                task_count=5,
+                configs_count=2,
+                repeats=3,
+                parallel=4,
+                repo_path=tmp_path,
+            )
+        # Only subprocess call should be du -sm for repo size estimation
+        for c in mock_run.call_args_list:
+            args = c[0][0] if c[0] else c[1].get("args", [])
+            assert args[0] == "du", f"Unexpected subprocess: {args}"
+
+    def test_frozen_dataclass(self, tmp_path: Path) -> None:
+        """DryRunEstimate is immutable."""
+        import pytest
+
+        estimate = dry_run_estimate(
+            task_count=1,
+            configs_count=1,
+            repeats=1,
+            parallel=1,
+            repo_path=tmp_path,
+        )
+        with pytest.raises(AttributeError):
+            estimate.total_tasks = 99  # type: ignore[misc]
+
+
+# --- Error taxonomy tests ---
+
+
+class TestErrorTaxonomy:
+    def test_classify_error_timeout(self) -> None:
+        """subprocess.TimeoutExpired -> 'timeout'."""
+        exc = subprocess.TimeoutExpired(cmd="fake", timeout=30)
+        assert _classify_error(exc) == "timeout"
+
+    def test_classify_error_system_oserror(self) -> None:
+        """OSError -> 'system'."""
+        assert _classify_error(OSError("disk full")) == "system"
+
+    def test_classify_error_system_memory(self) -> None:
+        """MemoryError -> 'system'."""
+        assert _classify_error(MemoryError()) == "system"
+
+    def test_classify_error_agent_generic(self) -> None:
+        """Generic exceptions -> 'agent'."""
+        assert _classify_error(RuntimeError("something")) == "agent"
+        assert _classify_error(ValueError("bad value")) == "agent"
+
+    def test_execute_task_timeout_sets_category(self, tmp_path: Path) -> None:
+        """When adapter.run() raises TimeoutExpired, error_category='timeout'."""
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        config = AgentConfig()
+
+        class TimeoutAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                raise subprocess.TimeoutExpired(cmd="agent", timeout=60)
+
+        adapter = TimeoutAdapter(stdout="")
+        result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+        assert result.status == "error"
+        assert result.error_category == "timeout"
+
+    def test_execute_task_oserror_sets_category(self, tmp_path: Path) -> None:
+        """When adapter.run() raises OSError, error_category='system'."""
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        config = AgentConfig()
+
+        class OSErrorAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                raise OSError("No space left on device")
+
+        adapter = OSErrorAdapter(stdout="")
+        result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+        assert result.status == "error"
+        assert result.error_category == "system"
+
+    def test_execute_task_generic_error_sets_agent_category(
+        self, tmp_path: Path
+    ) -> None:
+        """When adapter.run() raises a generic error, error_category='agent'."""
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        config = AgentConfig()
+
+        class CrashAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                raise RuntimeError("agent crashed")
+
+        adapter = CrashAdapter(stdout="")
+        result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+        assert result.status == "error"
+        assert result.error_category == "agent"
+
+    def test_execute_task_success_has_no_error_category(self, tmp_path: Path) -> None:
+        """Successful tasks have error_category=None."""
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        adapter = FakeAdapter(stdout="correct answer")
+        config = AgentConfig()
+
+        result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+        assert result.status == "completed"
+        assert result.error_category is None
+
+    def test_system_error_warning_above_threshold(self, tmp_path: Path) -> None:
+        """When >30% of tasks have system errors, a WARNING is logged."""
+        # 2 out of 3 tasks will raise OSError (67% > 30%)
+        tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+        call_count = 0
+
+        class MixedAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 2:
+                    raise OSError("system failure")
+                return super().run(prompt, config, session_env=session_env)
+
+        adapter = MixedAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="test-config")
+        agent_config = AgentConfig()
+
+        import logging
+
+        with patch.object(
+            logging.getLogger("codeprobe.core.executor"),
+            "warning",
+        ) as mock_warn:
+            execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=Path("/repo"),
+                experiment_config=exp_config,
+                agent_config=agent_config,
+            )
+            # Find the capacity warning call
+            capacity_calls = [
+                c for c in mock_warn.call_args_list if "system errors" in str(c)
+            ]
+            assert len(capacity_calls) == 1
+            assert "67%" in str(capacity_calls[0])
+
+    def test_system_error_warning_below_threshold(self, tmp_path: Path) -> None:
+        """When <=30% of tasks have system errors, no warning is logged."""
+        # 1 out of 4 tasks = 25% < 30%
+        tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(4)]
+        call_count = 0
+
+        class MixedAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    raise OSError("system failure")
+                return super().run(prompt, config, session_env=session_env)
+
+        adapter = MixedAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="test-config")
+        agent_config = AgentConfig()
+
+        import logging
+
+        with patch.object(
+            logging.getLogger("codeprobe.core.executor"),
+            "warning",
+        ) as mock_warn:
+            execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=Path("/repo"),
+                experiment_config=exp_config,
+                agent_config=agent_config,
+            )
+            capacity_calls = [
+                c for c in mock_warn.call_args_list if "system errors" in str(c)
+            ]
+            assert len(capacity_calls) == 0
