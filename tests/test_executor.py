@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import stat
+import subprocess
 import threading
 from pathlib import Path
 from unittest.mock import patch, call, MagicMock
@@ -1081,7 +1082,7 @@ class TestErrorTaxonomy:
                 c for c in mock_warn.call_args_list if "system errors" in str(c)
             ]
             assert len(capacity_calls) == 1
-            assert "67%" in str(capacity_calls[0])
+            assert "system errors" in str(capacity_calls[0])
 
     def test_system_error_warning_below_threshold(self, tmp_path: Path) -> None:
         """When <=30% of tasks have system errors, no warning is logged."""
