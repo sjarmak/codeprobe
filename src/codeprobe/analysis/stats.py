@@ -2,17 +2,137 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import statistics
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from codeprobe.models.experiment import CompletedTask, ConfigResults
+
+logger = logging.getLogger(__name__)
 
 # A task is considered "passed" when its automated_score meets or exceeds
 # this threshold. Scores are typically 0.0 (fail) or 1.0 (pass), but
 # partial scores are supported — anything below this is treated as a fail.
 PASS_THRESHOLD = 0.5
+
+_SMALL_SAMPLE_THRESHOLD = 10
+
+
+# ---------------------------------------------------------------------------
+# Statistical helper functions
+# ---------------------------------------------------------------------------
+
+
+def wilson_ci(passed: int, total: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score confidence interval for a binomial proportion."""
+    if total == 0:
+        return (0.0, 0.0)
+    p = passed / total
+    denom = 1 + z * z / total
+    centre = p + z * z / (2 * total)
+    spread = z * math.sqrt((p * (1 - p) + z * z / (4 * total)) / total)
+    return ((centre - spread) / denom, (centre + spread) / denom)
+
+
+def mcnemars_exact_test(
+    a_scores: Sequence[float], b_scores: Sequence[float]
+) -> float | None:
+    """McNemar's exact test for paired binary pass/fail outcomes.
+
+    Returns a two-sided p-value, or None when there are no discordant pairs.
+    """
+    if len(a_scores) != len(b_scores):
+        return None
+
+    # Count discordant pairs
+    n01 = 0  # a fail, b pass
+    n10 = 0  # a pass, b fail
+    for a_s, b_s in zip(a_scores, b_scores):
+        a_pass = a_s >= PASS_THRESHOLD
+        b_pass = b_s >= PASS_THRESHOLD
+        if a_pass and not b_pass:
+            n10 += 1
+        elif not a_pass and b_pass:
+            n01 += 1
+
+    n = n01 + n10
+    if n == 0:
+        return None
+
+    # Exact binomial test: two-sided p-value under H0: p=0.5
+    k = min(n01, n10)
+    p_value = 0.0
+    for i in range(k + 1):
+        p_value += math.comb(n, i) * 0.5**n
+    return min(2.0 * p_value, 1.0)
+
+
+def wilcoxon_test(a_scores: Sequence[float], b_scores: Sequence[float]) -> float | None:
+    """Wilcoxon signed-rank test for paired continuous scores.
+
+    Returns p-value, or None if scipy is unavailable or all differences are zero.
+    """
+    if len(a_scores) != len(b_scores) or len(a_scores) < 2:
+        return None
+
+    diffs = [a - b for a, b in zip(a_scores, b_scores)]
+    if all(d == 0.0 for d in diffs):
+        return None
+
+    try:
+        from scipy.stats import wilcoxon as _wilcoxon
+
+        result = _wilcoxon(a_scores, b_scores)
+        return float(result.pvalue)
+    except (ImportError, ValueError):
+        return None
+
+
+def cliffs_delta(a: Sequence[float], b: Sequence[float]) -> float:
+    """Cliff's delta effect size for ordinal/binary data.
+
+    Returns a value in [-1, 1]. Positive means a > b on average.
+    """
+    if not a or not b:
+        return 0.0
+    n = len(a) * len(b)
+    more = sum(1 for ai in a for bi in b if ai > bi)
+    less = sum(1 for ai in a for bi in b if ai < bi)
+    return (more - less) / n
+
+
+def cohens_d(a: Sequence[float], b: Sequence[float]) -> float:
+    """Cohen's d effect size for continuous paired data.
+
+    Uses pooled standard deviation. Returns 0.0 when variance is zero.
+    """
+    if len(a) < 2 or len(b) < 2:
+        return 0.0
+    mean_a = statistics.mean(a)
+    mean_b = statistics.mean(b)
+    var_a = statistics.variance(a)
+    var_b = statistics.variance(b)
+    pooled_std = math.sqrt((var_a + var_b) / 2)
+    if pooled_std == 0.0:
+        return 0.0
+    return (mean_a - mean_b) / pooled_std
+
+
+def _is_binary(scores: Sequence[float]) -> bool:
+    """Check if scores are binary (only 0.0 and 1.0 values)."""
+    return all(s == 0.0 or s == 1.0 for s in scores)
+
+
+def _dominant_billing_model(tasks: Sequence[CompletedTask]) -> str:
+    """Return the most common cost_model among tasks, or 'unknown'."""
+    models = [t.cost_model for t in tasks if t.cost_model != "unknown"]
+    if not models:
+        return "unknown"
+    counter = Counter(models)
+    return counter.most_common(1)[0][0]
 
 
 @dataclass(frozen=True)
@@ -32,6 +152,10 @@ class ConfigSummary:
     total_tokens: int | None
     is_partial: bool = False
     tasks_expected: int | None = None
+    ci_lower: float = 0.0
+    ci_upper: float = 0.0
+    billing_model: str = "unknown"
+    sample_size_warning: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +169,11 @@ class PairwiseComparison:
     speed_diff: float
     winner: str
     summary: str
+    p_value: float | None = None
+    effect_size: float | None = None
+    effect_size_method: str = ""
+    ci_lower: float = 0.0
+    ci_upper: float = 0.0
 
 
 def summarize_config(
@@ -94,8 +223,18 @@ def summarize_config(
     costs = [t.cost_usd for t in tasks if t.cost_usd is not None]
     total_cost: float | None = sum(costs) if costs else None
 
-    tokens = [t.token_count for t in tasks if t.token_count is not None]
+    tokens = [
+        (t.input_tokens or 0) + (t.output_tokens or 0)
+        for t in tasks
+        if t.input_tokens is not None or t.output_tokens is not None
+    ]
     total_tokens: int | None = sum(tokens) if tokens else None
+
+    ci_lo, ci_hi = wilson_ci(passed, total)
+    warning = (
+        f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
+    )
+    billing = _dominant_billing_model(tasks)
 
     return ConfigSummary(
         label=results.config,
@@ -111,6 +250,10 @@ def summarize_config(
         total_tokens=total_tokens,
         is_partial=is_partial,
         tasks_expected=total_tasks,
+        ci_lower=ci_lo,
+        ci_upper=ci_hi,
+        billing_model=billing,
+        sample_size_warning=warning,
     )
 
 
@@ -136,9 +279,11 @@ def summarize_completed_tasks(
     passed = 0
     token_sum = 0
     has_tokens = False
+
     scores: list[float] = []
     durations: list[float] = []
     costs: list[float] = []
+    billing_models: list[str] = []
 
     for task in tasks:
         total += 1
@@ -156,9 +301,12 @@ def summarize_completed_tasks(
         if task.cost_usd is not None:
             costs.append(task.cost_usd)
 
-        if task.token_count is not None:
-            token_sum += task.token_count
+        if task.input_tokens is not None or task.output_tokens is not None:
+            token_sum += (task.input_tokens or 0) + (task.output_tokens or 0)
             has_tokens = True
+
+        if task.cost_model != "unknown":
+            billing_models.append(task.cost_model)
 
     is_partial = total_tasks is not None and total < total_tasks
 
@@ -182,6 +330,14 @@ def summarize_completed_tasks(
     total_duration = sum(durations)
     total_cost: float | None = sum(costs) if costs else None
 
+    ci_lo, ci_hi = wilson_ci(passed, total)
+    warning = (
+        f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
+    )
+    billing = (
+        Counter(billing_models).most_common(1)[0][0] if billing_models else "unknown"
+    )
+
     return ConfigSummary(
         label=label,
         total_tasks=total,
@@ -196,6 +352,10 @@ def summarize_completed_tasks(
         total_tokens=token_sum if has_tokens else None,
         is_partial=is_partial,
         tasks_expected=total_tasks,
+        ci_lower=ci_lo,
+        ci_upper=ci_hi,
+        billing_model=billing,
+        sample_size_warning=warning,
     )
 
 
@@ -219,8 +379,18 @@ def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
     return a.label
 
 
-def compare_configs(a: ConfigSummary, b: ConfigSummary) -> PairwiseComparison:
-    """Compare two configurations and determine which is better."""
+def compare_configs(
+    a: ConfigSummary,
+    b: ConfigSummary,
+    *,
+    a_scores: Sequence[float] | None = None,
+    b_scores: Sequence[float] | None = None,
+) -> PairwiseComparison:
+    """Compare two configurations and determine which is better.
+
+    When *a_scores* and *b_scores* are provided (paired per-task scores),
+    statistical hypothesis tests and effect sizes are computed.
+    """
     score_diff = a.mean_score - b.mean_score
 
     cost_diff: float | None = None
@@ -229,6 +399,33 @@ def compare_configs(a: ConfigSummary, b: ConfigSummary) -> PairwiseComparison:
 
     speed_diff = a.mean_duration_sec - b.mean_duration_sec
     winner = _determine_winner(a, b)
+
+    # Statistical tests when raw scores are available
+    p_val: float | None = None
+    eff_size: float | None = None
+    eff_method = ""
+    ci_lo = 0.0
+    ci_hi = 0.0
+
+    if a_scores is not None and b_scores is not None and len(a_scores) == len(b_scores):
+        binary = _is_binary(a_scores) and _is_binary(b_scores)
+        if binary:
+            p_val = mcnemars_exact_test(a_scores, b_scores)
+            eff_size = cliffs_delta(list(a_scores), list(b_scores))
+            eff_method = "cliffs_delta"
+        else:
+            p_val = wilcoxon_test(a_scores, b_scores)
+            eff_size = cohens_d(list(a_scores), list(b_scores))
+            eff_method = "cohens_d"
+
+        # CI for score difference (normal approximation)
+        diffs = [ai - bi for ai, bi in zip(a_scores, b_scores)]
+        n = len(diffs)
+        if n >= 2:
+            mean_diff = statistics.mean(diffs)
+            se = statistics.stdev(diffs) / math.sqrt(n)
+            ci_lo = mean_diff - 1.96 * se
+            ci_hi = mean_diff + 1.96 * se
 
     # Build human-readable summary
     parts: list[str] = []
@@ -250,4 +447,9 @@ def compare_configs(a: ConfigSummary, b: ConfigSummary) -> PairwiseComparison:
         speed_diff=speed_diff,
         winner=winner,
         summary=summary,
+        p_value=p_val,
+        effect_size=eff_size,
+        effect_size_method=eff_method,
+        ci_lower=ci_lo,
+        ci_upper=ci_hi,
     )

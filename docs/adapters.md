@@ -83,7 +83,6 @@ Immutable dataclass returned by `run()`:
 | `stderr`            | `str \| None`   | required        | Standard error (or `None`)                          |
 | `exit_code`         | `int`           | required        | `0` = success, `-1` = timeout                       |
 | `duration_seconds`  | `float`         | required        | Wall-clock time                                     |
-| `token_count`       | `int \| None`   | `None`          | Legacy total token count                            |
 | `cost_usd`          | `float \| None` | `None`          | Estimated cost in USD                               |
 | `input_tokens`      | `int \| None`   | `None`          | Input/prompt tokens                                 |
 | `output_tokens`     | `int \| None`   | `None`          | Output/completion tokens                            |
@@ -190,8 +189,8 @@ class AiderAdapter(BaseAdapter):
 
         token_match = _TOKEN_RE.search(combined)
         if token_match:
-            input_tokens = _parse_token_count(token_match.group(1))
-            output_tokens = _parse_token_count(token_match.group(2))
+            input_tokens = _parse_token_value(token_match.group(1))
+            output_tokens = _parse_token_value(token_match.group(2))
 
         cost_match = _COST_RE.search(combined)
         if cost_match:

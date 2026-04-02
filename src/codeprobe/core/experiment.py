@@ -206,7 +206,6 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
             automated_score=t["automated_score"],
             status=t.get("status", "completed"),
             duration_seconds=t.get("duration_seconds", 0.0),
-            token_count=t.get("token_count"),
             input_tokens=t.get("input_tokens"),
             output_tokens=t.get("output_tokens"),
             cache_read_tokens=t.get("cache_read_tokens"),

@@ -35,7 +35,6 @@ class AgentOutput:
     stderr: str | None
     exit_code: int
     duration_seconds: float
-    token_count: int | None = None
     cost_usd: float | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None

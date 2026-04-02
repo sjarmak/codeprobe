@@ -34,7 +34,8 @@ def _task(
     status: str = "completed",
     duration: float = 10.0,
     cost: float | None = None,
-    tokens: int | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
 ) -> CompletedTask:
     return CompletedTask(
         task_id=task_id,
@@ -42,7 +43,8 @@ def _task(
         status=status,
         duration_seconds=duration,
         cost_usd=cost,
-        token_count=tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -94,13 +96,34 @@ class TestSummarizeConfig:
         assert s.total_tokens is None
 
     def test_with_costs(self) -> None:
-        """Tasks with cost_usd and token_count are aggregated."""
+        """Tasks with cost_usd and input/output tokens are aggregated."""
         results = ConfigResults(
             config="expensive",
             completed=[
-                _task("t1", 1.0, duration=5.0, cost=0.10, tokens=500),
-                _task("t2", 0.8, duration=8.0, cost=0.20, tokens=1000),
-                _task("t3", 0.6, duration=7.0, cost=0.12, tokens=750),
+                _task(
+                    "t1",
+                    1.0,
+                    duration=5.0,
+                    cost=0.10,
+                    input_tokens=400,
+                    output_tokens=100,
+                ),
+                _task(
+                    "t2",
+                    0.8,
+                    duration=8.0,
+                    cost=0.20,
+                    input_tokens=800,
+                    output_tokens=200,
+                ),
+                _task(
+                    "t3",
+                    0.6,
+                    duration=7.0,
+                    cost=0.12,
+                    input_tokens=600,
+                    output_tokens=150,
+                ),
             ],
         )
         s = summarize_config(results)
@@ -357,15 +380,15 @@ class TestGenerateReport:
         results_a = ConfigResults(
             config="config-a",
             completed=[
-                _task("t1", 1.0, duration=10.0, cost=0.10, tokens=500),
-                _task("t2", 0.7, duration=15.0, cost=0.12, tokens=600),
+                _task("t1", 1.0, duration=10.0, cost=0.10, input_tokens=500),
+                _task("t2", 0.7, duration=15.0, cost=0.12, input_tokens=600),
             ],
         )
         results_b = ConfigResults(
             config="config-b",
             completed=[
-                _task("t1", 0.5, duration=8.0, cost=0.05, tokens=300),
-                _task("t2", 0.3, duration=12.0, cost=0.09, tokens=400),
+                _task("t1", 0.5, duration=8.0, cost=0.05, input_tokens=300),
+                _task("t2", 0.3, duration=12.0, cost=0.09, input_tokens=400),
             ],
         )
 
@@ -417,7 +440,7 @@ class TestFormatJsonReport:
         results = ConfigResults(
             config="beta",
             completed=[
-                _task("t1", 0.9, duration=12.0, cost=0.15, tokens=800),
+                _task("t1", 0.9, duration=12.0, cost=0.15, input_tokens=800),
             ],
         )
         report = generate_report("json-exp", [results])
@@ -460,8 +483,8 @@ class TestSummarizeCompletedTasks:
     def test_matches_batch(self) -> None:
         """Streaming summarize produces identical output to batch summarize."""
         tasks = [
-            _task("t1", 1.0, duration=10.0, cost=0.10, tokens=500),
-            _task("t2", 0.5, duration=20.0, cost=0.20, tokens=1000),
+            _task("t1", 1.0, duration=10.0, cost=0.10, input_tokens=500),
+            _task("t2", 0.5, duration=20.0, cost=0.20, input_tokens=1000),
             _task("t3", 0.0, duration=30.0),
         ]
         batch_result = summarize_config(ConfigResults(config="test", completed=tasks))
@@ -509,7 +532,7 @@ class TestSummarizeCompletedTasks:
                 score=(i % 3) / 2.0,
                 duration=float(i % 50),
                 cost=0.01 * (i % 10) if i % 5 != 0 else None,
-                tokens=100 * (i % 20) if i % 7 != 0 else None,
+                input_tokens=100 * (i % 20) if i % 7 != 0 else None,
             )
             for i in range(10_000)
         ]
@@ -529,15 +552,15 @@ class TestGenerateReportStreaming:
         results_a = ConfigResults(
             config="config-a",
             completed=[
-                _task("t1", 1.0, duration=10.0, cost=0.10, tokens=500),
-                _task("t2", 0.7, duration=15.0, cost=0.12, tokens=600),
+                _task("t1", 1.0, duration=10.0, cost=0.10, input_tokens=500),
+                _task("t2", 0.7, duration=15.0, cost=0.12, input_tokens=600),
             ],
         )
         results_b = ConfigResults(
             config="config-b",
             completed=[
-                _task("t1", 0.5, duration=8.0, cost=0.05, tokens=300),
-                _task("t2", 0.3, duration=12.0, cost=0.09, tokens=400),
+                _task("t1", 0.5, duration=8.0, cost=0.05, input_tokens=300),
+                _task("t2", 0.3, duration=12.0, cost=0.09, input_tokens=400),
             ],
         )
         batch_report = generate_report("test", [results_a, results_b])
@@ -716,7 +739,7 @@ class TestPartialJsonReport:
         """Partial report JSON includes partial metadata."""
         results = ConfigResults(
             config="beta",
-            completed=[_task("t1", 0.9, duration=12.0, cost=0.15, tokens=800)],
+            completed=[_task("t1", 0.9, duration=12.0, cost=0.15, input_tokens=800)],
         )
         report = generate_report("json-exp", [results], total_tasks=5)
         text = format_json_report(report)

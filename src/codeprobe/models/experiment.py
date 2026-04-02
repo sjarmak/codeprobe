@@ -28,7 +28,6 @@ class CompletedTask:
     automated_score: float
     status: str = "completed"
     duration_seconds: float = 0.0
-    token_count: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None

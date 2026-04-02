@@ -14,7 +14,7 @@ _TOKEN_RE = re.compile(r"Tokens:\s*([\d.]+k?)\s*sent,\s*([\d.]+k?)\s*received")
 _COST_RE = re.compile(r"Cost:\s*\$([\d.]+)\s*message")
 
 
-def _parse_token_count(raw: str) -> int:
+def _parse_token_value(raw: str) -> int:
     """Parse a token count string like '1.2k' or '856' into an integer."""
     raw = raw.strip().lower()
     if raw.endswith("k"):
@@ -57,8 +57,8 @@ class AiderAdapter(BaseAdapter):
 
         token_match = _TOKEN_RE.search(combined)
         if token_match:
-            input_tokens = _parse_token_count(token_match.group(1))
-            output_tokens = _parse_token_count(token_match.group(2))
+            input_tokens = _parse_token_value(token_match.group(1))
+            output_tokens = _parse_token_value(token_match.group(2))
 
         cost_match = _COST_RE.search(combined)
         if cost_match:
