@@ -28,6 +28,7 @@ def run_eval(
     config: str | None = None,
     max_cost_usd: float | None = None,
     parallel: int = 1,
+    repeats: int = 1,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -107,6 +108,7 @@ def run_eval(
             on_task_complete=_on_task_complete,
             max_cost_usd=max_cost_usd,
             parallel=parallel,
+            repeats=repeats,
         )
 
         save_config_results(exp_dir, exp_config.label, results)

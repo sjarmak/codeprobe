@@ -26,6 +26,7 @@ class CompletedTask:
 
     task_id: str
     automated_score: float
+    repeat_index: int = 0
     status: str = "completed"
     duration_seconds: float = 0.0
     input_tokens: int | None = None

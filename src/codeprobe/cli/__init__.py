@@ -127,9 +127,7 @@ def run(
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
-@click.option(
-    "--format", "fmt", default="text", help="Output format: text, json, html."
-)
+@click.option("--format", "fmt", default="text", help="Output format: text, json, csv.")
 def interpret(path: str, fmt: str) -> None:
     """Analyze eval results and get recommendations.
 

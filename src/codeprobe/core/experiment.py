@@ -204,6 +204,7 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
         CompletedTask(
             task_id=t["task_id"],
             automated_score=t["automated_score"],
+            repeat_index=t.get("repeat_index", 0),
             status=t.get("status", "completed"),
             duration_seconds=t.get("duration_seconds", 0.0),
             input_tokens=t.get("input_tokens"),

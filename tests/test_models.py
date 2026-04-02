@@ -1,6 +1,11 @@
 """Tests for core data models."""
 
-from codeprobe.models.experiment import CompletedTask, ConfigResults, Experiment, ExperimentConfig
+from codeprobe.models.experiment import (
+    CompletedTask,
+    ConfigResults,
+    Experiment,
+    ExperimentConfig,
+)
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 
@@ -28,6 +33,16 @@ def test_completed_task_score():
     task = CompletedTask(task_id="t-001", automated_score=0.75)
     assert task.automated_score == 0.75
     assert task.status == "completed"
+
+
+def test_completed_task_repeat_index_default():
+    task = CompletedTask(task_id="t-001", automated_score=1.0)
+    assert task.repeat_index == 0
+
+
+def test_completed_task_repeat_index_explicit():
+    task = CompletedTask(task_id="t-001", automated_score=1.0, repeat_index=3)
+    assert task.repeat_index == 3
 
 
 def test_config_results():

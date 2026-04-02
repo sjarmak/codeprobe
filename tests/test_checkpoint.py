@@ -36,7 +36,7 @@ class TestCRUD:
         store.append(_make_task("t-002", 0.0))
 
         ids = store.load_ids()
-        assert ids == {"t-001", "t-002"}
+        assert ids == {("t-001", 0), ("t-002", 0)}
 
     def test_load_entries(self, tmp_path: Path) -> None:
         db_path = tmp_path / "checkpoint.db"
@@ -98,8 +98,8 @@ class TestCRUD:
         store_a.append(_make_task("t-001"))
         store_b.append(_make_task("t-002"))
 
-        assert store_a.load_ids() == {"t-001"}
-        assert store_b.load_ids() == {"t-002"}
+        assert store_a.load_ids() == {("t-001", 0)}
+        assert store_b.load_ids() == {("t-002", 0)}
 
     def test_empty_db(self, tmp_path: Path) -> None:
         db_path = tmp_path / "checkpoint.db"
@@ -156,7 +156,7 @@ class TestConcurrency:
 
         store_a = CheckpointStore(db_path, config_name="cfg-a")
         store_b = CheckpointStore(db_path, config_name="cfg-b")
-        assert len(store_a.load_ids()) == 50
+        assert len(store_a.load_ids()) == 50  # set of (task_id, repeat_index) tuples
         assert len(store_b.load_ids()) == 50
 
 
@@ -181,7 +181,7 @@ class TestJSONLMigration:
         )
 
         ids = store.load_ids()
-        assert ids == {"t-001", "t-002"}
+        assert ids == {("t-001", 0), ("t-002", 0)}
 
         entries = store.load_entries()
         assert entries[0]["automated_score"] == 1.0
@@ -200,7 +200,7 @@ class TestJSONLMigration:
         store = CheckpointStore.from_legacy_path(
             jsonl_path, db_path, config_name="default"
         )
-        assert store.load_ids() == {"t-001", "t-002"}
+        assert store.load_ids() == {("t-001", 0), ("t-002", 0)}
 
     def test_migrate_no_op_when_db_exists(self, tmp_path: Path) -> None:
         """If .db already exists, migration is skipped."""
@@ -218,7 +218,7 @@ class TestJSONLMigration:
             jsonl_path, db_path, config_name="default"
         )
         # Should see only the DB entry, not the JSONL one
-        assert store2.load_ids() == {"t-existing"}
+        assert store2.load_ids() == {("t-existing", 0)}
 
     def test_migrate_no_jsonl(self, tmp_path: Path) -> None:
         """No JSONL file -> just create fresh DB."""
@@ -245,7 +245,7 @@ class TestCorruptRecovery:
         store = CheckpointStore(db_path, config_name="default")
         # Should work fine after recovery
         store.append(_make_task("t-001"))
-        assert store.load_ids() == {"t-001"}
+        assert store.load_ids() == {("t-001", 0)}
 
     def test_error_status_excluded_from_load_ids(self, tmp_path: Path) -> None:
         """Tasks with status='error' should not appear in load_ids."""
@@ -259,7 +259,7 @@ class TestCorruptRecovery:
             CompletedTask(task_id="t-err", automated_score=0.0, status="error")
         )
 
-        assert store.load_ids() == {"t-ok"}
+        assert store.load_ids() == {("t-ok", 0)}
 
     def test_error_status_excluded_from_load_entries(self, tmp_path: Path) -> None:
         """Tasks with status='error' should not appear in load_entries."""
@@ -290,7 +290,7 @@ class TestCorruptRecovery:
         store.append(
             CompletedTask(task_id="t-001", automated_score=1.0, status="completed")
         )
-        assert store.load_ids() == {"t-001"}
+        assert store.load_ids() == {("t-001", 0)}
 
     def test_schema_migration_adds_status_column(self, tmp_path: Path) -> None:
         """Opening an old DB without status column should auto-migrate."""
@@ -318,7 +318,28 @@ class TestCorruptRecovery:
         # Opening should auto-migrate
         store = CheckpointStore(db_path, config_name="default")
         ids = store.load_ids()
-        assert "t-old" in ids
+        assert ("t-old", 0) in ids
+
+    def test_repeat_index_distinguishes_entries(self, tmp_path: Path) -> None:
+        """Same task_id with different repeat_index are separate entries."""
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(task_id="t-001", automated_score=1.0, repeat_index=0)
+        )
+        store.append(
+            CompletedTask(task_id="t-001", automated_score=0.0, repeat_index=1)
+        )
+
+        ids = store.load_ids()
+        assert ids == {("t-001", 0), ("t-001", 1)}
+
+        entries = store.load_entries()
+        assert len(entries) == 2
+        scores = {e["repeat_index"]: e["automated_score"] for e in entries}
+        assert scores[0] == 1.0
+        assert scores[1] == 0.0
 
     def test_full_token_data_roundtrips(self, tmp_path: Path) -> None:
         """All CompletedTask fields survive checkpoint save/load."""

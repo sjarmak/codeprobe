@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,6 +16,7 @@ from codeprobe.analysis import (
     cliffs_delta,
     cohens_d,
     compare_configs,
+    format_csv_report,
     format_json_report,
     format_text_report,
     generate_report,

@@ -21,12 +21,13 @@ _CREATE_TABLE = """\
 CREATE TABLE IF NOT EXISTS checkpoints (
     task_id       TEXT NOT NULL,
     config_name   TEXT NOT NULL,
+    repeat_index  INTEGER NOT NULL DEFAULT 0,
     automated_score REAL NOT NULL,
     status        TEXT NOT NULL DEFAULT 'completed',
     completed_at  TEXT NOT NULL,
     metadata      TEXT NOT NULL DEFAULT '{}',
     result_json   TEXT NOT NULL DEFAULT '{}',
-    PRIMARY KEY (task_id, config_name)
+    PRIMARY KEY (task_id, config_name, repeat_index)
 )
 """
 
@@ -35,6 +36,9 @@ _MIGRATE_STATUS_COLUMN = (
 )
 _MIGRATE_RESULT_JSON_COLUMN = (
     "ALTER TABLE checkpoints ADD COLUMN result_json TEXT NOT NULL DEFAULT '{}'"
+)
+_MIGRATE_REPEAT_INDEX_COLUMN = (
+    "ALTER TABLE checkpoints ADD COLUMN repeat_index INTEGER NOT NULL DEFAULT 0"
 )
 
 
@@ -61,9 +65,9 @@ class CheckpointStore:
         result_json = json.dumps(asdict(task))
         self._conn.execute(
             "INSERT INTO checkpoints "
-            "(task_id, config_name, automated_score, status, completed_at, metadata, result_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT (task_id, config_name) DO UPDATE SET "
+            "(task_id, config_name, repeat_index, automated_score, status, completed_at, metadata, result_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (task_id, config_name, repeat_index) DO UPDATE SET "
             "  automated_score = excluded.automated_score, "
             "  status = excluded.status, "
             "  completed_at = excluded.completed_at, "
@@ -72,6 +76,7 @@ class CheckpointStore:
             (
                 task.task_id,
                 self._config_name,
+                task.repeat_index,
                 task.automated_score,
                 task.status,
                 now,
@@ -81,17 +86,17 @@ class CheckpointStore:
         )
         self._conn.commit()
 
-    def load_ids(self) -> set[str]:
-        """Return the set of successfully completed task IDs for this config.
+    def load_ids(self) -> set[tuple[str, int]]:
+        """Return the set of successfully completed (task_id, repeat_index) for this config.
 
         Tasks with status ``'error'`` are excluded so they get retried.
         """
         rows = self._conn.execute(
-            "SELECT task_id FROM checkpoints "
+            "SELECT task_id, repeat_index FROM checkpoints "
             "WHERE config_name = ? AND status != 'error'",
             (self._config_name,),
         ).fetchall()
-        return {row[0] for row in rows}
+        return {(row[0], row[1]) for row in rows}
 
     def load_entries(self) -> list[dict]:
         """Return checkpoint entries for this config as dicts.
@@ -104,7 +109,7 @@ class CheckpointStore:
         CompletedTask fields.  Falls back to minimal fields for old rows.
         """
         rows = self._conn.execute(
-            "SELECT task_id, automated_score, completed_at, metadata, status, result_json "
+            "SELECT task_id, automated_score, completed_at, metadata, status, result_json, repeat_index "
             "FROM checkpoints WHERE config_name = ? AND status != 'error' "
             "ORDER BY rowid",
             (self._config_name,),
@@ -118,6 +123,7 @@ class CheckpointStore:
                 entries.append(result_data)
             else:
                 # Legacy row — minimal fields only
+                repeat_index = row[6] if len(row) > 6 else 0
                 entries.append(
                     {
                         "task_id": row[0],
@@ -125,6 +131,7 @@ class CheckpointStore:
                         "completed_at": row[2],
                         "metadata": json.loads(row[3]) if row[3] else {},
                         "status": row[4],
+                        "repeat_index": repeat_index,
                     }
                 )
         return entries
@@ -204,6 +211,33 @@ class CheckpointStore:
         if "result_json" not in cols:
             conn.execute(_MIGRATE_RESULT_JSON_COLUMN)
             logger.info("Migrated checkpoint schema: added 'result_json' column")
+        if "repeat_index" not in cols:
+            conn.execute(_MIGRATE_REPEAT_INDEX_COLUMN)
+            # Recreate table with new PRIMARY KEY via rename-and-copy
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS checkpoints_new ("
+                "  task_id TEXT NOT NULL,"
+                "  config_name TEXT NOT NULL,"
+                "  repeat_index INTEGER NOT NULL DEFAULT 0,"
+                "  automated_score REAL NOT NULL,"
+                "  status TEXT NOT NULL DEFAULT 'completed',"
+                "  completed_at TEXT NOT NULL,"
+                "  metadata TEXT NOT NULL DEFAULT '{}',"
+                "  result_json TEXT NOT NULL DEFAULT '{}',"
+                "  PRIMARY KEY (task_id, config_name, repeat_index)"
+                ")"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO checkpoints_new "
+                "SELECT task_id, config_name, repeat_index, automated_score, "
+                "status, completed_at, metadata, result_json FROM checkpoints"
+            )
+            conn.execute("DROP TABLE checkpoints")
+            conn.execute("ALTER TABLE checkpoints_new RENAME TO checkpoints")
+            logger.info(
+                "Migrated checkpoint schema: added 'repeat_index' column "
+                "and updated PRIMARY KEY"
+            )
 
     def _migrate_jsonl(self, jsonl_path: Path) -> None:
         """Import entries from a legacy JSONL checkpoint file."""

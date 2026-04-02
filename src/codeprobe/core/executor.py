@@ -266,18 +266,24 @@ def _save_task_artifacts(
 
 def _restore_checkpointed(
     checkpoint_store: CheckpointStore | None,
-) -> tuple[set[str], list[CompletedTask]]:
-    """Load checkpointed results, returning (ids, results)."""
+) -> tuple[set[tuple[str, int]], list[CompletedTask]]:
+    """Load checkpointed results, returning (id_tuples, results).
+
+    Each id tuple is ``(task_id, repeat_index)`` so that repeat runs
+    of the same task are tracked independently.
+    """
     if checkpoint_store is None:
         return set(), []
-    ids: set[str] = set()
+    ids: set[tuple[str, int]] = set()
     results: list[CompletedTask] = []
     for entry in checkpoint_store.load_entries():
-        ids.add(entry["task_id"])
+        repeat_index = entry.get("repeat_index", 0)
+        ids.add((entry["task_id"], repeat_index))
         results.append(
             CompletedTask(
                 task_id=entry["task_id"],
                 automated_score=entry.get("automated_score", 0.0),
+                repeat_index=repeat_index,
                 status=entry.get("status", "completed"),
                 duration_seconds=entry.get("duration_seconds", 0.0),
                 input_tokens=entry.get("input_tokens"),
@@ -307,6 +313,7 @@ def execute_config(
     preamble_resolver: PreambleResolver | None = None,
     parallel: int = 1,
     isolation: IsolationStrategy | None = None,
+    repeats: int = 1,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -326,27 +333,39 @@ def execute_config(
     """
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
-    pending_dirs = [d for d in task_dirs if d.name not in checkpointed_ids]
-    for skipped in task_dirs:
-        if skipped.name in checkpointed_ids:
-            logger.info("Skipping %s (checkpointed)", skipped.name)
+    # Build expanded work items: (task_dir, repeat_index) for all repeats
+    all_work: list[tuple[Path, int]] = [
+        (d, ri) for d in task_dirs for ri in range(repeats)
+    ]
+    pending_work = [
+        (d, ri) for d, ri in all_work if (d.name, ri) not in checkpointed_ids
+    ]
+    for d, ri in all_work:
+        if (d.name, ri) in checkpointed_ids:
+            logger.info("Skipping %s repeat %d (checkpointed)", d.name, ri)
 
-    if not pending_dirs:
+    if not pending_work:
         return results
 
     cumulative_cost = 0.0
 
     def _run_one(
         task_dir: Path,
+        repeat_index: int = 0,
         worktree_path: Path | None = None,
         session_env: dict[str, str] | None = None,
     ) -> TaskResult:
-        logger.info("[%s] Running %s", experiment_config.label, task_dir.name)
+        logger.info(
+            "[%s] Running %s (repeat %d)",
+            experiment_config.label,
+            task_dir.name,
+            repeat_index,
+        )
         sem = get_concurrency_semaphore()
         if sem is not None:
             sem.acquire()
         try:
-            return execute_task(
+            task_result = execute_task(
                 adapter=adapter,
                 task_dir=task_dir,
                 repo_path=repo_path,
@@ -358,6 +377,16 @@ def execute_config(
                 worktree_path=worktree_path,
                 session_env=session_env,
             )
+            # Stamp repeat_index on the completed task
+            if repeat_index != 0:
+                from dataclasses import replace
+
+                task_result = TaskResult(
+                    completed=replace(task_result.completed, repeat_index=repeat_index),
+                    agent_stdout=task_result.agent_stdout,
+                    agent_stderr=task_result.agent_stderr,
+                )
+            return task_result
         finally:
             if sem is not None:
                 sem.release()
@@ -368,7 +397,10 @@ def execute_config(
         results.append(result)
 
         if runs_dir is not None:
-            _save_task_artifacts(runs_dir, result.task_id, task_result)
+            artifact_id = result.task_id
+            if result.repeat_index > 0:
+                artifact_id = f"{result.task_id}/repeat-{result.repeat_index}"
+            _save_task_artifacts(runs_dir, artifact_id, task_result)
 
         if checkpoint_store is not None:
             checkpoint_store.append(result)
@@ -379,11 +411,11 @@ def execute_config(
         if result.cost_model in _BILLABLE_COST_MODELS and result.cost_usd is not None:
             cumulative_cost += result.cost_usd
 
-    workers = min(parallel, len(pending_dirs))
+    workers = min(parallel, len(pending_work))
 
     if workers <= 1:
         # Sequential — preserves original behavior and budget checks
-        for idx, task_dir in enumerate(pending_dirs):
+        for idx, (task_dir, repeat_index) in enumerate(pending_work):
             if max_cost_usd is not None and cumulative_cost > max_cost_usd:
                 logger.warning(
                     "Cost circuit-breaker: $%.2f exceeds budget $%.2f — halting",
@@ -395,14 +427,14 @@ def execute_config(
             # task N don't corrupt task N+1's results.
             if idx > 0:
                 _git_reset_workdir(repo_path)
-            task_result = _run_one(task_dir)
+            task_result = _run_one(task_dir, repeat_index=repeat_index)
             _handle_result(task_result)
     else:
         # Parallel — dispatch all pending tasks to thread pool
         logger.info(
-            "[%s] Dispatching %d tasks with %d workers",
+            "[%s] Dispatching %d work items with %d workers",
             experiment_config.label,
-            len(pending_dirs),
+            len(pending_work),
             workers,
         )
         # Auto-create isolation when parallel > 1 and none provided
@@ -412,7 +444,7 @@ def execute_config(
             active_isolation = WorktreeIsolation(repo_path, pool_size=workers)
             owns_isolation = True
 
-        def _run_isolated(task_dir: Path) -> TaskResult:
+        def _run_isolated(task_dir: Path, repeat_index: int) -> TaskResult:
             wt = active_isolation.acquire()  # type: ignore[union-attr]
             try:
                 # Extract slot index from worktree path name (e.g. "slot-0" → 0)
@@ -422,30 +454,38 @@ def execute_config(
                 except (ValueError, IndexError):
                     slot_id = 0
                 sess_env = adapter.isolate_session(slot_id)
-                return _run_one(task_dir, worktree_path=wt, session_env=sess_env)
+                return _run_one(
+                    task_dir,
+                    repeat_index=repeat_index,
+                    worktree_path=wt,
+                    session_env=sess_env,
+                )
             finally:
                 active_isolation.release(wt)  # type: ignore[union-attr]
 
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                future_to_dir = {
-                    pool.submit(_run_isolated, td): td for td in pending_dirs
+                future_to_work = {
+                    pool.submit(_run_isolated, td, ri): (td, ri)
+                    for td, ri in pending_work
                 }
-                for future in as_completed(future_to_dir):
-                    task_dir = future_to_dir[future]
+                for future in as_completed(future_to_work):
+                    task_dir, repeat_index = future_to_work[future]
                     try:
                         task_result = future.result()
                     except Exception as exc:
                         logger.error(
-                            "[%s] %s raised: %s",
+                            "[%s] %s repeat %d raised: %s",
                             experiment_config.label,
                             task_dir.name,
+                            repeat_index,
                             exc,
                         )
                         task_result = TaskResult(
                             completed=CompletedTask(
                                 task_id=task_dir.name,
                                 automated_score=0.0,
+                                repeat_index=repeat_index,
                                 status="error",
                                 metadata={"error": str(exc)},
                             ),
@@ -459,7 +499,7 @@ def execute_config(
                             cumulative_cost,
                             max_cost_usd,
                         )
-                        for f in future_to_dir:
+                        for f in future_to_work:
                             f.cancel()
                         break
         finally:

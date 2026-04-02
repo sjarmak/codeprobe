@@ -27,6 +27,7 @@ def _count_expected_tasks(tasks_dir: Path) -> int | None:
 def run_interpret(path: str, fmt: str = "text") -> None:
     """Analyze eval results and generate report."""
     from codeprobe.analysis import (
+        format_csv_report,
         format_json_report,
         format_text_report,
         generate_report,
@@ -60,7 +61,9 @@ def run_interpret(path: str, fmt: str = "text") -> None:
             f"Results are partial.\n"
         )
 
-    if fmt == "json":
+    if fmt == "csv":
+        click.echo(format_csv_report(report))
+    elif fmt == "json":
         click.echo(format_json_report(report))
     else:
         click.echo(format_text_report(report))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
@@ -28,6 +30,7 @@ class Report:
     is_partial: bool = False
     tasks_expected: int | None = None
     completion_ratio: float | None = None
+    config_results: tuple[ConfigResults, ...] = ()
 
 
 def _compute_partial_metadata(
@@ -83,6 +86,7 @@ def generate_report(
         is_partial=is_partial,
         tasks_expected=tasks_expected,
         completion_ratio=completion_ratio,
+        config_results=tuple(all_results),
     )
 
 
@@ -163,6 +167,22 @@ def format_text_report(report: Report) -> str:
             lines.append(c.summary)
         lines.append("")
 
+    # Per-Task Results
+    if report.config_results:
+        lines.append("### Per-Task Results")
+        lines.append("")
+        lines.append("| Config | Task | Score | Pass | Duration (s) | Cost ($) |")
+        lines.append("|--------|------|-------|------|--------------|----------|")
+        for cr in report.config_results:
+            for task in cr.completed:
+                passed = "Y" if task.automated_score > 0 else "N"
+                cost_cell = f"{task.cost_usd:.4f}" if task.cost_usd is not None else ""
+                lines.append(
+                    f"| {cr.config} | {task.task_id} | {task.automated_score:.2f} "
+                    f"| {passed} | {task.duration_seconds:.1f} | {cost_cell} |"
+                )
+        lines.append("")
+
     # Recommendation
     lines.append("### Recommendation")
     if report.rankings:
@@ -178,6 +198,36 @@ def format_text_report(report: Report) -> str:
         lines.append("No configurations to recommend.")
 
     return "\n".join(lines)
+
+
+def _build_task_rows(report: Report) -> list[dict]:
+    """Build per-task row dicts from report config_results and summaries."""
+    summary_map = {s.label: s for s in report.summaries}
+    rows: list[dict] = []
+    for cr in report.config_results:
+        summary = summary_map.get(cr.config)
+        ci_lower = summary.ci_lower if summary else None
+        ci_upper = summary.ci_upper if summary else None
+        for task in cr.completed:
+            rows.append(
+                {
+                    "config": cr.config,
+                    "task_id": task.task_id,
+                    "repeat": 1,
+                    "score": task.automated_score,
+                    "pass": 1 if task.automated_score > 0 else 0,
+                    "duration_sec": task.duration_seconds,
+                    "cost_usd": task.cost_usd,
+                    "cost_source": task.cost_source,
+                    "input_tokens": task.input_tokens,
+                    "output_tokens": task.output_tokens,
+                    "cache_read_tokens": task.cache_read_tokens,
+                    "cost_model": task.cost_model,
+                    "ci_lower": ci_lower,
+                    "ci_upper": ci_upper,
+                }
+            )
+    return rows
 
 
 def format_json_report(report: Report) -> str:
@@ -198,5 +248,40 @@ def format_json_report(report: Report) -> str:
             for r in report.rankings
         ],
         "comparisons": [asdict(c) for c in report.comparisons],
+        "tasks": _build_task_rows(report),
     }
     return json.dumps(data, indent=2)
+
+
+_CSV_COLUMNS = [
+    "config",
+    "task_id",
+    "repeat",
+    "score",
+    "pass",
+    "duration_sec",
+    "cost_usd",
+    "cost_source",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cost_model",
+    "ci_lower",
+    "ci_upper",
+]
+
+
+def format_csv_report(report: Report) -> str:
+    """Format report as CSV with per-task rows."""
+    buf = io.StringIO()
+
+    has_warning = any(s.sample_size_warning for s in report.summaries)
+    if has_warning:
+        buf.write("# SINGLE RUN — no statistical confidence\n")
+
+    writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS)
+    writer.writeheader()
+    for row in _build_task_rows(report):
+        writer.writerow(row)
+
+    return buf.getvalue()

@@ -784,3 +784,95 @@ class TestConcurrencySemaphore:
             assert env is not None
             assert "CLAUDE_CONFIG_DIR" in env
             assert env["CLAUDE_CONFIG_DIR"].startswith("/tmp/codeprobe-claude/slot-")
+
+
+# --- Repeat infrastructure tests ---
+
+
+class TestRepeats:
+    def test_repeats_runs_each_task_n_times(self, tmp_path: Path) -> None:
+        """With repeats=3, each task runs 3 times."""
+        tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(2)]
+        adapter = FakeAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            repeats=3,
+        )
+        assert len(results) == 6  # 2 tasks * 3 repeats
+        assert len(adapter.run_calls) == 6
+
+    def test_repeats_stamps_repeat_index(self, tmp_path: Path) -> None:
+        """Each result has the correct repeat_index."""
+        tasks = [_make_task(tmp_path / "task-000", passing=True)]
+        adapter = FakeAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            repeats=3,
+        )
+        assert len(results) == 3
+        indices = sorted(r.repeat_index for r in results)
+        assert indices == [0, 1, 2]
+        assert all(r.task_id == "task-000" for r in results)
+
+    def test_repeats_default_is_one(self, tmp_path: Path) -> None:
+        """Default repeats=1 runs each task once."""
+        tasks = [_make_task(tmp_path / "task-000", passing=True)]
+        adapter = FakeAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+        )
+        assert len(results) == 1
+        assert results[0].repeat_index == 0
+
+    def test_repeats_checkpoint_skips_completed_repeats(self, tmp_path: Path) -> None:
+        """Checkpoint tracks (task_id, repeat_index) — completed repeats are skipped."""
+        tasks = [_make_task(tmp_path / "task-000", passing=True)]
+        adapter = FakeAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        from codeprobe.core.checkpoint import CheckpointStore
+
+        checkpoint_db = tmp_path / "checkpoint.db"
+        store = CheckpointStore(checkpoint_db, config_name="baseline")
+        # Checkpoint repeat 0 as already done
+        store.append(
+            CompletedTask(task_id="task-000", automated_score=1.0, repeat_index=0)
+        )
+
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            checkpoint_store=store,
+            repeats=3,
+        )
+        # Should skip repeat 0, run repeats 1 and 2
+        assert len(adapter.run_calls) == 2
+        # Results include checkpoint (repeat 0) + 2 new
+        assert len(results) == 3
+        indices = sorted(r.repeat_index for r in results)
+        assert indices == [0, 1, 2]
