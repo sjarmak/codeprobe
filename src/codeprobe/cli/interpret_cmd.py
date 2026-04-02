@@ -28,6 +28,7 @@ def run_interpret(path: str, fmt: str = "text") -> None:
     """Analyze eval results and generate report."""
     from codeprobe.analysis import (
         format_csv_report,
+        format_html_report,
         format_json_report,
         format_text_report,
         generate_report,
@@ -65,5 +66,10 @@ def run_interpret(path: str, fmt: str = "text") -> None:
         click.echo(format_csv_report(report))
     elif fmt == "json":
         click.echo(format_json_report(report))
+    elif fmt == "html":
+        html = format_html_report(report)
+        out_path = exp_dir / f"{experiment.name}_report.html"
+        out_path.write_text(html)
+        click.echo(f"HTML report written to {out_path}")
     else:
         click.echo(format_text_report(report))

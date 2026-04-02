@@ -17,6 +17,7 @@ from codeprobe.analysis import (
     cohens_d,
     compare_configs,
     format_csv_report,
+    format_html_report,
     format_json_report,
     format_text_report,
     generate_report,
@@ -1241,6 +1242,159 @@ class TestFormatTextReportPerTask:
         assert "t1" in text
         assert "t2" in text
         assert "| alpha |" in text
+
+
+# ---------------------------------------------------------------------------
+# format_html_report
+# ---------------------------------------------------------------------------
+
+
+class TestFormatHtmlReport:
+    def test_self_contained_html(self) -> None:
+        """HTML output is self-contained with inline CSS/JS."""
+        results = ConfigResults(
+            config="alpha",
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.20),
+                _task("t2", 0.8, duration=15.0, cost=0.22),
+            ],
+        )
+        report = generate_report("html-exp", [results])
+        html = format_html_report(report)
+
+        assert html.startswith("<!DOCTYPE html>")
+        assert "<style>" in html
+        assert "<script>" in html
+        assert "</html>" in html
+        # No external links
+        assert 'href="http' not in html
+        assert 'src="http' not in html
+
+    def test_executive_summary_section(self) -> None:
+        """HTML contains executive summary with recommendation."""
+        results = ConfigResults(
+            config="best-agent",
+            completed=[_task("t1", 1.0, duration=10.0, cost=0.10)],
+        )
+        report = generate_report("exec-exp", [results])
+        html = format_html_report(report)
+
+        assert 'id="executive-summary"' in html
+        assert "best-agent" in html
+        assert "Recommendation" in html
+
+    def test_ranking_table(self) -> None:
+        """HTML contains ranking table with scores and costs."""
+        results_a = ConfigResults(
+            config="fast",
+            completed=[_task("t1", 1.0, duration=5.0, cost=0.50)],
+        )
+        results_b = ConfigResults(
+            config="slow",
+            completed=[_task("t1", 0.5, duration=20.0, cost=0.10)],
+        )
+        report = generate_report("rank-exp", [results_a, results_b])
+        html = format_html_report(report)
+
+        assert 'id="ranking-table"' in html
+        assert "fast" in html
+        assert "slow" in html
+        assert "Pass Rate" in html
+        assert "Mean Score" in html
+
+    def test_per_task_drilldown(self) -> None:
+        """HTML contains per-task drill-down with details elements."""
+        results = ConfigResults(
+            config="drill",
+            completed=[
+                _task("task-a", 1.0, duration=10.0, cost=0.20),
+                _task("task-b", 0.0, duration=15.0, cost=0.22),
+            ],
+        )
+        report = generate_report("drill-exp", [results])
+        html = format_html_report(report)
+
+        assert 'id="per-task-drilldown"' in html
+        assert "<details>" in html
+        assert "task-a" in html
+        assert "task-b" in html
+
+    def test_pairwise_comparison_cards(self) -> None:
+        """HTML contains pairwise comparison cards."""
+        results_a = ConfigResults(
+            config="alpha",
+            completed=[_task("t1", 1.0, duration=10.0, cost=0.20)],
+        )
+        results_b = ConfigResults(
+            config="beta",
+            completed=[_task("t1", 0.5, duration=20.0, cost=0.10)],
+        )
+        report = generate_report("pair-exp", [results_a, results_b])
+        html = format_html_report(report)
+
+        assert 'id="pairwise-comparisons"' in html
+        assert "pairwise-card" in html
+        assert "Score diff" in html
+        assert "Winner" in html
+
+    def test_cost_efficiency_section(self) -> None:
+        """HTML contains cost efficiency section with billing model separation."""
+        results = ConfigResults(
+            config="api-agent",
+            completed=[
+                CompletedTask(
+                    task_id="t1",
+                    automated_score=1.0,
+                    duration_seconds=10.0,
+                    cost_usd=0.20,
+                    cost_model="api",
+                ),
+            ],
+        )
+        report = generate_report("cost-exp", [results])
+        html = format_html_report(report)
+
+        assert 'id="cost-efficiency"' in html
+        assert "Per-Token Billing" in html
+        assert "Subscription Billing" in html
+
+    def test_single_run_banner_no_ci(self) -> None:
+        """When repeats=1 (small sample), show single-run banner and no CI bars."""
+        results = ConfigResults(
+            config="single",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        report = generate_report("single-exp", [results])
+        html = format_html_report(report)
+
+        assert "Single run" in html
+        assert "single-run-banner" in html
+        assert "single-run-badge" in html
+
+    def test_no_single_run_banner_large_sample(self) -> None:
+        """Large sample does not show single-run banner or badge text."""
+        results = ConfigResults(
+            config="large",
+            completed=[_task(f"t{i}", 1.0, duration=5.0) for i in range(10)],
+        )
+        report = generate_report("large-exp", [results])
+        html = format_html_report(report)
+
+        # Banner text and badge text should not appear in body
+        assert "Single run — no confidence intervals" not in html
+        assert ">Single run<" not in html
+
+    def test_partial_report_banner(self) -> None:
+        """Partial report shows completion info in HTML."""
+        results = ConfigResults(
+            config="partial",
+            completed=[_task("t1", 1.0, duration=5.0)],
+        )
+        report = generate_report("partial-exp", [results], total_tasks=10)
+        html = format_html_report(report)
+
+        assert "PARTIAL" in html
+        assert "1/10" in html
 
 
 # ---------------------------------------------------------------------------

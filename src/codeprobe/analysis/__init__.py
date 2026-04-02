@@ -4,6 +4,7 @@ from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.report import (
     Report,
     format_csv_report,
+    format_html_report,
     format_json_report,
     format_text_report,
     generate_report,
@@ -28,6 +29,7 @@ __all__ = [
     "RankedConfig",
     "Report",
     "format_csv_report",
+    "format_html_report",
     "cliffs_delta",
     "cohens_d",
     "compare_configs",
