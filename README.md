@@ -24,7 +24,7 @@ You also need:
 - **Git** (for task mining and worktree isolation)
 - **GitHub CLI** (`gh`) — optional, for mining tasks from GitHub PRs with linked issues
 
-The `assess` command uses Claude (via `ANTHROPIC_API_KEY`) for model-based scoring. Without it, it falls back to heuristic scoring.
+The `assess` and `mine --enrich` commands call the **Claude CLI** (`claude -p`) with Haiku for cheap model-based scoring/enrichment. This requires Claude Code installed and `ANTHROPIC_API_KEY` set. Without the CLI, `assess` falls back to heuristic scoring and `--enrich` is unavailable.
 
 ## Quick Start
 
