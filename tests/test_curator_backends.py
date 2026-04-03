@@ -266,7 +266,13 @@ class TestPRDiffBackend:
         mock_result.returncode = 0
         mock_result.stdout = git_output
 
-        with patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "codeprobe.mining.curator_backends._file_matches_content",
+                return_value=True,
+            ),
+        ):
             backend = PRDiffBackend()
             result = backend.search(sample_repos, sample_family)
 
@@ -301,7 +307,13 @@ class TestPRDiffBackend:
         mock_result.returncode = 0
         mock_result.stdout = git_output
 
-        with patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch(
+                "codeprobe.mining.curator_backends._file_matches_content",
+                return_value=True,
+            ),
+        ):
             result = PRDiffBackend().search(repos, sample_family)
 
         paths = [cf.path for cf in result]

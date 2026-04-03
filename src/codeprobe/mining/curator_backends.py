@@ -34,6 +34,41 @@ from codeprobe.mining.org_scale_scanner import (
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT = 30
+_MAX_FILE_SIZE_CONTENT_CHECK = 512_000  # Skip files larger than 512KB
+_MAX_LINE_LEN_CONTENT_CHECK = 500
+
+
+def _compile_content_patterns(
+    patterns: tuple[str, ...],
+) -> list[re.Pattern[str]]:
+    """Compile content regex patterns, skipping invalid ones."""
+    compiled = []
+    for p in patterns:
+        try:
+            compiled.append(re.compile(p))
+        except re.error:
+            pass
+    return compiled
+
+
+def _file_matches_content(
+    full_path: Path,
+    compiled_patterns: list[re.Pattern[str]],
+) -> bool:
+    """Check if a file contains at least one content pattern match."""
+    try:
+        if full_path.stat().st_size > _MAX_FILE_SIZE_CONTENT_CHECK:
+            return False
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for line in content.splitlines():
+        if len(line) > _MAX_LINE_LEN_CONTENT_CHECK:
+            continue
+        for pat in compiled_patterns:
+            if pat.search(line):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -226,22 +261,30 @@ class PRDiffBackend:
         curated: list[CuratedFile] = []
         seen: set[str] = set()
 
+        compiled_patterns = _compile_content_patterns(family.content_patterns)
+
         for repo_path in repos:
             modified_files = self._get_modified_files(repo_path)
             for fp in modified_files:
                 if fp in seen:
                     continue
-                if any(matches_glob(fp, g) for g in family.glob_patterns):
-                    seen.add(fp)
-                    curated.append(
-                        CuratedFile(
-                            path=fp,
-                            tier="required",
-                            sources=("pr_diff",),
-                            confidence=0.7,
-                            hit_count=1,
-                        )
+                if not any(matches_glob(fp, g) for g in family.glob_patterns):
+                    continue
+                # Also verify at least one content pattern matches
+                if compiled_patterns and not _file_matches_content(
+                    repo_path / fp, compiled_patterns
+                ):
+                    continue
+                seen.add(fp)
+                curated.append(
+                    CuratedFile(
+                        path=fp,
+                        tier="required",
+                        sources=("pr_diff",),
+                        confidence=0.7,
+                        hit_count=1,
                     )
+                )
         return curated
 
     def _get_modified_files(self, repo_path: Path) -> list[str]:
