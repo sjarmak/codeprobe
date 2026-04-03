@@ -634,6 +634,118 @@ _GO_IMPORT_PATTERN = re.compile(r'"([^"]+)"')
 _PY_IMPORT_PATTERN = re.compile(r"^(?:from|import)\s+([\w.]+)")
 _MAX_DEP_TRACE_PACKAGES = 3
 
+# Python stdlib modules to skip (top ~50 most common)
+_PYTHON_STDLIB_SKIP = frozenset(
+    {
+        "os",
+        "sys",
+        "re",
+        "json",
+        "typing",
+        "io",
+        "warnings",
+        "collections",
+        "datetime",
+        "functools",
+        "itertools",
+        "operator",
+        "pathlib",
+        "copy",
+        "contextlib",
+        "inspect",
+        "textwrap",
+        "string",
+        "math",
+        "abc",
+        "dataclasses",
+        "enum",
+        "hashlib",
+        "hmac",
+        "secrets",
+        "struct",
+        "subprocess",
+        "threading",
+        "multiprocessing",
+        "logging",
+        "argparse",
+        "configparser",
+        "csv",
+        "pickle",
+        "shelve",
+        "sqlite3",
+        "xml",
+        "html",
+        "http",
+        "urllib",
+        "email",
+        "socket",
+        "ssl",
+        "select",
+        "signal",
+        "shutil",
+        "tempfile",
+        "glob",
+        "fnmatch",
+        "stat",
+        "time",
+        "calendar",
+        "locale",
+        "gettext",
+        "unicodedata",
+        "codecs",
+        "pprint",
+        "traceback",
+        "types",
+        "weakref",
+        "array",
+        "bisect",
+        "heapq",
+        "queue",
+        "decimal",
+        "fractions",
+        "random",
+        "statistics",
+        "ctypes",
+        "platform",
+        "importlib",
+        "pkgutil",
+        "zipfile",
+        "tarfile",
+        "gzip",
+        "bz2",
+        "lzma",
+        "zlib",
+        "base64",
+        "binascii",
+        "difflib",
+        "unittest",
+        "doctest",
+        "pdb",
+        "cProfile",
+        "profile",
+        "timeit",
+        "dis",
+        "ast",
+        "token",
+        "tokenize",
+        "keyword",
+        "compileall",
+        "py_compile",
+        "code",
+        "codeop",
+        "atexit",
+        "gc",
+        "site",
+        "builtins",
+        "__future__",
+        "zoneinfo",
+        "uuid",
+        "concurrent",
+        "asyncio",
+        "contextvars",
+    }
+)
+
 
 def _discover_top_imports(
     repo_path: Path,
@@ -694,20 +806,34 @@ def _discover_top_imports(
                 m = _PY_IMPORT_PATTERN.match(line)
                 if m:
                     pkg = m.group(1).split(".")[0]
-                    if pkg and pkg not in ("os", "sys", "re", "json", "typing"):
+                    if pkg and pkg not in _PYTHON_STDLIB_SKIP:
                         import_counts[pkg] += 1
                         import_files.setdefault(pkg, set()).add(file_path)
 
-    # Return packages imported by 10-200 files (interesting but not ubiquitous).
-    # Sort by count descending within the range to get the most interesting ones.
+    # Filter out self-imports (repo's own package name)
+    repo_name_lower = repo_path.name.lower().replace("-", "_")
+    for self_name in (repo_name_lower, repo_path.name):
+        import_counts.pop(self_name, None)
+        import_files.pop(self_name, None)
+    # Also filter out test frameworks
+    for test_pkg in ("pytest", "unittest", "nose", "hypothesis", "mock"):
+        import_counts.pop(test_pkg, None)
+        import_files.pop(test_pkg, None)
+
+    # Return external packages imported by 10+ files.
+    # For large repos, important deps like numpy may have 1000+ importers —
+    # that's OK, it's a valid (hard) task. Cap at 500 files in ground truth.
+    _MAX_DEP_GT = 500
     candidates: list[tuple[str, int, frozenset[str]]] = []
     for pkg, cnt in import_counts.most_common(50):
         files = import_files.get(pkg, set())
         n = len(files)
-        if 10 <= n <= 200:
-            candidates.append((pkg, n, frozenset(files)))
+        if n >= 10:
+            # Cap ground truth at _MAX_DEP_GT to keep tasks tractable
+            capped = frozenset(sorted(files)[:_MAX_DEP_GT])
+            candidates.append((pkg, n, capped))
 
-    # Sort by file count descending (most imported in the valid range first)
+    # Sort by file count descending (most imported first)
     candidates.sort(key=lambda x: x[1], reverse=True)
 
     results: list[tuple[str, frozenset[str]]] = [
