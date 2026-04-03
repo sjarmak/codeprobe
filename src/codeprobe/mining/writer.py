@@ -134,7 +134,13 @@ _ALLOWED_COMMAND_PREFIXES = (
 )
 
 
-def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
+def write_task_dir(
+    task: Task,
+    base_dir: Path,
+    repo_path: Path,
+    *,
+    curation_backends: tuple[str, ...] = (),
+) -> Path:
     """Write a mined task to the experiment directory structure.
 
     Creates::
@@ -147,6 +153,10 @@ def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
     Returns the task directory path.
 
     Raises ValueError if task.id contains path separators or is empty.
+
+    When *curation_backends* is provided, the ground_truth.json curation
+    provenance block records the backend names that contributed to the
+    curated file set.
     """
     # Validate task.id is safe for filesystem use (no path traversal)
     safe_id = Path(task.id).name
@@ -163,7 +173,14 @@ def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
 
     # Oracle tasks get a different output structure
     if task.verification.type == "oracle":
-        _write_oracle_task(task, task_dir, tests_dir, repo_path, safe_id)
+        _write_oracle_task(
+            task,
+            task_dir,
+            tests_dir,
+            repo_path,
+            safe_id,
+            curation_backends=curation_backends,
+        )
         return task_dir
 
     if task.metadata.issue_title:
@@ -247,6 +264,8 @@ def _write_oracle_task(
     tests_dir: Path,
     repo_path: Path,
     safe_id: str,
+    *,
+    curation_backends: tuple[str, ...] = (),
 ) -> None:
     """Write an oracle-verified org-scale task.
 
@@ -279,7 +298,9 @@ def _write_oracle_task(
     (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
 
     # ground_truth.json — oracle answer + commit + pattern provenance
+    has_curation = bool(task.verification.oracle_tiers)
     ground_truth: dict[str, object] = {
+        "schema_version": 2 if has_curation else 1,
         "oracle_type": task.verification.oracle_type,
         "expected": list(task.verification.oracle_answer),
         "commit": task.metadata.ground_truth_commit,
@@ -288,6 +309,15 @@ def _write_oracle_task(
     if task.metadata.ground_truth_commits:
         ground_truth["commits"] = {
             repo_name: sha for repo_name, sha in task.metadata.ground_truth_commits
+        }
+    if has_curation:
+        ground_truth["oracle_tiers"] = dict(task.verification.oracle_tiers)
+        # Curation provenance summary (Risk 7: summary only, no raw data)
+        ground_truth["curation"] = {
+            "backends_used": (
+                list(curation_backends) if curation_backends else ["curated"]
+            ),
+            "file_count": len(task.verification.oracle_tiers),
         }
     (task_dir / "ground_truth.json").write_text(
         json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",

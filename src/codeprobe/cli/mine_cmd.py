@@ -480,9 +480,19 @@ def run_mine(
     repos: tuple[str, ...] = (),
     scan_timeout: int = 60,
     validate_flag: bool = False,
+    curate: bool = False,
+    backends: tuple[str, ...] = (),
+    verify_curation_flag: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.mining import mine_tasks, write_task_dir
+
+    # CLI validation: --backends agent --no-llm is incompatible
+    if no_llm and "agent" in backends:
+        raise click.UsageError(
+            "Cannot use --backends agent with --no-llm: "
+            "AgentSearchBackend requires an LLM backend."
+        )
 
     repo_path = _resolve_repo_path(path)
 
@@ -505,6 +515,9 @@ def run_mine(
             families=families,
             scan_timeout=scan_timeout,
             validate_flag=validate_flag,
+            curate=curate,
+            backends=backends,
+            verify_curation_flag=verify_curation_flag,
         )
         return
 
@@ -587,6 +600,9 @@ def _run_org_scale_mine(
     families: tuple[str, ...] = (),
     scan_timeout: int = 60,
     validate_flag: bool = False,
+    curate: bool = False,
+    backends: tuple[str, ...] = (),
+    verify_curation_flag: bool = False,
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification."""
     from codeprobe.mining.org_scale import mine_org_scale_tasks
@@ -644,12 +660,135 @@ def _run_org_scale_mine(
     if validate_flag:
         _run_validation(result, repo_paths)
 
+    # Run curation pipeline if requested
+    curation_backends_used: tuple[str, ...] = ()
+    curated_tasks = result.tasks
+    if curate:
+        curated_tasks, curation_backends_used = _run_curation(
+            result,
+            repo_paths,
+            backends=backends,
+            no_llm=no_llm,
+            verify_curation_flag=verify_curation_flag,
+        )
+
     # Write tasks
     tasks_dir = _clear_tasks_dir(primary_repo)
-    for task in result.tasks:
-        write_task_dir(task, tasks_dir, primary_repo)
+    for task in curated_tasks:
+        write_task_dir(
+            task,
+            tasks_dir,
+            primary_repo,
+            curation_backends=curation_backends_used,
+        )
 
-    _show_org_scale_results(result.tasks, tasks_dir, primary_repo)
+    _show_org_scale_results(curated_tasks, tasks_dir, primary_repo)
+
+
+def _build_curation_backends(
+    backends: tuple[str, ...],
+    no_llm: bool,
+) -> list[object]:
+    """Build list of CurationBackend instances from backend names.
+
+    When *backends* is empty, uses defaults (grep + pr_diff; agent_search
+    only when LLM is available).
+    """
+    from codeprobe.mining.curator_backends import (
+        AgentSearchBackend,
+        GrepBackend,
+        PRDiffBackend,
+        SourcegraphBackend,
+    )
+
+    _BACKEND_MAP = {
+        "grep": GrepBackend,
+        "sourcegraph": SourcegraphBackend,
+        "pr_diff": PRDiffBackend,
+        "agent": AgentSearchBackend,
+    }
+
+    if backends:
+        return [_BACKEND_MAP[name]() for name in backends if name in _BACKEND_MAP]
+
+    # Defaults: grep + pr_diff; agent_search only if LLM available
+    result: list[object] = [GrepBackend(), PRDiffBackend()]
+    if not no_llm:
+        result.append(AgentSearchBackend())
+    return result
+
+
+def _run_curation(
+    result: "OrgScaleMineResult",
+    repo_paths: list[Path],
+    *,
+    backends: tuple[str, ...] = (),
+    no_llm: bool = False,
+    verify_curation_flag: bool = False,
+) -> tuple[list["Task"], tuple[str, ...]]:
+    """Run curation pipeline on mined tasks, returning updated tasks and backends used."""
+    from codeprobe.mining.curator import CurationPipeline
+    from codeprobe.mining.curator_tiers import classify_tiers, verify_curation
+    from codeprobe.mining.org_scale import generate_org_scale_task
+
+    backend_instances = _build_curation_backends(backends, no_llm)
+    pipeline = CurationPipeline(backends=backend_instances)
+
+    curated_tasks: list["Task"] = []
+    all_backends_used: set[str] = set()
+
+    for sr in result.scan_results:
+        # Run curation for this family
+        curation_result = pipeline.curate(repos=repo_paths, family=sr.family)
+        if not curation_result.files:
+            # No curated files: keep original tasks for this family
+            for task in result.tasks:
+                if task.metadata.category == sr.family.name:
+                    curated_tasks.append(task)
+            continue
+
+        all_backends_used.update(curation_result.backends_used)
+
+        # Classify tiers
+        tiered_files = classify_tiers(
+            list(curation_result.files),
+            sr.family,
+            repo_paths,
+            use_llm=not no_llm,
+        )
+
+        # Build updated CurationResult with tiered files
+        from codeprobe.mining.curator import CurationResult
+
+        tiered_result = CurationResult(
+            family=curation_result.family,
+            files=tuple(tiered_files),
+            repo_paths=curation_result.repo_paths,
+            commit_shas=curation_result.commit_shas,
+            backends_used=curation_result.backends_used,
+            merge_config=curation_result.merge_config,
+            matched_files=frozenset(cf.path for cf in tiered_files),
+        )
+
+        # Verify curation if requested
+        if verify_curation_flag:
+            verdict = verify_curation(tiered_files, sr.family, repo_paths)
+            click.echo(f"  Curation verification ({sr.family.name}): {verdict}")
+
+        # Re-generate task with curation result
+        for task in result.tasks:
+            if task.metadata.category == sr.family.name:
+                curated_task = generate_org_scale_task(
+                    sr,
+                    no_llm=no_llm,
+                    curation_result=tiered_result,
+                )
+                if curated_task is not None:
+                    curated_tasks.append(curated_task)
+                    break  # One task per family/scan_result
+
+    backends_tuple = tuple(sorted(all_backends_used))
+    return curated_tasks, backends_tuple
 
 
 def _interactive_family_selection(
