@@ -511,26 +511,10 @@ def extract_task_from_merge(
 
 def _guess_language(extensions: list[str]) -> str:
     """Guess the primary language from file extensions."""
-    from collections import Counter
+    from codeprobe.mining._lang import guess_language_from_extensions
 
-    lang_map: dict[str, str] = {
-        ".py": "python",
-        ".js": "javascript",
-        ".ts": "typescript",
-        ".go": "go",
-        ".rs": "rust",
-        ".java": "java",
-        ".rb": "ruby",
-        ".swift": "swift",
-        ".kt": "kotlin",
-        ".cpp": "cpp",
-        ".c": "c",
-        ".php": "php",
-    }
-    counts = Counter(lang_map[ext] for ext in extensions if ext in lang_map)
-    if not counts:
-        return ""
-    return counts.most_common(1)[0][0]
+    lang = guess_language_from_extensions(extensions)
+    return "" if lang == "unknown" else lang
 
 
 _MIN_QUALITY_SCORE = 2 / 4  # At least two quality signals required

@@ -578,3 +578,161 @@ class TestEndToEnd:
 
         score_result = oracle_check(task_dir)
         assert score_result["f1"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Unified language detection (_lang.py)
+# ---------------------------------------------------------------------------
+
+
+class TestLangModule:
+    def test_ext_to_language_known(self) -> None:
+        from codeprobe.mining._lang import ext_to_language
+
+        assert ext_to_language(".py") == "python"
+        assert ext_to_language(".go") == "go"
+        assert ext_to_language(".rs") == "rust"
+
+    def test_ext_to_language_unknown(self) -> None:
+        from codeprobe.mining._lang import ext_to_language
+
+        assert ext_to_language(".xyz") == "unknown"
+
+    def test_guess_language_from_extensions(self) -> None:
+        from codeprobe.mining._lang import guess_language_from_extensions
+
+        assert guess_language_from_extensions([".py", ".py", ".go"]) == "python"
+        assert guess_language_from_extensions([".go", ".go", ".py"]) == "go"
+        assert guess_language_from_extensions([]) == "unknown"
+        assert guess_language_from_extensions([".xyz"]) == "unknown"
+
+    def test_guess_language_from_paths(self) -> None:
+        from codeprobe.mining._lang import guess_language_from_paths
+
+        paths = frozenset({"src/main.py", "src/util.py", "README.md"})
+        assert guess_language_from_paths(paths) == "python"
+
+    def test_guess_language_from_paths_empty(self) -> None:
+        from codeprobe.mining._lang import guess_language_from_paths
+
+        assert guess_language_from_paths(frozenset()) == "unknown"
+
+    def test_superset_coverage(self) -> None:
+        """Unified map covers all extensions from the old implementations."""
+        from codeprobe.mining._lang import _EXT_TO_LANGUAGE
+
+        expected = {
+            ".c",
+            ".cpp",
+            ".go",
+            ".java",
+            ".js",
+            ".kt",
+            ".php",
+            ".py",
+            ".rb",
+            ".rs",
+            ".swift",
+            ".ts",
+        }
+        assert set(_EXT_TO_LANGUAGE.keys()) == expected
+
+
+# ---------------------------------------------------------------------------
+# Instruction discovery variant
+# ---------------------------------------------------------------------------
+
+
+class TestStripLocationHints:
+    def test_strips_backtick_patterns(self) -> None:
+        from codeprobe.mining.writer import _strip_location_hints
+
+        q = "Find all files containing matches for the patterns `@Deprecated`, `@deprecated`."
+        result = _strip_location_hints(q)
+        assert "`@Deprecated`" not in result
+        assert "`@deprecated`" not in result
+
+    def test_strips_patterns_phrase(self) -> None:
+        from codeprobe.mining.writer import _strip_location_hints
+
+        q = (
+            "In the kubernetes repository, find all files containing "
+            "matches for the patterns `@Deprecated`, `@deprecated`. "
+            "List the file paths, one per line."
+        )
+        result = _strip_location_hints(q)
+        assert "matching the patterns" not in result
+        assert "for the patterns" not in result
+        # Core question intent preserved
+        assert "kubernetes" in result
+        assert "file paths" in result
+
+    def test_no_change_when_no_hints(self) -> None:
+        from codeprobe.mining.writer import _strip_location_hints
+
+        q = "Find all deprecated APIs in the repository."
+        assert _strip_location_hints(q) == q
+
+    def test_discovery_variant_written(self, tmp_path: Path) -> None:
+        """_write_oracle_task creates instruction_discovery.md when hints are present."""
+        from codeprobe.mining.writer import _write_oracle_task
+
+        task = Task(
+            id="disc-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="migration-inventory",
+                org_scale=True,
+                issue_title="Find deprecated APIs",
+                issue_body=(
+                    "Find all files matching the patterns "
+                    "`@Deprecated`, `@deprecated` in the test-repo repository."
+                ),
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.py",),
+            ),
+            instruction_variant_path="instruction_discovery.md",
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "disc-001")
+
+        discovery = task_dir / "instruction_discovery.md"
+        assert discovery.exists()
+        content = discovery.read_text()
+        assert "`@Deprecated`" not in content
+        assert "test-repo" in content
+
+    def test_no_discovery_variant_when_unchanged(self, tmp_path: Path) -> None:
+        """No instruction_discovery.md when stripping changes nothing."""
+        from codeprobe.mining.writer import _write_oracle_task
+
+        task = Task(
+            id="disc-002",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="migration-inventory",
+                org_scale=True,
+                issue_title="Find deprecated APIs",
+                issue_body="Find all deprecated APIs in the repository.",
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.py",),
+            ),
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "disc-002")
+
+        assert not (task_dir / "instruction_discovery.md").exists()

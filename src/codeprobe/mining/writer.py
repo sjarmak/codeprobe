@@ -13,6 +13,14 @@ from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
 
+# Pattern for stripping backtick-wrapped code patterns from instructions
+_BACKTICK_PATTERN = re.compile(r"`[^`]+`")
+# Pattern for "matching the patterns X, Y, Z" phrases
+_PATTERNS_PHRASE = re.compile(
+    r"\s*(?:matching|for) the patterns?\s+(?:`[^`]+`(?:,\s*)?)+\.?",
+    re.IGNORECASE,
+)
+
 _MAX_FALLBACK_LEN = 500
 _MAX_ISSUE_BODY_LEN = 1500
 _WHAT_THIS_PR_PATTERN = re.compile(
@@ -258,6 +266,28 @@ def write_task_dir(
     return task_dir
 
 
+def _strip_location_hints(question: str) -> str:
+    r"""Remove grep-pattern hints from a question to create a discovery variant.
+
+    Strips backtick-wrapped patterns (e.g. ``\`@Deprecated\```) and
+    "matching the patterns ..." phrases so the agent must find the relevant
+    code without being told which regex to use.
+    """
+    # Remove "matching the patterns `X`, `Y`, `Z`" phrases first
+    result = _PATTERNS_PHRASE.sub("", question)
+    # Remove remaining backtick-wrapped patterns
+    result = _BACKTICK_PATTERN.sub("the relevant patterns", result)
+    # Collapse multiple "the relevant patterns" into one
+    result = re.sub(
+        r"(the relevant patterns(?:,\s*)?){2,}",
+        "the relevant patterns",
+        result,
+    )
+    # Clean up whitespace
+    result = re.sub(r"  +", " ", result).strip()
+    return result
+
+
 def _write_oracle_task(
     task: Task,
     task_dir: Path,
@@ -296,6 +326,26 @@ def _write_oracle_task(
         f"- `TASK_REPO_ROOT={repo_path}`\n"
     )
     (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+
+    # instruction_discovery.md — same question with pattern/location hints stripped
+    discovery_question = _strip_location_hints(question)
+    if discovery_question != question:
+        discovery_instruction = (
+            f"# {task.metadata.issue_title or task.metadata.name}\n\n"
+            f"**Repository:** {repo_name}\n"
+            f"**Language:** {language}\n\n"
+            "## Question\n\n"
+            f"{discovery_question}\n\n"
+            "## Answer Format\n\n"
+            "Write your answer to `answer.txt` in the repository root, "
+            "listing one file path per line. Do not include explanations "
+            "in the file — only file paths.\n\n"
+            "## Task Contract\n\n"
+            f"- `TASK_REPO_ROOT={repo_path}`\n"
+        )
+        (task_dir / "instruction_discovery.md").write_text(
+            discovery_instruction, encoding="utf-8"
+        )
 
     # ground_truth.json — oracle answer + commit + pattern provenance
     has_curation = bool(task.verification.oracle_tiers)

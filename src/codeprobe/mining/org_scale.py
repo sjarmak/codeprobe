@@ -135,26 +135,12 @@ def _build_task_gen_prompt(
 
 def _guess_language(scan_result: FamilyScanResult) -> str:
     """Guess primary language from file extensions in scan hits."""
-    from collections import Counter
+    from codeprobe.mining._lang import guess_language_from_extensions
 
-    ext_map = {
-        ".go": "go",
-        ".py": "python",
-        ".java": "java",
-        ".ts": "typescript",
-        ".js": "javascript",
-        ".rs": "rust",
-        ".kt": "kotlin",
-        ".cpp": "cpp",
-        ".c": "c",
-        ".rb": "ruby",
-    }
-    exts = Counter(
+    extensions = [
         Path(h.file_path).suffix for h in scan_result.hits if Path(h.file_path).suffix
-    )
-    if exts:
-        return ext_map.get(exts.most_common(1)[0][0], "unknown")
-    return "unknown"
+    ]
+    return guess_language_from_extensions(extensions)
 
 
 def _deterministic_question(
@@ -282,6 +268,7 @@ def generate_org_scale_task(
             oracle_answer=tuple(sorted(ground_truth_files)),
             oracle_tiers=oracle_tiers,
         ),
+        instruction_variant_path="instruction_discovery.md",
     )
 
 
@@ -323,6 +310,7 @@ def _build_dep_trace_task(
             oracle_type="file_list",
             oracle_answer=tuple(sorted(importing_files)),
         ),
+        instruction_variant_path="instruction_discovery.md",
     )
 
 
@@ -526,15 +514,9 @@ def _stamp_multi_repo_commits(task: Task, commits: tuple[tuple[str, str], ...]) 
 
 def _guess_repo_language(tracked_files: frozenset[str]) -> str:
     """Guess repo language from file extensions."""
-    from collections import Counter
+    from codeprobe.mining._lang import guess_language_from_paths
 
-    lang_map = {".go": "go", ".py": "python", ".java": "java", ".ts": "typescript"}
-    ext_counts = Counter(
-        Path(f).suffix for f in list(tracked_files)[:1000] if Path(f).suffix
-    )
-    if ext_counts:
-        return lang_map.get(ext_counts.most_common(1)[0][0], "go")
-    return "go"
+    return guess_language_from_paths(tracked_files)
 
 
 def validate_ground_truth_sample(
