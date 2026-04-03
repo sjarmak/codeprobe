@@ -307,7 +307,7 @@ class TestScanner:
                 "src/also_old.py": "@Deprecated\nclass OldClass: pass",
             },
         )
-        result = scan_repo_for_family(repo, MIGRATION_INVENTORY)
+        result = scan_repo_for_family([repo], MIGRATION_INVENTORY)
         assert len(result.matched_files) >= 3
         assert "src/new.py" not in result.matched_files
 
@@ -317,7 +317,7 @@ class TestScanner:
             {"src/one.py": "@deprecated\ndef f(): pass"},
         )
         # min_hits=3 default, only 1 file → should have hits but below threshold
-        result = scan_repo_for_family(repo, MIGRATION_INVENTORY)
+        result = scan_repo_for_family([repo], MIGRATION_INVENTORY)
         assert len(result.matched_files) < MIGRATION_INVENTORY.min_hits
 
     def test_scan_compliance_audit(self, tmp_path: Path) -> None:
@@ -330,7 +330,7 @@ class TestScanner:
                 "config.yaml": "tls:\n  minVersion: 1.2",
             },
         )
-        result = scan_repo_for_family(repo, COMPLIANCE_AUDIT)
+        result = scan_repo_for_family([repo], COMPLIANCE_AUDIT)
         assert "pkg/server.go" in result.matched_files
         assert "pkg/util.go" not in result.matched_files
 
@@ -349,7 +349,7 @@ class TestGenerateOrgScaleTask:
                 PatternHit("src/legacy.py", 3, "# Deprecated:", r"Deprecated:"),
                 PatternHit("src/also.py", 1, "@Deprecated", r"@Deprecated"),
             ),
-            repo_path=tmp_path,
+            repo_paths=(tmp_path,),
             commit_sha="abc12345deadbeef",
             matched_files=frozenset({"src/old.py", "src/legacy.py", "src/also.py"}),
         )

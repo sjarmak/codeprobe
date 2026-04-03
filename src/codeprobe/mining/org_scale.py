@@ -124,7 +124,7 @@ def _build_task_gen_prompt(
     return _TASK_GEN_PROMPT.format(
         family_name=scan_result.family.name,
         family_description=scan_result.family.description,
-        repo_name=scan_result.repo_path.name,
+        repo_name=scan_result.repo_paths[0].name,
         language=language,
         file_count=len(scan_result.matched_files),
         sample_hits=sample_hits,
@@ -163,7 +163,7 @@ def _deterministic_question(
 ) -> tuple[str, str]:
     """Generate a deterministic question without LLM (--no-llm fallback)."""
     patterns_str = ", ".join(f"`{p}`" for p in family.content_patterns[:3])
-    repo_name = scan_result.repo_path.name
+    repo_name = scan_result.repo_paths[0].name
 
     if is_multi_hop:
         return (
@@ -246,7 +246,7 @@ def generate_org_scale_task(
 
     return Task(
         id=task_id,
-        repo=scan_result.repo_path.name,
+        repo=scan_result.repo_paths[0].name,
         metadata=TaskMetadata(
             name=f"org-{task_id}",
             difficulty=difficulty,
@@ -337,7 +337,7 @@ def _mine_pattern_families(
         if include_multi_hop and scan_result.family.multi_hop and len(tasks) < count:
             language = _guess_language(scan_result)
             multi_hop_files = find_callers_of_symbols(
-                repo_path,
+                [repo_path],
                 scan_result.matched_files,
                 tracked_files,
                 language,
@@ -366,7 +366,7 @@ def _mine_dep_trace(
     commit_sha = get_head_sha(repo_path)
     dep_language = _guess_repo_language(tracked_files)
     top_packages = discover_top_imports(
-        repo_path,
+        [repo_path],
         tracked_files,
         dep_language,
         max_files=max_files,
@@ -391,7 +391,7 @@ def _mine_dep_trace(
                     PatternHit(f, 0, f'import "{pkg_name}"', pkg_name)
                     for f in list(importing_files)[:10]
                 ),
-                repo_path=repo_path,
+                repo_paths=(repo_path,),
                 commit_sha=commit_sha,
                 matched_files=importing_files,
             )
@@ -418,7 +418,7 @@ def mine_org_scale_tasks(
 
     tracked_files = get_tracked_files(repo_path)
     scan_results = scan_repo(
-        repo_path, non_dep, max_files=max_files, tracked_files=tracked_files
+        [repo_path], non_dep, max_files=max_files, tracked_files=tracked_files
     )
 
     tasks = _mine_pattern_families(

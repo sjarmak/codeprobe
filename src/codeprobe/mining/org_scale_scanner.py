@@ -591,13 +591,13 @@ _TEST_PACKAGES = frozenset({"pytest", "unittest", "nose", "hypothesis", "mock"})
 
 
 def discover_top_imports(
-    repo_path: Path,
+    repo_paths: list[Path],
     tracked_files: frozenset[str],
     language: str,
     *,
     max_files: int = 5000,
 ) -> list[tuple[str, frozenset[str]]]:
-    """Discover external packages imported by 10+ files.
+    """Discover external packages imported by 10+ files across one or more repos.
 
     Returns up to _MAX_DEP_TRACE_PACKAGES as (package_name, importing_files).
     Filters out stdlib, self-imports, and test frameworks.
@@ -614,31 +614,34 @@ def discover_top_imports(
     }
     valid_exts = ext_map.get(language, (".go",))
 
-    scanned = 0
-    for file_path in tracked_files:
-        if scanned >= max_files:
-            break
-        if not any(file_path.endswith(ext) for ext in valid_exts):
-            continue
-        if "vendor/" in file_path or "testdata/" in file_path:
-            continue
-        full_path = repo_path / file_path
-        try:
-            content = full_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        scanned += 1
+    for rp in repo_paths:
+        rp_tracked = tracked_files if tracked_files else get_tracked_files(rp)
+        scanned = 0
+        for file_path in rp_tracked:
+            if scanned >= max_files:
+                break
+            if not any(file_path.endswith(ext) for ext in valid_exts):
+                continue
+            if "vendor/" in file_path or "testdata/" in file_path:
+                continue
+            full_path = rp / file_path
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            scanned += 1
 
-        if language == "go":
-            _collect_go_imports(content, file_path, import_counts, import_files)
-        elif language == "python":
-            _collect_python_imports(content, file_path, import_counts, import_files)
+            if language == "go":
+                _collect_go_imports(content, file_path, import_counts, import_files)
+            elif language == "python":
+                _collect_python_imports(content, file_path, import_counts, import_files)
 
-    # Filter self-imports and test frameworks
-    repo_name = repo_path.name.lower().replace("-", "_")
-    for skip in (repo_name, repo_path.name, *_TEST_PACKAGES):
-        import_counts.pop(skip, None)
-        import_files.pop(skip, None)
+    # Filter self-imports and test frameworks for each repo
+    for rp in repo_paths:
+        repo_name = rp.name.lower().replace("-", "_")
+        for skip in (repo_name, rp.name, *_TEST_PACKAGES):
+            import_counts.pop(skip, None)
+            import_files.pop(skip, None)
 
     # Return packages with 10+ importers, capped at _MAX_DEP_GT
     candidates = []
