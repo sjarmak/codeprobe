@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,19 @@ __all__ = [
     "oracle_check",
     "scan_repo",
 ]
+
+
+_FENCE_RE = re.compile(r"^```(?:json)?\s*", re.MULTILINE)
+_FENCE_END_RE = re.compile(r"\s*```\s*$")
+
+
+def _strip_fences(text: str) -> str:
+    """Strip markdown code fences from LLM JSON responses."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = _FENCE_RE.sub("", text, count=1)
+        text = _FENCE_END_RE.sub("", text)
+    return text.strip()
 
 
 @dataclass(frozen=True)
@@ -183,7 +197,7 @@ def _llm_question(
         response = call_claude(
             LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
         )
-        data = json.loads(response.text)
+        data = json.loads(_strip_fences(response.text))
         heading = data.get("heading", f"{scan_result.family.name} task")
         question = data.get("question", "")
         difficulty = data.get("difficulty", "medium")
@@ -582,7 +596,7 @@ def validate_ground_truth_sample(
         response = call_claude(
             LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
         )
-        data = json.loads(response.text)
+        data = json.loads(_strip_fences(response.text))
         disagreements = data.get("disagreements", [])
         if len(disagreements) > 1:
             logger.warning(
