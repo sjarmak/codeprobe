@@ -8,12 +8,14 @@ ZFC compliant: pure arithmetic comparison, no semantic judgment.
 
 from __future__ import annotations
 
+import json
 import logging
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from codeprobe.mining.org_scale_families import TaskFamily
-from codeprobe.mining.org_scale_oracle import normalize_path
+from codeprobe.mining.org_scale_oracle import normalize_path, oracle_check
 from codeprobe.mining.org_scale_scanner import scan_repo_for_family
 from codeprobe.models.task import Task
 
@@ -41,20 +43,6 @@ class DeltaResult:
     details: str
 
 
-def _compute_f1(predicted: frozenset[str], expected: frozenset[str]) -> float:
-    """Compute F1 score between predicted and expected file sets."""
-    if not expected:
-        return 1.0 if not predicted else 0.0
-    if not predicted:
-        return 0.0
-    intersection = len(predicted & expected)
-    precision = intersection / len(predicted)
-    recall = intersection / len(expected)
-    if precision + recall == 0.0:
-        return 0.0
-    return 2.0 * precision * recall / (precision + recall)
-
-
 def validate_family_delta(
     family: TaskFamily,
     sample_tasks: list[Task],
@@ -64,7 +52,7 @@ def validate_family_delta(
 
     For each sample task, runs the family's regex patterns against the
     corresponding repo to get grep-matched files, then compares against
-    the task's ground truth (oracle_answer) via F1 scoring.
+    the task's ground truth (oracle_answer) via oracle_check F1 scoring.
 
     Args:
         family: The task family to validate.
@@ -88,21 +76,35 @@ def validate_family_delta(
 
     for task, repo_path in zip(sample_tasks, repo_paths):
         expected_raw = task.verification.oracle_answer
-        expected = frozenset(normalize_path(p) for p in expected_raw if p)
+        expected = [normalize_path(p) for p in expected_raw if p]
 
         if not expected:
             task_details.append(f"{task.id}: skipped (empty ground truth)")
             continue
 
         scan_result = scan_repo_for_family([repo_path], family)
-        grep_files = frozenset(normalize_path(f) for f in scan_result.matched_files)
+        grep_files = [normalize_path(f) for f in scan_result.matched_files]
 
-        f1 = _compute_f1(grep_files, expected)
+        # Use oracle_check for ground truth comparison via temp directory
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            gt_data = {"expected": expected, "oracle_type": "file_list"}
+            (tmp_path / "ground_truth.json").write_text(
+                json.dumps(gt_data), encoding="utf-8"
+            )
+            (tmp_path / "answer.txt").write_text(
+                "\n".join(grep_files), encoding="utf-8"
+            )
+            result = oracle_check(tmp_path, metric="f1")
+
+        f1 = float(result.get("f1", result.get("score", 0.0)))
         f1_scores.append(f1)
+        grep_set = frozenset(grep_files)
+        expected_set = frozenset(expected)
         task_details.append(
             f"{task.id}: f1={f1:.3f} "
-            f"(grep={len(grep_files)}, truth={len(expected)}, "
-            f"overlap={len(grep_files & expected)})"
+            f"(grep={len(grep_set)}, truth={len(expected_set)}, "
+            f"overlap={len(grep_set & expected_set)})"
         )
 
     avg_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0

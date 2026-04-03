@@ -10,7 +10,6 @@ import pytest
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.mining.org_scale_validate import (
     DeltaResult,
-    _compute_f1,
     validate_families,
     validate_family_delta,
 )
@@ -64,35 +63,6 @@ def _init_git_repo(repo_path: Path) -> None:
             "PATH": "/usr/bin:/bin",
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# Unit tests: _compute_f1
-# ---------------------------------------------------------------------------
-
-
-class TestComputeF1:
-    def test_perfect_match(self) -> None:
-        assert _compute_f1(frozenset({"a", "b"}), frozenset({"a", "b"})) == 1.0
-
-    def test_no_overlap(self) -> None:
-        assert _compute_f1(frozenset({"a"}), frozenset({"b"})) == 0.0
-
-    def test_partial_overlap(self) -> None:
-        predicted = frozenset({"a", "b", "c"})
-        expected = frozenset({"a", "b", "d"})
-        # precision = 2/3, recall = 2/3, f1 = 2/3
-        f1 = _compute_f1(predicted, expected)
-        assert abs(f1 - 2 / 3) < 1e-9
-
-    def test_empty_both(self) -> None:
-        assert _compute_f1(frozenset(), frozenset()) == 1.0
-
-    def test_empty_predicted(self) -> None:
-        assert _compute_f1(frozenset(), frozenset({"a"})) == 0.0
-
-    def test_empty_expected(self) -> None:
-        assert _compute_f1(frozenset({"a"}), frozenset()) == 0.0
 
 
 # ---------------------------------------------------------------------------
