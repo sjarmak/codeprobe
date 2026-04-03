@@ -9,8 +9,9 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -39,13 +40,14 @@ class PatternHit:
 
 @dataclass(frozen=True)
 class FamilyScanResult:
-    """Results of scanning a repo for one task family."""
+    """Results of scanning one or more repos for one task family."""
 
     family: TaskFamily
     hits: tuple[PatternHit, ...]
-    repo_path: Path
+    repo_paths: tuple[Path, ...]
     commit_sha: str
     matched_files: frozenset[str]
+    timed_out: bool = field(default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -109,34 +111,80 @@ def matches_glob(file_path: str, glob_pattern: str) -> bool:
 
 _MAX_FILE_SIZE = 512_000  # Skip files larger than 512KB (generated/bundled)
 
+# ---------------------------------------------------------------------------
+# Scan result cache
+# ---------------------------------------------------------------------------
+
+_scan_cache: dict[tuple[tuple[str, ...], str, str], FamilyScanResult] = {}
+
+
+def clear_scan_cache() -> None:
+    """Clear the module-level scan result cache."""
+    _scan_cache.clear()
+
+
+def _cache_key(
+    repo_paths: list[Path], commit_sha: str, family_name: str
+) -> tuple[tuple[str, ...], str, str]:
+    return (tuple(sorted(str(p) for p in repo_paths)), commit_sha, family_name)
+
 
 def scan_repo_for_family(
-    repo_path: Path,
+    repo_paths: list[Path],
     family: TaskFamily,
     *,
     max_files: int = 50_000,
     tracked_files: frozenset[str] | None = None,
     commit_sha: str = "",
+    timeout_seconds: float = 60.0,
 ) -> FamilyScanResult:
-    """Scan a repo for pattern matches belonging to a task family."""
-    if not commit_sha:
-        commit_sha = get_head_sha(repo_path)
-    if tracked_files is None:
-        tracked_files = get_tracked_files(repo_path)
+    """Scan one or more repos for pattern matches belonging to a task family."""
+    # Gather per-repo tracked files and commit SHAs
+    per_repo: list[tuple[Path, frozenset[str], str]] = []
+    for rp in repo_paths:
+        tf = tracked_files if tracked_files is not None else get_tracked_files(rp)
+        sha = commit_sha if commit_sha else get_head_sha(rp)
+        per_repo.append((rp, tf, sha))
 
-    candidate_files = _filter_by_suffix(tracked_files, family.glob_patterns, max_files)
+    combined_sha = ",".join(sha for _, _, sha in per_repo)
+
+    # Check cache
+    key = _cache_key(repo_paths, combined_sha, family.name)
+    if key in _scan_cache:
+        return _scan_cache[key]
+
     compiled_patterns = _compile_patterns(family)
-    hits, matched_files = _scan_files(
-        repo_path, candidate_files, compiled_patterns, family.max_hits
-    )
+    deadline = time.monotonic() + timeout_seconds
 
-    return FamilyScanResult(
+    all_hits: list[PatternHit] = []
+    all_matched_files: set[str] = set()
+    any_timed_out = False
+
+    for rp, tf, _sha in per_repo:
+        candidate_files = _filter_by_suffix(tf, family.glob_patterns, max_files)
+        hits, matched_files, timed_out = _scan_files(
+            rp,
+            candidate_files,
+            compiled_patterns,
+            family.max_hits,
+            deadline=deadline,
+        )
+        all_hits.extend(hits)
+        all_matched_files.update(matched_files)
+        if timed_out:
+            any_timed_out = True
+            break
+
+    result = FamilyScanResult(
         family=family,
-        hits=tuple(hits),
-        repo_path=repo_path,
-        commit_sha=commit_sha,
-        matched_files=frozenset(matched_files),
+        hits=tuple(all_hits),
+        repo_paths=tuple(repo_paths),
+        commit_sha=combined_sha,
+        matched_files=frozenset(all_matched_files),
+        timed_out=any_timed_out,
     )
+    _scan_cache[key] = result
+    return result
 
 
 def _filter_by_suffix(
@@ -191,12 +239,19 @@ def _scan_files(
     candidate_files: list[str],
     compiled_patterns: list[tuple[str, re.Pattern[str]]],
     max_hits: int,
-) -> tuple[list[PatternHit], set[str]]:
-    """Scan files for pattern matches. Returns (hits, matched_files)."""
+    *,
+    deadline: float | None = None,
+) -> tuple[list[PatternHit], set[str], bool]:
+    """Scan files for pattern matches. Returns (hits, matched_files, timed_out)."""
     hits: list[PatternHit] = []
     matched_files: set[str] = set()
+    timed_out = False
 
     for file_path in candidate_files:
+        if deadline is not None and time.monotonic() > deadline:
+            timed_out = True
+            break
+
         full_path = repo_path / file_path
         try:
             if full_path.stat().st_size > _MAX_FILE_SIZE:
@@ -224,32 +279,28 @@ def _scan_files(
         if len(hits) >= max_hits:
             break
 
-    return hits[:max_hits], matched_files
+    return hits[:max_hits], matched_files, timed_out
 
 
 def scan_repo(
-    repo_path: Path,
+    repo_paths: list[Path],
     families: tuple[TaskFamily, ...] | None = None,
     *,
     max_files: int = 50_000,
     tracked_files: frozenset[str] | None = None,
 ) -> list[FamilyScanResult]:
-    """Scan a repo for all task families. Returns results with enough hits."""
+    """Scan one or more repos for all task families. Returns results with enough hits."""
     if families is None:
         families = FAMILIES
 
-    if tracked_files is None:
-        tracked_files = get_tracked_files(repo_path)
-    commit_sha = get_head_sha(repo_path)
     results: list[FamilyScanResult] = []
 
     for family in families:
         result = scan_repo_for_family(
-            repo_path,
+            repo_paths,
             family,
             max_files=max_files,
             tracked_files=tracked_files,
-            commit_sha=commit_sha,
         )
         if len(result.matched_files) >= family.min_hits:
             results.append(result)
@@ -373,39 +424,44 @@ def _extract_deprecated_symbols(
 
 
 def find_callers_of_symbols(
-    repo_path: Path,
+    repo_paths: list[Path],
     symbol_files: frozenset[str],
     tracked_files: frozenset[str],
     language: str,
     *,
     max_files: int = 50_000,
 ) -> frozenset[str]:
-    """Find files referencing deprecated symbols from the given files."""
-    symbols = _extract_deprecated_symbols(repo_path, symbol_files, language)
-    if not symbols:
+    """Find files referencing deprecated symbols across one or more repos."""
+    # Extract symbols from all repos
+    all_symbols: set[str] = set()
+    for rp in repo_paths:
+        all_symbols.update(_extract_deprecated_symbols(rp, symbol_files, language))
+    if not all_symbols:
         return frozenset()
 
-    logger.info("Multi-hop: %d symbols: %s", len(symbols), sorted(symbols)[:10])
+    logger.info("Multi-hop: %d symbols: %s", len(all_symbols), sorted(all_symbols)[:10])
 
-    pattern = re.compile(r"\b(" + "|".join(re.escape(s) for s in symbols) + r")\b")
+    pattern = re.compile(r"\b(" + "|".join(re.escape(s) for s in all_symbols) + r")\b")
     caller_files: set[str] = set()
-    scanned = 0
 
-    for file_path in tracked_files:
-        if file_path in symbol_files or scanned >= max_files:
-            break
-        if len(caller_files) >= _MAX_MULTI_HOP_FILES:
-            break
-        if not any(file_path.endswith(ext) for ext in _SOURCE_EXTS):
-            continue
-        full_path = repo_path / file_path
-        try:
-            content = full_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        scanned += 1
-        if pattern.search(content):
-            caller_files.add(file_path)
+    for rp in repo_paths:
+        scanned = 0
+        rp_tracked = tracked_files if tracked_files else get_tracked_files(rp)
+        for file_path in rp_tracked:
+            if file_path in symbol_files or scanned >= max_files:
+                break
+            if len(caller_files) >= _MAX_MULTI_HOP_FILES:
+                break
+            if not any(file_path.endswith(ext) for ext in _SOURCE_EXTS):
+                continue
+            full_path = rp / file_path
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            scanned += 1
+            if pattern.search(content):
+                caller_files.add(file_path)
 
     return frozenset(caller_files)
 
