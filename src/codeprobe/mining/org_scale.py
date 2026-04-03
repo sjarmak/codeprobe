@@ -317,7 +317,7 @@ def _build_dep_trace_task(
 
 def _mine_pattern_families(
     scan_results: list[FamilyScanResult],
-    repo_path: Path,
+    repo_paths: list[Path],
     tracked_files: frozenset[str],
     *,
     count: int,
@@ -337,7 +337,7 @@ def _mine_pattern_families(
         if include_multi_hop and scan_result.family.multi_hop and len(tasks) < count:
             language = _guess_language(scan_result)
             multi_hop_files = find_callers_of_symbols(
-                [repo_path],
+                repo_paths,
                 scan_result.matched_files,
                 tracked_files,
                 language,
@@ -355,7 +355,7 @@ def _mine_pattern_families(
 
 
 def _mine_dep_trace(
-    repo_path: Path,
+    repo_paths: list[Path],
     tracked_files: frozenset[str],
     scan_results: list[FamilyScanResult],
     *,
@@ -363,10 +363,11 @@ def _mine_dep_trace(
     max_files: int,
 ) -> list[Task]:
     """Generate dep-trace tasks by discovering top imported packages."""
-    commit_sha = get_head_sha(repo_path)
+    primary_repo = repo_paths[0]
+    commit_sha = get_head_sha(primary_repo)
     dep_language = _guess_repo_language(tracked_files)
     top_packages = discover_top_imports(
-        [repo_path],
+        repo_paths,
         tracked_files,
         dep_language,
         max_files=max_files,
@@ -379,7 +380,7 @@ def _mine_dep_trace(
             _build_dep_trace_task(
                 pkg_name,
                 importing_files,
-                repo_path,
+                primary_repo,
                 commit_sha,
                 dep_language,
             )
@@ -391,7 +392,7 @@ def _mine_dep_trace(
                     PatternHit(f, 0, f'import "{pkg_name}"', pkg_name)
                     for f in list(importing_files)[:10]
                 ),
-                repo_paths=(repo_path,),
+                repo_paths=tuple(repo_paths),
                 commit_sha=commit_sha,
                 matched_files=importing_files,
             )
@@ -403,48 +404,104 @@ def _mine_dep_trace(
 
 
 def mine_org_scale_tasks(
-    repo_path: Path,
+    repo_paths: list[Path],
     *,
     count: int = 5,
     families: tuple[TaskFamily, ...] | None = None,
     no_llm: bool = False,
     max_files: int = 50_000,
     include_multi_hop: bool = True,
+    scan_timeout: int = 60,
 ) -> OrgScaleMineResult:
-    """Mine org-scale comprehension tasks from a repository."""
+    """Mine org-scale comprehension tasks from one or more repositories.
+
+    Args:
+        repo_paths: One or more local repo directories to scan.
+        count: Maximum number of tasks to generate.
+        families: Restrict to specific families (default: all).
+        no_llm: Skip LLM question generation, use deterministic fallback.
+        max_files: Cap on files to scan per family.
+        include_multi_hop: Generate multi-hop task variants.
+        scan_timeout: Per-family scan timeout in seconds.
+    """
     all_families = families or FAMILIES
     non_dep = tuple(f for f in all_families if f.name != "cross-repo-dep-trace")
     want_dep = any(f.name == "cross-repo-dep-trace" for f in all_families)
 
-    tracked_files = get_tracked_files(repo_path)
+    # Merge tracked files from all repos
+    all_tracked: frozenset[str] = frozenset()
+    for rp in repo_paths:
+        all_tracked = all_tracked | get_tracked_files(rp)
+
     scan_results = scan_repo(
-        [repo_path], non_dep, max_files=max_files, tracked_files=tracked_files
+        repo_paths, non_dep, max_files=max_files, tracked_files=all_tracked
     )
+
+    # Build multi-repo commits mapping
+    commits = tuple((rp.name, get_head_sha(rp)) for rp in repo_paths)
 
     tasks = _mine_pattern_families(
         scan_results,
-        repo_path,
-        tracked_files,
+        repo_paths,
+        all_tracked,
         count=count,
         no_llm=no_llm,
         max_files=max_files,
         include_multi_hop=include_multi_hop,
     )
 
+    # Stamp multi-repo commits onto tasks when there are multiple repos
+    if len(repo_paths) > 1:
+        tasks = [_stamp_multi_repo_commits(t, commits) for t in tasks]
+
     if want_dep and len(tasks) < count:
         dep_tasks = _mine_dep_trace(
-            repo_path,
-            tracked_files,
+            repo_paths,
+            all_tracked,
             scan_results,
             count=count - len(tasks),
             max_files=max_files,
         )
+        if len(repo_paths) > 1:
+            dep_tasks = [_stamp_multi_repo_commits(t, commits) for t in dep_tasks]
         tasks.extend(dep_tasks)
 
     if not tasks:
-        logger.info("No org-scale tasks generated from %s", repo_path)
+        logger.info("No org-scale tasks generated from %s", repo_paths)
 
     return OrgScaleMineResult(tasks=tasks[:count], scan_results=scan_results)
+
+
+def _stamp_multi_repo_commits(task: Task, commits: tuple[tuple[str, str], ...]) -> Task:
+    """Return a new Task with ground_truth_commits set for multi-repo."""
+    return Task(
+        id=task.id,
+        repo=task.repo,
+        metadata=TaskMetadata(
+            name=task.metadata.name,
+            difficulty=task.metadata.difficulty,
+            description=task.metadata.description,
+            license=task.metadata.license,
+            language=task.metadata.language,
+            category=task.metadata.category,
+            org_scale=task.metadata.org_scale,
+            mcp_suite=task.metadata.mcp_suite,
+            tags=task.metadata.tags,
+            estimated_duration_sec=task.metadata.estimated_duration_sec,
+            resource_tier=task.metadata.resource_tier,
+            issue_title=task.metadata.issue_title,
+            issue_body=task.metadata.issue_body,
+            quality_score=task.metadata.quality_score,
+            enrichment_source=task.metadata.enrichment_source,
+            ground_truth_commit=task.metadata.ground_truth_commit,
+            ground_truth_commits=commits,
+        ),
+        verification=task.verification,
+        instruction_path=task.instruction_path,
+        instruction_variant_path=task.instruction_variant_path,
+        time_limit_sec=task.time_limit_sec,
+        verification_modes=task.verification_modes,
+    )
 
 
 def _guess_repo_language(tracked_files: frozenset[str]) -> str:
@@ -458,3 +515,82 @@ def _guess_repo_language(tracked_files: frozenset[str]) -> str:
     if ext_counts:
         return lang_map.get(ext_counts.most_common(1)[0][0], "go")
     return "go"
+
+
+def validate_ground_truth_sample(
+    task: Task,
+    repo_paths: list[Path],
+    *,
+    sample_size: int = 5,
+) -> bool | None:
+    """Best-effort LLM validation of ground truth for a single task.
+
+    Samples up to ``sample_size`` matches and ``sample_size`` non-matches from
+    the repo, asks the LLM to confirm whether each file should be in the ground
+    truth. Logs a warning if the LLM disagrees on more than 1 file.
+
+    Returns True if validation passed, False if disagreements found,
+    None if LLM was unavailable (skipped silently).
+    """
+    try:
+        from codeprobe.core.llm import LLMError, LLMRequest, call_claude, llm_available
+
+        if not llm_available():
+            return None
+    except ImportError:
+        return None
+
+    gt_files = set(task.verification.oracle_answer)
+    if not gt_files:
+        return True
+
+    # Gather non-match files from tracked files
+    all_tracked: set[str] = set()
+    for rp in repo_paths:
+        all_tracked.update(get_tracked_files(rp))
+    non_matches = sorted(all_tracked - gt_files)
+
+    import random
+
+    rng = random.Random(42)
+    match_sample = sorted(rng.sample(sorted(gt_files), min(sample_size, len(gt_files))))
+    non_match_sample = (
+        sorted(rng.sample(non_matches, min(sample_size, len(non_matches))))
+        if non_matches
+        else []
+    )
+
+    prompt = (
+        f"You are validating ground truth for a code comprehension task.\n\n"
+        f"Task category: {task.metadata.category}\n"
+        f"Task description: {task.metadata.description}\n"
+        f"Question: {task.metadata.issue_body}\n\n"
+        f"Files claimed to MATCH (should be in answer):\n"
+        + "\n".join(f"  {f}" for f in match_sample)
+        + f"\n\nFiles claimed to NOT MATCH (should not be in answer):\n"
+        + "\n".join(f"  {f}" for f in non_match_sample)
+        + "\n\nFor each file, respond with JSON: "
+        '{"disagreements": ["file1.py", "file2.py"]} '
+        "listing only files where you disagree with the classification. "
+        "Empty list means you agree with all classifications.\n"
+        "Respond ONLY with the JSON object."
+    )
+
+    try:
+        response = call_claude(
+            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+        )
+        data = json.loads(response.text)
+        disagreements = data.get("disagreements", [])
+        if len(disagreements) > 1:
+            logger.warning(
+                "LLM ground truth validation: %d disagreements for task %s: %s",
+                len(disagreements),
+                task.id,
+                disagreements,
+            )
+            return False
+        return True
+    except (LLMError, json.JSONDecodeError, KeyError) as exc:
+        logger.debug("LLM ground truth validation skipped: %s", exc)
+        return None

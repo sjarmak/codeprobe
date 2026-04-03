@@ -512,7 +512,7 @@ class TestEndToEnd:
 
         # Step 1: Mine tasks
         result = mine_org_scale_tasks(
-            repo,
+            [repo],
             count=2,
             families=(MIGRATION_INVENTORY,),
             no_llm=True,
@@ -546,7 +546,7 @@ class TestEndToEnd:
         repo = self._make_repo(tmp_path)
 
         result = mine_org_scale_tasks(
-            repo, count=1, families=(MIGRATION_INVENTORY,), no_llm=True
+            [repo], count=1, families=(MIGRATION_INVENTORY,), no_llm=True
         )
         assert len(result.tasks) >= 1
 
@@ -568,7 +568,7 @@ class TestEndToEnd:
         repo = self._make_repo(tmp_path)
 
         result = mine_org_scale_tasks(
-            repo, count=1, families=(MIGRATION_INVENTORY,), no_llm=True
+            [repo], count=1, families=(MIGRATION_INVENTORY,), no_llm=True
         )
         task = result.tasks[0]
         tasks_dir = tmp_path / "output" / "tasks"

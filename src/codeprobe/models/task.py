@@ -39,6 +39,9 @@ class TaskMetadata:
     quality_score: float = 0.0
     enrichment_source: str = ""
     ground_truth_commit: str = ""
+    ground_truth_commits: tuple[
+        tuple[str, str], ...
+    ] = ()  # (repo_name, sha) pairs for multi-repo
 
 
 @dataclass(frozen=True)
