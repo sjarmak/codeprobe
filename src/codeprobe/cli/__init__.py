@@ -83,6 +83,25 @@ def init(path: str) -> None:
     default=(),
     help="Limit org-scale mining to specific families. Repeatable.",
 )
+@click.option(
+    "--repos",
+    multiple=True,
+    default=(),
+    help="Repo paths or URLs for multi-repo org-scale mining. Repeatable.",
+)
+@click.option(
+    "--scan-timeout",
+    default=60,
+    type=int,
+    help="Per-family scan timeout in seconds (default: 60).",
+)
+@click.option(
+    "--validate",
+    "validate_flag",
+    is_flag=True,
+    default=False,
+    help="Run MCP delta validation on mined families.",
+)
 def mine(
     path: str,
     count: int,
@@ -95,6 +114,9 @@ def mine(
     no_llm: bool,
     org_scale: bool,
     family: tuple[str, ...],
+    repos: tuple[str, ...],
+    scan_timeout: int,
+    validate_flag: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -125,6 +147,9 @@ def mine(
         no_llm=no_llm,
         org_scale=org_scale,
         families=family,
+        repos=repos,
+        scan_timeout=scan_timeout,
+        validate_flag=validate_flag,
     )
 
 

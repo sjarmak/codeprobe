@@ -279,12 +279,16 @@ def _write_oracle_task(
     (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
 
     # ground_truth.json — oracle answer + commit + pattern provenance
-    ground_truth = {
+    ground_truth: dict[str, object] = {
         "oracle_type": task.verification.oracle_type,
         "expected": list(task.verification.oracle_answer),
         "commit": task.metadata.ground_truth_commit,
         "pattern_used": task.metadata.category,
     }
+    if task.metadata.ground_truth_commits:
+        ground_truth["commits"] = {
+            repo_name: sha for repo_name, sha in task.metadata.ground_truth_commits
+        }
     (task_dir / "ground_truth.json").write_text(
         json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",

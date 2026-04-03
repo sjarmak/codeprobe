@@ -477,6 +477,9 @@ def run_mine(
     no_llm: bool = False,
     org_scale: bool = False,
     families: tuple[str, ...] = (),
+    repos: tuple[str, ...] = (),
+    scan_timeout: int = 60,
+    validate_flag: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.mining import mine_tasks, write_task_dir
@@ -484,7 +487,25 @@ def run_mine(
     repo_path = _resolve_repo_path(path)
 
     if org_scale:
-        _run_org_scale_mine(repo_path, count=count, no_llm=no_llm, families=families)
+        # Build repo_paths list: primary path + any --repos entries
+        repo_paths = [repo_path]
+        for r in repos:
+            if _is_git_url(r):
+                repo_paths.append(_clone_repo(r))
+            else:
+                rp = Path(r).resolve()
+                if not rp.exists():
+                    click.echo(f"Path does not exist: {rp}")
+                    raise SystemExit(1)
+                repo_paths.append(rp)
+        _run_org_scale_mine(
+            repo_paths,
+            count=count,
+            no_llm=no_llm,
+            families=families,
+            scan_timeout=scan_timeout,
+            validate_flag=validate_flag,
+        )
         return
 
     if interactive is None:
@@ -559,18 +580,22 @@ def run_mine(
 
 
 def _run_org_scale_mine(
-    repo_path: Path,
+    repo_paths: list[Path],
     *,
     count: int = 5,
     no_llm: bool = False,
     families: tuple[str, ...] = (),
+    scan_timeout: int = 60,
+    validate_flag: bool = False,
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification."""
     from codeprobe.mining.org_scale import mine_org_scale_tasks
-    from codeprobe.mining.org_scale_families import FAMILY_BY_NAME, TaskFamily
+    from codeprobe.mining.org_scale_families import FAMILIES, FAMILY_BY_NAME, TaskFamily
     from codeprobe.mining.writer import write_task_dir
 
-    click.echo(f"Scanning {repo_path.name} for org-scale patterns...", err=True)
+    primary_repo = repo_paths[0]
+    repo_names = ", ".join(rp.name for rp in repo_paths)
+    click.echo(f"Scanning {repo_names} for org-scale patterns...", err=True)
 
     # Filter families if specified
     selected_families: tuple[TaskFamily, ...] | None = None
@@ -583,11 +608,19 @@ def _run_org_scale_mine(
             return
         selected_families = tuple(selected)
 
+    # Interactive family selection when TTY and no explicit --family filter
+    if not selected_families and _is_interactive():
+        selected_families = _interactive_family_selection(repo_paths)
+        if selected_families is not None and not selected_families:
+            click.echo("No families selected. Aborted.")
+            return
+
     result = mine_org_scale_tasks(
-        repo_path,
+        repo_paths,
         count=count,
         families=selected_families,
         no_llm=no_llm,
+        scan_timeout=scan_timeout,
     )
 
     if not result.tasks:
@@ -607,12 +640,110 @@ def _run_org_scale_mine(
         click.echo(f"  {sr.family.name}: {len(sr.matched_files)} files matched")
     click.echo()
 
-    # Write tasks
-    tasks_dir = _clear_tasks_dir(repo_path)
-    for task in result.tasks:
-        write_task_dir(task, tasks_dir, repo_path)
+    # Run MCP delta validation if requested
+    if validate_flag:
+        _run_validation(result, repo_paths)
 
-    _show_org_scale_results(result.tasks, tasks_dir, repo_path)
+    # Write tasks
+    tasks_dir = _clear_tasks_dir(primary_repo)
+    for task in result.tasks:
+        write_task_dir(task, tasks_dir, primary_repo)
+
+    _show_org_scale_results(result.tasks, tasks_dir, primary_repo)
+
+
+def _interactive_family_selection(
+    repo_paths: list[Path],
+) -> tuple["TaskFamily", ...] | None:
+    """Show detected families with hit counts and prompt for selection.
+
+    Returns None to use all families (default), or a tuple of selected families.
+    """
+    from codeprobe.mining.org_scale_families import FAMILIES
+    from codeprobe.mining.org_scale_scanner import get_tracked_files, scan_repo
+
+    # Quick scan to show hit counts
+    all_tracked: frozenset[str] = frozenset()
+    for rp in repo_paths:
+        all_tracked = all_tracked | get_tracked_files(rp)
+
+    scan_results = scan_repo(repo_paths, FAMILIES, tracked_files=all_tracked)
+
+    click.echo()
+    click.echo("Detected task families:")
+    entries = []
+    for i, family in enumerate(FAMILIES, 1):
+        sr = next((s for s in scan_results if s.family.name == family.name), None)
+        hit_count = len(sr.matched_files) if sr else 0
+        status = (
+            f"{hit_count} files"
+            if hit_count >= family.min_hits
+            else f"{hit_count} files (below threshold)"
+        )
+        entries.append((family, hit_count))
+        click.echo(f"  [{i}] {family.name:<30s} {status}")
+    click.echo()
+
+    raw = click.prompt(
+        "Select families (comma-separated numbers, or Enter for all)",
+        default="",
+        show_default=False,
+    )
+
+    if not raw.strip():
+        return None  # Use all families
+
+    selected = []
+    for token in raw.split(","):
+        token = token.strip()
+        try:
+            idx = int(token)
+            if 1 <= idx <= len(FAMILIES):
+                selected.append(FAMILIES[idx - 1])
+            else:
+                click.echo(f"  Skipping out-of-range index: {idx}")
+        except ValueError:
+            click.echo(f"  Skipping invalid input: {token}")
+
+    return tuple(selected) if selected else tuple()
+
+
+def _run_validation(
+    result: "OrgScaleMineResult",
+    repo_paths: list[Path],
+) -> None:
+    """Run MCP delta validation and display results."""
+    from codeprobe.mining.org_scale_validate import validate_families
+
+    # Group tasks by family for validation
+    family_tasks: dict[str, list] = {}
+    for task in result.tasks:
+        family_tasks.setdefault(task.metadata.category, []).append(task)
+
+    families_to_validate = []
+    tasks_per_family = []
+    repos_per_family = []
+    for sr in result.scan_results:
+        tasks_for_family = family_tasks.get(sr.family.name, [])
+        if tasks_for_family:
+            families_to_validate.append(sr.family)
+            tasks_per_family.append(tasks_for_family)
+            repos_per_family.append(repo_paths)
+
+    if not families_to_validate:
+        click.echo("No families to validate.")
+        return
+
+    click.echo("Running MCP delta validation...")
+    delta_results = validate_families(
+        families_to_validate, tasks_per_family, repos_per_family
+    )
+    click.echo()
+    click.echo("Validation results:")
+    for dr in delta_results:
+        status = "BASELINE-ONLY" if dr.is_baseline_only else "OK"
+        click.echo(f"  {dr.family_name:<30s} grep_f1={dr.grep_f1:.3f} [{status}]")
+    click.echo()
 
 
 def _show_org_scale_results(

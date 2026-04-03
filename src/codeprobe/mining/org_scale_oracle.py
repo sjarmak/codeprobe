@@ -1,9 +1,11 @@
 """Oracle comparison for org-scale tasks.
 
-Compares agent answers (file lists) against structurally-computed ground
-truth using F1/recall/precision/jaccard scoring.
+Supports three oracle types:
+- **file_list** (default): frozenset F1/precision/recall/jaccard scoring
+- **count**: exact integer match with optional ±tolerance
+- **boolean**: normalized true/false comparison
 
-All comparison uses frozenset (not list) to prevent duplicate inflation.
+All file_list comparison uses frozenset (not list) to prevent duplicate inflation.
 """
 
 from __future__ import annotations
@@ -36,22 +38,54 @@ def normalize_path(path: str) -> str:
     return p
 
 
-def extract_answer(task_dir: Path) -> list[str]:
-    """Extract the agent's answer from answer.txt in the task directory.
-
-    Returns a list of normalized file paths (blank lines and comments skipped).
-    """
+def _read_answer_raw(task_dir: Path) -> str | None:
+    """Read answer.txt and return raw text, or None on failure."""
     answer_file = task_dir / "answer.txt"
     if not answer_file.exists():
         logger.warning("No answer.txt found in %s", task_dir)
-        return []
-
+        return None
     try:
-        raw = answer_file.read_text(encoding="utf-8", errors="replace")
+        return answer_file.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         logger.warning("Failed to read answer.txt: %s", exc)
-        return []
+        return None
 
+
+def extract_answer(
+    task_dir: Path,
+    oracle_type: str = "file_list",
+) -> list[str] | int | bool | None:
+    """Extract the agent's answer from answer.txt in the task directory.
+
+    Returns:
+        - ``list[str]``: normalized file paths for ``file_list``
+        - ``int``: parsed integer for ``count``
+        - ``bool``: normalized boolean for ``boolean``
+        - ``None``: on missing/unreadable answer.txt or parse failure
+    """
+    raw = _read_answer_raw(task_dir)
+    if raw is None:
+        return [] if oracle_type == "file_list" else None
+
+    if oracle_type == "count":
+        for line in raw.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                try:
+                    return int(line)
+                except ValueError:
+                    logger.warning("Cannot parse count answer: %r", line)
+                    return None
+        return None
+
+    if oracle_type == "boolean":
+        for line in raw.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return _normalize_bool(line)
+        return None
+
+    # file_list (default)
     paths: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
@@ -59,8 +93,22 @@ def extract_answer(task_dir: Path) -> list[str]:
             normalized = normalize_path(line)
             if normalized:
                 paths.append(normalized)
-
     return paths
+
+
+_TRUE_VALS = frozenset({"true", "yes", "1"})
+_FALSE_VALS = frozenset({"false", "no", "0"})
+
+
+def _normalize_bool(value: str) -> bool | None:
+    """Normalize a string to a boolean, or None if unrecognized."""
+    v = value.strip().lower()
+    if v in _TRUE_VALS:
+        return True
+    if v in _FALSE_VALS:
+        return False
+    logger.warning("Cannot normalize boolean value: %r", value)
+    return None
 
 
 def oracle_check(
@@ -70,13 +118,15 @@ def oracle_check(
 ) -> dict[str, float | str]:
     """Compare agent answer against ground truth.
 
+    Dispatches to type-specific checkers based on ``oracle_type`` in
+    ``ground_truth.json`` (defaults to ``"file_list"``).
+
     Args:
         task_dir: Task directory containing answer.txt and ground_truth.json.
-        metric: Primary metric: ``"f1"``, ``"recall"``, ``"precision"``, ``"jaccard"``.
+        metric: Primary metric (only used for file_list type).
 
     Returns:
-        Dict with ``score``, ``precision``, ``recall``, ``f1``, ``jaccard``,
-        raw counts, and ``error`` (empty string if no error).
+        Dict with at least ``score`` and ``error`` keys.
     """
     gt_path = task_dir / "ground_truth.json"
     if not gt_path.exists():
@@ -87,6 +137,25 @@ def oracle_check(
     except (json.JSONDecodeError, OSError) as exc:
         return {"score": 0.0, "error": f"Invalid ground_truth.json: {exc}"}
 
+    oracle_type = gt_data.get("oracle_type", "file_list")
+
+    if oracle_type == "count":
+        return _check_count(task_dir, gt_data)
+    if oracle_type == "boolean":
+        return _check_boolean(task_dir, gt_data)
+    if oracle_type == "file_list":
+        return _check_file_list(task_dir, gt_data, metric=metric)
+
+    return {"score": 0.0, "error": f"Unknown oracle_type: {oracle_type!r}"}
+
+
+def _check_file_list(
+    task_dir: Path,
+    gt_data: dict,
+    *,
+    metric: str = "f1",
+) -> dict[str, float | str]:
+    """File-list oracle: frozenset F1/precision/recall/jaccard scoring."""
     expected_raw = gt_data.get("expected", [])
     if not isinstance(expected_raw, list):
         return {"score": 0.0, "error": "ground_truth.json 'expected' is not a list"}
@@ -95,7 +164,8 @@ def oracle_check(
     if not expected:
         return {"score": 0.0, "error": "Empty ground truth"}
 
-    agent_answer: frozenset[str] = frozenset(extract_answer(task_dir))
+    agent_paths = extract_answer(task_dir, oracle_type="file_list")
+    agent_answer: frozenset[str] = frozenset(agent_paths)  # type: ignore[arg-type]
     if not agent_answer:
         return {
             "score": 0.0,
@@ -139,5 +209,69 @@ def oracle_check(
         "intersection_size": intersection_size,
         "expected_size": len(expected),
         "answer_size": len(agent_answer),
+        "error": "",
+    }
+
+
+def _check_count(
+    task_dir: Path,
+    gt_data: dict,
+) -> dict[str, float | str | int]:
+    """Count oracle: exact integer match with optional ±tolerance."""
+    expected = gt_data.get("expected")
+    if not isinstance(expected, int):
+        return {
+            "score": 0.0,
+            "error": "ground_truth.json 'expected' is not an int for count type",
+        }
+
+    tolerance = gt_data.get("tolerance", 0)
+    if not isinstance(tolerance, int) or tolerance < 0:
+        return {"score": 0.0, "error": f"Invalid tolerance: {tolerance!r}"}
+
+    agent_val = extract_answer(task_dir, oracle_type="count")
+    if agent_val is None:
+        return {
+            "score": 0.0,
+            "expected": expected,
+            "agent_answer": None,
+            "error": "Empty or unparseable agent answer for count type",
+        }
+
+    match = abs(agent_val - expected) <= tolerance  # type: ignore[operator]
+    return {
+        "score": 1.0 if match else 0.0,
+        "expected": expected,
+        "agent_answer": agent_val,
+        "tolerance": tolerance,
+        "error": "",
+    }
+
+
+def _check_boolean(
+    task_dir: Path,
+    gt_data: dict,
+) -> dict[str, float | str | bool]:
+    """Boolean oracle: normalized true/false comparison."""
+    expected = gt_data.get("expected")
+    if not isinstance(expected, bool):
+        return {
+            "score": 0.0,
+            "error": "ground_truth.json 'expected' is not a bool for boolean type",
+        }
+
+    agent_val = extract_answer(task_dir, oracle_type="boolean")
+    if agent_val is None:
+        return {
+            "score": 0.0,
+            "expected": expected,
+            "agent_answer": None,
+            "error": "Empty or unparseable agent answer for boolean type",
+        }
+
+    return {
+        "score": 1.0 if agent_val == expected else 0.0,
+        "expected": expected,
+        "agent_answer": agent_val,
         "error": "",
     }

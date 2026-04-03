@@ -139,11 +139,117 @@ CROSS_REPO_DEP_TRACE = TaskFamily(
 )
 
 
-# All Phase 1 families
+# ---------------------------------------------------------------------------
+# Phase 2 families (3 families, single-repo, with multi-hop variants)
+# ---------------------------------------------------------------------------
+
+INCIDENT_DEBUG = TaskFamily(
+    name="incident-debug",
+    description="Find files containing error types and exception handling patterns.",
+    glob_patterns=(
+        "**/*.py",
+        "**/*.go",
+        "**/*.java",
+        "**/*.ts",
+        "**/*.js",
+        "**/*.rs",
+        "**/*.kt",
+        "**/*.cpp",
+        "**/*.c",
+        "**/*.h",
+        "**/*.rb",
+    ),
+    content_patterns=(
+        r"class\s+\w+Error",
+        r"type\s+\w+Error\s+struct",
+        r"panic\(",
+        r"raise\s+\w+Error",
+        r"throw\s+new\s+\w+Error",
+    ),
+    min_hits=3,
+    multi_hop=True,
+    multi_hop_description=(
+        "Trace error propagation across call chains — requires following "
+        "raise/catch paths through multiple files, not just finding error types."
+    ),
+)
+
+PLATFORM_KNOWLEDGE = TaskFamily(
+    name="platform-knowledge",
+    description="Find files containing plugin, extension, and registry patterns.",
+    glob_patterns=(
+        "**/*.py",
+        "**/*.go",
+        "**/*.java",
+        "**/*.ts",
+        "**/*.js",
+        "**/*.rs",
+        "**/*.kt",
+        "**/*.cpp",
+        "**/*.c",
+        "**/*.h",
+        "**/*.rb",
+    ),
+    content_patterns=(
+        r"Register\w*\(",
+        r"\.register\(",
+        r"Plugin",
+        r"extension_point",
+        r"Hook\w*\(",
+        r"Factory\w*\(",
+    ),
+    min_hits=3,
+    multi_hop=True,
+    multi_hop_description=(
+        "Map which plugins hook into which extension points — requires tracing "
+        "registration calls to their consuming dispatch sites, not just finding "
+        "registration patterns."
+    ),
+)
+
+CROSS_REPO_CONFIG_TRACE = TaskFamily(
+    name="cross-repo-config-trace",
+    description="Find files containing configuration struct and access patterns.",
+    glob_patterns=(
+        "**/*.go",
+        "**/*.py",
+        "**/*.java",
+        "**/*.ts",
+        "**/*.js",
+        "**/*.rs",
+        "**/*.kt",
+        "**/*.yaml",
+        "**/*.yml",
+        "**/*.toml",
+        "**/*.json",
+        "**/*.rb",
+    ),
+    content_patterns=(
+        r"type\s+\w*Config\s+struct",
+        r"class\s+\w*Config",
+        r"viper\.\w+",
+        r"os\.environ",
+        r"envconfig\.",
+        r"@ConfigurationProperties",
+    ),
+    min_hits=3,
+    multi_hop=True,
+    multi_hop_description=(
+        "Trace a config key from definition to consumption — requires following "
+        "config structs through parsing, validation, and usage sites, not just "
+        "finding config definitions."
+    ),
+)
+
+
+# All families (Phase 1 + Phase 2)
 FAMILIES: tuple[TaskFamily, ...] = (
     MIGRATION_INVENTORY,
     COMPLIANCE_AUDIT,
     CROSS_REPO_DEP_TRACE,
+    INCIDENT_DEBUG,
+    PLATFORM_KNOWLEDGE,
+    CROSS_REPO_CONFIG_TRACE,
 )
 
 FAMILY_BY_NAME: dict[str, TaskFamily] = {f.name: f for f in FAMILIES}
