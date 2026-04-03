@@ -434,7 +434,11 @@ def mine_org_scale_tasks(
         all_tracked = all_tracked | get_tracked_files(rp)
 
     scan_results = scan_repo(
-        repo_paths, non_dep, max_files=max_files, tracked_files=all_tracked
+        repo_paths,
+        non_dep,
+        max_files=max_files,
+        tracked_files=all_tracked,
+        timeout_seconds=scan_timeout,
     )
 
     # Build multi-repo commits mapping

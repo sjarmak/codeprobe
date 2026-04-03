@@ -404,3 +404,100 @@ class TestRepoURLResolution:
             ],
         )
         mock_clone.assert_called_once_with("https://github.com/org/repo.git")
+
+
+# ---------------------------------------------------------------------------
+# AC3: scan_timeout forwarded through the call chain
+# ---------------------------------------------------------------------------
+
+
+class TestScanTimeoutForwarding:
+    @patch("codeprobe.mining.org_scale.scan_repo")
+    @patch("codeprobe.mining.org_scale.get_tracked_files", return_value=frozenset())
+    @patch("codeprobe.mining.org_scale.get_head_sha", return_value="abc123")
+    def test_scan_timeout_reaches_scan_repo(
+        self,
+        mock_sha: MagicMock,
+        mock_tracked: MagicMock,
+        mock_scan: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """scan_timeout passed to mine_org_scale_tasks reaches scan_repo as timeout_seconds."""
+        mock_scan.return_value = []
+
+        mine_org_scale_tasks(
+            [tmp_path],
+            count=1,
+            families=(MIGRATION_INVENTORY,),
+            no_llm=True,
+            scan_timeout=30,
+        )
+        assert mock_scan.called
+        call_kwargs = mock_scan.call_args[1]
+        assert call_kwargs["timeout_seconds"] == 30
+
+    def test_scan_repo_forwards_timeout_to_family_scanner(self) -> None:
+        """scan_repo passes timeout_seconds through to scan_repo_for_family."""
+        from codeprobe.mining.org_scale_scanner import scan_repo
+
+        with patch(
+            "codeprobe.mining.org_scale_scanner.scan_repo_for_family"
+        ) as mock_family:
+            mock_family.return_value = MagicMock(matched_files=[], hits=[])
+            scan_repo(
+                [Path("/fake")],
+                (MIGRATION_INVENTORY,),
+                timeout_seconds=42.0,
+            )
+            assert mock_family.called
+            assert mock_family.call_args[1]["timeout_seconds"] == 42.0
+
+
+# ---------------------------------------------------------------------------
+# AC4: _run_validation constructs repo_paths correctly
+# ---------------------------------------------------------------------------
+
+
+class TestRunValidationRepoPaths:
+    @patch("codeprobe.mining.org_scale_validate.validate_families")
+    def test_repos_per_family_is_list_of_lists(self, mock_validate: MagicMock) -> None:
+        """repos_per_family should be list[list[Path]], not flattened."""
+        from codeprobe.cli.mine_cmd import _run_validation
+
+        task = Task(
+            id="val123",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="org-val123",
+                category="migration-inventory",
+                description="test",
+                org_scale=True,
+            ),
+            verification=TaskVerification(
+                type="oracle",
+                oracle_type="file_list",
+                oracle_answer=("src/old.py",),
+            ),
+        )
+        scan_result = FamilyScanResult(
+            family=MIGRATION_INVENTORY,
+            hits=(),
+            repo_paths=(Path("/repo-a"),),
+            commit_sha="abc123",
+            matched_files=frozenset({"src/old.py"}),
+        )
+        result = MagicMock(tasks=[task], scan_results=[scan_result])
+        repo_paths = [Path("/repo-a"), Path("/repo-b")]
+
+        mock_validate.return_value = []
+        _run_validation(result, repo_paths)
+
+        assert mock_validate.called
+        call_args = mock_validate.call_args[0]
+        repos_arg = call_args[2]  # third positional: repos_per_family
+        # Should be list[list[Path]], each entry is the full repo_paths list
+        assert len(repos_arg) == 1  # one family
+        assert repos_arg[0] == repo_paths
+        # NOT a flat list like [Path('/repo-a'), Path('/repo-b'), Path('/repo-a'), Path('/repo-b')]
+        assert isinstance(repos_arg[0], list)
+        assert all(isinstance(p, Path) for p in repos_arg[0])

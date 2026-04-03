@@ -728,7 +728,7 @@ def _run_validation(
         if tasks_for_family:
             families_to_validate.append(sr.family)
             tasks_per_family.append(tasks_for_family)
-            repos_per_family.append(repo_paths * len(tasks_for_family))
+            repos_per_family.append(repo_paths)
 
     if not families_to_validate:
         click.echo("No families to validate.")

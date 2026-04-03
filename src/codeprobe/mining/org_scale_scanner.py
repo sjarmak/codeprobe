@@ -288,6 +288,7 @@ def scan_repo(
     *,
     max_files: int = 50_000,
     tracked_files: frozenset[str] | None = None,
+    timeout_seconds: float = 60.0,
 ) -> list[FamilyScanResult]:
     """Scan one or more repos for all task families. Returns results with enough hits."""
     if families is None:
@@ -301,6 +302,7 @@ def scan_repo(
             family,
             max_files=max_files,
             tracked_files=tracked_files,
+            timeout_seconds=timeout_seconds,
         )
         if len(result.matched_files) >= family.min_hits:
             results.append(result)
