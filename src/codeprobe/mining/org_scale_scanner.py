@@ -215,6 +215,9 @@ def _filter_by_suffix(
     for f in tracked_files:
         if len(result) >= max_files:
             break
+        # Skip vendored / generated / test-data directories
+        if any(seg in f for seg in ("vendor/", "node_modules/", "testdata/")):
+            continue
         # Fast path: suffix set lookup
         if suffixes and any(f.endswith(s) for s in suffixes):
             result.append(f)

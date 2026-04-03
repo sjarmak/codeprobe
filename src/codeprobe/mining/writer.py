@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 
 # Pattern for stripping backtick-wrapped code patterns from instructions
 _BACKTICK_PATTERN = re.compile(r"`[^`]+`")
-# Pattern for "matching the patterns X, Y, Z" phrases
+# Pattern for "containing matches for the patterns X, Y, Z" and similar phrases
 _PATTERNS_PHRASE = re.compile(
-    r"\s*(?:matching|for) the patterns?\s+(?:`[^`]+`(?:,\s*)?)+\.?",
+    r"\s*(?:containing\s+matches\s+)?(?:matching|for)\s+the\s+patterns?\s+"
+    r"(?:`[^`]+`(?:,\s*)?)+\.?",
     re.IGNORECASE,
 )
 
@@ -273,8 +274,9 @@ def _strip_location_hints(question: str) -> str:
     "matching the patterns ..." phrases so the agent must find the relevant
     code without being told which regex to use.
     """
-    # Remove "matching the patterns `X`, `Y`, `Z`" phrases first
-    result = _PATTERNS_PHRASE.sub("", question)
+    # Remove "containing matches for the patterns `X`, `Y`, `Z`" phrases,
+    # replacing with a generic clause that preserves sentence structure
+    result = _PATTERNS_PHRASE.sub(" that are relevant to this task", question)
     # Remove remaining backtick-wrapped patterns
     result = _BACKTICK_PATTERN.sub("the relevant patterns", result)
     # Collapse multiple "the relevant patterns" into one

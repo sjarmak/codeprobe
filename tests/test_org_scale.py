@@ -334,6 +334,25 @@ class TestScanner:
         assert "pkg/server.go" in result.matched_files
         assert "pkg/util.go" not in result.matched_files
 
+    def test_scan_excludes_vendor_and_testdata(self, tmp_path: Path) -> None:
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "src/old.py": "@deprecated\ndef old_func(): pass",
+                "src/also.py": "@Deprecated\nclass X: pass",
+                "src/third.py": "@deprecated\nclass Y: pass",
+                "vendor/lib/dep.py": "@deprecated\ndef vendored(): pass",
+                "node_modules/pkg/mod.py": "@deprecated\ndef npm(): pass",
+                "testdata/fixture.py": "@deprecated\ndef fixture(): pass",
+            },
+        )
+        result = scan_repo_for_family([repo], MIGRATION_INVENTORY)
+        for f in result.matched_files:
+            assert "vendor/" not in f, f"vendor file in ground truth: {f}"
+            assert "node_modules/" not in f, f"node_modules file in ground truth: {f}"
+            assert "testdata/" not in f, f"testdata file in ground truth: {f}"
+        assert len(result.matched_files) == 3
+
 
 # ---------------------------------------------------------------------------
 # Task generation tests
@@ -661,11 +680,13 @@ class TestStripLocationHints:
             "List the file paths, one per line."
         )
         result = _strip_location_hints(q)
-        assert "matching the patterns" not in result
-        assert "for the patterns" not in result
+        assert "`@Deprecated`" not in result
+        assert "`@deprecated`" not in result
         # Core question intent preserved
         assert "kubernetes" in result
         assert "file paths" in result
+        # Replacement reads naturally
+        assert "that are relevant to this task" in result
 
     def test_no_change_when_no_hints(self) -> None:
         from codeprobe.mining.writer import _strip_location_hints
