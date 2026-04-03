@@ -233,3 +233,83 @@ class TestFromScanResultBridge:
         assert cr.matched_files == scan_result.matched_files
         assert all(cf.tier == "required" for cf in cr.files)
         assert all(cf.sources == ("grep",) for cf in cr.files)
+
+
+# ---------------------------------------------------------------------------
+# Curation quality reporting
+# ---------------------------------------------------------------------------
+
+
+class TestShowOrgScaleResults:
+    """Verify _show_org_scale_results displays curation metadata."""
+
+    def _make_task(self, tiers: dict[str, str] | None = None) -> Task:
+        return Task(
+            id="org-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                difficulty="medium",
+                category="migration-inventory",
+                org_scale=True,
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=tuple(tiers.keys()) if tiers else ("a.py",),
+                oracle_tiers=tiers or {},
+            ),
+        )
+
+    @staticmethod
+    def _capture(func: object) -> str:
+        from io import StringIO
+        from unittest.mock import patch
+
+        buf = StringIO()
+        with patch(
+            "click.echo", side_effect=lambda msg="", **kw: buf.write(msg + "\n")
+        ):
+            func()  # type: ignore[operator]
+        return buf.getvalue()
+
+    def test_without_curation_no_tier_column(self, tmp_path: Path) -> None:
+        from codeprobe.cli.mine_cmd import _show_org_scale_results
+
+        task = self._make_task()
+        output = self._capture(
+            lambda: _show_org_scale_results([task], tmp_path, tmp_path)
+        )
+        assert "Tiers" not in output
+        assert "Curation backends" not in output
+        assert "weighted_f1" not in output
+
+    def test_with_curation_shows_tiers_and_backends(self, tmp_path: Path) -> None:
+        from codeprobe.cli.mine_cmd import _show_org_scale_results
+
+        tiers = {
+            "a.py": "required",
+            "b.py": "required",
+            "c.py": "supplementary",
+            "d.py": "context",
+        }
+        task = self._make_task(tiers=tiers)
+        backends = ("grep", "sourcegraph")
+
+        output = self._capture(
+            lambda: _show_org_scale_results([task], tmp_path, tmp_path, backends)
+        )
+        assert "Tiers (R/S/C)" in output
+        assert "2/  1/  1" in output
+        assert "Curation backends: grep, sourcegraph" in output
+        assert "weighted_f1" in output
+
+    def test_with_curation_but_no_tiers(self, tmp_path: Path) -> None:
+        from codeprobe.cli.mine_cmd import _show_org_scale_results
+
+        task = self._make_task()
+        output = self._capture(
+            lambda: _show_org_scale_results([task], tmp_path, tmp_path, ("grep",))
+        )
+        # Header shows Tiers column but row has no tier breakdown
+        assert "Tiers (R/S/C)" in output
+        assert "Curation backends: grep" in output

@@ -682,7 +682,9 @@ def _run_org_scale_mine(
             curation_backends=curation_backends_used,
         )
 
-    _show_org_scale_results(curated_tasks, tasks_dir, primary_repo)
+    _show_org_scale_results(
+        curated_tasks, tasks_dir, primary_repo, curation_backends_used
+    )
 
 
 def _build_curation_backends(
@@ -886,26 +888,61 @@ def _run_validation(
 
 
 def _show_org_scale_results(
-    tasks: list["Task"], tasks_dir: Path, repo_path: Path
+    tasks: list["Task"],
+    tasks_dir: Path,
+    repo_path: Path,
+    curation_backends: tuple[str, ...] = (),
 ) -> None:
     """Display org-scale mining results table and next steps."""
+    curated = bool(curation_backends)
+
     click.echo(f"Generated {len(tasks)} org-scale tasks:")
     click.echo()
-    click.echo(
-        f"  {'#':>2}  {'Task ID':<14} {'Family':<24} {'Difficulty':<10} "
-        f"{'Files':>5}"
-    )
-    click.echo("  " + "-" * 60)
-    for i, t in enumerate(tasks, 1):
+
+    # Header — add Tiers column when curation is active
+    if curated:
         click.echo(
+            f"  {'#':>2}  {'Task ID':<14} {'Family':<24} {'Difficulty':<10} "
+            f"{'Files':>5}  {'Tiers (R/S/C)':>13}"
+        )
+        click.echo("  " + "-" * 76)
+    else:
+        click.echo(
+            f"  {'#':>2}  {'Task ID':<14} {'Family':<24} {'Difficulty':<10} "
+            f"{'Files':>5}"
+        )
+        click.echo("  " + "-" * 60)
+
+    for i, t in enumerate(tasks, 1):
+        base = (
             f"  {i:>2}  {t.id:<14} {t.metadata.category:<24} "
             f"{t.metadata.difficulty:<10} "
             f"{len(t.verification.oracle_answer):>5}"
         )
+        if curated and t.verification.oracle_tiers:
+            tiers = t.verification.oracle_tiers
+            req = sum(1 for v in tiers.values() if v == "required")
+            sup = sum(1 for v in tiers.values() if v == "supplementary")
+            ctx = sum(1 for v in tiers.values() if v == "context")
+            click.echo(f"{base}  {req:>4}/{sup:>3}/{ctx:>3}")
+        else:
+            click.echo(base)
+
     click.echo()
+
+    # Curation summary
+    if curated:
+        click.echo(f"Curation backends: {', '.join(curation_backends)}")
+        click.echo()
+
     click.echo(f"Tasks written to {tasks_dir}")
     click.echo()
     click.echo("Next steps:")
     click.echo(f"  1. Run eval:     codeprobe run {repo_path} --agent claude")
     click.echo(f"  2. Check scores: codeprobe oracle-check {tasks_dir}/<task_id>")
+    if curated:
+        click.echo(
+            f"  3. Weighted F1:  codeprobe oracle-check {tasks_dir}/<task_id> "
+            f"--metric weighted_f1"
+        )
     click.echo()
