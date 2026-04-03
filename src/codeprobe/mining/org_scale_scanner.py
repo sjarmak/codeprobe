@@ -107,20 +107,24 @@ def matches_glob(file_path: str, glob_pattern: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_MAX_FILE_SIZE = 512_000  # Skip files larger than 512KB (generated/bundled)
+
+
 def scan_repo_for_family(
     repo_path: Path,
     family: TaskFamily,
     *,
     max_files: int = 50_000,
     tracked_files: frozenset[str] | None = None,
+    commit_sha: str = "",
 ) -> FamilyScanResult:
     """Scan a repo for pattern matches belonging to a task family."""
-    commit_sha = get_head_sha(repo_path)
-
+    if not commit_sha:
+        commit_sha = get_head_sha(repo_path)
     if tracked_files is None:
         tracked_files = get_tracked_files(repo_path)
 
-    candidate_files = _filter_by_globs(tracked_files, family.glob_patterns, max_files)
+    candidate_files = _filter_by_suffix(tracked_files, family.glob_patterns, max_files)
     compiled_patterns = _compile_patterns(family)
     hits, matched_files = _scan_files(
         repo_path, candidate_files, compiled_patterns, family.max_hits
@@ -135,18 +139,39 @@ def scan_repo_for_family(
     )
 
 
-def _filter_by_globs(
+def _filter_by_suffix(
     tracked_files: frozenset[str],
     glob_patterns: tuple[str, ...],
     max_files: int,
 ) -> list[str]:
-    """Filter tracked files by glob patterns, capped at max_files."""
+    """Filter tracked files by extension suffix, capped at max_files.
+
+    Extracts suffixes from glob patterns (e.g., ``**/*.go`` → ``.go``) for
+    O(1) set-lookup filtering instead of O(patterns) fnmatch per file.
+    Falls back to fnmatch for non-standard patterns.
+    """
+    # Extract simple suffixes from **/*.ext patterns
+    suffixes: set[str] = set()
+    complex_patterns: list[str] = []
+    for g in glob_patterns:
+        if g.startswith("**/") and "*" not in g[3:]:
+            suffix = g[3:]  # e.g., "*.go" → extract ".go"
+            if suffix.startswith("*."):
+                suffixes.add(suffix[1:])  # ".go"
+            else:
+                complex_patterns.append(g)
+        else:
+            complex_patterns.append(g)
+
     result: list[str] = []
     for f in tracked_files:
-        if any(matches_glob(f, g) for g in glob_patterns):
-            result.append(f)
         if len(result) >= max_files:
             break
+        # Fast path: suffix set lookup
+        if suffixes and any(f.endswith(s) for s in suffixes):
+            result.append(f)
+        elif complex_patterns and any(matches_glob(f, g) for g in complex_patterns):
+            result.append(f)
     return result
 
 
@@ -173,9 +198,9 @@ def _scan_files(
 
     for file_path in candidate_files:
         full_path = repo_path / file_path
-        if not full_path.is_file():
-            continue
         try:
+            if full_path.stat().st_size > _MAX_FILE_SIZE:
+                continue
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
@@ -207,17 +232,24 @@ def scan_repo(
     families: tuple[TaskFamily, ...] | None = None,
     *,
     max_files: int = 50_000,
+    tracked_files: frozenset[str] | None = None,
 ) -> list[FamilyScanResult]:
     """Scan a repo for all task families. Returns results with enough hits."""
     if families is None:
         families = FAMILIES
 
-    tracked_files = get_tracked_files(repo_path)
+    if tracked_files is None:
+        tracked_files = get_tracked_files(repo_path)
+    commit_sha = get_head_sha(repo_path)
     results: list[FamilyScanResult] = []
 
     for family in families:
         result = scan_repo_for_family(
-            repo_path, family, max_files=max_files, tracked_files=tracked_files
+            repo_path,
+            family,
+            max_files=max_files,
+            tracked_files=tracked_files,
+            commit_sha=commit_sha,
         )
         if len(result.matched_files) >= family.min_hits:
             results.append(result)
@@ -308,8 +340,6 @@ def _extract_deprecated_symbols(
     symbols: set[str] = set()
     for file_path in symbol_files:
         full_path = repo_path / file_path
-        if not full_path.is_file():
-            continue
         try:
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -369,8 +399,6 @@ def find_callers_of_symbols(
         if not any(file_path.endswith(ext) for ext in _SOURCE_EXTS):
             continue
         full_path = repo_path / file_path
-        if not full_path.is_file():
-            continue
         try:
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -539,8 +567,6 @@ def discover_top_imports(
         if "vendor/" in file_path or "testdata/" in file_path:
             continue
         full_path = repo_path / file_path
-        if not full_path.is_file():
-            continue
         try:
             content = full_path.read_text(encoding="utf-8", errors="replace")
         except OSError:

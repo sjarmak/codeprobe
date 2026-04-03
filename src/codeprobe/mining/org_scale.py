@@ -250,7 +250,7 @@ def generate_org_scale_task(
         metadata=TaskMetadata(
             name=f"org-{task_id}",
             difficulty=difficulty,
-            description=question,
+            description=f"{family.name}: {len(ground_truth_files)} files",
             language=language,
             category=family.name,
             org_scale=True,
@@ -288,11 +288,7 @@ def _build_dep_trace_task(
         metadata=TaskMetadata(
             name=f"org-{task_id}",
             difficulty="medium",
-            description=(
-                f"In the {repo_name} repository, find all source files that "
-                f"import the package `{pkg_name}`. List the file paths, "
-                f"one per line."
-            ),
+            description=f"cross-repo-dep-trace: {pkg_name} ({len(importing_files)} files)",
             language=language,
             category="cross-repo-dep-trace",
             org_scale=True,
@@ -420,8 +416,10 @@ def mine_org_scale_tasks(
     non_dep = tuple(f for f in all_families if f.name != "cross-repo-dep-trace")
     want_dep = any(f.name == "cross-repo-dep-trace" for f in all_families)
 
-    scan_results = scan_repo(repo_path, non_dep, max_files=max_files)
     tracked_files = get_tracked_files(repo_path)
+    scan_results = scan_repo(
+        repo_path, non_dep, max_files=max_files, tracked_files=tracked_files
+    )
 
     tasks = _mine_pattern_families(
         scan_results,

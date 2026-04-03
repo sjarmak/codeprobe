@@ -787,19 +787,6 @@ def generate_instructions(
 # Legacy enrichment — kept for backward compatibility with --enrich flag
 
 
-def _build_enrichment_prompt(task: Task) -> str:
-    """Build the enrichment prompt for a low-quality task."""
-    return _INSTRUCTION_PROMPT_TEMPLATE.format(
-        title=task.metadata.name,
-        body=task.metadata.description,
-        issue_title=task.metadata.issue_title or "(none)",
-        issue_body=task.metadata.issue_body or "(none)",
-        labels="(none)",
-        language=task.metadata.language or "unknown",
-        changed_files="(unknown)",
-    )
-
-
 def enrich_task(task: Task) -> Task:
     """Enrich a single task via LLM (legacy wrapper around generate_instruction)."""
     return generate_instruction(task)

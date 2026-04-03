@@ -391,8 +391,16 @@ def _discover_and_select(
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _clear_tasks_dir(repo_path: Path) -> Path:
+    """Clear stale tasks and return the tasks directory path."""
+    tasks_dir = repo_path / ".codeprobe" / "tasks"
+    if tasks_dir.exists():
+        shutil.rmtree(tasks_dir)
+    return tasks_dir
 
 
 def _resolve_repo_path(path: str) -> Path:
@@ -525,9 +533,7 @@ def run_mine(
 
     tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
 
-    tasks_dir = repo_path / ".codeprobe" / "tasks"
-    if tasks_dir.exists():
-        shutil.rmtree(tasks_dir)
+    tasks_dir = _clear_tasks_dir(repo_path)
     for task in tasks:
         write_task_dir(task, tasks_dir, repo_path)
 
@@ -602,10 +608,7 @@ def _run_org_scale_mine(
     click.echo()
 
     # Write tasks
-    tasks_dir = repo_path / ".codeprobe" / "tasks"
-    if tasks_dir.exists():
-        shutil.rmtree(tasks_dir)
-
+    tasks_dir = _clear_tasks_dir(repo_path)
     for task in result.tasks:
         write_task_dir(task, tasks_dir, repo_path)
 
