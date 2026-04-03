@@ -252,6 +252,63 @@ def _matches_glob(file_path: str, glob_pattern: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+_DEPRECATED_MARKERS = re.compile(
+    r"@[Dd]eprecated|#\[deprecated|//\s*Deprecated:", re.MULTILINE
+)
+
+# Short/common names that match too many files — filter these from multi-hop
+_COMMON_SYMBOLS = frozenset(
+    {
+        "Config",
+        "List",
+        "Get",
+        "Set",
+        "New",
+        "Run",
+        "Start",
+        "Stop",
+        "Close",
+        "Open",
+        "Read",
+        "Write",
+        "Delete",
+        "Update",
+        "Create",
+        "Init",
+        "Test",
+        "Error",
+        "String",
+        "Type",
+        "Name",
+        "Value",
+        "Handle",
+        "Status",
+        "Result",
+        "Context",
+        "Options",
+        "Spec",
+        "Data",
+        "Info",
+        "Key",
+        "Event",
+        "Node",
+        "Item",
+        "Map",
+        "Func",
+        "Watch",
+        "Add",
+        "Remove",
+        "Check",
+        "Validate",
+        "Parse",
+        "Format",
+    }
+)
+
+_MIN_SYMBOL_LEN = 6
+_MAX_MULTI_HOP_FILES = 200
+
+
 def _find_callers_of_symbols(
     repo_path: Path,
     symbol_files: frozenset[str],
@@ -260,12 +317,12 @@ def _find_callers_of_symbols(
     *,
     max_files: int = 50_000,
 ) -> frozenset[str]:
-    """Find files that call/import symbols defined in the given files.
+    """Find files that call/import symbols defined near deprecated annotations.
 
-    This is the multi-hop extension: given files containing deprecated
-    annotations, find OTHER files that reference those symbols.
+    Only extracts symbols within 2 lines of a deprecated marker, and
+    filters out common/short names to avoid matching half the repo.
+    Caps results at _MAX_MULTI_HOP_FILES.
     """
-    # Extract likely symbol names from the deprecated files
     symbols: set[str] = set()
     for file_path in symbol_files:
         full_path = repo_path / file_path
@@ -276,9 +333,13 @@ def _find_callers_of_symbols(
         except OSError:
             continue
 
-        # Extract function/class/type names near deprecated annotations
-        for line in content.splitlines():
-            # Go: func/type after deprecated comment
+        lines = content.splitlines()
+        for i, line in enumerate(lines):
+            # Only extract symbols near deprecated annotations (within 2 lines)
+            window = "\n".join(lines[max(0, i - 2) : i + 1])
+            if not _DEPRECATED_MARKERS.search(window):
+                continue
+
             if language == "go":
                 m = re.search(r"^func\s+(?:\([^)]+\)\s+)?(\w+)", line)
                 if m:
@@ -286,24 +347,33 @@ def _find_callers_of_symbols(
                 m = re.search(r"^type\s+(\w+)", line)
                 if m:
                     symbols.add(m.group(1))
-            # Python: def/class after @deprecated
             elif language == "python":
                 m = re.search(r"^(?:def|class)\s+(\w+)", line)
                 if m:
                     symbols.add(m.group(1))
-            # Java: method/class after @Deprecated
             elif language == "java":
                 m = re.search(
-                    r"(?:public|private|protected)?\s*(?:static\s+)?(?:\w+\s+)+(\w+)\s*\(",
+                    r"(?:public|private|protected)?\s*"
+                    r"(?:static\s+)?(?:\w+\s+)+(\w+)\s*\(",
                     line,
                 )
                 if m:
                     symbols.add(m.group(1))
 
+    # Filter out common/short names
+    symbols = {
+        s for s in symbols if s not in _COMMON_SYMBOLS and len(s) >= _MIN_SYMBOL_LEN
+    }
+
     if not symbols:
         return frozenset()
 
-    # Find files referencing these symbols (excluding the definition files)
+    logger.info(
+        "Multi-hop: %d symbols after filtering: %s",
+        len(symbols),
+        sorted(symbols)[:10],
+    )
+
     caller_files: set[str] = set()
     symbol_pattern = re.compile(
         r"\b(" + "|".join(re.escape(s) for s in symbols) + r")\b"
@@ -315,10 +385,11 @@ def _find_callers_of_symbols(
             continue
         if scanned >= max_files:
             break
+        if len(caller_files) >= _MAX_MULTI_HOP_FILES:
+            break
         full_path = repo_path / file_path
         if not full_path.is_file():
             continue
-        # Only scan source files
         if not any(
             file_path.endswith(ext)
             for ext in (".go", ".py", ".java", ".ts", ".js", ".rs")
@@ -556,6 +627,96 @@ def _deterministic_question(
 
 
 # ---------------------------------------------------------------------------
+# Dep-trace: discover specific packages to trace
+# ---------------------------------------------------------------------------
+
+_GO_IMPORT_PATTERN = re.compile(r'"([^"]+)"')
+_PY_IMPORT_PATTERN = re.compile(r"^(?:from|import)\s+([\w.]+)")
+_MAX_DEP_TRACE_PACKAGES = 3
+
+
+def _discover_top_imports(
+    repo_path: Path,
+    tracked_files: frozenset[str],
+    language: str,
+    *,
+    max_files: int = 5000,
+) -> list[tuple[str, frozenset[str]]]:
+    """Discover the most frequently imported external packages.
+
+    Returns up to _MAX_DEP_TRACE_PACKAGES as (package_name, importing_files).
+    Only returns packages imported by >= 5 files to be interesting.
+    """
+    from collections import Counter
+
+    import_counts: Counter[str] = Counter()
+    import_files: dict[str, set[str]] = {}
+
+    ext_map = {
+        "go": (".go",),
+        "python": (".py",),
+        "java": (".java",),
+        "typescript": (".ts", ".tsx"),
+        "javascript": (".js", ".jsx"),
+    }
+    valid_exts = ext_map.get(language, (".go",))
+
+    scanned = 0
+    for file_path in tracked_files:
+        if scanned >= max_files:
+            break
+        if not any(file_path.endswith(ext) for ext in valid_exts):
+            continue
+        # Skip test files and vendor
+        if "vendor/" in file_path or "testdata/" in file_path:
+            continue
+        full_path = repo_path / file_path
+        if not full_path.is_file():
+            continue
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        scanned += 1
+
+        if language == "go":
+            for m in _GO_IMPORT_PATTERN.finditer(content):
+                pkg = m.group(1)
+                # Only external packages (contain a dot in the first segment)
+                if "/" in pkg and "." in pkg.split("/")[0]:
+                    # Use the first 3 segments as package identifier
+                    parts = pkg.split("/")
+                    key = "/".join(parts[: min(3, len(parts))])
+                    import_counts[key] += 1
+                    import_files.setdefault(key, set()).add(file_path)
+        elif language == "python":
+            for line in content.splitlines():
+                m = _PY_IMPORT_PATTERN.match(line)
+                if m:
+                    pkg = m.group(1).split(".")[0]
+                    if pkg and pkg not in ("os", "sys", "re", "json", "typing"):
+                        import_counts[pkg] += 1
+                        import_files.setdefault(pkg, set()).add(file_path)
+
+    # Return packages imported by 10-200 files (interesting but not ubiquitous).
+    # Sort by count descending within the range to get the most interesting ones.
+    candidates: list[tuple[str, int, frozenset[str]]] = []
+    for pkg, cnt in import_counts.most_common(50):
+        files = import_files.get(pkg, set())
+        n = len(files)
+        if 10 <= n <= 200:
+            candidates.append((pkg, n, frozenset(files)))
+
+    # Sort by file count descending (most imported in the valid range first)
+    candidates.sort(key=lambda x: x[1], reverse=True)
+
+    results: list[tuple[str, frozenset[str]]] = [
+        (pkg, files) for pkg, _cnt, files in candidates[:_MAX_DEP_TRACE_PACKAGES]
+    ]
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Main mining function
 # ---------------------------------------------------------------------------
 
@@ -582,15 +743,21 @@ def mine_org_scale_tasks(
         max_files: Maximum files to scan per family.
         include_multi_hop: Generate multi-hop task variants.
     """
-    scan_results = scan_repo(repo_path, families, max_files=max_files)
+    # Separate dep-trace from other families — it uses package discovery
+    from codeprobe.mining.org_scale_families import CROSS_REPO_DEP_TRACE
 
-    if not scan_results:
-        logger.info("No patterns found in %s", repo_path)
-        return OrgScaleMineResult(tasks=[], scan_results=[])
+    non_dep_families = tuple(
+        f for f in (families or FAMILIES) if f.name != "cross-repo-dep-trace"
+    )
+    include_dep_trace = any(
+        f.name == "cross-repo-dep-trace" for f in (families or FAMILIES)
+    )
 
+    scan_results = scan_repo(repo_path, non_dep_families, max_files=max_files)
     tracked_files = _get_tracked_files(repo_path)
     tasks: list[Task] = []
 
+    # Process non-dep-trace families (migration-inventory, compliance-audit)
     for scan_result in scan_results:
         if len(tasks) >= count:
             break
@@ -619,6 +786,87 @@ def mine_org_scale_tasks(
                 )
                 if mh_task is not None:
                     tasks.append(mh_task)
+
+    # Dep-trace: discover specific imported packages and create targeted tasks
+    if include_dep_trace and len(tasks) < count:
+        # Guess language from tracked files
+        from collections import Counter as _Counter
+
+        ext_counts = _Counter(
+            Path(f).suffix for f in list(tracked_files)[:1000] if Path(f).suffix
+        )
+        lang_map = {".go": "go", ".py": "python", ".java": "java", ".ts": "typescript"}
+        top_ext = ext_counts.most_common(1)[0][0] if ext_counts else ".go"
+        dep_language = lang_map.get(top_ext, "go")
+
+        commit_sha = _get_head_sha(repo_path)
+        top_packages = _discover_top_imports(
+            repo_path, tracked_files, dep_language, max_files=max_files
+        )
+
+        for pkg_name, importing_files in top_packages:
+            if len(tasks) >= count:
+                break
+
+            # Create a synthetic scan result for this specific package
+            dep_scan = FamilyScanResult(
+                family=CROSS_REPO_DEP_TRACE,
+                hits=tuple(
+                    PatternHit(f, 0, f'import "{pkg_name}"', pkg_name)
+                    for f in list(importing_files)[:10]
+                ),
+                repo_path=repo_path,
+                commit_sha=commit_sha,
+                matched_files=importing_files,
+            )
+
+            # Override the deterministic question to be package-specific
+            repo_name = repo_path.name
+            heading = f"Find files importing {pkg_name} in {repo_name}"
+            question = (
+                f"In the {repo_name} repository, find all source files that "
+                f"import the package `{pkg_name}`. List the file paths, "
+                f"one per line."
+            )
+
+            task_id = hashlib.sha256(
+                f"dep-trace-{pkg_name}-{commit_sha[:8]}".encode()
+            ).hexdigest()[:8]
+
+            metadata = TaskMetadata(
+                name=f"org-{task_id}",
+                difficulty="medium",
+                description=question,
+                language=dep_language,
+                category="cross-repo-dep-trace",
+                org_scale=True,
+                issue_title=heading,
+                issue_body=question,
+                enrichment_source="",
+                ground_truth_commit=commit_sha,
+            )
+            verification = TaskVerification(
+                type="oracle",
+                command="bash tests/test.sh",
+                reward_type="continuous",
+                oracle_type="file_list",
+                oracle_answer=tuple(sorted(importing_files)),
+            )
+            tasks.append(
+                Task(
+                    id=task_id,
+                    repo=repo_name,
+                    metadata=metadata,
+                    verification=verification,
+                )
+            )
+            scan_results.append(dep_scan)
+            logger.info(
+                "Dep-trace: %s imported by %d files", pkg_name, len(importing_files)
+            )
+
+    if not tasks:
+        logger.info("No org-scale tasks generated from %s", repo_path)
 
     logger.info("Generated %d org-scale tasks from %s", len(tasks), repo_path)
     return OrgScaleMineResult(tasks=tasks[:count], scan_results=scan_results)
