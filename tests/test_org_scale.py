@@ -10,14 +10,18 @@ from unittest.mock import patch
 import pytest
 
 from codeprobe.mining.org_scale import (
-    FamilyScanResult,
     OrgScaleMineResult,
-    PatternHit,
-    extract_answer,
     generate_org_scale_task,
     mine_org_scale_tasks,
+)
+from codeprobe.mining.org_scale_oracle import (
+    extract_answer,
     normalize_path,
     oracle_check,
+)
+from codeprobe.mining.org_scale_scanner import (
+    FamilyScanResult,
+    PatternHit,
     scan_repo_for_family,
 )
 from codeprobe.mining.org_scale_families import (

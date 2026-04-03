@@ -395,6 +395,68 @@ def _discover_and_select(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_repo_path(path: str) -> Path:
+    """Resolve a path or URL to a local repo directory."""
+    if _is_git_url(path):
+        return _clone_repo(path)
+    repo_path = Path(path).resolve()
+    if not repo_path.exists():
+        click.echo(f"Path does not exist: {repo_path}")
+        raise SystemExit(1)
+    return repo_path
+
+
+def _interactive_config(
+    count: int,
+    source: str,
+    min_files: int,
+    subsystems: tuple[str, ...],
+    discover_subsystems: bool,
+    repo_path: Path,
+) -> tuple[str, int, str, int, str, tuple[str, ...], bool]:
+    """Run interactive configuration phases 0-2. Returns updated params."""
+    goal_name, goal_min_files, bias = _ask_eval_goal()
+    if min_files == 0:
+        min_files = goal_min_files
+    count = _ask_task_count()
+    source = _ask_source()
+    if not subsystems and not discover_subsystems:
+        if click.confirm("\nDiscover and filter by subsystems?", default=False):
+            discover_subsystems = True
+    return goal_name, count, source, min_files, bias, subsystems, discover_subsystems
+
+
+def _enrich_sdlc_tasks(
+    tasks: list["Task"],
+    mine_result: "MineResult",
+    no_llm: bool,
+    enrich: bool,
+) -> list["Task"]:
+    """Apply LLM instruction generation or legacy enrichment to SDLC tasks."""
+    if not no_llm:
+        from codeprobe.core.llm import llm_available
+        from codeprobe.mining import generate_instructions
+
+        if llm_available():
+            click.echo("Generating instructions via LLM...")
+            return generate_instructions(
+                tasks,
+                pr_bodies=mine_result.pr_bodies,
+                changed_files_map=mine_result.changed_files_map,
+            )
+        click.echo(
+            "No LLM backend available — using regex fallback for instructions.\n"
+            "Install an LLM backend for better quality: "
+            "pip install codeprobe[anthropic]"
+        )
+    elif enrich:
+        from codeprobe.mining.extractor import enrich_tasks
+
+        click.echo("Enriching low-quality tasks via LLM...")
+        return enrich_tasks(tasks)
+    return tasks
+
+
 def run_mine(
     path: str,
     count: int = 5,
@@ -408,34 +470,15 @@ def run_mine(
     org_scale: bool = False,
     families: tuple[str, ...] = (),
 ) -> None:
-    """Mine eval tasks from a repository.
+    """Mine eval tasks from a repository."""
+    from codeprobe.mining import mine_tasks, write_task_dir
 
-    When *org_scale* is True, mines comprehension/IR tasks with oracle
-    verification instead of SDLC code-change tasks.
+    repo_path = _resolve_repo_path(path)
 
-    When *interactive* is True (default when TTY), runs the full interactive
-    workflow matching the mine-tasks skill.
-
-    By default, instruction.md is generated via LLM (Haiku) for quality.
-    Pass *no_llm=True* (``--no-llm``) to skip LLM and use regex fallback.
-    """
-    from codeprobe.mining import generate_instructions, mine_tasks, write_task_dir
-
-    # If path looks like a URL or owner/repo, clone it first
-    if _is_git_url(path):
-        repo_path = _clone_repo(path)
-    else:
-        repo_path = Path(path).resolve()
-        if not repo_path.exists():
-            click.echo(f"Path does not exist: {repo_path}")
-            raise SystemExit(1)
-
-    # Org-scale mining has a separate pipeline
     if org_scale:
         _run_org_scale_mine(repo_path, count=count, no_llm=no_llm, families=families)
         return
 
-    # Determine interactive mode
     if interactive is None:
         interactive = _is_interactive()
 
@@ -443,41 +486,27 @@ def run_mine(
     bias = "balanced"
 
     if interactive:
-        # Phase 0: Eval goal
-        goal_name, goal_min_files, bias = _ask_eval_goal()
-        if min_files == 0:
-            min_files = goal_min_files
+        goal_name, count, source, min_files, bias, subsystems, discover_subsystems = (
+            _interactive_config(
+                count, source, min_files, subsystems, discover_subsystems, repo_path
+            )
+        )
 
-        # Phase 1: Mining configuration
-        count = _ask_task_count()
-        source = _ask_source()
-
-        # Subsystem discovery: offer if not already specified
-        if not subsystems and not discover_subsystems:
-            if click.confirm("\nDiscover and filter by subsystems?", default=False):
-                discover_subsystems = True
-
-    # Subsystem discovery
     if discover_subsystems:
         subsystems = _discover_and_select(repo_path, source)
         if not subsystems:
             return
 
-    # Normalize prefixes to end with /
     subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
 
-    if interactive:
-        # Phase 2: Pre-flight summary
-        if not _show_preflight(
-            repo_path, goal_name, count, source, min_files, bias, subsystems
-        ):
-            click.echo("Aborted.")
-            return
+    if interactive and not _show_preflight(
+        repo_path, goal_name, count, source, min_files, bias, subsystems
+    ):
+        click.echo("Aborted.")
+        return
 
-    # Phase 3: Run mining
     if interactive:
-        click.echo()
-        click.echo("Mining tasks...")
+        click.echo("\nMining tasks...")
 
     mine_result = mine_tasks(
         repo_path,
@@ -494,43 +523,16 @@ def run_mine(
         )
         return
 
-    # LLM instruction generation (default) or legacy enrichment
-    use_llm = not no_llm
-    if use_llm:
-        from codeprobe.core.llm import llm_available
+    tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
 
-        if llm_available():
-            click.echo("Generating instructions via LLM...")
-            tasks = generate_instructions(
-                tasks,
-                pr_bodies=mine_result.pr_bodies,
-                changed_files_map=mine_result.changed_files_map,
-            )
-        else:
-            click.echo(
-                "No LLM backend available — using regex fallback for instructions.\n"
-                "Install an LLM backend for better quality: "
-                "pip install codeprobe[anthropic]"
-            )
-    elif enrich:
-        # Legacy --enrich flag: only enrich low-quality tasks
-        from codeprobe.mining.extractor import enrich_tasks
-
-        click.echo("Enriching low-quality tasks via LLM...")
-        tasks = enrich_tasks(tasks)
-
-    # Clear stale tasks from prior runs before writing new ones
     tasks_dir = repo_path / ".codeprobe" / "tasks"
     if tasks_dir.exists():
         shutil.rmtree(tasks_dir)
-
     for task in tasks:
         write_task_dir(task, tasks_dir, repo_path)
 
-    # Phase 5: Results table
     _show_results_table(tasks)
 
-    # Phase 4: Quality review
     warnings = _quality_review(tasks, goal_name, bias)
     if warnings:
         click.echo("Quality warnings:")
@@ -542,8 +544,6 @@ def run_mine(
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
     click.echo()
-
-    # Phase 6: Next steps
     _show_next_steps(repo_path, min_files)
 
 
@@ -609,27 +609,27 @@ def _run_org_scale_mine(
     for task in result.tasks:
         write_task_dir(task, tasks_dir, repo_path)
 
-    # Results table
-    click.echo(f"Generated {len(result.tasks)} org-scale tasks:")
+    _show_org_scale_results(result.tasks, tasks_dir, repo_path)
+
+
+def _show_org_scale_results(
+    tasks: list["Task"], tasks_dir: Path, repo_path: Path
+) -> None:
+    """Display org-scale mining results table and next steps."""
+    click.echo(f"Generated {len(tasks)} org-scale tasks:")
     click.echo()
     click.echo(
         f"  {'#':>2}  {'Task ID':<14} {'Family':<24} {'Difficulty':<10} "
-        f"{'Multi-hop':>9}  {'Files':>5}"
+        f"{'Files':>5}"
     )
-    click.echo("  " + "-" * 70)
-    for i, t in enumerate(result.tasks, 1):
-        is_mh = (
-            "yes"
-            if t.id.endswith("mh") or len(t.verification.oracle_answer) > 0
-            else "no"
-        )
+    click.echo("  " + "-" * 60)
+    for i, t in enumerate(tasks, 1):
         click.echo(
             f"  {i:>2}  {t.id:<14} {t.metadata.category:<24} "
-            f"{t.metadata.difficulty:<10} {is_mh:>9}  "
+            f"{t.metadata.difficulty:<10} "
             f"{len(t.verification.oracle_answer):>5}"
         )
     click.echo()
-
     click.echo(f"Tasks written to {tasks_dir}")
     click.echo()
     click.echo("Next steps:")

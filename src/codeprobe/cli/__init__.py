@@ -302,7 +302,7 @@ def oracle_check_cmd(task_dir: str, metric: str, write_reward: bool) -> None:
     import json
     from pathlib import Path
 
-    from codeprobe.mining.org_scale import oracle_check
+    from codeprobe.mining.org_scale_oracle import oracle_check
 
     result = oracle_check(Path(task_dir), metric=metric)
 
