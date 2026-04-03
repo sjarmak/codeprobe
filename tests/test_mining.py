@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from codeprobe.mining.extractor import (
     MergedPR,
     PRMetadata,
@@ -452,6 +454,17 @@ class TestMineTasks:
 
 
 class TestWriteTaskDir:
+    def test_write_task_dir_rejects_path_traversal(self, tmp_path: Path) -> None:
+        """Writer rejects task IDs with path traversal."""
+        task = Task(
+            id="../etc",
+            repo="r",
+            metadata=TaskMetadata(name="x"),
+            verification=TaskVerification(command="bash tests/test.sh"),
+        )
+        with pytest.raises(ValueError, match="Invalid task id"):
+            write_task_dir(task, tmp_path / "tasks", tmp_path / "r")
+
     def test_write_task_dir(self, tmp_path: Path) -> None:
         task = Task(
             id="abc12345",

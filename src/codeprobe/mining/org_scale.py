@@ -1007,17 +1007,20 @@ def normalize_path(path: str) -> str:
     """Normalize a file path for oracle comparison.
 
     Strips common prefixes, normalizes separators, and removes leading dots.
+    Loops until stable to handle combined prefixes like ``/tmp/./pkg/foo.go``.
     """
-    # Normalize separators to forward slash (Windows compat)
-    p = path.replace("\\", "/")
-    # Strip common prefixes
-    for prefix in ("./", "/workspace/", "/tmp/", "/app/"):
-        if p.startswith(prefix):
-            p = p[len(prefix) :]
-    # Strip leading slash
-    p = p.lstrip("/")
-    # Strip trailing whitespace/newline
-    p = p.strip()
+    p = path.replace("\\", "/").strip()
+    _PREFIXES = ("./", "/workspace/", "/tmp/", "/app/")
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _PREFIXES:
+            if p.startswith(prefix):
+                p = p[len(prefix) :]
+                changed = True
+        if p.startswith("/"):
+            p = p.lstrip("/")
+            changed = True
     return p
 
 
@@ -1111,10 +1114,10 @@ def oracle_check(
     union = expected | agent_answer
     jaccard = intersection_size / len(union) if union else 0.0
 
-    # Invariant check (premortem P0: crash, don't clamp)
-    assert 0.0 <= f1 <= 1.0, f"F1 out of bounds: {f1}"
-    assert 0.0 <= precision <= 1.0, f"Precision out of bounds: {precision}"
-    assert 0.0 <= recall <= 1.0, f"Recall out of bounds: {recall}"
+    # Invariant check — return error dict instead of crashing the CLI
+    for name, val in (("f1", f1), ("precision", precision), ("recall", recall)):
+        if not (0.0 <= val <= 1.0):
+            return {"score": 0.0, "error": f"{name} out of bounds: {val}"}
 
     metrics = {
         "precision": round(precision, 4),

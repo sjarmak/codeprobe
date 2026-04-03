@@ -65,6 +65,12 @@ class TestNormalizePath:
     def test_leading_slash(self) -> None:
         assert normalize_path("/pkg/foo.go") == "pkg/foo.go"
 
+    def test_combined_prefixes(self) -> None:
+        """Paths with multiple prefixes like /tmp/./pkg/foo.go are fully normalized."""
+        assert normalize_path("/tmp/./pkg/foo.go") == "pkg/foo.go"
+        assert normalize_path("/workspace/./src/main.py") == "src/main.py"
+        assert normalize_path("/app/./config.yaml") == "config.yaml"
+
     def test_idempotent(self) -> None:
         """normalize(normalize(p)) == normalize(p)"""
         paths = [
@@ -72,6 +78,8 @@ class TestNormalizePath:
             "/workspace/src/main.py",
             "pkg\\bar.go",
             "/tmp/test.py",
+            "/tmp/./pkg/foo.go",
+            "/workspace/./src/main.py",
         ]
         for p in paths:
             once = normalize_path(p)

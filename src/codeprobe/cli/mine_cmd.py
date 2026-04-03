@@ -564,7 +564,7 @@ def _run_org_scale_mine(
     from codeprobe.mining.org_scale_families import FAMILY_BY_NAME, TaskFamily
     from codeprobe.mining.writer import write_task_dir
 
-    click.echo(f"Scanning {repo_path.name} for org-scale patterns...")
+    click.echo(f"Scanning {repo_path.name} for org-scale patterns...", err=True)
 
     # Filter families if specified
     selected_families: tuple[TaskFamily, ...] | None = None
