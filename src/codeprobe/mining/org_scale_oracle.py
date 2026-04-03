@@ -193,14 +193,21 @@ def _check_file_list(
         if not (0.0 <= val <= 1.0):
             return {"score": 0.0, "error": f"{name} out of bounds: {val}"}
 
-    metric_map = {
+    # --- Weighted F1 (additive, never replaces standard f1) ---
+    weighted_metrics: dict[str, float] = {}
+    if metric == "weighted_f1":
+        oracle_tiers: dict[str, str] = gt_data.get("oracle_tiers", {})
+        weighted_metrics = _weighted_f1(expected, agent_answer, oracle_tiers)
+
+    metric_map: dict[str, float] = {
         "f1": f1,
         "recall": recall,
         "precision": precision,
         "jaccard": jaccard,
+        "weighted_f1": weighted_metrics.get("weighted_f1", f1),
     }
 
-    return {
+    result: dict[str, float | str | int] = {
         "score": round(metric_map.get(metric, f1), 4),
         "precision": round(precision, 4),
         "recall": round(recall, 4),
@@ -210,6 +217,54 @@ def _check_file_list(
         "expected_size": len(expected),
         "answer_size": len(agent_answer),
         "error": "",
+    }
+
+    if weighted_metrics:
+        result["weighted_f1"] = weighted_metrics["weighted_f1"]
+        result["weighted_recall"] = weighted_metrics["weighted_recall"]
+
+    return result
+
+
+_TIER_WEIGHTS: dict[str, float] = {
+    "required": 2.0,
+    "supplementary": 1.0,
+    "context": 0.5,
+}
+
+
+def _weighted_f1(
+    expected: frozenset[str],
+    agent_answer: frozenset[str],
+    oracle_tiers: dict[str, str],
+) -> dict[str, float]:
+    """Compute weighted F1 where recall weights files by tier.
+
+    Tier weights: required=2.0, supplementary=1.0, context=0.5.
+    Missing tiers default to 'required' (backward compatible).
+    Precision is unweighted (standard).
+    """
+    intersection = expected & agent_answer
+
+    # Weighted recall: sum(weight[tier] for matched) / sum(weight[tier] for expected)
+    weighted_hit = sum(
+        _TIER_WEIGHTS.get(oracle_tiers.get(f, "required"), 2.0) for f in intersection
+    )
+    weighted_total = sum(
+        _TIER_WEIGHTS.get(oracle_tiers.get(f, "required"), 2.0) for f in expected
+    )
+    weighted_recall = weighted_hit / weighted_total if weighted_total > 0 else 0.0
+
+    # Standard precision (unweighted)
+    precision = len(intersection) / len(agent_answer) if agent_answer else 0.0
+
+    # Weighted F1
+    denom = precision + weighted_recall
+    wf1 = 2.0 * precision * weighted_recall / denom if denom > 0 else 0.0
+
+    return {
+        "weighted_recall": round(weighted_recall, 4),
+        "weighted_f1": round(wf1, 4),
     }
 
 
