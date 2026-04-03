@@ -29,7 +29,7 @@ def init(path: str) -> None:
 
 
 @main.command()
-@click.argument("path", default=".", type=click.Path(exists=True))
+@click.argument("path", default=".")
 @click.option("--count", default=5, help="Number of tasks to mine (3-20).")
 @click.option(
     "--source",
@@ -60,6 +60,17 @@ def init(path: str) -> None:
     default=False,
     help="Enrich low-quality tasks via LLM (adds problem statement + acceptance criteria).",
 )
+@click.option(
+    "--interactive/--no-interactive",
+    default=None,
+    help="Force interactive or non-interactive mode (default: auto-detect TTY).",
+)
+@click.option(
+    "--no-llm",
+    is_flag=True,
+    default=False,
+    help="Skip LLM instruction generation; use regex fallback (for offline/CI).",
+)
 def mine(
     path: str,
     count: int,
@@ -68,11 +79,20 @@ def mine(
     subsystem: tuple[str, ...],
     discover_subsystems: bool,
     enrich: bool,
+    interactive: bool | None,
+    no_llm: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics.
+
+    By default, generates high-quality instructions via LLM (Haiku).
+    Use --no-llm to skip LLM and fall back to regex extraction.
+
+    When run interactively (default in a terminal), walks you through
+    choosing an eval goal, task count, and git host before mining.
+    Use --no-interactive to skip the prompts and use defaults/flags directly.
     """
     from codeprobe.cli.mine_cmd import run_mine
 
@@ -84,6 +104,8 @@ def mine(
         subsystems=subsystem,
         discover_subsystems=discover_subsystems,
         enrich=enrich,
+        interactive=interactive,
+        no_llm=no_llm,
     )
 
 

@@ -536,6 +536,15 @@ def _guess_language(extensions: list[str]) -> str:
 _MIN_QUALITY_SCORE = 2 / 4  # At least two quality signals required
 
 
+@dataclass(frozen=True)
+class MineResult:
+    """Result of mine_tasks() including raw context for LLM generation."""
+
+    tasks: list[Task]
+    pr_bodies: dict[str, str]  # task.id → raw PR body
+    changed_files_map: dict[str, list[str]]  # task.id → changed file paths
+
+
 def mine_tasks(
     path: Path,
     count: int = 5,
@@ -543,7 +552,7 @@ def mine_tasks(
     min_files: int = 0,
     min_quality: float = _MIN_QUALITY_SCORE,
     subsystems: tuple[str, ...] = (),
-) -> list[Task]:
+) -> MineResult:
     """Mine eval tasks from a repository.
 
     1. Detect or use provided source
@@ -552,7 +561,7 @@ def mine_tasks(
     4. Extract tasks from each merge (respecting min_files threshold)
     5. Filter out tasks below *min_quality* score
     6. Sort by quality descending, then file count descending
-    7. Return up to *count* tasks
+    7. Return MineResult with tasks and raw context for LLM instruction generation
     """
     if source_hint != "auto":
         source = RepoSource(host=source_hint, owner="", repo=path.name, remote_url="")
@@ -565,9 +574,12 @@ def mine_tasks(
     prs = list_merged_prs(source, path, limit=search_limit)
     if not prs:
         logger.info("No merge commits found in %s", path)
-        return []
+        return MineResult(tasks=[], pr_bodies={}, changed_files_map={})
 
     candidates: list[tuple[float, int, Task]] = []
+    pr_bodies: dict[str, str] = {}
+    changed_files_map: dict[str, list[str]] = {}
+
     for pr in prs:
         changed_files = _get_changed_files(pr.merge_commit, path)
         if len(changed_files) < min_files:
@@ -605,10 +617,20 @@ def mine_tasks(
             enriched_metadata = replace(task.metadata, quality_score=quality)
             task = replace(task, metadata=enriched_metadata)
             candidates.append((quality, len(changed_files), task))
+            # Stash raw context for LLM instruction generation
+            pr_bodies[task.id] = pr_meta.body
+            changed_files_map[task.id] = changed_files
 
     # Sort by quality score descending, then file count descending
     candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
     tasks = [task for _, _, task in candidates[:count]]
+
+    # Prune context maps to only include selected tasks
+    selected_ids = {t.id for t in tasks}
+    pr_bodies = {k: v for k, v in pr_bodies.items() if k in selected_ids}
+    changed_files_map = {
+        k: v for k, v in changed_files_map.items() if k in selected_ids
+    }
 
     logger.info(
         "Mined %d tasks from %d merge commits (min_files=%d)",
@@ -616,62 +638,95 @@ def mine_tasks(
         len(prs),
         min_files,
     )
-    return tasks
+    return MineResult(
+        tasks=tasks,
+        pr_bodies=pr_bodies,
+        changed_files_map=changed_files_map,
+    )
 
 
 # ---------------------------------------------------------------------------
-# LLM enrichment
+# LLM instruction generation
 # ---------------------------------------------------------------------------
 
 _ENRICHMENT_THRESHOLD = 0.5
 
-_ENRICHMENT_PROMPT_TEMPLATE = """\
-You are an eval-task enrichment assistant. Given the following raw task \
-extracted from a pull request, produce an improved task description.
+_INSTRUCTION_PROMPT_TEMPLATE = """\
+You are an eval-task writer for an AI coding agent benchmark. Given raw PR \
+metadata from a merged pull request, write a clear task instruction that tells \
+an agent WHAT to implement without revealing HOW (the solution).
 
-## Raw Task
+## Raw PR Metadata
 Title: {title}
-Description:
-{description}
+Body:
+{body}
+
+Issue title: {issue_title}
+Issue body: {issue_body}
+
+Labels: {labels}
+Language: {language}
+Changed files: {changed_files}
 
 ## Instructions
 Produce a JSON object with exactly these keys:
-- "problem_statement": A clear 2-3 sentence problem statement.
-- "acceptance_criteria": A bullet list (as a single string) of acceptance criteria.
+- "heading": A short descriptive title for the task (not the raw PR title).
+- "problem": A clear 2-4 sentence problem description. Explain what is broken \
+or what feature is needed and why. Do NOT describe the solution or mention \
+specific code changes from the PR. If there is issue context, use it — it \
+describes the problem better than the PR body.
+- "requirements": A bullet list (as a single string with newlines) of what the \
+agent must accomplish. Focus on observable behavior and acceptance criteria, \
+not implementation details.
 - "difficulty": One of "easy", "medium", or "hard".
+
+Strip any PR template boilerplate (e.g., "What type of PR is this?", \
+checklists, release notes, bot labels). Focus on the actual problem.
 
 Respond ONLY with the JSON object, no markdown fences.
 """
 
 
-def _build_enrichment_prompt(task: Task) -> str:
-    """Build the enrichment prompt for a low-quality task."""
-    return _ENRICHMENT_PROMPT_TEMPLATE.format(
+def _build_instruction_prompt(
+    task: Task,
+    pr_body: str = "",
+    changed_files: list[str] | None = None,
+) -> str:
+    """Build the LLM prompt for generating task instructions."""
+    return _INSTRUCTION_PROMPT_TEMPLATE.format(
         title=task.metadata.name,
-        description=task.metadata.description,
+        body=pr_body or task.metadata.description,
+        issue_title=task.metadata.issue_title or "(none)",
+        issue_body=task.metadata.issue_body or "(none)",
+        labels="(none)",
+        language=task.metadata.language or "unknown",
+        changed_files=", ".join(changed_files[:20]) if changed_files else "(unknown)",
     )
 
 
-def enrich_task(task: Task) -> Task:
-    """Enrich a single task via call_claude().
+def generate_instruction(
+    task: Task,
+    pr_body: str = "",
+    changed_files: list[str] | None = None,
+) -> Task:
+    """Generate instruction content for a task via LLM.
 
-    Appends LLM-generated problem statement and acceptance criteria to the
-    task description. Sets enrichment_source='llm' in metadata.
+    Replaces the raw PR description with an LLM-generated problem statement
+    and requirements. Sets enrichment_source='llm' in metadata.
 
     On LLM failure, returns the task unchanged (logs warning).
     """
     from codeprobe.core.llm import LLMError, LLMRequest, call_claude
 
-    prompt = _build_enrichment_prompt(task)
+    prompt = _build_instruction_prompt(task, pr_body, changed_files)
     try:
         response = call_claude(
             LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
         )
     except LLMError as exc:
-        logger.warning("LLM enrichment failed for %s: %s", task.id, exc)
+        logger.warning("LLM instruction generation failed for %s: %s", task.id, exc)
         return task
 
-    # Parse the response — best-effort JSON extraction
     try:
         data = _json.loads(response.text)
     except _json.JSONDecodeError:
@@ -680,26 +735,74 @@ def enrich_task(task: Task) -> Task:
         )
         return task
 
-    problem = data.get("problem_statement", "")
-    criteria = data.get("acceptance_criteria", "")
+    heading = data.get("heading", "")
+    problem = data.get("problem", "")
+    requirements = data.get("requirements", "")
     difficulty = data.get("difficulty", task.metadata.difficulty)
 
     if difficulty not in ("easy", "medium", "hard"):
         difficulty = task.metadata.difficulty
 
-    enriched_description = task.metadata.description
-    if problem:
-        enriched_description += f"\n\n## Problem Statement\n\n{problem}"
-    if criteria:
-        enriched_description += f"\n\n## Acceptance Criteria\n\n{criteria}"
+    if not problem:
+        # LLM returned empty problem — keep original
+        return task
 
     new_metadata = replace(
         task.metadata,
-        description=enriched_description,
+        description=task.metadata.description,  # preserve raw for metadata.json
         difficulty=difficulty,
         enrichment_source="llm",
+        issue_title=heading or task.metadata.issue_title,
+        issue_body=problem
+        + ("\n\n## Requirements\n\n" + requirements if requirements else ""),
     )
     return replace(task, metadata=new_metadata)
+
+
+def generate_instructions(
+    tasks: list[Task],
+    pr_bodies: dict[str, str] | None = None,
+    changed_files_map: dict[str, list[str]] | None = None,
+) -> list[Task]:
+    """Generate LLM instructions for all tasks.
+
+    *pr_bodies* maps task.id → raw PR body text.
+    *changed_files_map* maps task.id → list of changed file paths.
+    """
+    pr_bodies = pr_bodies or {}
+    changed_files_map = changed_files_map or {}
+    result: list[Task] = []
+    for task in tasks:
+        logger.info("Generating instruction for %s via LLM", task.id)
+        result.append(
+            generate_instruction(
+                task,
+                pr_body=pr_bodies.get(task.id, ""),
+                changed_files=changed_files_map.get(task.id),
+            )
+        )
+    return result
+
+
+# Legacy enrichment — kept for backward compatibility with --enrich flag
+
+
+def _build_enrichment_prompt(task: Task) -> str:
+    """Build the enrichment prompt for a low-quality task."""
+    return _INSTRUCTION_PROMPT_TEMPLATE.format(
+        title=task.metadata.name,
+        body=task.metadata.description,
+        issue_title=task.metadata.issue_title or "(none)",
+        issue_body=task.metadata.issue_body or "(none)",
+        labels="(none)",
+        language=task.metadata.language or "unknown",
+        changed_files="(unknown)",
+    )
+
+
+def enrich_task(task: Task) -> Task:
+    """Enrich a single task via LLM (legacy wrapper around generate_instruction)."""
+    return generate_instruction(task)
 
 
 def enrich_tasks(tasks: list[Task]) -> list[Task]:

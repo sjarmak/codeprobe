@@ -50,6 +50,7 @@ This project is AI-orchestration code — ZFC applies at two levels:
 - `adapters/` — mechanical parsing, honest about data quality via `cost_source`
 - `analysis/stats.py` — arithmetic aggregation (deterministic math, not judgment)
 - `assess/heuristics.py:score_repo_with_model()` — delegates scoring to Claude via fixed RUBRIC_V1; model judges quality, code does IO
+- `mining/extractor.py:generate_instruction()` — delegates instruction.md generation to LLM; regex fallback only for `--no-llm` offline mode
 
 ### Known violations (tracked for refactoring)
 

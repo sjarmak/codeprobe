@@ -10,6 +10,8 @@ Point at a codebase and extract real eval tasks from its merge history. Mines me
 
 Invokes `codeprobe mine` under the hood -- all mining runs through the CLI, not Python imports.
 
+**Note:** The CLI now has its own interactive mode (auto-enabled in TTY). When a user runs `codeprobe mine` directly in a terminal, the CLI handles the interactive workflow (eval goal, config, pre-flight, quality review, results table, next steps). The skill phases below describe the same flow — use the skill when the user invokes `/mine-tasks` from Claude Code, or run the CLI directly.
+
 ---
 
 ## Phase 0: Eval Goal

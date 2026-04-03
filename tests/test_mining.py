@@ -17,6 +17,8 @@ from codeprobe.mining.extractor import (
     enrich_tasks,
     extract_subsystems,
     extract_task_from_merge,
+    generate_instruction,
+    generate_instructions,
     list_merged_prs,
     mine_tasks,
     resolve_pr_metadata,
@@ -322,10 +324,10 @@ class TestMineTasks:
 
         mock_extractor_run.side_effect = _extractor_side_effect
 
-        tasks = mine_tasks(Path("/fake/repo"), count=5)
+        result = mine_tasks(Path("/fake/repo"), count=5)
 
-        assert len(tasks) == 2
-        assert all(isinstance(t, Task) for t in tasks)
+        assert len(result.tasks) == 2
+        assert all(isinstance(t, Task) for t in result.tasks)
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
@@ -344,8 +346,8 @@ class TestMineTasks:
 
         mock_extractor_run.side_effect = _extractor_side_effect
 
-        tasks = mine_tasks(Path("/fake/repo"), count=5)
-        assert tasks == []
+        result = mine_tasks(Path("/fake/repo"), count=5)
+        assert result.tasks == []
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
@@ -390,9 +392,9 @@ class TestMineTasks:
         mock_extractor_run.side_effect = _extractor_side_effect
 
         # Default min_quality filters out the bare task
-        tasks = mine_tasks(Path("/fake/repo"), count=5)
-        assert len(tasks) == 1
-        assert tasks[0].id == "aaaa1111"
+        result = mine_tasks(Path("/fake/repo"), count=5)
+        assert len(result.tasks) == 1
+        assert result.tasks[0].id == "aaaa1111"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
@@ -418,8 +420,8 @@ class TestMineTasks:
         mock_extractor_run.side_effect = _extractor_side_effect
 
         # Even min_quality=0 can't bypass hard gates
-        tasks = mine_tasks(Path("/fake/repo"), count=5, min_quality=0.0)
-        assert tasks == []
+        result = mine_tasks(Path("/fake/repo"), count=5, min_quality=0.0)
+        assert result.tasks == []
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
@@ -440,8 +442,8 @@ class TestMineTasks:
 
         mock_extractor_run.side_effect = _extractor_side_effect
 
-        tasks = mine_tasks(Path("/fake/repo"), count=3)
-        assert len(tasks) == 3
+        result = mine_tasks(Path("/fake/repo"), count=3)
+        assert len(result.tasks) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1043,12 +1045,12 @@ class TestMineTasksSubsystemFilter:
         mock_extractor_run.side_effect = _extractor_side_effect
 
         # Filter to only pkg/ subsystem
-        tasks = mine_tasks(
+        result = mine_tasks(
             Path("/fake/repo"), count=5, subsystems=("pkg/",), min_quality=0.0
         )
 
-        assert len(tasks) == 1
-        assert tasks[0].metadata.language == "go"
+        assert len(result.tasks) == 1
+        assert result.tasks[0].metadata.language == "go"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
@@ -1074,8 +1076,8 @@ class TestMineTasksSubsystemFilter:
 
         mock_extractor_run.side_effect = _extractor_side_effect
 
-        tasks = mine_tasks(Path("/fake/repo"), count=5, subsystems=(), min_quality=0.0)
-        assert len(tasks) == 1
+        result = mine_tasks(Path("/fake/repo"), count=5, subsystems=(), min_quality=0.0)
+        assert len(result.tasks) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1115,7 +1117,7 @@ class TestRunMineClearsStale:
 
         mock_extractor_run.side_effect = _extractor_side_effect
 
-        run_mine(str(tmp_path), count=5)
+        run_mine(str(tmp_path), count=5, no_llm=True)
 
         tasks_dir = tmp_path / ".codeprobe" / "tasks"
         task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
@@ -1277,12 +1279,13 @@ class TestEnrichment:
 
     @patch("codeprobe.core.llm.call_claude")
     def test_enrich_task_success(self, mock_call: object) -> None:
-        """enrich_task() enriches description and sets enrichment_source='llm'."""
+        """enrich_task() generates instruction via LLM and sets enrichment_source='llm'."""
         from codeprobe.core.llm import LLMResponse
 
         mock_call.return_value = LLMResponse(
-            text='{"problem_statement": "Auth tokens expire without warning.", '
-            '"acceptance_criteria": "- Tokens refresh on 401\\n- User stays logged in", '
+            text='{"heading": "Fix silent token expiry", '
+            '"problem": "Auth tokens expire without warning, causing silent 401 errors.", '
+            '"requirements": "- Tokens refresh on 401\\n- User stays logged in", '
             '"difficulty": "medium"}'
         )
 
@@ -1290,10 +1293,11 @@ class TestEnrichment:
         enriched = enrich_task(task)
 
         assert enriched.metadata.enrichment_source == "llm"
-        assert "Auth tokens expire without warning" in enriched.metadata.description
-        assert "Acceptance Criteria" in enriched.metadata.description
+        assert enriched.metadata.issue_title == "Fix silent token expiry"
+        assert "Auth tokens expire without warning" in enriched.metadata.issue_body
+        assert "Requirements" in enriched.metadata.issue_body
         assert enriched.metadata.difficulty == "medium"
-        # Original description preserved
+        # Original description preserved in metadata.description
         assert "Tokens expired silently" in enriched.metadata.description
 
     @patch("codeprobe.core.llm.call_claude")
@@ -1329,7 +1333,8 @@ class TestEnrichment:
         from codeprobe.core.llm import LLMResponse
 
         mock_call.return_value = LLMResponse(
-            text='{"problem_statement": "Enriched.", "acceptance_criteria": "- Done", "difficulty": "easy"}'
+            text='{"heading": "Fix auth", "problem": "Enriched problem.", '
+            '"requirements": "- Done", "difficulty": "easy"}'
         )
 
         low_quality = self._make_task(quality_score=0.25, task_id="low1")
@@ -1340,7 +1345,7 @@ class TestEnrichment:
         assert len(result) == 2
         # Low-quality task was enriched
         assert result[0].metadata.enrichment_source == "llm"
-        assert "Enriched." in result[0].metadata.description
+        assert "Enriched problem." in result[0].metadata.issue_body
         # High-quality task was NOT enriched
         assert result[1].metadata.enrichment_source == ""
         assert result[1].metadata.description == high_quality.metadata.description
@@ -1371,3 +1376,456 @@ class TestEnrichment:
         assert len(result) == 2
         assert all(t.metadata.enrichment_source == "" for t in result)
         mock_call.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# LLM instruction generation tests
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateInstruction:
+    def _make_task(self, task_id: str = "t001") -> Task:
+        return Task(
+            id=task_id,
+            repo="kubernetes",
+            metadata=TaskMetadata(
+                name=f"merge-{task_id}",
+                difficulty="hard",
+                description="Add workload aware preemption\n\n"
+                "#### What type of PR is this?\n/kind feature\n\n"
+                "#### What this PR does:\nImplements KEP-5710.",
+                language="go",
+            ),
+            verification=TaskVerification(command="go test ./pkg/scheduler/..."),
+        )
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_generate_instruction_success(self, mock_call: object) -> None:
+        """generate_instruction() produces clean instruction from raw PR data."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"heading": "Implement workload-aware pod preemption", '
+            '"problem": "When scheduling pod groups, the default preemption runs per-pod '
+            'instead of per-group, leading to suboptimal scheduling decisions.", '
+            '"requirements": "- Preemption runs for the whole pod group\\n'
+            '- Existing per-pod preemption still works for non-group pods", '
+            '"difficulty": "hard"}'
+        )
+
+        task = self._make_task()
+        result = generate_instruction(
+            task,
+            pr_body="Raw PR body with template noise",
+            changed_files=[
+                "pkg/scheduler/preemption.go",
+                "pkg/scheduler/preemption_test.go",
+            ],
+        )
+
+        assert result.metadata.enrichment_source == "llm"
+        assert result.metadata.issue_title == "Implement workload-aware pod preemption"
+        assert "suboptimal scheduling" in result.metadata.issue_body
+        assert "Requirements" in result.metadata.issue_body
+        assert result.metadata.difficulty == "hard"
+        # Original raw description preserved
+        assert "KEP-5710" in result.metadata.description
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_generate_instruction_llm_failure_returns_unchanged(
+        self, mock_call: object
+    ) -> None:
+        from codeprobe.core.llm import LLMExecutionError
+
+        mock_call.side_effect = LLMExecutionError("timeout")
+        task = self._make_task()
+        result = generate_instruction(task)
+
+        assert result.metadata.enrichment_source == ""
+        assert result.metadata.issue_title == ""
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_generate_instruction_empty_problem_returns_unchanged(
+        self, mock_call: object
+    ) -> None:
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"heading": "Something", "problem": "", "requirements": "", "difficulty": "easy"}'
+        )
+        task = self._make_task()
+        result = generate_instruction(task)
+
+        # Empty problem → keep original task unchanged
+        assert result.metadata.enrichment_source == ""
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_generate_instructions_batch(self, mock_call: object) -> None:
+        """generate_instructions() processes all tasks."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"heading": "Fix it", "problem": "Something is broken.", '
+            '"requirements": "- Fix the thing", "difficulty": "easy"}'
+        )
+
+        tasks = [self._make_task(f"t{i}") for i in range(3)]
+        results = generate_instructions(tasks)
+
+        assert len(results) == 3
+        assert all(r.metadata.enrichment_source == "llm" for r in results)
+        assert mock_call.call_count == 3
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_llm_instruction_written_without_regex_cleanup(
+        self, mock_call: object, tmp_path: Path
+    ) -> None:
+        """LLM-generated instructions skip regex cleanup in writer."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"heading": "Fix scheduler preemption", '
+            '"problem": "Pod groups fail to schedule with shared claims.", '
+            '"requirements": "- Shared claims handled correctly", '
+            '"difficulty": "hard"}'
+        )
+
+        task = self._make_task()
+        enriched = generate_instruction(task)
+
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "kubernetes"
+        result_path = write_task_dir(enriched, base_dir, repo_path)
+        instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
+
+        assert "# Fix scheduler preemption" in instruction
+        assert "Pod groups fail to schedule" in instruction
+        assert "Shared claims handled correctly" in instruction
+        # Template noise from raw description should NOT leak through
+        assert "What type of PR is this" not in instruction
+
+
+# ---------------------------------------------------------------------------
+# PR template stripping tests
+# ---------------------------------------------------------------------------
+
+
+class TestStripPrTemplate:
+    """Test _strip_pr_template and _extract_first_paragraph with PR templates."""
+
+    def test_kubernetes_style_template(self) -> None:
+        """Kubernetes PR bodies have template sections that should be stripped."""
+        from codeprobe.mining.writer import _extract_first_paragraph
+
+        description = (
+            "Add workload aware preemption\n\n"
+            "#### What type of PR is this?\r\n\r\n"
+            "/kind feature\r\n\r\n"
+            "#### What this PR does / why we need it:\r\n\r\n"
+            "This PR implements workload aware preemption from KEP-5710.\r\n\r\n"
+            "#### Which issue(s) this PR is related to:\r\n\r\n"
+            "KEP-5710\r\n\r\n"
+            "#### Special notes for your reviewer:\r\n\r\n"
+            "This PR builds on top of two PRs.\r\n\r\n"
+            "#### Does this PR introduce a user-facing change?\r\n\r\n"
+            "```release-note\nSome release note.\n```\r\n\r\n"
+            "#### Additional documentation e.g., KEPs:\r\n\r\n"
+            "docs link"
+        )
+        result = _extract_first_paragraph(description)
+        # Should extract the "What this PR does" content, not template headers
+        assert "workload aware preemption" in result
+        assert "KEP-5710" in result
+        # Should NOT contain template section headers
+        assert "What type of PR is this" not in result
+        assert "/kind feature" not in result
+
+    def test_strip_pr_template_preserves_plain_text(self) -> None:
+        """Non-template text should pass through unchanged."""
+        from codeprobe.mining.writer import _strip_pr_template
+
+        text = "This fixes a bug where tokens expired silently."
+        result = _strip_pr_template(text)
+        assert result == text
+
+    def test_strip_pr_template_removes_label_lines(self) -> None:
+        """Lines like /kind feature should be removed."""
+        from codeprobe.mining.writer import _strip_pr_template
+
+        text = "Some description.\n\n/kind feature\n/area scheduling\n\nMore text."
+        result = _strip_pr_template(text)
+        assert "/kind feature" not in result
+        assert "/area scheduling" not in result
+        assert "Some description." in result
+        assert "More text." in result
+
+    def test_strip_html_comments(self) -> None:
+        """HTML comments from PR templates should be stripped."""
+        from codeprobe.mining.writer import _strip_pr_template
+
+        text = (
+            "<!--  Thanks for sending a pull request!  Here are some tips:\n"
+            "1. Follow the guide\n"
+            "2. Do stuff\n"
+            "-->\n\n"
+            "The actual description of the change."
+        )
+        result = _strip_pr_template(text)
+        assert "Thanks for sending" not in result
+        assert "actual description" in result
+
+    def test_strip_html_comments_multiline(self) -> None:
+        """Multiline HTML comments should be fully removed."""
+        from codeprobe.mining.writer import _strip_pr_template
+
+        text = "Before <!-- comment\nspanning\nmultiple lines --> After"
+        result = _strip_pr_template(text)
+        assert "comment" not in result
+        assert "Before" in result
+        assert "After" in result
+
+    def test_strip_release_note_fenced_block(self) -> None:
+        """```release-note blocks should be stripped."""
+        from codeprobe.mining.writer import _strip_pr_template
+
+        text = (
+            "Description here.\n\n"
+            "```release-note\n"
+            "Some release note content.\n"
+            "```\n\n"
+            "More text."
+        )
+        result = _strip_pr_template(text)
+        assert "release note content" not in result
+        assert "Description here." in result
+
+    def test_instruction_strips_html_comment_pr_template(self, tmp_path: Path) -> None:
+        """PR bodies starting with HTML comment template should produce clean instructions."""
+        from codeprobe.mining.writer import _extract_first_paragraph
+
+        description = (
+            "Fix the widget\n\n"
+            "<!--  Thanks for sending a pull request!  Here are some tips for you:\n"
+            "1. Read the guide\n"
+            "-->\n\n"
+            "This fixes the widget rendering bug."
+        )
+        result = _extract_first_paragraph(description)
+        assert "Thanks for sending" not in result
+        assert "widget rendering bug" in result
+
+    def test_issue_body_details_blocks_stripped(self, tmp_path: Path) -> None:
+        """<details> blocks in issue bodies should be stripped during write."""
+        task = Task(
+            id="det001",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-det001",
+                difficulty="easy",
+                description="Fix DRA scheduling",
+                language="go",
+                issue_title="DRA scheduler bug",
+                issue_body=(
+                    "### What happened?\n\n"
+                    "Scheduler loops forever.\n\n"
+                    "### Kubernetes version\n\n"
+                    "<details>\n\n"
+                    "```console\n$ kubectl version\nv1.36.0\n```\n\n"
+                    "</details>\n\n"
+                    "### OS version\n\n"
+                    "<details>\n\n"
+                    "```console\n$ uname -a\nLinux 6.17\n```\n\n"
+                    "</details>"
+                ),
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="go test ./pkg/...",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+
+        result_path = write_task_dir(task, base_dir, repo_path)
+        instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
+
+        assert "Scheduler loops forever" in instruction
+        assert "<details>" not in instruction
+        assert "uname -a" not in instruction
+
+    def test_extract_first_paragraph_skips_empty_paragraphs(self) -> None:
+        """After stripping template noise, first non-empty paragraph is used."""
+        from codeprobe.mining.writer import _extract_first_paragraph
+
+        description = (
+            "Fix bug\n\n"
+            "#### What type of PR is this?\n\n"
+            "/kind bug\n\n"
+            "#### What this PR does / why we need it:\n\n"
+            "Tokens expired silently causing 401 errors.\n\n"
+            "#### Which issue(s) this PR is related to:\n\n"
+            "#1234"
+        )
+        result = _extract_first_paragraph(description)
+        assert "Tokens expired silently" in result
+
+    def test_extract_first_paragraph_fallback_when_no_what_section(self) -> None:
+        """PR without 'What this PR does' still extracts first paragraph."""
+        from codeprobe.mining.writer import _extract_first_paragraph
+
+        description = "Fix auth redirect\n\nTokens were not refreshed on 401."
+        result = _extract_first_paragraph(description)
+        assert "Tokens were not refreshed" in result
+
+    def test_instruction_with_kubernetes_pr(self, tmp_path: Path) -> None:
+        """Full integration: kubernetes-style PR generates useful instruction."""
+        k8s_description = (
+            "Add workload aware preemption\n\n"
+            "#### What type of PR is this?\n\n"
+            "/kind feature\n\n"
+            "#### What this PR does / why we need it:\n\n"
+            "This PR implements workload aware preemption from KEP-5710.\n\n"
+            "#### Which issue(s) this PR is related to:\n\n"
+            "KEP-5710\n\n"
+            "#### Does this PR introduce a user-facing change?\n\n"
+            "```release-note\nSome note.\n```"
+        )
+        task = Task(
+            id="k8stest1",
+            repo="kubernetes",
+            metadata=TaskMetadata(
+                name="merge-k8stest1",
+                difficulty="hard",
+                description=k8s_description,
+                language="go",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="go test ./pkg/scheduler/...",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "kubernetes"
+
+        result_path = write_task_dir(task, base_dir, repo_path)
+        instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
+
+        # Should contain the actual problem description
+        assert "workload aware preemption" in instruction
+        assert "KEP-5710" in instruction
+        # Should NOT contain template noise
+        assert "What type of PR is this" not in instruction
+        assert "/kind feature" not in instruction
+
+
+# ---------------------------------------------------------------------------
+# Interactive mine command tests
+# ---------------------------------------------------------------------------
+
+
+class TestMineInteractive:
+    """Test the interactive mine workflow functions."""
+
+    def test_quality_review_flags_thin_instructions(self) -> None:
+        """Quality review flags tasks with thin descriptions."""
+        from codeprobe.cli.mine_cmd import _quality_review
+
+        tasks = [
+            Task(
+                id="t1",
+                repo="r",
+                metadata=TaskMetadata(name="merge-t1", description="short"),
+                verification=TaskVerification(command="pytest tests/test_a.py"),
+            ),
+        ]
+        warnings = _quality_review(tasks, "General benchmarking", "balanced")
+        assert any("thin instructions" in w for w in warnings)
+
+    def test_quality_review_flags_difficulty_mismatch(self) -> None:
+        """Quality review flags easy tasks when goal needs hard."""
+        from codeprobe.cli.mine_cmd import _quality_review
+
+        tasks = [
+            Task(
+                id=f"t{i}",
+                repo="r",
+                metadata=TaskMetadata(
+                    name=f"merge-t{i}",
+                    difficulty="easy",
+                    description="x" * 100,
+                ),
+                verification=TaskVerification(command="pytest tests/test_a.py"),
+            )
+            for i in range(4)
+        ]
+        warnings = _quality_review(tasks, "MCP / tool comparison", "hard")
+        assert any("Difficulty mismatch" in w for w in warnings)
+
+    def test_quality_review_flags_no_variance(self) -> None:
+        """Quality review flags all-same-difficulty for mixed goals."""
+        from codeprobe.cli.mine_cmd import _quality_review
+
+        tasks = [
+            Task(
+                id=f"t{i}",
+                repo="r",
+                metadata=TaskMetadata(
+                    name=f"merge-t{i}",
+                    difficulty="medium",
+                    description="x" * 100,
+                ),
+                verification=TaskVerification(command="pytest tests/test_a.py"),
+            )
+            for i in range(3)
+        ]
+        warnings = _quality_review(tasks, "Model comparison", "mixed")
+        assert any("No difficulty variance" in w for w in warnings)
+
+    def test_quality_review_no_warnings_for_good_tasks(self) -> None:
+        """Quality review returns no warnings for well-formed tasks."""
+        from codeprobe.cli.mine_cmd import _quality_review
+
+        tasks = [
+            Task(
+                id="t1",
+                repo="r",
+                metadata=TaskMetadata(
+                    name="merge-t1",
+                    difficulty="easy",
+                    description="x" * 100,
+                ),
+                verification=TaskVerification(command="pytest tests/test_a.py"),
+            ),
+            Task(
+                id="t2",
+                repo="r",
+                metadata=TaskMetadata(
+                    name="merge-t2",
+                    difficulty="hard",
+                    description="y" * 100,
+                ),
+                verification=TaskVerification(command="pytest tests/test_b.py"),
+            ),
+        ]
+        warnings = _quality_review(tasks, "General benchmarking", "balanced")
+        assert len(warnings) == 0
+
+    def test_quality_review_flags_stub_tests(self) -> None:
+        """Quality review flags tasks with generic test stubs."""
+        from codeprobe.cli.mine_cmd import _quality_review
+
+        tasks = [
+            Task(
+                id="t1",
+                repo="r",
+                metadata=TaskMetadata(
+                    name="merge-t1",
+                    description="x" * 100,
+                ),
+                verification=TaskVerification(command="bash tests/test.sh"),
+            ),
+        ]
+        warnings = _quality_review(tasks, "General benchmarking", "balanced")
+        assert any("generic test stubs" in w for w in warnings)
