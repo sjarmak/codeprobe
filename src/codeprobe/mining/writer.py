@@ -267,16 +267,49 @@ def write_task_dir(
     return task_dir
 
 
-def _strip_location_hints(question: str) -> str:
+def _get_family_description(category: str) -> str:
+    """Look up the human-readable description for a task family by name."""
+    try:
+        from codeprobe.mining.org_scale_families import FAMILIES
+
+        for family in FAMILIES:
+            if family.name == category:
+                return family.description
+    except ImportError:
+        pass
+    return ""
+
+
+def _strip_location_hints(question: str, family_description: str = "") -> str:
     r"""Remove grep-pattern hints from a question to create a discovery variant.
 
     Strips backtick-wrapped patterns (e.g. ``\`@Deprecated\```) and
     "matching the patterns ..." phrases so the agent must find the relevant
     code without being told which regex to use.
+
+    When *family_description* is provided, uses it as the replacement clause
+    (e.g. "containing deprecated API annotations or markers") so the discovery
+    variant still communicates what to look for, just not the exact regex.
     """
+    if family_description:
+        # Strip leading "Find files" variants since the question already has
+        # "find all files" — we only need the qualifying clause
+        desc = re.sub(
+            r"^find\s+(?:files|all\s+files)\s+",
+            "",
+            family_description,
+            flags=re.IGNORECASE,
+        )
+        # Lowercase first char for mid-sentence insertion
+        desc = desc[0].lower() + desc[1:] if desc else desc
+        # Strip trailing period — we add our own
+        desc = desc.rstrip(".")
+        replacement = f" that {desc}." if desc else " that are relevant to this task."
+    else:
+        replacement = " that are relevant to this task."
     # Remove "containing matches for the patterns `X`, `Y`, `Z`" phrases,
-    # replacing with a generic clause that preserves sentence structure
-    result = _PATTERNS_PHRASE.sub(" that are relevant to this task", question)
+    # replacing with a description-aware clause
+    result = _PATTERNS_PHRASE.sub(replacement, question)
     # Remove remaining backtick-wrapped patterns
     result = _BACKTICK_PATTERN.sub("the relevant patterns", result)
     # Collapse multiple "the relevant patterns" into one
@@ -330,7 +363,8 @@ def _write_oracle_task(
     (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
 
     # instruction_discovery.md — same question with pattern/location hints stripped
-    discovery_question = _strip_location_hints(question)
+    family_desc = _get_family_description(task.metadata.category)
+    discovery_question = _strip_location_hints(question, family_desc)
     if discovery_question != question:
         discovery_instruction = (
             f"# {task.metadata.issue_title or task.metadata.name}\n\n"
