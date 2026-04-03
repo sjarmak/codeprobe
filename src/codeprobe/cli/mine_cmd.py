@@ -405,15 +405,16 @@ def run_mine(
     enrich: bool = False,
     interactive: bool | None = None,
     no_llm: bool = False,
+    org_scale: bool = False,
+    families: tuple[str, ...] = (),
 ) -> None:
     """Mine eval tasks from a repository.
 
-    When *interactive* is True (default when TTY), runs the full interactive
-    workflow matching the mine-tasks skill: eval goal, config, pre-flight
-    summary, quality review, results table, and next steps.
+    When *org_scale* is True, mines comprehension/IR tasks with oracle
+    verification instead of SDLC code-change tasks.
 
-    When *interactive* is False (piped/CI or --no-interactive), runs the
-    original non-interactive pipeline.
+    When *interactive* is True (default when TTY), runs the full interactive
+    workflow matching the mine-tasks skill.
 
     By default, instruction.md is generated via LLM (Haiku) for quality.
     Pass *no_llm=True* (``--no-llm``) to skip LLM and use regex fallback.
@@ -428,6 +429,11 @@ def run_mine(
         if not repo_path.exists():
             click.echo(f"Path does not exist: {repo_path}")
             raise SystemExit(1)
+
+    # Org-scale mining has a separate pipeline
+    if org_scale:
+        _run_org_scale_mine(repo_path, count=count, no_llm=no_llm, families=families)
+        return
 
     # Determine interactive mode
     if interactive is None:
@@ -539,3 +545,94 @@ def run_mine(
 
     # Phase 6: Next steps
     _show_next_steps(repo_path, min_files)
+
+
+# ---------------------------------------------------------------------------
+# Org-scale mining pipeline
+# ---------------------------------------------------------------------------
+
+
+def _run_org_scale_mine(
+    repo_path: Path,
+    *,
+    count: int = 5,
+    no_llm: bool = False,
+    families: tuple[str, ...] = (),
+) -> None:
+    """Mine org-scale comprehension tasks with oracle verification."""
+    from codeprobe.mining.org_scale import mine_org_scale_tasks
+    from codeprobe.mining.org_scale_families import FAMILY_BY_NAME, TaskFamily
+    from codeprobe.mining.writer import write_task_dir
+
+    click.echo(f"Scanning {repo_path.name} for org-scale patterns...")
+
+    # Filter families if specified
+    selected_families: tuple[TaskFamily, ...] | None = None
+    if families:
+        selected = [FAMILY_BY_NAME[f] for f in families if f in FAMILY_BY_NAME]
+        unknown = [f for f in families if f not in FAMILY_BY_NAME]
+        if unknown:
+            click.echo(f"Unknown families: {', '.join(unknown)}")
+            click.echo(f"Available: {', '.join(FAMILY_BY_NAME)}")
+            return
+        selected_families = tuple(selected)
+
+    result = mine_org_scale_tasks(
+        repo_path,
+        count=count,
+        families=selected_families,
+        no_llm=no_llm,
+    )
+
+    if not result.tasks:
+        click.echo(
+            "No org-scale tasks generated. Repo may not have enough pattern matches."
+        )
+        if result.scan_results:
+            click.echo("\nScan results (below min_hits threshold):")
+            for sr in result.scan_results:
+                click.echo(f"  {sr.family.name}: {len(sr.matched_files)} files")
+        return
+
+    # Show scan summary
+    click.echo()
+    click.echo("Scan results:")
+    for sr in result.scan_results:
+        click.echo(f"  {sr.family.name}: {len(sr.matched_files)} files matched")
+    click.echo()
+
+    # Write tasks
+    tasks_dir = repo_path / ".codeprobe" / "tasks"
+    if tasks_dir.exists():
+        shutil.rmtree(tasks_dir)
+
+    for task in result.tasks:
+        write_task_dir(task, tasks_dir, repo_path)
+
+    # Results table
+    click.echo(f"Generated {len(result.tasks)} org-scale tasks:")
+    click.echo()
+    click.echo(
+        f"  {'#':>2}  {'Task ID':<14} {'Family':<24} {'Difficulty':<10} "
+        f"{'Multi-hop':>9}  {'Files':>5}"
+    )
+    click.echo("  " + "-" * 70)
+    for i, t in enumerate(result.tasks, 1):
+        is_mh = (
+            "yes"
+            if t.id.endswith("mh") or len(t.verification.oracle_answer) > 0
+            else "no"
+        )
+        click.echo(
+            f"  {i:>2}  {t.id:<14} {t.metadata.category:<24} "
+            f"{t.metadata.difficulty:<10} {is_mh:>9}  "
+            f"{len(t.verification.oracle_answer):>5}"
+        )
+    click.echo()
+
+    click.echo(f"Tasks written to {tasks_dir}")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  1. Run eval:     codeprobe run {repo_path} --agent claude")
+    click.echo(f"  2. Check scores: codeprobe oracle-check {tasks_dir}/<task_id>")
+    click.echo()

@@ -4,6 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Valid org-scale task family categories.
+ORG_SCALE_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "migration-inventory",
+        "compliance-audit",
+        "cross-repo-dep-trace",
+        "cross-repo-config-trace",
+        "onboarding-comprehension",
+        "incident-debug",
+        "platform-knowledge",
+        "domain-lineage",
+    }
+)
+
 
 @dataclass(frozen=True)
 class TaskMetadata:
@@ -24,6 +38,7 @@ class TaskMetadata:
     issue_body: str = ""
     quality_score: float = 0.0
     enrichment_source: str = ""
+    ground_truth_commit: str = ""
 
 
 @dataclass(frozen=True)
@@ -33,6 +48,8 @@ class TaskVerification:
     type: str = "test_script"
     command: str = "bash tests/test.sh"
     reward_type: str = "binary"
+    oracle_type: str = ""  # "file_list", "count", "boolean" — empty for SDLC
+    oracle_answer: tuple[str, ...] = ()  # expected answer set for oracle tasks
 
 
 @dataclass(frozen=True)

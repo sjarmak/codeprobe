@@ -130,6 +130,7 @@ _ALLOWED_COMMAND_PREFIXES = (
     "pytest ",
     "go test ",
     "npm test ",
+    "codeprobe oracle-check ",
 )
 
 
@@ -156,9 +157,14 @@ def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
     tests_dir = task_dir / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write instruction.md — issue-based when available, fallback otherwise
+    # Write instruction.md and verification files
     repo_name = repo_path.name
     language = task.metadata.language or "unknown"
+
+    # Oracle tasks get a different output structure
+    if task.verification.type == "oracle":
+        _write_oracle_task(task, task_dir, tests_dir, repo_path, safe_id)
+        return task_dir
 
     if task.metadata.issue_title:
         issue_body = task.metadata.issue_body
@@ -233,3 +239,82 @@ def write_task_dir(task: Task, base_dir: Path, repo_path: Path) -> Path:
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir
+
+
+def _write_oracle_task(
+    task: Task,
+    task_dir: Path,
+    tests_dir: Path,
+    repo_path: Path,
+    safe_id: str,
+) -> None:
+    """Write an oracle-verified org-scale task.
+
+    Produces::
+
+        task_dir/
+            instruction.md       (the question)
+            ground_truth.json    (expected answer + commit SHA)
+            tests/test.sh        (calls oracle-check, writes reward.txt)
+            metadata.json
+    """
+    repo_name = repo_path.name
+    language = task.metadata.language or "unknown"
+    question = task.metadata.issue_body or task.metadata.description
+
+    # instruction.md — question format, tells agent to write answer.txt
+    instruction = (
+        f"# {task.metadata.issue_title or task.metadata.name}\n\n"
+        f"**Repository:** {repo_name}\n"
+        f"**Language:** {language}\n\n"
+        "## Question\n\n"
+        f"{question}\n\n"
+        "## Answer Format\n\n"
+        "Write your answer to `answer.txt` in the repository root, "
+        "listing one file path per line. Do not include explanations "
+        "in the file — only file paths.\n\n"
+        "## Task Contract\n\n"
+        f"- `TASK_REPO_ROOT={repo_path}`\n"
+    )
+    (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+
+    # ground_truth.json — oracle answer + commit + pattern provenance
+    ground_truth = {
+        "oracle_type": task.verification.oracle_type,
+        "expected": list(task.verification.oracle_answer),
+        "commit": task.metadata.ground_truth_commit,
+        "pattern_used": task.metadata.category,
+    }
+    (task_dir / "ground_truth.json").write_text(
+        json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    # tests/test.sh — verifies commit, runs oracle-check, writes reward.txt
+    test_script = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        f"# Oracle verification for org-scale task {safe_id}\n"
+        f"TASK_DIR={shlex.quote(str(task_dir))}\n"
+        f"REPO_DIR={shlex.quote(str(repo_path))}\n\n"
+        "# Verify workspace is at the expected commit\n"
+        'EXPECTED_COMMIT=$(python3 -c "\n'
+        "import json; d=json.load(open('$TASK_DIR/ground_truth.json'));\n"
+        "print(d.get('commit',''))\n"
+        '")\n'
+        'ACTUAL_COMMIT=$(cd "$REPO_DIR" && git rev-parse HEAD)\n'
+        'if [ -n "$EXPECTED_COMMIT" ] && [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then\n'
+        '    echo "WARNING: workspace at $ACTUAL_COMMIT but ground truth pinned to $EXPECTED_COMMIT" >&2\n'
+        "fi\n\n"
+        "# Run oracle-check and write reward.txt\n"
+        'codeprobe oracle-check "$TASK_DIR" --metric f1 --write-reward\n'
+    )
+    test_sh_path = tests_dir / "test.sh"
+    test_sh_path.write_text(test_script, encoding="utf-8")
+    test_sh_path.chmod(0o755)
+
+    # metadata.json
+    (task_dir / "metadata.json").write_text(
+        json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )

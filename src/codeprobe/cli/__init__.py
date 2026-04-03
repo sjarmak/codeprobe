@@ -71,6 +71,18 @@ def init(path: str) -> None:
     default=False,
     help="Skip LLM instruction generation; use regex fallback (for offline/CI).",
 )
+@click.option(
+    "--org-scale",
+    is_flag=True,
+    default=False,
+    help="Mine org-scale comprehension tasks (oracle-verified) instead of SDLC tasks.",
+)
+@click.option(
+    "--family",
+    multiple=True,
+    default=(),
+    help="Limit org-scale mining to specific families. Repeatable.",
+)
 def mine(
     path: str,
     count: int,
@@ -81,14 +93,19 @@ def mine(
     enrich: bool,
     interactive: bool | None,
     no_llm: bool,
+    org_scale: bool,
+    family: tuple[str, ...],
 ) -> None:
     """Mine eval tasks from a repository's history.
 
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics.
 
+    Use --org-scale to mine comprehension/IR tasks with oracle verification
+    instead of SDLC code-change tasks.
+
     By default, generates high-quality instructions via LLM (Haiku).
-    Use --no-llm to skip LLM and fall back to regex extraction.
+    Use --no-llm to skip LLM and fall back to regex/template extraction.
 
     When run interactively (default in a terminal), walks you through
     choosing an eval goal, task count, and git host before mining.
@@ -106,6 +123,8 @@ def mine(
         enrich=enrich,
         interactive=interactive,
         no_llm=no_llm,
+        org_scale=org_scale,
+        families=family,
     )
 
 
@@ -262,6 +281,40 @@ def assess(path: str) -> None:
     from codeprobe.cli.assess_cmd import run_assess
 
     run_assess(path)
+
+
+@main.command("oracle-check")
+@click.argument("task_dir", type=click.Path(exists=True))
+@click.option(
+    "--metric",
+    default="f1",
+    type=click.Choice(["f1", "recall", "precision", "jaccard"]),
+    help="Primary scoring metric (default: f1).",
+)
+@click.option("--write-reward", is_flag=True, default=False, help="Write reward.txt.")
+def oracle_check_cmd(task_dir: str, metric: str, write_reward: bool) -> None:
+    """Compare agent answer against oracle ground truth.
+
+    Reads answer.txt and ground_truth.json from TASK_DIR, computes F1/recall/
+    precision/jaccard, and prints the result. Use --write-reward to write the
+    score to reward.txt (for test.sh integration).
+    """
+    import json
+    from pathlib import Path
+
+    from codeprobe.mining.org_scale import oracle_check
+
+    result = oracle_check(Path(task_dir), metric=metric)
+
+    if result.get("error"):
+        click.echo(f"Error: {result['error']}", err=True)
+
+    click.echo(json.dumps(result, indent=2))
+
+    if write_reward:
+        reward_path = Path(task_dir) / "reward.txt"
+        reward_path.write_text(str(result.get("score", 0.0)) + "\n")
+        click.echo(f"Wrote {reward_path}")
 
 
 # Register the ratings subcommand group
