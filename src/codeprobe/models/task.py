@@ -53,6 +53,9 @@ class TaskVerification:
     reward_type: str = "binary"
     oracle_type: str = ""  # "file_list", "count", "boolean" — empty for SDLC
     oracle_answer: tuple[str, ...] = ()  # expected answer set for oracle tasks
+    oracle_tiers: dict[str, str] = field(
+        default_factory=dict
+    )  # file→tier mapping: "required"|"supplementary"|"context"
 
 
 @dataclass(frozen=True)

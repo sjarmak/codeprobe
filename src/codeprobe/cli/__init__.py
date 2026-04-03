@@ -102,6 +102,25 @@ def init(path: str) -> None:
     default=False,
     help="Run MCP delta validation on mined families.",
 )
+@click.option(
+    "--curate",
+    is_flag=True,
+    default=False,
+    help="Enable curation pipeline (multi-backend ground truth with tiers).",
+)
+@click.option(
+    "--backends",
+    multiple=True,
+    default=(),
+    help="Curation backends to use: grep, sourcegraph, pr_diff, agent. Repeatable.",
+)
+@click.option(
+    "--verify-curation",
+    "verify_curation_flag",
+    is_flag=True,
+    default=False,
+    help="Run LLM verification on curated ground truth.",
+)
 def mine(
     path: str,
     count: int,
@@ -117,6 +136,9 @@ def mine(
     repos: tuple[str, ...],
     scan_timeout: int,
     validate_flag: bool,
+    curate: bool,
+    backends: tuple[str, ...],
+    verify_curation_flag: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -150,6 +172,9 @@ def mine(
         repos=repos,
         scan_timeout=scan_timeout,
         validate_flag=validate_flag,
+        curate=curate,
+        backends=backends,
+        verify_curation_flag=verify_curation_flag,
     )
 
 
@@ -313,7 +338,7 @@ def assess(path: str) -> None:
 @click.option(
     "--metric",
     default="f1",
-    type=click.Choice(["f1", "recall", "precision", "jaccard"]),
+    type=click.Choice(["f1", "recall", "precision", "jaccard", "weighted_f1"]),
     help="Primary scoring metric (default: f1).",
 )
 @click.option("--write-reward", is_flag=True, default=False, help="Write reward.txt.")

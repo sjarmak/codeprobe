@@ -17,6 +17,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from codeprobe.mining.curator import CurationResult
 from codeprobe.mining.org_scale_families import (
     CROSS_REPO_DEP_TRACE,
     FAMILIES,
@@ -220,12 +221,26 @@ def generate_org_scale_task(
     *,
     multi_hop_files: frozenset[str] | None = None,
     no_llm: bool = False,
+    curation_result: CurationResult | None = None,
 ) -> Task | None:
-    """Generate a single org-scale task from scan results."""
+    """Generate a single org-scale task from scan results.
+
+    When *curation_result* is provided, its files are used for ground truth
+    and the per-file tier mapping is populated on ``TaskVerification.oracle_tiers``.
+    """
     language = _guess_language(scan_result)
     family = scan_result.family
     is_multi_hop = multi_hop_files is not None
-    ground_truth_files = multi_hop_files if is_multi_hop else scan_result.matched_files
+
+    # When curation is provided, use curated files as ground truth.
+    if curation_result is not None:
+        ground_truth_files = curation_result.matched_files
+        oracle_tiers = {cf.path: cf.tier for cf in curation_result.files}
+    else:
+        ground_truth_files = (
+            multi_hop_files if is_multi_hop else scan_result.matched_files
+        )
+        oracle_tiers = {}
 
     if not ground_truth_files:
         return None
@@ -265,6 +280,7 @@ def generate_org_scale_task(
             reward_type="continuous",
             oracle_type="file_list",
             oracle_answer=tuple(sorted(ground_truth_files)),
+            oracle_tiers=oracle_tiers,
         ),
     )
 
