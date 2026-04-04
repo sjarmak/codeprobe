@@ -239,7 +239,24 @@ def execute_task(
             cost_source=output.cost_source,
         )
 
-    if output.exit_code != 0 and not output.stdout.strip():
+    # For oracle tasks, the agent writes answer.txt to the repo root.
+    # Copy it into the task dir so the scorer's sandbox has it.
+    # Done before error checks so partial results from timeouts are scored.
+    effective_repo = worktree_path or repo_path
+    answer_src = effective_repo / "answer.txt"
+    if answer_src.is_file():
+        try:
+            import shutil
+
+            shutil.copy2(answer_src, task_dir / "answer.txt")
+        except OSError:
+            pass  # Non-fatal; scorer will report missing answer
+
+    # If the agent failed with no output AND no answer.txt was produced,
+    # return an error. But if answer.txt exists (e.g. agent timed out
+    # after writing it), fall through to scoring.
+    has_answer = (task_dir / "answer.txt").is_file()
+    if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
         error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
         return TaskResult(
             completed=CompletedTask(
@@ -252,18 +269,6 @@ def execute_task(
             agent_stdout=output.stdout,
             agent_stderr=output.stderr or "",
         )
-
-    # For oracle tasks, the agent writes answer.txt to the repo root.
-    # Copy it into the task dir so the scorer's sandbox has it.
-    effective_repo = worktree_path or repo_path
-    answer_src = effective_repo / "answer.txt"
-    if answer_src.is_file():
-        try:
-            import shutil
-
-            shutil.copy2(answer_src, task_dir / "answer.txt")
-        except OSError:
-            pass  # Non-fatal; scorer will report missing answer
 
     try:
         scorer = get_scorer(reward_type)
