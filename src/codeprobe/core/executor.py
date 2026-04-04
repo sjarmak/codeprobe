@@ -253,6 +253,18 @@ def execute_task(
             agent_stderr=output.stderr or "",
         )
 
+    # For oracle tasks, the agent writes answer.txt to the repo root.
+    # Copy it into the task dir so the scorer's sandbox has it.
+    effective_repo = worktree_path or repo_path
+    answer_src = effective_repo / "answer.txt"
+    if answer_src.is_file():
+        try:
+            import shutil
+
+            shutil.copy2(answer_src, task_dir / "answer.txt")
+        except OSError:
+            pass  # Non-fatal; scorer will report missing answer
+
     try:
         scorer = get_scorer(reward_type)
     except ValueError as exc:

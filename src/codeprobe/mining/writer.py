@@ -410,22 +410,18 @@ def _write_oracle_task(
         encoding="utf-8",
     )
 
-    # tests/test.sh — verifies commit, runs oracle-check, writes reward.txt
+    # tests/test.sh — runs oracle-check, writes reward.txt
+    #
+    # Uses relative path for TASK_DIR so it works in the scorer's sandbox.
+    # answer.txt is copied from the repo root by the executor before
+    # scoring, so test.sh only needs to run oracle-check.
     test_script = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
         f"# Oracle verification for org-scale task {safe_id}\n"
-        f"TASK_DIR={shlex.quote(str(task_dir))}\n"
-        f"REPO_DIR={shlex.quote(str(repo_path))}\n\n"
-        "# Verify workspace is at the expected commit\n"
-        'EXPECTED_COMMIT=$(python3 -c "\n'
-        "import json; d=json.load(open('$TASK_DIR/ground_truth.json'));\n"
-        "print(d.get('commit',''))\n"
-        '")\n'
-        'ACTUAL_COMMIT=$(cd "$REPO_DIR" && git rev-parse HEAD)\n'
-        'if [ -n "$EXPECTED_COMMIT" ] && [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then\n'
-        '    echo "WARNING: workspace at $ACTUAL_COMMIT but ground truth pinned to $EXPECTED_COMMIT" >&2\n'
-        "fi\n\n"
+        "# Resolve TASK_DIR relative to this script (works in sandbox)\n"
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'TASK_DIR="$(dirname "$SCRIPT_DIR")"\n\n'
         "# Run oracle-check and write reward.txt\n"
         'codeprobe oracle-check "$TASK_DIR" --metric f1 --write-reward\n'
     )
