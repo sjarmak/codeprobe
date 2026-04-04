@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0a3 (2026-04-04)
+## 0.1.0 (2026-04-04)
 
 Major release adding org-scale task mining, ground-truth curation, and eval runner improvements.
 
