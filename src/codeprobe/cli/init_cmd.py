@@ -150,9 +150,9 @@ def _prompt_mcp_config() -> str:
         click.echo()
         click.echo("Discovered MCP configurations:")
         for i, (p, servers) in enumerate(discovered, 1):
-            server_list = ", ".join(servers[:5])
-            suffix = f", +{len(servers) - 5} more" if len(servers) > 5 else ""
-            click.echo(f"  {i}. {p}  ({server_list}{suffix})")
+            click.echo(f"  {i}. {p}  ({len(servers)} servers)")
+            for s in servers:
+                click.echo(f"     - {s}")
         click.echo(f"  {len(discovered) + 1}. Enter a custom path")
         click.echo()
 

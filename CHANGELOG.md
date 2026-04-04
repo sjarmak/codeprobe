@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 (2026-04-04)
+
+### Fixes
+
+- MCP config picker now lists all server names instead of truncating with "+N more"
+
 ## 0.1.1 (2026-04-04)
 
 ### Features
