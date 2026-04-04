@@ -773,7 +773,7 @@ def _run_curation(
         )
 
         # Verify curation if requested
-        if verify_curation_flag:
+        if verify_curation_flag and not no_llm:
             verdict = verify_curation(tiered_files, sr.family, repo_paths)
             click.echo(f"  Curation verification ({sr.family.name}): {verdict}")
 
