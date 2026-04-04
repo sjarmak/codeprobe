@@ -243,6 +243,9 @@ class SourcegraphBackend:
 # ---------------------------------------------------------------------------
 
 
+_PR_DIFF_MAX_FILES = 200
+
+
 class PRDiffBackend:
     """Finds recently modified files via git log, filtered by family globs."""
 
@@ -266,6 +269,8 @@ class PRDiffBackend:
         for repo_path in repos:
             modified_files = self._get_modified_files(repo_path)
             for fp in modified_files:
+                if len(curated) >= _PR_DIFF_MAX_FILES:
+                    break
                 if fp in seen:
                     continue
                 if not any(matches_glob(fp, g) for g in family.glob_patterns):
@@ -295,7 +300,7 @@ class PRDiffBackend:
                     "log",
                     "--diff-filter=M",
                     "--name-only",
-                    "--since=6months",
+                    "--since=3months",
                     "--format=",
                 ],
                 cwd=str(repo_path),
