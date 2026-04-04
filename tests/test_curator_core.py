@@ -162,6 +162,27 @@ class TestMergeEmpty:
         assert result == ()
 
 
+class TestMergeExcludesVendor:
+    def test_vendor_files_excluded(self) -> None:
+        files = {
+            "grep": [
+                CuratedFile(path="src/main.go"),
+                CuratedFile(path="vendor/lib/dep.go"),
+            ],
+            "agent": [
+                CuratedFile(path="src/main.go"),
+                CuratedFile(path="node_modules/pkg/mod.js"),
+                CuratedFile(path="testdata/fixture.go"),
+            ],
+        }
+        result = merge_results(files, MergeConfig())
+        paths = {cf.path for cf in result}
+        assert "src/main.go" in paths
+        assert "vendor/lib/dep.go" not in paths
+        assert "node_modules/pkg/mod.js" not in paths
+        assert "testdata/fixture.go" not in paths
+
+
 # ---------------------------------------------------------------------------
 # CurationResult.from_scan_result
 # ---------------------------------------------------------------------------

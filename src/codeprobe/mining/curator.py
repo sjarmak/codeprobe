@@ -159,8 +159,14 @@ def merge_results(
         for cf in files:
             per_path.setdefault(cf.path, []).append((backend_name, cf))
 
+    # Directories excluded from ground truth (same as scanner)
+    _EXCLUDED_DIRS = ("vendor/", "node_modules/", "testdata/")
+
     merged: list[CuratedFile] = []
     for path, entries in sorted(per_path.items()):
+        # Skip vendored / generated / test-data paths
+        if any(seg in path for seg in _EXCLUDED_DIRS):
+            continue
         # Quorum filter: require min_backends distinct backends.
         distinct_backends = {name for name, _ in entries}
         if len(distinct_backends) < config.min_backends:

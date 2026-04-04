@@ -131,8 +131,10 @@ def classify_tiers(
     # LLM path
     prompt = _build_classify_prompt(files, family)
     try:
+        # Scale timeout with file count — 30s base + 0.5s per file
+        timeout = min(30 + len(files) // 2, 120)
         response = call_claude(
-            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=timeout)
         )
         mapping = _parse_tier_response(response.text, files)
     except (LLMError, ValueError) as exc:

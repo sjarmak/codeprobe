@@ -120,7 +120,7 @@ class TestClassifyLLM:
         # Verify Haiku was called with correct params
         call_args = mock_call.call_args[0][0]
         assert call_args.model == "haiku"
-        assert call_args.timeout_seconds == 30
+        assert call_args.timeout_seconds >= 30  # scales with file count
 
     @patch("codeprobe.mining.curator_tiers.call_claude")
     def test_llm_with_markdown_fences(self, mock_call: object) -> None:
