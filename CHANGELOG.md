@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1 (2026-04-04)
+
+### Features
+
+- **Auto-discover MCP configs** — `codeprobe init` now scans known locations (`~/.claude/.mcp.json`, `~/.claude/mcp-configs/`, `settings.json`) and presents a numbered picker with server names instead of requiring a manual path
+
+### Fixes
+
+- Tilde expansion (`~`) now works in `--mcp-config` CLI flag and init wizard path prompts
+
 ## 0.1.0 (2026-04-04)
 
 Major release adding org-scale task mining, ground-truth curation, and eval runner improvements.
