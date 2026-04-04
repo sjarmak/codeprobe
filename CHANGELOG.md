@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 (2026-04-04)
+
+### Features
+
+- `codeprobe run` auto-discovers experiments inside `.codeprobe/` — no longer requires `--config` flag when there's exactly one experiment
+- Shows helpful disambiguation when multiple experiments exist
+
 ## 0.1.3 (2026-04-04)
 
 ### Fixes
