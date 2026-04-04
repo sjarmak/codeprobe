@@ -28,6 +28,8 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         "TERM",
         "TMPDIR",
         "LC_ALL",
+        # Codeprobe sandbox signal (eval harness sets this)
+        "CODEPROBE_SANDBOX",
         # Agent-specific API keys (required by the adapters)
         "ANTHROPIC_API_KEY",
         "CLAUDE_CONFIG_DIR",
