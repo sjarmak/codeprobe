@@ -166,6 +166,22 @@ def execute_task(
     """
     task_id = task_dir.name
 
+    # Auto-detect reward_type from task metadata when caller uses default.
+    # Oracle tasks (org-scale) need "continuous" scoring to read reward.txt;
+    # the default "binary" would score exit-code-only and always pass.
+    if reward_type == "binary":
+        meta_path = task_dir / "metadata.json"
+        if meta_path.is_file():
+            try:
+                import json as _json
+
+                meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+                task_rt = (meta.get("verification") or {}).get("reward_type")
+                if task_rt and task_rt != "binary":
+                    reward_type = task_rt
+            except (ValueError, OSError):
+                pass  # Stick with caller's default
+
     def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
             completed=CompletedTask(

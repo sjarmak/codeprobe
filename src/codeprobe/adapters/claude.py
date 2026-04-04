@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,6 +16,20 @@ from codeprobe.adapters.protocol import (
 )
 from codeprobe.adapters.telemetry import JsonStdoutCollector
 from codeprobe.core.sandbox import is_sandboxed
+
+# Claude CLI accepts aliases (sonnet, opus, haiku) or short model IDs
+# (claude-sonnet-4-6) but NOT full API model IDs with date suffixes
+# (claude-sonnet-4-6-20250514). Strip the date suffix when present.
+_API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
+
+
+def _normalize_model_for_cli(model: str) -> str:
+    """Normalize a model identifier for the Claude CLI.
+
+    Strips date suffixes from full API model IDs so the CLI can resolve them.
+    Aliases like 'sonnet' or 'haiku' pass through unchanged.
+    """
+    return _API_MODEL_DATE_SUFFIX.sub("", model)
 
 
 class ClaudeAdapter(BaseAdapter):
@@ -40,7 +55,7 @@ class ClaudeAdapter(BaseAdapter):
         cmd = [binary, "-p", prompt, "--output-format", "json"]
 
         if config.model:
-            cmd.extend(["--model", config.model])
+            cmd.extend(["--model", _normalize_model_for_cli(config.model)])
 
         if config.permission_mode == "dangerously_skip":
             cmd.append("--dangerously-skip-permissions")

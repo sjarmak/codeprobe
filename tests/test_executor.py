@@ -1119,3 +1119,89 @@ class TestErrorTaxonomy:
                 c for c in mock_warn.call_args_list if "system errors" in str(c)
             ]
             assert len(capacity_calls) == 0
+
+
+class TestRewardTypeAutoDetect:
+    """Auto-detect reward_type from task metadata.json."""
+
+    def test_oracle_task_uses_continuous_scoring(self, tmp_path: Path) -> None:
+        """When metadata.json says continuous, executor uses it even if caller says binary."""
+        import json
+
+        task_dir = tmp_path / "task-001"
+        task_dir.mkdir()
+        (task_dir / "instruction.md").write_text("Find files.\n")
+        (task_dir / "metadata.json").write_text(
+            json.dumps({"verification": {"reward_type": "continuous"}})
+        )
+
+        # Create test.sh that writes reward.txt with 0.5
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text('#!/bin/bash\necho 0.5 > "$1/reward.txt"\n')
+        test_sh.chmod(0o755)
+
+        adapter = MagicMock()
+        adapter.run.return_value = MagicMock(
+            stdout="done",
+            stderr="",
+            exit_code=0,
+            duration_seconds=1.0,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            cost_model="per_token",
+            cost_source="estimated",
+            error=None,
+        )
+
+        result = execute_task(
+            adapter=adapter,
+            task_dir=task_dir,
+            repo_path=tmp_path,
+            agent_config=AgentConfig(),
+            reward_type="binary",  # caller says binary...
+        )
+        # ...but task metadata says continuous, so score should be 0.5 not 1.0
+        assert (
+            result.completed.automated_score < 1.0
+        ), "Expected continuous scoring (0.5) but got binary (1.0)"
+
+    def test_no_metadata_keeps_binary(self, tmp_path: Path) -> None:
+        """Without metadata.json, default binary scoring is used."""
+        task_dir = tmp_path / "task-002"
+        task_dir.mkdir()
+        (task_dir / "instruction.md").write_text("Do something.\n")
+
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        adapter = MagicMock()
+        adapter.run.return_value = MagicMock(
+            stdout="done",
+            stderr="",
+            exit_code=0,
+            duration_seconds=1.0,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            cost_model="per_token",
+            cost_source="estimated",
+            error=None,
+        )
+
+        result = execute_task(
+            adapter=adapter,
+            task_dir=task_dir,
+            repo_path=tmp_path,
+            agent_config=AgentConfig(),
+            reward_type="binary",
+        )
+        # Binary: exit 0 → score 1.0
+        assert result.completed.automated_score == 1.0

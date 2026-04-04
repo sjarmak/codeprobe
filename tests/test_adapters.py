@@ -1580,3 +1580,39 @@ class TestClaudeSandboxGating:
         from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES
 
         assert "dangerously_skip" in ALLOWED_PERMISSION_MODES
+
+
+class TestClaudeModelNormalization:
+    """Tests for model name normalization in Claude adapter."""
+
+    def test_strips_date_suffix(self) -> None:
+        from codeprobe.adapters.claude import _normalize_model_for_cli
+
+        assert (
+            _normalize_model_for_cli("claude-sonnet-4-6-20250514")
+            == "claude-sonnet-4-6"
+        )
+        assert _normalize_model_for_cli("claude-opus-4-6-20250514") == "claude-opus-4-6"
+        assert (
+            _normalize_model_for_cli("claude-haiku-4-5-20251001") == "claude-haiku-4-5"
+        )
+
+    def test_preserves_aliases(self) -> None:
+        from codeprobe.adapters.claude import _normalize_model_for_cli
+
+        assert _normalize_model_for_cli("sonnet") == "sonnet"
+        assert _normalize_model_for_cli("opus") == "opus"
+        assert _normalize_model_for_cli("haiku") == "haiku"
+
+    def test_preserves_short_ids(self) -> None:
+        from codeprobe.adapters.claude import _normalize_model_for_cli
+
+        assert _normalize_model_for_cli("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    def test_build_command_normalizes_model(self) -> None:
+        adapter = ClaudeAdapter()
+        config = AgentConfig(model="claude-sonnet-4-6-20250514")
+        with patch("shutil.which", return_value="/usr/bin/claude"):
+            cmd = adapter.build_command("test", config)
+        idx = cmd.index("--model")
+        assert cmd[idx + 1] == "claude-sonnet-4-6"
