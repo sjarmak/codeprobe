@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -32,7 +33,9 @@ def run_init(path: str) -> None:
     target = Path(path).resolve()
     agents = available()
     if not agents:
-        raise click.ClickException("No agent adapters registered. Install an adapter first.")
+        raise click.ClickException(
+            "No agent adapters registered. Install an adapter first."
+        )
 
     click.echo("Welcome to codeprobe!")
     click.echo()
@@ -93,18 +96,88 @@ def _prompt_agent(agents: list[str]) -> str:
 
 def _prompt_model() -> str | None:
     """Prompt for optional model override."""
-    model = click.prompt("Model (optional, press Enter to skip)", default="", show_default=False)
+    model = click.prompt(
+        "Model (optional, press Enter to skip)", default="", show_default=False
+    )
     return model if model else None
 
 
 _Result = tuple[EvalrcConfig, list[ExperimentConfig]]
+
+# Known locations for MCP config files, searched in order.
+_MCP_SEARCH_PATHS = [
+    Path.home() / ".claude" / ".mcp.json",
+    Path.home() / ".claude" / "mcp-configs" / "mcp-servers.json",
+    Path.home() / ".claude" / "settings.json",
+    Path.home() / ".claude" / "settings.local.json",
+]
+
+
+def _discover_mcp_configs() -> list[tuple[Path, list[str]]]:
+    """Scan known locations for MCP config files with mcpServers keys.
+
+    Returns a list of (path, server_names) for each file that has servers.
+    """
+    found: list[tuple[Path, list[str]]] = []
+    for p in _MCP_SEARCH_PATHS:
+        if not p.is_file():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        servers = data.get("mcpServers", {})
+        if servers:
+            found.append((p, sorted(servers.keys())))
+    # Also check .mcp.json in the current directory
+    local_mcp = Path.cwd() / ".mcp.json"
+    if local_mcp.is_file():
+        try:
+            data = json.loads(local_mcp.read_text(encoding="utf-8"))
+            servers = data.get("mcpServers", {})
+            if servers:
+                found.append((local_mcp, sorted(servers.keys())))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return found
+
+
+def _prompt_mcp_config() -> str:
+    """Prompt for MCP config with auto-discovery of known locations."""
+    discovered = _discover_mcp_configs()
+
+    if discovered:
+        click.echo()
+        click.echo("Discovered MCP configurations:")
+        for i, (p, servers) in enumerate(discovered, 1):
+            server_list = ", ".join(servers[:5])
+            suffix = f", +{len(servers) - 5} more" if len(servers) > 5 else ""
+            click.echo(f"  {i}. {p}  ({server_list}{suffix})")
+        click.echo(f"  {len(discovered) + 1}. Enter a custom path")
+        click.echo()
+
+        choice = click.prompt(
+            "Select MCP config",
+            type=click.IntRange(1, len(discovered) + 1),
+            default=1,
+        )
+        if choice <= len(discovered):
+            return str(discovered[choice - 1][0])
+
+    # Manual entry with tilde expansion
+    while True:
+        raw = click.prompt("Path to MCP config JSON")
+        expanded = Path(raw).expanduser().resolve()
+        if expanded.is_file():
+            return str(expanded)
+        click.echo(f"  Error: '{expanded}' does not exist. Try again.")
 
 
 def _goal_mcp(agents: list[str], name: str) -> _Result:
     """Goal 1: MCP comparison prompts."""
     agent = _prompt_agent(agents)
     model = _prompt_model()
-    mcp_path = click.prompt("Path to MCP config JSON", type=click.Path(exists=True))
+    mcp_path = _prompt_mcp_config()
 
     return ask_mcp_comparison(
         experiment_name=name,
@@ -148,7 +221,9 @@ def _goal_prompts(agents: list[str], name: str) -> _Result:
 
 def _goal_custom(agents: list[str], name: str) -> _Result:
     """Goal 4: Custom comparison prompts."""
-    count = click.prompt("Number of configurations", type=click.IntRange(2, 10), default=2)
+    count = click.prompt(
+        "Number of configurations", type=click.IntRange(2, 10), default=2
+    )
 
     configs_input: list[dict] = []
     for i in range(1, count + 1):

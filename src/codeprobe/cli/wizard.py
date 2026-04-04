@@ -109,7 +109,7 @@ def validate_experiment_name(name: str) -> str:
 
 def _load_json(path: str) -> dict:
     """Load and return a JSON file as a dict."""
-    p = Path(path)
+    p = Path(path).expanduser().resolve()
     if not p.is_file():
         raise click.BadParameter(f"File not found: {path}")
     try:
@@ -118,5 +118,7 @@ def _load_json(path: str) -> dict:
     except json.JSONDecodeError as exc:
         raise click.BadParameter(f"Invalid JSON in {path}: {exc}") from exc
     if not isinstance(data, dict):
-        raise click.BadParameter(f"Expected a JSON object in {path}, got {type(data).__name__}")
+        raise click.BadParameter(
+            f"Expected a JSON object in {path}, got {type(data).__name__}"
+        )
     return data

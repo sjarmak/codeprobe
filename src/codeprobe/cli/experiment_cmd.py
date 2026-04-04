@@ -88,7 +88,7 @@ def experiment_add_config(
         try:
             mcp_config = json.loads(mcp_config_str)
         except json.JSONDecodeError:
-            mcp_path = Path(mcp_config_str)
+            mcp_path = Path(mcp_config_str).expanduser().resolve()
             if mcp_path.is_file():
                 mcp_config = json.loads(mcp_path.read_text(encoding="utf-8"))
             else:

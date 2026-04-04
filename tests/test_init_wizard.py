@@ -270,9 +270,14 @@ class TestAskCustom:
 class TestInitCliIntegration:
     """End-to-end tests via CliRunner."""
 
-    def test_goal1_mcp_flow(self, tmp_path: Path) -> None:
+    def test_goal1_mcp_flow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         mcp_file = tmp_path / "mcp.json"
         mcp_file.write_text(json.dumps({"mcpServers": {}}))
+
+        # Patch discovery so the prompt falls through to manual path entry
+        monkeypatch.setattr("codeprobe.cli.init_cmd._discover_mcp_configs", lambda: [])
 
         runner = CliRunner()
         # Inputs: goal=1, experiment name (enter=default), agent (enter=default),
