@@ -711,8 +711,14 @@ def generate_instruction(
         logger.warning("LLM instruction generation failed for %s: %s", task.id, exc)
         return task
 
+    text = response.text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        lines = [ln for ln in lines if not ln.strip().startswith("```")]
+        text = "\n".join(lines).strip()
+
     try:
-        data = _json.loads(response.text)
+        data = _json.loads(text)
     except _json.JSONDecodeError:
         logger.warning(
             "LLM returned invalid JSON for %s: %.100s", task.id, response.text

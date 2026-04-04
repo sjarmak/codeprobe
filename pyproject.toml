@@ -1,6 +1,6 @@
 [project]
 name = "codeprobe"
-version = "0.1.2"
+version = "0.1.3"
 description = "Benchmark AI coding agents against your own codebase. Mine real tasks from repo history, run agents, interpret results."
 readme = "README.md"
 license = "Apache-2.0"

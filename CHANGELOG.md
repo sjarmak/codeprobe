@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 (2026-04-04)
+
+### Fixes
+
+- Strip markdown fences from LLM JSON responses in regular task mining (extractor.py) — the previous fix in 0.1.0 only covered the org-scale path
+
 ## 0.1.2 (2026-04-04)
 
 ### Fixes
