@@ -70,7 +70,7 @@ class ClaudeAdapter(BaseAdapter):
 
         mcp_path = self._write_mcp_config(config)
         if mcp_path:
-            cmd.extend(["--mcp-config", mcp_path])
+            cmd.extend(["--mcp-config", mcp_path, "--strict-mcp-config"])
 
         return cmd
 
