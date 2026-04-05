@@ -242,6 +242,101 @@ CROSS_REPO_CONFIG_TRACE = TaskFamily(
 )
 
 
+# ---------------------------------------------------------------------------
+# MCP-advantaged families (tasks where Sourcegraph code intelligence
+# outperforms local grep — aliased references, type hierarchies, blast radius)
+# ---------------------------------------------------------------------------
+
+SYMBOL_REFERENCE_TRACE = TaskFamily(
+    name="symbol-reference-trace",
+    description=(
+        "Find all files referencing a public symbol, including through "
+        "aliased imports, re-exports, and wildcard imports."
+    ),
+    glob_patterns=(
+        "**/*.py",
+        "**/*.go",
+        "**/*.java",
+        "**/*.ts",
+        "**/*.js",
+        "**/*.rs",
+    ),
+    content_patterns=(
+        r"\bdef\s+\w{6,}\s*\(",
+        r"\bclass\s+\w{6,}\s*[:\(]",
+        r"\bfunc\s+\w{6,}\s*\(",
+    ),
+    oracle_type="file_list",
+    min_hits=10,
+    max_hits=300,
+    multi_hop=True,
+    multi_hop_description=(
+        "Trace symbol references through aliased imports, re-exports, and "
+        "wildcard imports — requires compiler-accurate reference resolution."
+    ),
+)
+
+TYPE_HIERARCHY_CONSUMERS = TaskFamily(
+    name="type-hierarchy-consumers",
+    description=(
+        "Find implementations of a base class or Protocol and all files "
+        "that instantiate or call those implementations."
+    ),
+    glob_patterns=(
+        "**/*.py",
+        "**/*.go",
+        "**/*.java",
+        "**/*.ts",
+        "**/*.js",
+        "**/*.rs",
+    ),
+    content_patterns=(
+        r"class\s+\w+\(.*(?:ABC|Base|Protocol|Interface)\w*",
+        r"class\s+\w+\(.*metaclass=ABCMeta",
+        r"@abstractmethod",
+        r"typing\.Protocol",
+        r"\binterface\s+\w+",
+    ),
+    oracle_type="file_list",
+    min_hits=5,
+    max_hits=200,
+    multi_hop=True,
+    multi_hop_description=(
+        "Find concrete implementations AND their usage sites — requires "
+        "tracing type hierarchy, not just text matching base class name."
+    ),
+)
+
+CHANGE_SCOPE_AUDIT = TaskFamily(
+    name="change-scope-audit",
+    description=(
+        "Find the blast radius of a recently changed symbol — all files "
+        "that depend on it and would need review."
+    ),
+    glob_patterns=(
+        "**/*.py",
+        "**/*.go",
+        "**/*.java",
+        "**/*.ts",
+        "**/*.js",
+        "**/*.rs",
+    ),
+    content_patterns=(
+        r"\bdef\s+\w+\s*\(",
+        r"\bclass\s+\w+",
+        r"\bfunc\s+\w+\s*\(",
+    ),
+    oracle_type="file_list",
+    min_hits=5,
+    max_hits=300,
+    multi_hop=True,
+    multi_hop_description=(
+        "Combine diff analysis with reference tracing to find all files "
+        "affected by a specific code change."
+    ),
+)
+
+
 # All families (Phase 1 + Phase 2)
 FAMILIES: tuple[TaskFamily, ...] = (
     MIGRATION_INVENTORY,
@@ -252,4 +347,14 @@ FAMILIES: tuple[TaskFamily, ...] = (
     CROSS_REPO_CONFIG_TRACE,
 )
 
-FAMILY_BY_NAME: dict[str, TaskFamily] = {f.name: f for f in FAMILIES}
+# MCP-advantaged families (separate tuple — only used when mining for
+# Sourcegraph MCP comparison experiments)
+MCP_FAMILIES: tuple[TaskFamily, ...] = (
+    SYMBOL_REFERENCE_TRACE,
+    TYPE_HIERARCHY_CONSUMERS,
+    CHANGE_SCOPE_AUDIT,
+)
+
+ALL_FAMILIES: tuple[TaskFamily, ...] = FAMILIES + MCP_FAMILIES
+
+FAMILY_BY_NAME: dict[str, TaskFamily] = {f.name: f for f in ALL_FAMILIES}

@@ -659,6 +659,288 @@ def discover_top_imports(
     return [(pkg, files) for pkg, _n, files in candidates[:_MAX_DEP_TRACE_PACKAGES]]
 
 
+# ---------------------------------------------------------------------------
+# MCP-advantaged: discover high-fan-out public symbols for reference tracing
+# ---------------------------------------------------------------------------
+
+# Common names that appear everywhere and produce useless tasks
+_SYMBOL_BLOCKLIST = frozenset(
+    {
+        "array",
+        "test",
+        "setup",
+        "error",
+        "result",
+        "value",
+        "values",
+        "config",
+        "create",
+        "delete",
+        "update",
+        "insert",
+        "select",
+        "main",
+        "init",
+        "string",
+        "buffer",
+        "assert",
+        "return",
+        "params",
+        "output",
+        "input",
+        "number",
+        "format",
+        "object",
+        "source",
+        "target",
+        "handle",
+        "render",
+        "length",
+        "record",
+        "status",
+        "module",
+        "method",
+        "column",
+        "reshape",
+        "append",
+        "extend",
+        "remove",
+        "astype",
+        "asarray",
+        "flatten",
+    }
+)
+
+_DEF_PATTERN_PY = re.compile(r"^\s*def\s+(\w{8,})\s*\(", re.MULTILINE)
+_DEF_PATTERN_GO = re.compile(
+    r"^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w{8,})\(", re.MULTILINE
+)
+_CLASS_PATTERN = re.compile(r"^\s*class\s+(\w{8,})\s*[:\(]", re.MULTILINE)
+
+_MAX_REFERENCE_TARGETS = 3
+_MAX_REF_GT = 300
+
+
+def discover_reference_targets(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+) -> list[tuple[str, str, frozenset[str]]]:
+    """Find high-fan-out public symbols suitable for reference-trace tasks.
+
+    Returns ``[(symbol_name, defining_file, referencing_files), ...]`` sorted
+    by reference count descending, capped at ``_MAX_REFERENCE_TARGETS``.
+    """
+    if language == "python":
+        patterns = [_DEF_PATTERN_PY, _CLASS_PATTERN]
+        exts = {".py"}
+    elif language == "go":
+        patterns = [_DEF_PATTERN_GO]
+        exts = {".go"}
+    else:
+        patterns = [_DEF_PATTERN_PY, _CLASS_PATTERN]
+        exts = _SOURCE_EXTS
+
+    # Phase 1: collect symbol definitions from non-test source files
+    symbol_defs: dict[str, str] = {}  # symbol -> defining_file
+    for rp in repo_paths:
+        for file_path in tracked_files:
+            if not any(file_path.endswith(e) for e in exts):
+                continue
+            # Skip test files and vendored code — we want public API symbols
+            if "/test" in file_path or "/vendor/" in file_path:
+                continue
+            full = rp / file_path
+            try:
+                content = full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for pat in patterns:
+                for m in pat.finditer(content):
+                    name = m.group(1)
+                    if name.startswith("_") or name.lower() in _SYMBOL_BLOCKLIST:
+                        continue
+                    # Require domain-specific names: has underscore (snake_case)
+                    # or mixed case (CamelCase). Rejects single-word names like
+                    # "contains", "multiply", "startswith".
+                    has_underscore = "_" in name
+                    has_mixed_case = name != name.lower() and name != name.upper()
+                    if not (has_underscore or has_mixed_case):
+                        continue
+                    if name not in symbol_defs:
+                        symbol_defs[name] = file_path
+
+    if not symbol_defs:
+        return []
+
+    logger.info(
+        "Reference targets: %d candidate symbols from %d files",
+        len(symbol_defs),
+        len({v for v in symbol_defs.values()}),
+    )
+
+    # Phase 2: count references for each symbol across all source files
+    # Use batched regex to avoid scanning the codebase N times
+    # Process in chunks to keep regex size manageable
+    chunk_size = 200
+    symbol_list = list(symbol_defs.keys())
+    ref_counts: Counter[str] = Counter()
+    ref_files: dict[str, set[str]] = {s: set() for s in symbol_list}
+
+    for chunk_start in range(0, len(symbol_list), chunk_size):
+        chunk = symbol_list[chunk_start : chunk_start + chunk_size]
+        pattern = re.compile(r"\b(" + "|".join(re.escape(s) for s in chunk) + r")\b")
+
+        for rp in repo_paths:
+            for file_path in tracked_files:
+                if not any(file_path.endswith(e) for e in exts):
+                    continue
+                full = rp / file_path
+                try:
+                    content = full.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                found_in_file: set[str] = set()
+                for m in pattern.finditer(content):
+                    found_in_file.add(m.group(1))
+                for sym in found_in_file:
+                    # Don't count the defining file as a reference
+                    if file_path != symbol_defs.get(sym):
+                        ref_counts[sym] += 1
+                        ref_files[sym].add(file_path)
+
+    # Phase 3: select top symbols with 10+ references
+    candidates = []
+    for sym, count in ref_counts.most_common(50):
+        if count < 10:
+            break
+        files = frozenset(sorted(ref_files[sym])[:_MAX_REF_GT])
+        candidates.append((sym, symbol_defs[sym], files))
+
+    return candidates[:_MAX_REFERENCE_TARGETS]
+
+
+# ---------------------------------------------------------------------------
+# MCP-advantaged: discover base types with multiple implementations
+# ---------------------------------------------------------------------------
+
+_BASE_CLASS_PATTERNS = (
+    re.compile(r"class\s+(\w{4,})\(.*(?:ABC|Protocol)\w*", re.MULTILINE),
+    re.compile(r"class\s+(\w{4,})\(.*metaclass=ABCMeta", re.MULTILINE),
+    re.compile(r"^\s*class\s+(\w{4,}).*:\s*$", re.MULTILINE),  # broad catch
+)
+
+_SUBCLASS_TEMPLATE = r"class\s+\w+\(.*\b{base}\b"
+
+_MAX_BASE_TYPES = 3
+
+
+def discover_base_types(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+) -> list[tuple[str, str, frozenset[str], frozenset[str]]]:
+    """Find abstract base classes / Protocols with 3+ concrete subclasses.
+
+    Returns ``[(base_name, defining_file, subclass_files, usage_files), ...]``.
+    ``usage_files`` are files that reference concrete subclasses by name
+    (grep baseline for the type hierarchy).
+    """
+    if language != "python":
+        return []  # TODO: extend to Go interfaces, Java/TS
+
+    exts = {".py"}
+
+    # Phase 1: find ABC / Protocol definitions
+    base_defs: dict[str, str] = {}  # base_name -> defining_file
+    for rp in repo_paths:
+        for file_path in tracked_files:
+            if not any(file_path.endswith(e) for e in exts):
+                continue
+            if "/test" in file_path or "/vendor/" in file_path:
+                continue
+            full = rp / file_path
+            try:
+                content = full.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            # Look for ABC/Protocol base classes only (not broad catch)
+            for pat in _BASE_CLASS_PATTERNS[:2]:
+                for m in pat.finditer(content):
+                    name = m.group(1)
+                    if name.startswith("_") or name.lower() in _SYMBOL_BLOCKLIST:
+                        continue
+                    if name not in base_defs:
+                        base_defs[name] = file_path
+
+    if not base_defs:
+        return []
+
+    logger.info("Base types: %d candidates", len(base_defs))
+
+    # Phase 2: find subclasses for each base type
+    results: list[tuple[str, str, frozenset[str], frozenset[str]]] = []
+    for base_name, def_file in base_defs.items():
+        subclass_pat = re.compile(_SUBCLASS_TEMPLATE.format(base=re.escape(base_name)))
+        subclass_files: set[str] = set()
+        subclass_names: set[str] = set()
+
+        for rp in repo_paths:
+            for file_path in tracked_files:
+                if not any(file_path.endswith(e) for e in exts):
+                    continue
+                full = rp / file_path
+                try:
+                    content = full.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for m in subclass_pat.finditer(content):
+                    subclass_files.add(file_path)
+                    # Extract the subclass name
+                    sub_match = re.match(r"class\s+(\w+)", m.group(0))
+                    if sub_match:
+                        subclass_names.add(sub_match.group(1))
+
+        if len(subclass_files) < 3:
+            continue
+
+        # Phase 3: find usage sites for the concrete subclass names
+        if subclass_names:
+            usage_pat = re.compile(
+                r"\b(" + "|".join(re.escape(s) for s in subclass_names) + r")\b"
+            )
+            usage_files: set[str] = set()
+            for rp in repo_paths:
+                for file_path in tracked_files:
+                    if not any(file_path.endswith(e) for e in exts):
+                        continue
+                    if file_path in subclass_files or file_path == def_file:
+                        continue
+                    full = rp / file_path
+                    try:
+                        content = full.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    if usage_pat.search(content):
+                        usage_files.add(file_path)
+        else:
+            usage_files = set()
+
+        all_files = subclass_files | usage_files
+        if len(all_files) >= 5:
+            results.append(
+                (
+                    base_name,
+                    def_file,
+                    frozenset(subclass_files),
+                    frozenset(usage_files),
+                )
+            )
+
+    results.sort(key=lambda x: len(x[2]) + len(x[3]), reverse=True)
+    return results[:_MAX_BASE_TYPES]
+
+
 def _collect_go_imports(
     content: str,
     file_path: str,

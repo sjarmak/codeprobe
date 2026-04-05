@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 
 from codeprobe.mining.org_scale_families import (
+    ALL_FAMILIES,
     FAMILIES,
     FAMILY_BY_NAME,
+    MCP_FAMILIES,
     CROSS_REPO_CONFIG_TRACE,
     INCIDENT_DEBUG,
     PLATFORM_KNOWLEDGE,
@@ -18,8 +20,8 @@ class TestFamilyCounts:
     def test_families_tuple_has_six_entries(self) -> None:
         assert len(FAMILIES) == 6
 
-    def test_family_by_name_has_six_keys(self) -> None:
-        assert len(FAMILY_BY_NAME) == 6
+    def test_family_by_name_has_all_keys(self) -> None:
+        assert len(FAMILY_BY_NAME) == 9  # 6 base + 3 MCP-advantaged
 
     def test_all_expected_names_present(self) -> None:
         expected = {
@@ -29,6 +31,9 @@ class TestFamilyCounts:
             "incident-debug",
             "platform-knowledge",
             "cross-repo-config-trace",
+            "symbol-reference-trace",
+            "type-hierarchy-consumers",
+            "change-scope-audit",
         }
         assert set(FAMILY_BY_NAME.keys()) == expected
 
@@ -62,7 +67,7 @@ class TestPatternCompilability:
     """All content_patterns must be valid regex."""
 
     def test_all_content_patterns_compile(self) -> None:
-        for family in FAMILIES:
+        for family in ALL_FAMILIES:
             for pattern in family.content_patterns:
                 try:
                     re.compile(pattern)
@@ -103,3 +108,24 @@ class TestCrossRepoConfigTrace:
         assert "Config" in joined
         assert "viper" in joined
         assert "environ" in joined
+
+
+class TestMCPFamilies:
+    def test_mcp_families_has_three_entries(self) -> None:
+        assert len(MCP_FAMILIES) == 3
+
+    def test_mcp_families_are_multi_hop(self) -> None:
+        for family in MCP_FAMILIES:
+            assert family.multi_hop is True, f"{family.name} should be multi_hop"
+            assert family.multi_hop_description
+
+    def test_mcp_families_have_required_fields(self) -> None:
+        for family in MCP_FAMILIES:
+            assert family.name
+            assert family.description
+            assert family.glob_patterns
+            assert family.content_patterns
+            assert family.oracle_type == "file_list"
+
+    def test_all_families_equals_families_plus_mcp(self) -> None:
+        assert ALL_FAMILIES == FAMILIES + MCP_FAMILIES
