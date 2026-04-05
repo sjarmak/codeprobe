@@ -86,23 +86,27 @@ def run_eval(
         raise SystemExit(1)
 
     tasks_dir = exp_dir / experiment.tasks_dir
-    if not tasks_dir.is_dir():
-        # mine writes tasks to <repo>/.codeprobe/tasks/, not inside the experiment dir
-        repo_tasks = Path(path).resolve() / ".codeprobe" / experiment.tasks_dir
-        if repo_tasks.is_dir():
-            tasks_dir = repo_tasks
-        else:
-            click.echo(f"Error: Tasks directory not found: {tasks_dir}", err=True)
-            click.echo(f"  Also checked: {repo_tasks}", err=True)
-            click.echo("Run 'codeprobe mine' first.", err=True)
-            raise SystemExit(1)
+    repo_tasks = Path(path).resolve() / ".codeprobe" / experiment.tasks_dir
 
-    task_dirs = sorted(
-        d for d in tasks_dir.iterdir() if d.is_dir() and (d / "instruction.md").exists()
-    )
+    # Prefer whichever location actually has task subdirectories with instruction.md
+    def _find_tasks(d: Path) -> list[Path]:
+        if not d.is_dir():
+            return []
+        return sorted(
+            sd for sd in d.iterdir() if sd.is_dir() and (sd / "instruction.md").exists()
+        )
+
+    task_dirs = _find_tasks(tasks_dir)
+    if not task_dirs and repo_tasks != tasks_dir:
+        task_dirs = _find_tasks(repo_tasks)
+        if task_dirs:
+            tasks_dir = repo_tasks
 
     if not task_dirs:
         click.echo("No tasks found. Run 'codeprobe mine' first.", err=True)
+        click.echo(f"  Checked: {tasks_dir}", err=True)
+        if repo_tasks != tasks_dir:
+            click.echo(f"  Checked: {repo_tasks}", err=True)
         raise SystemExit(1)
 
     configs_to_run = experiment.configs or [
