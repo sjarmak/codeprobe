@@ -1,32 +1,25 @@
-# Sourcegraph MCP Guide
+# Sourcegraph MCP — REQUIRED
 
-> You have access to Sourcegraph MCP tools for code search and navigation.
-> Use these tools to explore the codebase at `{{repo_path}}` efficiently.
+> **IMPORTANT**: You MUST use Sourcegraph MCP tools as your PRIMARY search method.
+> The repository is indexed at `github.com/sg-evals/{{repo_name}}` on Sourcegraph.
+> Use Sourcegraph `find_references` and `keyword_search` FIRST, then supplement with local Grep.
 
-## Available Sourcegraph MCP Tools
+## Available Tools
 
-| Tool                  | Purpose                          | Best For                                   |
-| --------------------- | -------------------------------- | ------------------------------------------ |
-| `sg_keyword_search`   | Fast exact string matching       | Function names, error messages, imports    |
-| `sg_nls_search`       | Natural language semantic search | "How does X work?", architecture questions |
-| `sg_read_file`        | Read file from indexed repo      | Examining specific files found via search  |
-| `sg_list_files`       | Find files by pattern            | Discovering file/directory structure       |
-| `sg_go_to_definition` | Navigate to symbol definitions   | Tracing function/type definitions          |
-| `sg_find_references`  | Find all references to a symbol  | Understanding usage patterns               |
-| `sg_commit_search`    | Search git commit history        | Understanding code evolution               |
+| Tool               | What it does                                    |
+| ------------------ | ----------------------------------------------- |
+| `keyword_search`   | Exact keyword search across the indexed repo    |
+| `nls_search`       | Semantic/natural-language code search           |
+| `find_references`  | Find all usages of a symbol (compiler-accurate) |
+| `go_to_definition` | Jump to where a symbol is defined               |
+| `read_file`        | Read a file from the indexed repo               |
+| `list_files`       | List files/directories in the repo              |
+| `commit_search`    | Search commit messages and history              |
+| `diff_search`      | Search code changes (added/removed lines)       |
 
-## Search Strategy
+## Required Workflow
 
-1. **Start broad**: Use `sg_nls_search` to understand the problem domain
-2. **Get specific**: Use `sg_keyword_search` for exact function/class names
-3. **Trace definitions**: Use `sg_go_to_definition` for symbol navigation
-4. **Check usage**: Use `sg_find_references` to understand impact
-5. **Read files**: Use `sg_read_file` for detailed examination
-
-## Recommended Workflow
-
-1. Use Sourcegraph MCP tools to explore and understand the codebase
-2. Identify all relevant files and code paths
-3. Read specific files locally for detailed examination
-4. Make targeted code changes
-5. Verify changes with tests
+1. **Use `keyword_search`** with `repo:github.com/sg-evals/{{repo_name}}` to find files matching the task criteria
+2. **Use `find_references`** on key symbols to trace callers and usages across files
+3. **Supplement with local Grep** to catch anything Sourcegraph may have missed
+4. **Combine all results** into the final answer — union of both approaches for best recall

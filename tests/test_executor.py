@@ -627,7 +627,15 @@ class TestWorktreeIsolation:
             assert mock_run.call_count == 2
             calls = [c[0][0] for c in mock_run.call_args_list]
             assert calls[0] == ["git", "checkout", "--", "."]
-            assert calls[1] == ["git", "clean", "-fd"]
+            assert calls[1] == [
+                "git",
+                "clean",
+                "-fd",
+                "-e",
+                ".codeprobe",
+                "-e",
+                ".codeprobe-worktrees",
+            ]
 
     def test_release_resets_and_returns_to_pool(self, tmp_path: Path) -> None:
         """release() resets the worktree and makes it available again."""

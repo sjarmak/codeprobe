@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -74,11 +75,26 @@ class ClaudeAdapter(BaseAdapter):
         return cmd
 
     def isolate_session(self, slot_id: int) -> dict[str, str]:
-        """Return a per-slot CLAUDE_CONFIG_DIR for session isolation."""
+        """Return a per-slot CLAUDE_CONFIG_DIR for session isolation.
+
+        Copies authentication credentials from the real ``~/.claude/``
+        directory so the agent subprocess can authenticate.
+        """
         config_dir = (
             Path(tempfile.gettempdir()) / "codeprobe-claude" / f"slot-{slot_id}"
         )
         config_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy auth credentials from the user's real config dir.
+        # Without these the subprocess gets "Not logged in".
+        real_config = Path.home() / ".claude"
+        if real_config.is_dir():
+            for name in ("credentials.json", ".credentials.json"):
+                src = real_config / name
+                dst = config_dir / name
+                if src.is_file() and not dst.exists():
+                    shutil.copy2(src, dst)
+
         return {"CLAUDE_CONFIG_DIR": str(config_dir)}
 
     def parse_output(

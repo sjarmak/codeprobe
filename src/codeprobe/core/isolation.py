@@ -86,7 +86,15 @@ class WorktreeIsolation:
                 capture_output=True,
             )
             subprocess.run(
-                ["git", "clean", "-fd"],
+                [
+                    "git",
+                    "clean",
+                    "-fd",
+                    "-e",
+                    ".codeprobe",
+                    "-e",
+                    ".codeprobe-worktrees",
+                ],
                 cwd=workspace,
                 check=True,
                 capture_output=True,

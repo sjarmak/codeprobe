@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -173,31 +174,47 @@ class CheckpointStore:
     def _open(self, db_path: Path) -> sqlite3.Connection:
         """Open (or create) the SQLite database with WAL mode.
 
-        If the file is corrupt, it is removed and recreated.
-        Automatically migrates the schema for older databases.
+        Retries on transient ``OperationalError`` (lock contention during
+        concurrent creation).  Only removes and recreates the file on
+        non-transient ``DatabaseError`` (genuine corruption).
         """
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            conn = sqlite3.connect(str(db_path), timeout=10)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(_CREATE_TABLE)
-            self._migrate_schema(conn)
-            conn.commit()
-            return conn
-        except sqlite3.DatabaseError:
-            logger.warning(
-                "Corrupt checkpoint DB at %s — removing and recreating", db_path
-            )
-            db_path.unlink(missing_ok=True)
-            # Also remove WAL/SHM sidecar files
-            db_path.with_suffix(".db-wal").unlink(missing_ok=True)
-            db_path.with_suffix(".db-shm").unlink(missing_ok=True)
-            conn = sqlite3.connect(str(db_path), timeout=10)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(_CREATE_TABLE)
-            self._migrate_schema(conn)
-            conn.commit()
-            return conn
+        last_err: Exception | None = None
+        for attempt in range(4):
+            try:
+                conn = sqlite3.connect(str(db_path), timeout=10)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(_CREATE_TABLE)
+                self._migrate_schema(conn)
+                conn.commit()
+                return conn
+            except sqlite3.OperationalError as exc:
+                # Transient lock contention — retry with backoff
+                last_err = exc
+                logger.debug(
+                    "Checkpoint DB busy at %s (attempt %d): %s",
+                    db_path,
+                    attempt + 1,
+                    exc,
+                )
+                time.sleep(0.1 * (2**attempt))
+            except sqlite3.DatabaseError:
+                logger.warning(
+                    "Corrupt checkpoint DB at %s — removing and recreating",
+                    db_path,
+                )
+                db_path.unlink(missing_ok=True)
+                db_path.with_suffix(".db-wal").unlink(missing_ok=True)
+                db_path.with_suffix(".db-shm").unlink(missing_ok=True)
+                conn = sqlite3.connect(str(db_path), timeout=10)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(_CREATE_TABLE)
+                self._migrate_schema(conn)
+                conn.commit()
+                return conn
+        raise sqlite3.OperationalError(
+            f"Could not open checkpoint DB at {db_path} after 4 attempts: {last_err}"
+        )
 
     @staticmethod
     def _migrate_schema(conn: sqlite3.Connection) -> None:

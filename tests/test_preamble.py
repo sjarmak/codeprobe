@@ -9,7 +9,6 @@ import yaml
 
 from codeprobe.models.preamble import PreambleBlock
 
-
 # -- PreambleBlock model tests ------------------------------------------------
 
 
@@ -75,7 +74,8 @@ def test_resolver_project_dir_fallback(tmp_path: Path):
     (project_preambles / "style.md").write_text("Be concise.")
 
     resolver = DefaultPreambleResolver(
-        task_dir=task_dir, project_dir=tmp_path,
+        task_dir=task_dir,
+        project_dir=tmp_path,
     )
     blocks = resolver.resolve(["style"])
     assert len(blocks) == 1
@@ -111,7 +111,8 @@ def test_resolver_task_local_takes_precedence(tmp_path: Path):
     (project_preambles / "hint.md").write_text("project version")
 
     resolver = DefaultPreambleResolver(
-        task_dir=task_dir, project_dir=tmp_path,
+        task_dir=task_dir,
+        project_dir=tmp_path,
     )
     blocks = resolver.resolve(["hint"])
     assert len(blocks) == 1
@@ -259,16 +260,18 @@ def test_builtin_sourcegraph_preamble_exists():
     """The sourcegraph preamble ships as a built-in."""
     block = get_builtin("sourcegraph")
     assert block.name == "sourcegraph"
-    assert "sg_keyword_search" in block.template
-    assert "{{repo_path}}" in block.template
+    assert "keyword_search" in block.template
+    assert "{{repo_name}}" in block.template
 
 
 def test_builtin_preamble_renders_variables():
     """Built-in preamble template variables resolve correctly."""
     block = get_builtin("sourcegraph")
-    rendered = block.render({"repo_path": "/my/repo", "task_id": "task-42"})
-    assert "/my/repo" in rendered
-    assert "{{repo_path}}" not in rendered
+    rendered = block.render(
+        {"repo_path": "/my/repo", "repo_name": "my-repo", "task_id": "task-42"}
+    )
+    assert "my-repo" in rendered
+    assert "{{repo_name}}" not in rendered
 
 
 def test_builtin_nonexistent_raises():
@@ -295,7 +298,7 @@ def test_resolver_falls_back_to_builtin(tmp_path: Path):
     blocks = resolver.resolve(["sourcegraph"])
     assert len(blocks) == 1
     assert blocks[0].name == "sourcegraph"
-    assert "sg_keyword_search" in blocks[0].template
+    assert "keyword_search" in blocks[0].template
 
 
 def test_resolver_local_overrides_builtin(tmp_path: Path):
@@ -316,9 +319,13 @@ def test_resolver_local_overrides_builtin(tmp_path: Path):
 
 def test_template_files_are_valid_yaml():
     """All shipped evalrc template YAML files parse without error."""
-    templates_dir = Path(__file__).resolve().parent.parent / "src" / "codeprobe" / "templates"
+    templates_dir = (
+        Path(__file__).resolve().parent.parent / "src" / "codeprobe" / "templates"
+    )
     yaml_files = list(templates_dir.glob("*.yaml"))
-    assert len(yaml_files) >= 3, f"Expected at least 3 templates, found {len(yaml_files)}"
+    assert (
+        len(yaml_files) >= 3
+    ), f"Expected at least 3 templates, found {len(yaml_files)}"
 
     for yaml_file in yaml_files:
         content = yaml.safe_load(yaml_file.read_text(encoding="utf-8"))
@@ -329,7 +336,9 @@ def test_template_files_are_valid_yaml():
 
 def test_mcp_template_references_sourcegraph_preamble():
     """MCP comparison template uses the built-in sourcegraph preamble."""
-    templates_dir = Path(__file__).resolve().parent.parent / "src" / "codeprobe" / "templates"
+    templates_dir = (
+        Path(__file__).resolve().parent.parent / "src" / "codeprobe" / "templates"
+    )
     content = yaml.safe_load((templates_dir / "evalrc-mcp-comparison.yaml").read_text())
     prompts = content["dimensions"]["prompts"]
     assert "with-mcp-hints" in prompts

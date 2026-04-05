@@ -114,6 +114,7 @@ def compose_instruction(
     effective_path = worktree_path if worktree_path is not None else repo_path
     context = {
         "repo_path": str(effective_path),
+        "repo_name": effective_path.name,
         "task_id": task_id,
     }
 

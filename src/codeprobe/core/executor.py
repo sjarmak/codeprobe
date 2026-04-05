@@ -325,7 +325,7 @@ def _git_reset_workdir(repo_path: Path) -> None:
             capture_output=True,
         )
         subprocess.run(
-            ["git", "clean", "-fd"],
+            ["git", "clean", "-fd", "-e", ".codeprobe", "-e", ".codeprobe-worktrees"],
             cwd=repo_path,
             check=True,
             capture_output=True,
@@ -447,6 +447,15 @@ def execute_config(
     cost models are skipped in accumulation.
     """
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
+
+    # Filter checkpointed results to only include tasks in the current
+    # experiment.  Without this, stale entries from prior runs with different
+    # task_ids leak into the results list and inflate/deflate scores.
+    current_task_ids = {d.name for d in task_dirs}
+    checkpointed_ids = {
+        (tid, ri) for tid, ri in checkpointed_ids if tid in current_task_ids
+    }
+    results = [r for r in results if r.task_id in current_task_ids]
 
     # Build expanded work items: (task_dir, repeat_index) for all repeats
     all_work: list[tuple[Path, int]] = [
