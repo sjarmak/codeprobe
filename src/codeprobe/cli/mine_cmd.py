@@ -403,6 +403,41 @@ def _clear_tasks_dir(repo_path: Path) -> Path:
     return tasks_dir
 
 
+def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None:
+    """Update the experiment's task_ids so ``run`` only executes these tasks.
+
+    If exactly one experiment exists under ``<repo>/.codeprobe/``, its
+    ``experiment.json`` is updated with the new task ID list.  When zero
+    or multiple experiments exist, this is a no-op (the user must scope
+    manually via ``--config``).
+    """
+    from codeprobe.core.experiment import load_experiment, save_experiment
+    from codeprobe.models.experiment import Experiment
+
+    codeprobe_dir = repo_path / ".codeprobe"
+    if not codeprobe_dir.is_dir():
+        return
+
+    candidates = sorted(
+        d
+        for d in codeprobe_dir.iterdir()
+        if d.is_dir() and (d / "experiment.json").is_file()
+    )
+    if len(candidates) != 1:
+        return
+
+    exp_dir = candidates[0]
+    experiment = load_experiment(exp_dir)
+    updated = Experiment(
+        name=experiment.name,
+        description=experiment.description,
+        configs=experiment.configs,
+        tasks_dir=experiment.tasks_dir,
+        task_ids=tuple(sorted(task_ids)),
+    )
+    save_experiment(exp_dir, updated)
+
+
 def _resolve_repo_path(path: str) -> Path:
     """Resolve a path or URL to a local repo directory."""
     if _is_git_url(path):
@@ -571,6 +606,8 @@ def run_mine(
     for task in tasks:
         write_task_dir(task, tasks_dir, repo_path)
 
+    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
+
     _show_results_table(tasks)
 
     warnings = _quality_review(tasks, goal_name, bias)
@@ -681,6 +718,8 @@ def _run_org_scale_mine(
             primary_repo,
             curation_backends=curation_backends_used,
         )
+
+    _record_task_ids_in_experiment(primary_repo, [t.id for t in curated_tasks])
 
     _show_org_scale_results(
         curated_tasks, tasks_dir, primary_repo, curation_backends_used

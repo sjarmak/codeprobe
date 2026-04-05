@@ -51,12 +51,14 @@ def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
 
 def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
     """Write experiment.json to the experiment directory."""
-    data = {
+    data: dict = {
         "name": experiment.name,
         "description": experiment.description,
         "tasks_dir": experiment.tasks_dir,
         "configs": [asdict(c) for c in experiment.configs],
     }
+    if experiment.task_ids:
+        data["task_ids"] = list(experiment.task_ids)
     path = exp_dir / "experiment.json"
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -96,11 +98,14 @@ def load_experiment(exp_dir: Path) -> Experiment:
     for c in configs:
         _validate_path_component(c.label, "config label")
 
+    task_ids = tuple(data.get("task_ids", ()))
+
     return Experiment(
         name=name,
         description=data.get("description", ""),
         configs=configs,
         tasks_dir=tasks_dir,
+        task_ids=task_ids,
     )
 
 

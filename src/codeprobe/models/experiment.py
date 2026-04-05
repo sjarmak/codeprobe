@@ -56,3 +56,4 @@ class Experiment:
     description: str = ""
     configs: list[ExperimentConfig] = field(default_factory=list)
     tasks_dir: str = "tasks"
+    task_ids: tuple[str, ...] = ()

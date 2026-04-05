@@ -108,6 +108,106 @@ def test_load_config_results_missing_raises(tmp_path: Path):
         load_config_results(exp_dir, "nonexistent")
 
 
+def test_save_and_load_task_ids(tmp_path: Path):
+    """Experiment.task_ids round-trips through save/load."""
+    exp = Experiment(
+        name="scoped-exp",
+        description="Experiment with scoped tasks",
+        configs=[ExperimentConfig(label="baseline")],
+        task_ids=("aaa111", "bbb222"),
+    )
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.task_ids == ("aaa111", "bbb222")
+
+
+def test_load_experiment_without_task_ids(tmp_path: Path):
+    """Old experiment.json without task_ids loads with empty tuple."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    # Manually strip task_ids from the JSON to simulate old format
+    path = exp_dir / "experiment.json"
+    data = json.loads(path.read_text())
+    data.pop("task_ids", None)
+    path.write_text(json.dumps(data))
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.task_ids == ()
+
+
+def test_task_ids_filters_discovery(tmp_path: Path):
+    """When task_ids is set, only those tasks are discovered by _find_tasks."""
+    from codeprobe.cli.run_cmd import _find_tasks
+
+    # Create 3 task dirs
+    tasks_dir = tmp_path / "tasks"
+    for tid in ("aaa111", "bbb222", "ccc333"):
+        d = tasks_dir / tid
+        d.mkdir(parents=True)
+        (d / "instruction.md").write_text("do something")
+
+    # Without filter: all 3
+    all_tasks = _find_tasks(tasks_dir)
+    assert len(all_tasks) == 3
+
+    # With filter: only 2
+    filtered = _find_tasks(tasks_dir, task_ids=("aaa111", "ccc333"))
+    assert [d.name for d in filtered] == ["aaa111", "ccc333"]
+
+
+def test_task_ids_filters_ignores_missing(tmp_path: Path):
+    """task_ids referencing non-existent dirs are silently skipped."""
+    from codeprobe.cli.run_cmd import _find_tasks
+
+    tasks_dir = tmp_path / "tasks"
+    d = tasks_dir / "aaa111"
+    d.mkdir(parents=True)
+    (d / "instruction.md").write_text("do something")
+
+    filtered = _find_tasks(tasks_dir, task_ids=("aaa111", "missing999"))
+    assert [d.name for d in filtered] == ["aaa111"]
+
+
+def test_record_task_ids_in_experiment(tmp_path: Path):
+    """_record_task_ids_in_experiment updates experiment.json with task IDs."""
+    from codeprobe.cli.mine_cmd import _record_task_ids_in_experiment
+
+    # Set up repo with a single experiment
+    codeprobe_dir = tmp_path / ".codeprobe"
+    exp = Experiment(
+        name="my-exp",
+        configs=[ExperimentConfig(label="baseline")],
+    )
+    exp_dir = create_experiment_dir(codeprobe_dir, exp)
+
+    # Record task IDs
+    _record_task_ids_in_experiment(tmp_path, ["ccc333", "aaa111", "bbb222"])
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.task_ids == ("aaa111", "bbb222", "ccc333")  # sorted
+
+
+def test_record_task_ids_skips_multiple_experiments(tmp_path: Path):
+    """No update when multiple experiments exist (ambiguous)."""
+    from codeprobe.cli.mine_cmd import _record_task_ids_in_experiment
+
+    codeprobe_dir = tmp_path / ".codeprobe"
+    for name in ("exp-a", "exp-b"):
+        create_experiment_dir(
+            codeprobe_dir,
+            Experiment(name=name, configs=[ExperimentConfig(label="base")]),
+        )
+
+    _record_task_ids_in_experiment(tmp_path, ["task1"])
+
+    # Neither experiment should have task_ids set
+    for name in ("exp-a", "exp-b"):
+        loaded = load_experiment(codeprobe_dir / name)
+        assert loaded.task_ids == ()
+
+
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_append_and_load_checkpoint(tmp_path: Path):
     checkpoint = tmp_path / "checkpoint.jsonl"

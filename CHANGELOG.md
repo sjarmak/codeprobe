@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.7 (2026-04-05)
+
+### Features
+
+- Task discovery scoped to current experiment — `mine` records task IDs in `experiment.json`, `run` filters by them
+- Backward compatible: old experiments without `task_ids` keep existing behavior (no filtering)
+
+### Fixes
+
+- Fix `run` picking up stale tasks from previous mining runs when multiple task sets coexist
+
 ## 0.1.6 (2026-04-05)
 
 ### Fixes

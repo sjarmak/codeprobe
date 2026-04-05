@@ -58,11 +58,24 @@ def _build_experiment_config(raw: dict) -> ExperimentConfig:
     )
 
 
-def _discover_task_dirs(tasks_dir: Path) -> list[Path]:
-    """Find valid task directories (those containing instruction.md)."""
+def _discover_task_dirs(
+    tasks_dir: Path, *, task_ids: tuple[str, ...] = ()
+) -> list[Path]:
+    """Find valid task directories (those containing instruction.md).
+
+    When *task_ids* is non-empty, only return tasks whose directory name
+    appears in that tuple.
+    """
     if not tasks_dir.is_dir():
         raise FileNotFoundError(f"Tasks directory not found: {tasks_dir}")
 
+    if task_ids:
+        allowed = set(task_ids)
+        return sorted(
+            d
+            for d in tasks_dir.iterdir()
+            if d.is_dir() and d.name in allowed and (d / "instruction.md").exists()
+        )
     return sorted(
         d for d in tasks_dir.iterdir() if d.is_dir() and (d / "instruction.md").exists()
     )
@@ -103,7 +116,7 @@ def run_experiment(
     experiment = load_experiment(experiment_dir)
 
     tasks_dir = experiment_dir / experiment.tasks_dir
-    task_dirs = _discover_task_dirs(tasks_dir)
+    task_dirs = _discover_task_dirs(tasks_dir, task_ids=experiment.task_ids)
 
     if not task_dirs:
         raise ValueError(

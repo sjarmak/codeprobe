@@ -22,6 +22,27 @@ def _on_task_complete(result: CompletedTask) -> None:
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
 
 
+def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
+    """Discover task subdirectories with instruction.md.
+
+    When *task_ids* is non-empty, only return tasks whose directory name
+    appears in that tuple.  This scopes task discovery to the current
+    experiment, preventing tasks from other experiments from leaking in.
+    """
+    if not d.is_dir():
+        return []
+    if task_ids:
+        allowed = set(task_ids)
+        return sorted(
+            sd
+            for sd in d.iterdir()
+            if sd.is_dir() and sd.name in allowed and (sd / "instruction.md").exists()
+        )
+    return sorted(
+        sd for sd in d.iterdir() if sd.is_dir() and (sd / "instruction.md").exists()
+    )
+
+
 def _print_dry_run(estimate: DryRunEstimate) -> None:
     """Pretty-print a DryRunEstimate to stdout."""
     cost_lo, cost_hi = estimate.estimated_cost_range
@@ -88,17 +109,9 @@ def run_eval(
     tasks_dir = exp_dir / experiment.tasks_dir
     repo_tasks = Path(path).resolve() / ".codeprobe" / experiment.tasks_dir
 
-    # Prefer whichever location actually has task subdirectories with instruction.md
-    def _find_tasks(d: Path) -> list[Path]:
-        if not d.is_dir():
-            return []
-        return sorted(
-            sd for sd in d.iterdir() if sd.is_dir() and (sd / "instruction.md").exists()
-        )
-
-    task_dirs = _find_tasks(tasks_dir)
+    task_dirs = _find_tasks(tasks_dir, task_ids=experiment.task_ids)
     if not task_dirs and repo_tasks != tasks_dir:
-        task_dirs = _find_tasks(repo_tasks)
+        task_dirs = _find_tasks(repo_tasks, task_ids=experiment.task_ids)
         if task_dirs:
             tasks_dir = repo_tasks
 
