@@ -87,8 +87,15 @@ def run_eval(
 
     tasks_dir = exp_dir / experiment.tasks_dir
     if not tasks_dir.is_dir():
-        click.echo(f"Error: Tasks directory not found: {tasks_dir}", err=True)
-        raise SystemExit(1)
+        # mine writes tasks to <repo>/.codeprobe/tasks/, not inside the experiment dir
+        repo_tasks = Path(path).resolve() / ".codeprobe" / experiment.tasks_dir
+        if repo_tasks.is_dir():
+            tasks_dir = repo_tasks
+        else:
+            click.echo(f"Error: Tasks directory not found: {tasks_dir}", err=True)
+            click.echo(f"  Also checked: {repo_tasks}", err=True)
+            click.echo("Run 'codeprobe mine' first.", err=True)
+            raise SystemExit(1)
 
     task_dirs = sorted(
         d for d in tasks_dir.iterdir() if d.is_dir() and (d / "instruction.md").exists()

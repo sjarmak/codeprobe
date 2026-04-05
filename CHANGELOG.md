@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 (2026-04-04)
+
+### Fixes
+
+- `codeprobe run` now finds tasks at `<repo>/.codeprobe/tasks/` when they're not inside the experiment subdirectory — fixes "No tasks found" after mining
+
 ## 0.1.4 (2026-04-04)
 
 ### Features
