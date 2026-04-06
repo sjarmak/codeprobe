@@ -519,6 +519,7 @@ def run_mine(
     backends: tuple[str, ...] = (),
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
+    sg_repo: str = "",
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.mining import mine_tasks, write_task_dir
@@ -555,6 +556,7 @@ def run_mine(
             backends=backends,
             verify_curation_flag=verify_curation_flag,
             mcp_families=mcp_families,
+            sg_repo=sg_repo,
         )
         return
 
@@ -643,6 +645,7 @@ def _run_org_scale_mine(
     backends: tuple[str, ...] = (),
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
+    sg_repo: str = "",
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification."""
     from codeprobe.mining.org_scale import mine_org_scale_tasks
@@ -671,6 +674,11 @@ def _run_org_scale_mine(
             click.echo("No families selected. Aborted.")
             return
 
+    # Default sg_repo from primary repo name if not explicitly provided
+    effective_sg_repo = sg_repo
+    if not effective_sg_repo and mcp_families:
+        effective_sg_repo = f"github.com/sg-evals/{repo_paths[0].name}"
+
     result = mine_org_scale_tasks(
         repo_paths,
         count=count,
@@ -678,6 +686,7 @@ def _run_org_scale_mine(
         no_llm=no_llm,
         scan_timeout=scan_timeout,
         include_mcp_families=mcp_families,
+        sg_repo=effective_sg_repo,
     )
 
     if not result.tasks:

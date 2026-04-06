@@ -424,6 +424,51 @@ def _mine_dep_trace(
 
 
 # ---------------------------------------------------------------------------
+# Sourcegraph enrichment helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_sg_config(sg_repo: str) -> tuple[str, bool]:
+    """Check if Sourcegraph enrichment is available.
+
+    Returns ``(sg_token, is_available)``.  Logs a warning when *sg_repo* is
+    provided but the env var is missing.
+    """
+    import os
+
+    sg_token = os.environ.get("SOURCEGRAPH_TOKEN", "")
+    if not sg_token or not sg_repo:
+        if sg_repo and not sg_token:
+            logger.warning("SOURCEGRAPH_TOKEN not set — using grep-only ground truth")
+        return "", False
+
+    return sg_token, True
+
+
+def _maybe_enrich(
+    sg_available: bool,
+    sg_token: str,
+    sg_repo: str,
+    symbol: str,
+    def_file: str,
+    grep_files: frozenset[str],
+) -> tuple[frozenset[str], dict[str, str]]:
+    """Enrich ground truth via Sourcegraph if available, else return grep-only."""
+    if not sg_available:
+        return grep_files, {}
+
+    from codeprobe.mining.sg_ground_truth import enrich_ground_truth
+
+    return enrich_ground_truth(
+        symbol=symbol,
+        defining_file=def_file,
+        grep_files=grep_files,
+        repo_sg_name=sg_repo,
+        sg_token=sg_token,
+    )
+
+
+# ---------------------------------------------------------------------------
 # MCP-advantaged family mining
 # ---------------------------------------------------------------------------
 
@@ -435,15 +480,23 @@ def _mine_symbol_reference_tasks(
     commit_sha: str,
     *,
     no_llm: bool = False,
+    sg_repo: str = "",
 ) -> list[Task]:
     """Generate symbol-reference-trace tasks from high-fan-out public symbols."""
     targets = discover_reference_targets(repo_paths, tracked_files, language)
     if not targets:
         return []
 
+    # Optional Sourcegraph enrichment
+    sg_token, sg_available = _get_sg_config(sg_repo)
+
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
+        enriched_files, oracle_tiers = _maybe_enrich(
+            sg_available, sg_token, sg_repo, symbol, def_file, ref_files
+        )
+
         task_id = hashlib.sha256(
             f"sym-ref-{symbol}-{commit_sha[:8]}".encode()
         ).hexdigest()[:8]
@@ -463,7 +516,7 @@ def _mine_symbol_reference_tasks(
                     name=f"org-{task_id}",
                     difficulty="hard",
                     description=(
-                        f"symbol-reference-trace: {symbol} ({len(ref_files)} files)"
+                        f"symbol-reference-trace: {symbol} ({len(enriched_files)} files)"
                     ),
                     language=language,
                     category="symbol-reference-trace",
@@ -477,15 +530,17 @@ def _mine_symbol_reference_tasks(
                     command="bash tests/test.sh",
                     reward_type="continuous",
                     oracle_type="file_list",
-                    oracle_answer=tuple(sorted(ref_files)),
+                    oracle_answer=tuple(sorted(enriched_files)),
+                    oracle_tiers=oracle_tiers,
                 ),
                 instruction_variant_path="instruction_discovery.md",
             )
         )
         logger.info(
-            "Symbol-reference-trace: %s referenced by %d files",
+            "Symbol-reference-trace: %s referenced by %d files%s",
             symbol,
-            len(ref_files),
+            len(enriched_files),
+            " (SG-enriched)" if sg_available else "",
         )
 
     return tasks
@@ -571,6 +626,7 @@ def _mine_change_scope_tasks(
     commit_sha: str,
     *,
     no_llm: bool = False,
+    sg_repo: str = "",
 ) -> list[Task]:
     """Generate change-scope-audit tasks from high-fan-out public symbols.
 
@@ -581,9 +637,16 @@ def _mine_change_scope_tasks(
     if not targets:
         return []
 
+    # Optional Sourcegraph enrichment
+    sg_token, sg_available = _get_sg_config(sg_repo)
+
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
+        enriched_files, oracle_tiers = _maybe_enrich(
+            sg_available, sg_token, sg_repo, symbol, def_file, ref_files
+        )
+
         task_id = hashlib.sha256(
             f"change-scope-{symbol}-{commit_sha[:8]}".encode()
         ).hexdigest()[:8]
@@ -603,7 +666,7 @@ def _mine_change_scope_tasks(
                     name=f"org-{task_id}",
                     difficulty="hard",
                     description=(
-                        f"change-scope-audit: {symbol} ({len(ref_files)} files)"
+                        f"change-scope-audit: {symbol} ({len(enriched_files)} files)"
                     ),
                     language=language,
                     category="change-scope-audit",
@@ -617,12 +680,18 @@ def _mine_change_scope_tasks(
                     command="bash tests/test.sh",
                     reward_type="continuous",
                     oracle_type="file_list",
-                    oracle_answer=tuple(sorted(ref_files)),
+                    oracle_answer=tuple(sorted(enriched_files)),
+                    oracle_tiers=oracle_tiers,
                 ),
                 instruction_variant_path="instruction_discovery.md",
             )
         )
-        logger.info("Change-scope-audit: %s affects %d files", symbol, len(ref_files))
+        logger.info(
+            "Change-scope-audit: %s affects %d files%s",
+            symbol,
+            len(enriched_files),
+            " (SG-enriched)" if sg_available else "",
+        )
 
     return tasks
 
@@ -633,6 +702,7 @@ def _mine_mcp_families(
     *,
     count: int,
     no_llm: bool,
+    sg_repo: str = "",
 ) -> list[Task]:
     """Generate tasks from all MCP-advantaged families."""
     primary_repo = repo_paths[0]
@@ -648,8 +718,12 @@ def _mine_mcp_families(
     for miner in miners:
         if len(tasks) >= count:
             break
+        # Pass sg_repo to miners that accept it
+        kwargs: dict[str, object] = {"no_llm": no_llm}
+        if miner in (_mine_symbol_reference_tasks, _mine_change_scope_tasks):
+            kwargs["sg_repo"] = sg_repo
         new_tasks = miner(
-            repo_paths, tracked_files, language, commit_sha, no_llm=no_llm
+            repo_paths, tracked_files, language, commit_sha, **kwargs  # type: ignore[arg-type]
         )
         tasks.extend(new_tasks)
 
@@ -666,6 +740,7 @@ def mine_org_scale_tasks(
     include_multi_hop: bool = True,
     include_mcp_families: bool = False,
     scan_timeout: int = 60,
+    sg_repo: str = "",
 ) -> OrgScaleMineResult:
     """Mine org-scale comprehension tasks from one or more repositories.
 
@@ -679,6 +754,9 @@ def mine_org_scale_tasks(
         include_mcp_families: Also mine MCP-advantaged families
             (symbol-reference-trace, type-hierarchy-consumers, change-scope-audit).
         scan_timeout: Per-family scan timeout in seconds.
+        sg_repo: Sourcegraph repo identifier for ground truth enrichment.
+            When set and ``SOURCEGRAPH_TOKEN`` env var is present, MCP family
+            ground truth is enriched via Sourcegraph ``find_references``.
     """
     all_families = families or FAMILIES
     non_dep = tuple(f for f in all_families if f.name != "cross-repo-dep-trace")
@@ -733,6 +811,7 @@ def mine_org_scale_tasks(
             all_tracked,
             count=count - len(tasks),
             no_llm=no_llm,
+            sg_repo=sg_repo,
         )
         if len(repo_paths) > 1:
             mcp_tasks = [_stamp_multi_repo_commits(t, commits) for t in mcp_tasks]

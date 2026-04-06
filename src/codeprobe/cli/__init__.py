@@ -128,6 +128,13 @@ def init(path: str) -> None:
     help="Include MCP-advantaged task families (symbol-reference-trace, "
     "type-hierarchy-consumers, change-scope-audit). Only with --org-scale.",
 )
+@click.option(
+    "--sg-repo",
+    default="",
+    help="Sourcegraph repo identifier for ground truth enrichment "
+    "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
+    "when --mcp-families is used. Requires SOURCEGRAPH_TOKEN env var.",
+)
 def mine(
     path: str,
     count: int,
@@ -147,6 +154,7 @@ def mine(
     backends: tuple[str, ...],
     verify_curation_flag: bool,
     mcp_families: bool,
+    sg_repo: str,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -184,6 +192,7 @@ def mine(
         backends=backends,
         verify_curation_flag=verify_curation_flag,
         mcp_families=mcp_families,
+        sg_repo=sg_repo,
     )
 
 
