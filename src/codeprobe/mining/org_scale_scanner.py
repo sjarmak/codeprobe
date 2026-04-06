@@ -941,6 +941,188 @@ def discover_base_types(
     return results[:_MAX_BASE_TYPES]
 
 
+# ---------------------------------------------------------------------------
+# MCP-advantaged: discover recently changed public symbols for scope audit
+# ---------------------------------------------------------------------------
+
+_DEF_IN_DIFF_PY = re.compile(r"^\+\s*def\s+(\w+)\s*\(", re.MULTILINE)
+_DEF_IN_DIFF_GO = re.compile(r"^\+func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)\(", re.MULTILINE)
+_CLASS_IN_DIFF = re.compile(r"^\+\s*class\s+(\w+)\s*[:\(]", re.MULTILINE)
+_COMMIT_BOUNDARY = re.compile(r"^([0-9a-f]{40})$", re.MULTILINE)
+
+_MAX_CHANGED_SYMBOLS = 3
+_MIN_CHANGED_REFS = 5
+_MIN_CHANGED_SYMBOL_LEN = 8
+
+
+def discover_changed_symbols(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+    *,
+    recent_n: int = 50,
+) -> list[tuple[str, str, str, frozenset[str]]]:
+    """Find recently changed public symbols and their dependents.
+
+    Parses recent git commits for modified function/class definitions,
+    then greps all tracked files for references to those symbols.
+
+    Returns ``[(commit_sha, symbol_name, defining_file, referencing_files), ...]``
+    sorted by reference count descending, capped at ``_MAX_CHANGED_SYMBOLS``.
+    """
+    if recent_n <= 0:
+        return []
+
+    if language == "python":
+        diff_patterns = [_DEF_IN_DIFF_PY, _CLASS_IN_DIFF]
+        exts = {".py"}
+        ext_glob = "*.py"
+    elif language == "go":
+        diff_patterns = [_DEF_IN_DIFF_GO]
+        exts = {".go"}
+        ext_glob = "*.go"
+    else:
+        diff_patterns = [_DEF_IN_DIFF_PY, _CLASS_IN_DIFF]
+        exts = set(_SOURCE_EXTS)
+        ext_glob = "*.py"
+
+    # Phase 1: extract modified symbols from recent diffs
+    # commit_sha -> {(symbol_name, defining_file)}
+    commit_symbols: dict[str, list[tuple[str, str]]] = {}
+
+    for rp in repo_paths:
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    "--diff-filter=M",
+                    "-p",
+                    "--format=%H",
+                    f"-n{recent_n}",
+                    "--",
+                    ext_glob,
+                ],
+                cwd=str(rp),
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT,
+            )
+            if result.returncode != 0:
+                continue
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+
+        _parse_diff_output(result.stdout, diff_patterns, commit_symbols)
+
+    if not commit_symbols:
+        return []
+
+    # Phase 2: count references for each symbol across tracked files
+    # Flatten all unique symbols first
+    all_symbols: dict[str, tuple[str, str]] = {}  # symbol -> (commit, file)
+    for sha, pairs in commit_symbols.items():
+        for sym, def_file in pairs:
+            if sym not in all_symbols:
+                all_symbols[sym] = (sha, def_file)
+
+    if not all_symbols:
+        return []
+
+    # Batched regex reference counting (same pattern as discover_reference_targets)
+    chunk_size = 200
+    symbol_list = list(all_symbols.keys())
+    ref_counts: Counter[str] = Counter()
+    ref_files: dict[str, set[str]] = {s: set() for s in symbol_list}
+
+    for chunk_start in range(0, len(symbol_list), chunk_size):
+        chunk = symbol_list[chunk_start : chunk_start + chunk_size]
+        pattern = re.compile(r"\b(" + "|".join(re.escape(s) for s in chunk) + r")\b")
+
+        for rp in repo_paths:
+            for file_path in tracked_files:
+                if not any(file_path.endswith(e) for e in exts):
+                    continue
+                full = rp / file_path
+                try:
+                    content = full.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                found_in_file: set[str] = set()
+                for m in pattern.finditer(content):
+                    found_in_file.add(m.group(1))
+                for sym in found_in_file:
+                    _sha, def_file = all_symbols[sym]
+                    if file_path != def_file:
+                        ref_counts[sym] += 1
+                        ref_files[sym].add(file_path)
+
+    # Phase 3: select top symbols with _MIN_CHANGED_REFS+ references
+    candidates: list[tuple[str, str, str, frozenset[str]]] = []
+    for sym, count in ref_counts.most_common(50):
+        if count < _MIN_CHANGED_REFS:
+            break
+        sha, def_file = all_symbols[sym]
+        files = frozenset(sorted(ref_files[sym])[:_MAX_REF_GT])
+        candidates.append((sha, sym, def_file, files))
+
+    return candidates[:_MAX_CHANGED_SYMBOLS]
+
+
+def _parse_diff_output(
+    diff_text: str,
+    diff_patterns: list[re.Pattern[str]],
+    commit_symbols: dict[str, list[tuple[str, str]]],
+) -> None:
+    """Parse git log -p output to extract modified symbols per commit.
+
+    Populates ``commit_symbols`` mapping commit SHA to list of
+    ``(symbol_name, defining_file)`` tuples.
+    """
+    current_sha: str = ""
+    current_file: str = ""
+
+    for line in diff_text.splitlines():
+        # Detect commit boundary
+        sha_match = _COMMIT_BOUNDARY.match(line)
+        if sha_match:
+            current_sha = sha_match.group(1)
+            continue
+
+        # Detect file being diffed
+        if line.startswith("diff --git"):
+            # "diff --git a/path/file.py b/path/file.py"
+            parts = line.split(" b/", 1)
+            if len(parts) == 2:
+                current_file = parts[1]
+            continue
+
+        # Only look at added/modified lines (starting with +)
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+
+        if not current_sha:
+            continue
+
+        for pat in diff_patterns:
+            m = pat.match(line)
+            if m:
+                name = m.group(1)
+                if (
+                    len(name) >= _MIN_CHANGED_SYMBOL_LEN
+                    and not name.startswith("_")
+                    and name.lower() not in _SYMBOL_BLOCKLIST
+                ):
+                    # Require domain-specificity: snake_case or CamelCase
+                    has_underscore = "_" in name
+                    has_mixed_case = name != name.lower() and name != name.upper()
+                    if has_underscore or has_mixed_case:
+                        commit_symbols.setdefault(current_sha, []).append(
+                            (name, current_file)
+                        )
+                break
+
+
 def _collect_go_imports(
     content: str,
     file_path: str,

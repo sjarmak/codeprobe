@@ -123,6 +123,44 @@ class TestValidation:
             _load_json(str(arr_file))
 
 
+class TestBuildSourcegraphMcpConfig:
+    """Tests for build_sourcegraph_mcp_config helper."""
+
+    def test_default_url(self) -> None:
+        from codeprobe.cli.wizard import build_sourcegraph_mcp_config
+
+        result = build_sourcegraph_mcp_config(token="tok_abc123")
+        sg = result["mcpServers"]["sourcegraph"]
+        assert sg["type"] == "http"
+        assert sg["url"] == "https://sourcegraph.com/.api/mcp/v1"
+        assert sg["headers"]["Authorization"] == "token tok_abc123"
+
+    def test_custom_url(self) -> None:
+        from codeprobe.cli.wizard import build_sourcegraph_mcp_config
+
+        result = build_sourcegraph_mcp_config(
+            token="tok_abc123", url="https://demo.sourcegraph.com"
+        )
+        sg = result["mcpServers"]["sourcegraph"]
+        assert sg["url"] == "https://demo.sourcegraph.com/.api/mcp/v1"
+
+    def test_url_trailing_slash_stripped(self) -> None:
+        from codeprobe.cli.wizard import build_sourcegraph_mcp_config
+
+        result = build_sourcegraph_mcp_config(
+            token="tok_abc123", url="https://demo.sourcegraph.com/"
+        )
+        sg = result["mcpServers"]["sourcegraph"]
+        assert sg["url"] == "https://demo.sourcegraph.com/.api/mcp/v1"
+
+    def test_env_var_placeholder(self) -> None:
+        from codeprobe.cli.wizard import build_sourcegraph_mcp_config
+
+        result = build_sourcegraph_mcp_config(token="${SOURCEGRAPH_TOKEN}")
+        sg = result["mcpServers"]["sourcegraph"]
+        assert sg["headers"]["Authorization"] == "token ${SOURCEGRAPH_TOKEN}"
+
+
 class TestAskMcpComparison:
     """Goal 1: Compare baseline vs MCP-augmented agent."""
 
@@ -167,6 +205,67 @@ class TestAskMcpComparison:
         )
         baseline = next(c for c in configs if c.label == "baseline")
         assert baseline.mcp_config is None
+
+    def test_sourcegraph_mode_http_config(self) -> None:
+        """When sourcegraph_token is provided, uses HTTP MCP config."""
+        evalrc, configs = ask_mcp_comparison(
+            experiment_name="sg-test",
+            agent="claude",
+            model=None,
+            sourcegraph_token="tok_abc",
+        )
+        mcp_cfg = next(c for c in configs if c.label == "with-mcp")
+        sg = mcp_cfg.mcp_config["mcpServers"]["sourcegraph"]
+        assert sg["type"] == "http"
+        assert sg["headers"]["Authorization"] == "token tok_abc"
+
+    def test_sourcegraph_mode_sets_preambles(self) -> None:
+        """When sourcegraph_token is provided, with-mcp gets sourcegraph preamble."""
+        evalrc, configs = ask_mcp_comparison(
+            experiment_name="sg-test",
+            agent="claude",
+            model=None,
+            sourcegraph_token="tok_abc",
+        )
+        mcp_cfg = next(c for c in configs if c.label == "with-mcp")
+        assert "sourcegraph" in mcp_cfg.preambles
+
+    def test_sourcegraph_mode_baseline_clean(self) -> None:
+        """Sourcegraph mode baseline has no mcp_config or preambles."""
+        evalrc, configs = ask_mcp_comparison(
+            experiment_name="sg-test",
+            agent="claude",
+            model=None,
+            sourcegraph_token="tok_abc",
+        )
+        baseline = next(c for c in configs if c.label == "baseline")
+        assert baseline.mcp_config is None
+        assert baseline.preambles == ()
+
+    def test_sourcegraph_mode_custom_url(self) -> None:
+        """Custom Sourcegraph URL is used in the MCP config."""
+        evalrc, configs = ask_mcp_comparison(
+            experiment_name="sg-test",
+            agent="claude",
+            model=None,
+            sourcegraph_token="tok_abc",
+            sourcegraph_url="https://demo.sourcegraph.com",
+        )
+        mcp_cfg = next(c for c in configs if c.label == "with-mcp")
+        sg = mcp_cfg.mcp_config["mcpServers"]["sourcegraph"]
+        assert "demo.sourcegraph.com" in sg["url"]
+
+    def test_sourcegraph_token_takes_precedence_over_mcp_path(self) -> None:
+        """When both sourcegraph_token and mcp_config_path are given, token wins."""
+        evalrc, configs = ask_mcp_comparison(
+            experiment_name="sg-test",
+            agent="claude",
+            model=None,
+            sourcegraph_token="tok_abc",
+            mcp_config_path="/nonexistent/path.json",  # should be ignored
+        )
+        mcp_cfg = next(c for c in configs if c.label == "with-mcp")
+        assert mcp_cfg.mcp_config["mcpServers"]["sourcegraph"]["type"] == "http"
 
 
 class TestAskModelComparison:
@@ -267,6 +366,55 @@ class TestAskCustom:
 # ---------------------------------------------------------------------------
 
 
+class TestDetectSourcegraphInMcp:
+    """Tests for _detect_sourcegraph_in_mcp helper."""
+
+    def test_detects_npm_sourcegraph(self) -> None:
+        from codeprobe.cli.init_cmd import _detect_sourcegraph_in_mcp
+
+        discovered = [
+            (
+                Path("/fake/.mcp.json"),
+                ["sourcegraph"],
+            )
+        ]
+        mcp_data = {
+            "mcpServers": {
+                "sourcegraph": {
+                    "command": "npx",
+                    "args": ["-y", "@sourcegraph/mcp-server"],
+                }
+            }
+        }
+        assert _detect_sourcegraph_in_mcp(discovered, mcp_data) is True
+
+    def test_no_sourcegraph_returns_false(self) -> None:
+        from codeprobe.cli.init_cmd import _detect_sourcegraph_in_mcp
+
+        discovered = [
+            (Path("/fake/.mcp.json"), ["github"]),
+        ]
+        mcp_data = {
+            "mcpServers": {
+                "github": {"command": "gh-mcp"},
+            }
+        }
+        assert _detect_sourcegraph_in_mcp(discovered, mcp_data) is False
+
+    def test_detects_sourcegraph_server_name(self) -> None:
+        from codeprobe.cli.init_cmd import _detect_sourcegraph_in_mcp
+
+        discovered = [
+            (Path("/fake/.mcp.json"), ["sourcegraph-mcp-server"]),
+        ]
+        mcp_data = {
+            "mcpServers": {
+                "sourcegraph-mcp-server": {"command": "npx"},
+            }
+        }
+        assert _detect_sourcegraph_in_mcp(discovered, mcp_data) is True
+
+
 class TestInitCliIntegration:
     """End-to-end tests via CliRunner."""
 
@@ -281,12 +429,35 @@ class TestInitCliIntegration:
 
         runner = CliRunner()
         # Inputs: goal=1, experiment name (enter=default), agent (enter=default),
-        # model (enter=skip), mcp config path
-        input_text = f"1\n\nclaude\n\n{mcp_file}\n"
+        # model (enter=skip), decline Sourcegraph, mcp config path
+        input_text = f"1\n\nclaude\n\nN\n{mcp_file}\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".evalrc.yaml").exists()
         assert (tmp_path / ".codeprobe").is_dir()
+
+    def test_goal1_sourcegraph_flow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Test Goal 1 with Sourcegraph HTTP MCP."""
+        monkeypatch.setattr("codeprobe.cli.init_cmd._discover_mcp_configs", lambda: [])
+        monkeypatch.delenv("SOURCEGRAPH_TOKEN", raising=False)
+
+        runner = CliRunner()
+        # Inputs: goal=1, name=default, agent=claude, model=skip,
+        # use Sourcegraph=Y, token, url=default (enter)
+        input_text = "1\n\nclaude\n\nY\ntok_test123\n\n"
+        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".evalrc.yaml").exists()
+
+        # Verify experiment.json has HTTP MCP config
+        exp_json = tmp_path / ".codeprobe" / "mcp-comparison" / "experiment.json"
+        assert exp_json.exists()
+        data = json.loads(exp_json.read_text())
+        mcp_cfg = next(c for c in data["configs"] if c["label"] == "with-mcp")
+        assert mcp_cfg["mcp_config"]["mcpServers"]["sourcegraph"]["type"] == "http"
+        assert "sourcegraph" in mcp_cfg["preambles"]
 
     def test_goal2_model_flow(self, tmp_path: Path) -> None:
         runner = CliRunner()

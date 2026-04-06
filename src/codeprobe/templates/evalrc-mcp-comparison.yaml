@@ -16,13 +16,13 @@ dimensions:
     baseline: null
     with-sourcegraph:
       sourcegraph:
-        command: npx
-        args: ["-y", "@sourcegraph/mcp-server"]
-        env:
-          SRC_ACCESS_TOKEN: "${SRC_ACCESS_TOKEN}"
-          SOURCEGRAPH_URL: "${SOURCEGRAPH_URL}"
+        type: http
+        url: "https://sourcegraph.com/.api/mcp/v1"
+        headers:
+          Authorization: "token ${SOURCEGRAPH_TOKEN}"
 
   prompts:
     default: instruction.md
     with-mcp-hints:
-      - sourcegraph
+      preambles:
+        - sourcegraph

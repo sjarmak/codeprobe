@@ -173,12 +173,83 @@ def _prompt_mcp_config() -> str:
         click.echo(f"  Error: '{expanded}' does not exist. Try again.")
 
 
+def _detect_sourcegraph_in_mcp(
+    discovered: list[tuple[Path, list[str]]],
+    mcp_data: dict | None = None,
+) -> bool:
+    """Return True if any discovered MCP config contains a Sourcegraph server.
+
+    Checks server names for common Sourcegraph patterns (e.g.
+    ``sourcegraph``, ``sourcegraph-mcp-server``).
+    """
+    sg_names = {"sourcegraph", "sourcegraph-mcp-server"}
+    for _path, server_names in discovered:
+        for name in server_names:
+            if name.lower() in sg_names:
+                return True
+    if mcp_data:
+        for name in mcp_data.get("mcpServers", {}):
+            if name.lower() in sg_names:
+                return True
+    return False
+
+
+def _prompt_sourcegraph_token() -> str:
+    """Prompt for Sourcegraph access token, checking env var first."""
+    import os
+
+    env_token = os.environ.get("SOURCEGRAPH_TOKEN", "")
+    if env_token:
+        masked = env_token[:4] + "..." + env_token[-4:] if len(env_token) > 8 else "***"
+        click.echo(f"  Found SOURCEGRAPH_TOKEN in environment ({masked})")
+        if click.confirm("  Use this token?", default=True):
+            return env_token
+
+    return click.prompt("Sourcegraph access token")
+
+
+def _prompt_sourcegraph_url() -> str | None:
+    """Prompt for optional custom Sourcegraph instance URL."""
+    url = click.prompt(
+        "Sourcegraph URL (press Enter for sourcegraph.com)",
+        default="",
+        show_default=False,
+    )
+    return url if url else None
+
+
 def _goal_mcp(agents: list[str], name: str) -> _Result:
     """Goal 1: MCP comparison prompts."""
     agent = _prompt_agent(agents)
     model = _prompt_model()
-    mcp_path = _prompt_mcp_config()
 
+    # Check if Sourcegraph is available in discovered MCP configs
+    discovered = _discover_mcp_configs()
+    use_sourcegraph = False
+
+    if _detect_sourcegraph_in_mcp(discovered):
+        click.echo()
+        click.echo("Detected Sourcegraph MCP server in your configuration.")
+        click.echo("codeprobe can use the HTTP endpoint for better performance.")
+        use_sourcegraph = click.confirm("Use Sourcegraph HTTP MCP?", default=True)
+    else:
+        click.echo()
+        click.echo("Would you like to use Sourcegraph as the MCP server?")
+        use_sourcegraph = click.confirm("Use Sourcegraph?", default=False)
+
+    if use_sourcegraph:
+        token = _prompt_sourcegraph_token()
+        sg_url = _prompt_sourcegraph_url()
+        return ask_mcp_comparison(
+            experiment_name=name,
+            agent=agent,
+            model=model,
+            sourcegraph_token=token,
+            sourcegraph_url=sg_url,
+        )
+
+    # Fall back to generic MCP config path
+    mcp_path = _prompt_mcp_config()
     return ask_mcp_comparison(
         experiment_name=name,
         agent=agent,

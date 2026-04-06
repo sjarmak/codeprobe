@@ -342,4 +342,6 @@ def test_mcp_template_references_sourcegraph_preamble():
     content = yaml.safe_load((templates_dir / "evalrc-mcp-comparison.yaml").read_text())
     prompts = content["dimensions"]["prompts"]
     assert "with-mcp-hints" in prompts
-    assert "sourcegraph" in prompts["with-mcp-hints"]
+    hints = prompts["with-mcp-hints"]
+    preambles = hints.get("preambles", hints) if isinstance(hints, dict) else hints
+    assert "sourcegraph" in preambles

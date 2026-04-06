@@ -518,6 +518,7 @@ def run_mine(
     curate: bool = False,
     backends: tuple[str, ...] = (),
     verify_curation_flag: bool = False,
+    mcp_families: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.mining import mine_tasks, write_task_dir
@@ -553,6 +554,7 @@ def run_mine(
             curate=curate,
             backends=backends,
             verify_curation_flag=verify_curation_flag,
+            mcp_families=mcp_families,
         )
         return
 
@@ -640,6 +642,7 @@ def _run_org_scale_mine(
     curate: bool = False,
     backends: tuple[str, ...] = (),
     verify_curation_flag: bool = False,
+    mcp_families: bool = False,
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification."""
     from codeprobe.mining.org_scale import mine_org_scale_tasks
@@ -674,6 +677,7 @@ def _run_org_scale_mine(
         families=selected_families,
         no_llm=no_llm,
         scan_timeout=scan_timeout,
+        include_mcp_families=mcp_families,
     )
 
     if not result.tasks:

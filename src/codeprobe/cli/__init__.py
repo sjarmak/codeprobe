@@ -121,6 +121,13 @@ def init(path: str) -> None:
     default=False,
     help="Run LLM verification on curated ground truth.",
 )
+@click.option(
+    "--mcp-families",
+    is_flag=True,
+    default=False,
+    help="Include MCP-advantaged task families (symbol-reference-trace, "
+    "type-hierarchy-consumers, change-scope-audit). Only with --org-scale.",
+)
 def mine(
     path: str,
     count: int,
@@ -139,6 +146,7 @@ def mine(
     curate: bool,
     backends: tuple[str, ...],
     verify_curation_flag: bool,
+    mcp_families: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -175,6 +183,7 @@ def mine(
         curate=curate,
         backends=backends,
         verify_curation_flag=verify_curation_flag,
+        mcp_families=mcp_families,
     )
 
 

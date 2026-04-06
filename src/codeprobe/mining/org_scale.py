@@ -32,6 +32,8 @@ from codeprobe.mining.org_scale_oracle import (
 from codeprobe.mining.org_scale_scanner import (
     FamilyScanResult,
     PatternHit,
+    discover_base_types,
+    discover_reference_targets,
     discover_top_imports,
     find_callers_of_symbols,
     get_head_sha,
@@ -421,6 +423,239 @@ def _mine_dep_trace(
     return tasks
 
 
+# ---------------------------------------------------------------------------
+# MCP-advantaged family mining
+# ---------------------------------------------------------------------------
+
+
+def _mine_symbol_reference_tasks(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+    commit_sha: str,
+    *,
+    no_llm: bool = False,
+) -> list[Task]:
+    """Generate symbol-reference-trace tasks from high-fan-out public symbols."""
+    targets = discover_reference_targets(repo_paths, tracked_files, language)
+    if not targets:
+        return []
+
+    repo_name = repo_paths[0].name
+    tasks: list[Task] = []
+    for symbol, def_file, ref_files in targets:
+        task_id = hashlib.sha256(
+            f"sym-ref-{symbol}-{commit_sha[:8]}".encode()
+        ).hexdigest()[:8]
+
+        heading = f"Find references to {symbol} in {repo_name}"
+        question = (
+            f"Find all files that reference `{symbol}` (defined in "
+            f"`{def_file}`), including through aliases, re-exports, and "
+            f"wildcard imports."
+        )
+
+        tasks.append(
+            Task(
+                id=task_id,
+                repo=repo_name,
+                metadata=TaskMetadata(
+                    name=f"org-{task_id}",
+                    difficulty="hard",
+                    description=(
+                        f"symbol-reference-trace: {symbol} ({len(ref_files)} files)"
+                    ),
+                    language=language,
+                    category="symbol-reference-trace",
+                    org_scale=True,
+                    issue_title=heading,
+                    issue_body=question,
+                    ground_truth_commit=commit_sha,
+                ),
+                verification=TaskVerification(
+                    type="oracle",
+                    command="bash tests/test.sh",
+                    reward_type="continuous",
+                    oracle_type="file_list",
+                    oracle_answer=tuple(sorted(ref_files)),
+                ),
+                instruction_variant_path="instruction_discovery.md",
+            )
+        )
+        logger.info(
+            "Symbol-reference-trace: %s referenced by %d files",
+            symbol,
+            len(ref_files),
+        )
+
+    return tasks
+
+
+def _mine_type_hierarchy_tasks(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+    commit_sha: str,
+    *,
+    no_llm: bool = False,
+) -> list[Task]:
+    """Generate type-hierarchy-consumers tasks from ABC/Protocol base types."""
+    base_types = discover_base_types(repo_paths, tracked_files, language)
+    if not base_types:
+        return []
+
+    repo_name = repo_paths[0].name
+    tasks: list[Task] = []
+    for base_name, def_file, subclass_files, usage_files in base_types:
+        ground_truth = subclass_files | usage_files
+        task_id = hashlib.sha256(
+            f"type-hier-{base_name}-{commit_sha[:8]}".encode()
+        ).hexdigest()[:8]
+
+        heading = f"Find implementations and consumers of {base_name}"
+        question = (
+            f"Find all files that implement `{base_name}` and all files "
+            f"that use those implementations."
+        )
+
+        # Tier assignment: subclass_files → required, usage_files → supplementary
+        oracle_tiers: dict[str, str] = {}
+        for f in subclass_files:
+            oracle_tiers[f] = "required"
+        for f in usage_files:
+            oracle_tiers[f] = "supplementary"
+
+        tasks.append(
+            Task(
+                id=task_id,
+                repo=repo_name,
+                metadata=TaskMetadata(
+                    name=f"org-{task_id}",
+                    difficulty="hard",
+                    description=(
+                        f"type-hierarchy-consumers: {base_name} "
+                        f"({len(ground_truth)} files)"
+                    ),
+                    language=language,
+                    category="type-hierarchy-consumers",
+                    org_scale=True,
+                    issue_title=heading,
+                    issue_body=question,
+                    ground_truth_commit=commit_sha,
+                ),
+                verification=TaskVerification(
+                    type="oracle",
+                    command="bash tests/test.sh",
+                    reward_type="continuous",
+                    oracle_type="file_list",
+                    oracle_answer=tuple(sorted(ground_truth)),
+                    oracle_tiers=oracle_tiers,
+                ),
+                instruction_variant_path="instruction_discovery.md",
+            )
+        )
+        logger.info(
+            "Type-hierarchy: %s — %d subclasses, %d usage sites",
+            base_name,
+            len(subclass_files),
+            len(usage_files),
+        )
+
+    return tasks
+
+
+def _mine_change_scope_tasks(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+    commit_sha: str,
+    *,
+    no_llm: bool = False,
+) -> list[Task]:
+    """Generate change-scope-audit tasks from high-fan-out public symbols.
+
+    Reuses ``discover_reference_targets`` to find symbols with many dependents,
+    then frames the task as a blast-radius audit rather than a reference trace.
+    """
+    targets = discover_reference_targets(repo_paths, tracked_files, language)
+    if not targets:
+        return []
+
+    repo_name = repo_paths[0].name
+    tasks: list[Task] = []
+    for symbol, def_file, ref_files in targets:
+        task_id = hashlib.sha256(
+            f"change-scope-{symbol}-{commit_sha[:8]}".encode()
+        ).hexdigest()[:8]
+
+        heading = f"Blast radius of changing {symbol} in {repo_name}"
+        question = (
+            f"The symbol `{symbol}` (defined in `{def_file}`) is about to "
+            f"change its signature. Find all files that depend on it and "
+            f"would need review."
+        )
+
+        tasks.append(
+            Task(
+                id=task_id,
+                repo=repo_name,
+                metadata=TaskMetadata(
+                    name=f"org-{task_id}",
+                    difficulty="hard",
+                    description=(
+                        f"change-scope-audit: {symbol} ({len(ref_files)} files)"
+                    ),
+                    language=language,
+                    category="change-scope-audit",
+                    org_scale=True,
+                    issue_title=heading,
+                    issue_body=question,
+                    ground_truth_commit=commit_sha,
+                ),
+                verification=TaskVerification(
+                    type="oracle",
+                    command="bash tests/test.sh",
+                    reward_type="continuous",
+                    oracle_type="file_list",
+                    oracle_answer=tuple(sorted(ref_files)),
+                ),
+                instruction_variant_path="instruction_discovery.md",
+            )
+        )
+        logger.info("Change-scope-audit: %s affects %d files", symbol, len(ref_files))
+
+    return tasks
+
+
+def _mine_mcp_families(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    *,
+    count: int,
+    no_llm: bool,
+) -> list[Task]:
+    """Generate tasks from all MCP-advantaged families."""
+    primary_repo = repo_paths[0]
+    commit_sha = get_head_sha(primary_repo)
+    language = _guess_repo_language(tracked_files)
+
+    tasks: list[Task] = []
+    miners = [
+        _mine_symbol_reference_tasks,
+        _mine_type_hierarchy_tasks,
+        _mine_change_scope_tasks,
+    ]
+    for miner in miners:
+        if len(tasks) >= count:
+            break
+        new_tasks = miner(
+            repo_paths, tracked_files, language, commit_sha, no_llm=no_llm
+        )
+        tasks.extend(new_tasks)
+
+    return tasks[:count]
+
+
 def mine_org_scale_tasks(
     repo_paths: list[Path],
     *,
@@ -429,6 +664,7 @@ def mine_org_scale_tasks(
     no_llm: bool = False,
     max_files: int = 50_000,
     include_multi_hop: bool = True,
+    include_mcp_families: bool = False,
     scan_timeout: int = 60,
 ) -> OrgScaleMineResult:
     """Mine org-scale comprehension tasks from one or more repositories.
@@ -440,6 +676,8 @@ def mine_org_scale_tasks(
         no_llm: Skip LLM question generation, use deterministic fallback.
         max_files: Cap on files to scan per family.
         include_multi_hop: Generate multi-hop task variants.
+        include_mcp_families: Also mine MCP-advantaged families
+            (symbol-reference-trace, type-hierarchy-consumers, change-scope-audit).
         scan_timeout: Per-family scan timeout in seconds.
     """
     all_families = families or FAMILIES
@@ -487,6 +725,18 @@ def mine_org_scale_tasks(
         if len(repo_paths) > 1:
             dep_tasks = [_stamp_multi_repo_commits(t, commits) for t in dep_tasks]
         tasks.extend(dep_tasks)
+
+    # MCP-advantaged families (opt-in via --mcp-families)
+    if include_mcp_families and len(tasks) < count:
+        mcp_tasks = _mine_mcp_families(
+            repo_paths,
+            all_tracked,
+            count=count - len(tasks),
+            no_llm=no_llm,
+        )
+        if len(repo_paths) > 1:
+            mcp_tasks = [_stamp_multi_repo_commits(t, commits) for t in mcp_tasks]
+        tasks.extend(mcp_tasks)
 
     if not tasks:
         logger.info("No org-scale tasks generated from %s", repo_paths)

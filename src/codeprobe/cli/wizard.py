@@ -14,19 +14,68 @@ from codeprobe.models.experiment import ExperimentConfig
 _SAFE_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 
 
+_DEFAULT_SOURCEGRAPH_URL = "https://sourcegraph.com"
+
+
+def build_sourcegraph_mcp_config(
+    *,
+    token: str,
+    url: str = _DEFAULT_SOURCEGRAPH_URL,
+) -> dict:
+    """Build an HTTP MCP config dict for Sourcegraph.
+
+    Returns a ``{"mcpServers": {"sourcegraph": {...}}}`` dict suitable for
+    passing as ``mcp_config`` on an :class:`ExperimentConfig`.
+    """
+    base_url = url.rstrip("/")
+    return {
+        "mcpServers": {
+            "sourcegraph": {
+                "type": "http",
+                "url": f"{base_url}/.api/mcp/v1",
+                "headers": {"Authorization": f"token {token}"},
+            }
+        }
+    }
+
+
 def ask_mcp_comparison(
     *,
     experiment_name: str,
     agent: str,
     model: str | None,
-    mcp_config_path: str,
+    mcp_config_path: str | None = None,
+    sourcegraph_token: str | None = None,
+    sourcegraph_url: str | None = None,
 ) -> tuple[EvalrcConfig, list[ExperimentConfig]]:
-    """Goal 1: Compare baseline agent vs MCP-augmented agent."""
-    mcp_data = _load_json(mcp_config_path)
+    """Goal 1: Compare baseline agent vs MCP-augmented agent.
+
+    When *sourcegraph_token* is provided, generates an HTTP-based Sourcegraph
+    MCP config with an ``Authorization`` header and adds the ``sourcegraph``
+    preamble.  Otherwise falls back to loading the MCP config from
+    *mcp_config_path*.
+    """
+    if sourcegraph_token is not None:
+        mcp_data = build_sourcegraph_mcp_config(
+            token=sourcegraph_token,
+            url=sourcegraph_url or _DEFAULT_SOURCEGRAPH_URL,
+        )
+        preambles: tuple[str, ...] = ("sourcegraph",)
+    else:
+        if mcp_config_path is None:
+            raise click.BadParameter(
+                "Either sourcegraph_token or mcp_config_path must be provided."
+            )
+        mcp_data = _load_json(mcp_config_path)
+        preambles = ()
 
     baseline = ExperimentConfig(label="baseline", agent=agent, model=model)
     with_mcp = ExperimentConfig(
-        label="with-mcp", agent=agent, model=model, mcp_config=mcp_data
+        label="with-mcp",
+        agent=agent,
+        model=model,
+        mcp_config=mcp_data,
+        preambles=preambles,
     )
 
     evalrc = EvalrcConfig(name=experiment_name, agents=[agent])
