@@ -10,6 +10,10 @@ import json
 import re
 from pathlib import Path
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 from codeprobe.probe.generator import Probe
 
 

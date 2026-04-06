@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import click
+
+logger = logging.getLogger(__name__)
 
 from codeprobe.probe.generator import DEFAULT_COUNT, MAX_PROBES, MIN_PROBES
 
@@ -76,7 +79,7 @@ def probe(
     output_dir = Path(output) if output else repo_root / "probes"
     effective_repo_name = repo_name or repo_root.name
 
-    click.echo(f"Scanning {repo_root} for symbols...", err=True)
+    logger.info("Scanning %s for symbols...", repo_root)
     probes = generate_probes(
         repo_root=repo_root,
         count=count,
@@ -85,12 +88,11 @@ def probe(
     )
 
     if not probes:
-        click.echo("No probes generated -- no suitable symbols found.", err=True)
+        logger.warning("No probes generated -- no suitable symbols found.")
         raise SystemExit(1)
 
-    click.echo(
-        f"Generated {len(probes)} probes, writing to {output_dir}...",
-        err=True,
+    logger.info(
+        "Generated %d probes, writing to %s...", len(probes), output_dir
     )
     created = write_probe_tasks(probes, output_dir, effective_repo_name)
 
@@ -108,9 +110,9 @@ def probe(
         }
         click.echo(json.dumps(summary, indent=2))
     else:
-        click.echo(f"Probe generation complete:", err=True)
-        click.echo(f"  Total probes: {len(probes)}", err=True)
+        logger.info("Probe generation complete:")
+        logger.info("  Total probes: %d", len(probes))
         for tpl_name, tpl_count in sorted(by_template.items()):
-            click.echo(f"  {tpl_name}: {tpl_count}", err=True)
-        click.echo(f"  Output: {output_dir}", err=True)
+            logger.info("  %s: %d", tpl_name, tpl_count)
+        logger.info("  Output: %s", output_dir)
         click.echo(f"Created {len(created)} probe tasks in {output_dir}")

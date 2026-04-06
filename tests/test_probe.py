@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import stat
 import tomllib
 from pathlib import Path
@@ -435,3 +436,96 @@ class TestProbeCLI:
         data = json.loads(result.output[json_start:])
         assert "total" in data
         assert "by_template" in data
+
+    def test_probe_quiet_suppresses_progress_messages(
+        self, py_repo: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        runner = CliRunner()
+        output_dir = tmp_path / "probes"
+        with caplog.at_level(logging.DEBUG, logger="codeprobe"):
+            result = runner.invoke(
+                main,
+                [
+                    "-q",
+                    "probe",
+                    str(py_repo),
+                    "--count",
+                    "3",
+                    "--output",
+                    str(output_dir),
+                    "--seed",
+                    "42",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        # With -q, the codeprobe logger is set to WARNING, so INFO
+        # messages like "Scanning" and "Probe generation complete"
+        # should not appear in the captured log records.
+        info_messages = [
+            r.message for r in caplog.records if r.levelno == logging.INFO
+        ]
+        assert not any("Scanning" in m for m in info_messages)
+        assert not any("Probe generation complete" in m for m in info_messages)
+
+    def test_probe_default_emits_info_progress(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        output_dir = tmp_path / "probes"
+        result = runner.invoke(
+            main,
+            [
+                "probe",
+                str(py_repo),
+                "--count",
+                "3",
+                "--output",
+                str(output_dir),
+                "--seed",
+                "42",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # Default verbosity is INFO; the StreamHandler writes to stderr
+        # which Click's CliRunner captures in result.output.
+        assert "Scanning" in result.output
+        assert "Probe generation complete" in result.output
+
+    def test_probe_no_symbols_logs_warning(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        empty_repo = tmp_path / "empty"
+        empty_repo.mkdir()
+        result = runner.invoke(
+            main,
+            ["probe", str(empty_repo), "--output", str(tmp_path / "out")],
+        )
+        assert result.exit_code == 1
+        # The warning is emitted via the logging StreamHandler to stderr,
+        # captured in result.output by CliRunner.
+        assert "no suitable symbols" in result.output
+
+    def test_probe_final_summary_on_stdout(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        output_dir = tmp_path / "probes"
+        result = runner.invoke(
+            main,
+            [
+                "probe",
+                str(py_repo),
+                "--count",
+                "3",
+                "--output",
+                str(output_dir),
+                "--seed",
+                "42",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        # The final summary line uses click.echo (stdout), not logger.
+        # It should be in the output.
+        assert "Created" in result.output
+        assert "probe tasks in" in result.output
