@@ -103,11 +103,15 @@ def compose_instruction(
     task_id: str = "",
     *,
     worktree_path: Path | None = None,
+    extra_context: dict[str, str] | None = None,
 ) -> tuple[str, list[dict[str, str]]]:
     """Build the full prompt from instruction + preamble blocks.
 
     Returns ``(prompt, resolved_preambles)`` where resolved_preambles is a
     list of dicts with ``name`` and ``content`` keys for reproducibility.
+
+    *extra_context* is merged into the template context so preambles can
+    reference task-specific values like ``{{sg_repo}}``.
     """
     base = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
 
@@ -117,6 +121,8 @@ def compose_instruction(
         "repo_name": effective_path.name,
         "task_id": task_id,
     }
+    if extra_context:
+        context.update(extra_context)
 
     blocks = resolver.resolve(preamble_names)
     resolved: list[dict[str, str]] = []

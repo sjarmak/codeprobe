@@ -373,20 +373,6 @@ def _write_oracle_task(
         _build_instruction(discovery_question), encoding="utf-8"
     )
 
-    # instruction_mcp.md — same discovery question + SG repo and tool hint
-    if task.metadata.sg_repo:
-        mcp_extra = (
-            "## Tools Available\n\n"
-            "You have access to the Sourcegraph MCP server. Use the "
-            "`sg_find_references` tool to find cross-file references "
-            "that local grep may miss (aliases, re-exports, indirect "
-            "imports).\n\n"
-            f"**Sourcegraph repository:** `{task.metadata.sg_repo}`\n\n"
-        )
-        (task_dir / "instruction_mcp.md").write_text(
-            _build_instruction(discovery_question, mcp_extra), encoding="utf-8"
-        )
-
     # ground_truth.json — oracle answer + commit + pattern provenance
     has_curation = bool(task.verification.oracle_tiers)
     ground_truth: dict[str, object] = {

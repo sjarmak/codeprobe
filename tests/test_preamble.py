@@ -261,17 +261,29 @@ def test_builtin_sourcegraph_preamble_exists():
     block = get_builtin("sourcegraph")
     assert block.name == "sourcegraph"
     assert "keyword_search" in block.template
-    assert "{{repo_name}}" in block.template
+    assert "{{sg_repo}}" in block.template
 
 
 def test_builtin_preamble_renders_variables():
     """Built-in preamble template variables resolve correctly."""
     block = get_builtin("sourcegraph")
     rendered = block.render(
-        {"repo_path": "/my/repo", "repo_name": "my-repo", "task_id": "task-42"}
+        {
+            "repo_path": "/my/repo",
+            "repo_name": "my-repo",
+            "task_id": "task-42",
+            "sg_repo": "github.com/sg-evals/my-repo",
+        }
     )
-    assert "my-repo" in rendered
-    assert "{{repo_name}}" not in rendered
+    assert "github.com/sg-evals/my-repo" in rendered
+    assert "{{sg_repo}}" not in rendered
+
+
+def test_builtin_github_preamble_exists():
+    """The github preamble ships as a built-in."""
+    block = get_builtin("github")
+    assert block.name == "github"
+    assert "search_code" in block.template
 
 
 def test_builtin_nonexistent_raises():

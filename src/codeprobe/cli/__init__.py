@@ -366,6 +366,15 @@ def init_experiment(path: str, name: str, description: str) -> None:
     default=None,
     help="Instruction file variant (e.g., instruction_mcp.md). Default: instruction.md.",
 )
+@click.option(
+    "--preamble",
+    "preambles",
+    multiple=True,
+    help=(
+        "Preamble to prepend to the instruction. Repeatable. "
+        "Built-ins: sourcegraph, github. Or path to a custom .md file."
+    ),
+)
 def add_config(
     path: str,
     label: str,
@@ -374,6 +383,7 @@ def add_config(
     permission_mode: str,
     mcp_config: str | None,
     instruction_variant: str | None,
+    preambles: tuple[str, ...],
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
@@ -386,6 +396,7 @@ def add_config(
         permission_mode=permission_mode,
         mcp_config_str=mcp_config,
         instruction_variant=instruction_variant,
+        preambles=preambles,
     )
 
 

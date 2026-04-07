@@ -166,21 +166,25 @@ def execute_task(
     """
     task_id = task_dir.name
 
+    # Load task metadata once — used for reward_type auto-detection and
+    # preamble context (e.g. sg_repo for Sourcegraph preamble).
+    _task_meta: dict = {}
+    meta_path = task_dir / "metadata.json"
+    if meta_path.is_file():
+        try:
+            import json as _json
+
+            _task_meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            pass
+
     # Auto-detect reward_type from task metadata when caller uses default.
     # Oracle tasks (org-scale) need "continuous" scoring to read reward.txt;
     # the default "binary" would score exit-code-only and always pass.
     if reward_type == "binary":
-        meta_path = task_dir / "metadata.json"
-        if meta_path.is_file():
-            try:
-                import json as _json
-
-                meta = _json.loads(meta_path.read_text(encoding="utf-8"))
-                task_rt = (meta.get("verification") or {}).get("reward_type")
-                if task_rt and task_rt != "binary":
-                    reward_type = task_rt
-            except (ValueError, OSError):
-                pass  # Stick with caller's default
+        task_rt = (_task_meta.get("verification") or {}).get("reward_type")
+        if task_rt and task_rt != "binary":
+            reward_type = task_rt
 
     def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
@@ -206,6 +210,12 @@ def execute_task(
         )
 
     if preamble_names and preamble_resolver is not None:
+        # Build extra context from task metadata for preamble templates
+        extra_ctx: dict[str, str] = {}
+        sg_repo = (_task_meta.get("metadata") or {}).get("sg_repo", "")
+        if sg_repo:
+            extra_ctx["sg_repo"] = sg_repo
+
         try:
             prompt, resolved_preambles = compose_instruction(
                 instruction,
@@ -214,6 +224,7 @@ def execute_task(
                 resolver=preamble_resolver,
                 task_id=task_id,
                 worktree_path=worktree_path,
+                extra_context=extra_ctx or None,
             )
         except (FileNotFoundError, ValueError) as exc:
             return _error_result(f"Preamble resolution failed: {exc}")
