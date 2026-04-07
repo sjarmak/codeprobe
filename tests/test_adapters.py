@@ -1329,6 +1329,37 @@ class TestIsolateSession:
         env = adapter.isolate_session(0)
         assert env == {}
 
+    def test_claude_isolate_session_refreshes_stale_credentials(
+        self, tmp_path: Path
+    ) -> None:
+        """Credentials are always overwritten so stale tokens don't persist."""
+        adapter = ClaudeAdapter()
+
+        fake_home = tmp_path / "home"
+        real_claude = fake_home / ".claude"
+        real_claude.mkdir(parents=True)
+        cred_file = real_claude / ".credentials.json"
+        cred_file.write_text('{"token": "fresh"}', encoding="utf-8")
+
+        # Pre-create the slot dir with a stale credential file
+        slot_dir = tmp_path / "tmp" / "codeprobe-claude" / "slot-0"
+        slot_dir.mkdir(parents=True)
+        stale = slot_dir / ".credentials.json"
+        stale.write_text('{"token": "stale"}', encoding="utf-8")
+
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            adapter.isolate_session(0)
+
+        # The stale file should be overwritten with fresh content
+        result = (slot_dir / ".credentials.json").read_text()
+        assert '"fresh"' in result
+
     def test_base_adapter_run_passes_session_env_to_subprocess(self) -> None:
         """session_env passed to run() reaches subprocess.run() via _adapter_safe_env."""
         adapter = ClaudeAdapter()

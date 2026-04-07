@@ -80,19 +80,24 @@ def _call_find_references(
     sg_token: str,
     sg_url: str,
 ) -> frozenset[str] | None:
-    """HTTP POST to Sourcegraph MCP find_references endpoint.
+    """Call Sourcegraph ``sg_find_references`` via Streamable HTTP MCP transport.
 
     Returns a frozenset of repo-relative file paths, or None on failure.
     """
+    import json as _json
+
     url = f"{sg_url.rstrip('/')}/.api/mcp/v1"
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "find_references",
+        "method": "tools/call",
         "params": {
-            "repository": repo_sg_name,
-            "filePath": defining_file,
-            "symbol": symbol,
+            "name": "sg_find_references",
+            "arguments": {
+                "repo": repo_sg_name,
+                "path": defining_file,
+                "symbol": symbol,
+            },
         },
     }
     headers = {
@@ -101,10 +106,15 @@ def _call_find_references(
     }
 
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=30)
+        resp = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=30,
+            stream=True,
+        )
         resp.raise_for_status()
-        data: dict[str, Any] = resp.json()
-        return _extract_file_paths(data)
+        return _parse_sse_references(resp, repo_sg_name)
     except Exception:
         # Log without leaking the token value
         logger.warning(
@@ -116,18 +126,38 @@ def _call_find_references(
         return None
 
 
-def _extract_file_paths(data: dict[str, Any]) -> frozenset[str]:
-    """Extract repo-relative file paths from a JSON-RPC find_references response."""
-    locations = data.get("result")
-    if not isinstance(locations, list):
-        return frozenset()
+def _parse_sse_references(
+    resp: requests.Response,
+    repo_sg_name: str,
+) -> frozenset[str]:
+    """Parse SSE event stream from Sourcegraph MCP and extract file paths."""
+    import json as _json
+    import re
 
     paths: set[str] = set()
-    for loc in locations:
-        uri = loc.get("uri", "")
-        # URIs may be file:///path or just a path — strip the prefix
-        path = uri.removeprefix("file:///")
-        if path:
-            paths.add(path)
+    # Pattern: "# repo <separator> file" header lines in the text content.
+    # The separator is typically an en-dash (–), arrow (→), or similar Unicode.
+    header_re = re.compile(
+        r"^#\s+" + re.escape(repo_sg_name) + r"\s+\S+\s+(.+)$",
+        re.MULTILINE,
+    )
+
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data: "):
+            continue
+        data = _json.loads(line[6:])
+
+        # Check for JSON-RPC error
+        if "error" in data:
+            return frozenset()
+
+        content = data.get("result", {}).get("content", [])
+        for item in content:
+            text = item.get("text", "")
+            if not text:
+                continue
+            for match in header_re.finditer(text):
+                paths.add(match.group(1).strip())
+        break  # Only one SSE data event expected
 
     return frozenset(paths)

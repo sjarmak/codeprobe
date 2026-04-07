@@ -92,7 +92,7 @@ class ClaudeAdapter(BaseAdapter):
             for name in ("credentials.json", ".credentials.json"):
                 src = real_config / name
                 dst = config_dir / name
-                if src.is_file() and not dst.exists():
+                if src.is_file():
                     shutil.copy2(src, dst)
 
         return {"CLAUDE_CONFIG_DIR": str(config_dir)}
