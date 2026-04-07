@@ -60,6 +60,63 @@ _NOISE_FENCED_BLOCKS = re.compile(r"```(?:release-note|docs)\b.*?```", re.DOTALL
 # <details> blocks (often contain verbose reproduction steps, version dumps)
 _DETAILS_BLOCK = re.compile(r"<details>.*?</details>", re.DOTALL)
 
+# ---------------------------------------------------------------------------
+# Self-contained oracle scorer (vendored into each task's tests/oracle.py)
+# No codeprobe install required — only stdlib imports.
+# ---------------------------------------------------------------------------
+_ORACLE_PY = '''\
+#!/usr/bin/env python3
+"""Self-contained F1 oracle scorer for org-scale tasks.
+
+Usage: python3 oracle.py <task_dir>
+
+Reads answer.txt and ground_truth.json from task_dir, computes F1,
+writes reward.txt, and exits 0 on success (any score) or 1 on error.
+"""
+import json, sys
+from pathlib import Path
+
+def normalize(p):
+    p = p.replace("\\\\", "/").strip()
+    for pfx in ("./", "/workspace/", "/tmp/", "/app/"):
+        while p.startswith(pfx):
+            p = p[len(pfx):]
+    return p.lstrip("/")
+
+def main():
+    task_dir = Path(sys.argv[1])
+    gt = json.loads((task_dir / "ground_truth.json").read_text())
+    expected = frozenset(normalize(p) for p in gt.get("expected", []) if p)
+    if not expected:
+        print("FAIL: empty ground truth")
+        sys.exit(1)
+
+    answer_file = task_dir / "answer.txt"
+    if not answer_file.exists():
+        print("FAIL: no answer.txt")
+        (task_dir / "reward.txt").write_text("0.0\\n")
+        sys.exit(0)
+
+    lines = answer_file.read_text().splitlines()
+    agent = frozenset(normalize(l) for l in lines if l.strip() and not l.startswith("#"))
+    if not agent:
+        print("FAIL: empty answer")
+        (task_dir / "reward.txt").write_text("0.0\\n")
+        sys.exit(0)
+
+    intersection = len(expected & agent)
+    precision = intersection / len(agent)
+    recall = intersection / len(expected)
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    (task_dir / "reward.txt").write_text(f"{f1:.4f}\\n")
+    print(f"score={f1:.4f} precision={precision:.4f} recall={recall:.4f} "
+          f"matched={intersection}/{len(expected)} agent_files={len(agent)}")
+
+if __name__ == "__main__":
+    main()
+'''
+
 
 def _strip_pr_template(text: str) -> str:
     """Remove common PR template sections and label lines from text.
@@ -400,20 +457,22 @@ def _write_oracle_task(
         encoding="utf-8",
     )
 
-    # tests/test.sh — runs oracle-check, writes reward.txt
-    #
-    # Uses relative path for TASK_DIR so it works in the scorer's sandbox.
-    # answer.txt is copied from the repo root by the executor before
-    # scoring, so test.sh only needs to run oracle-check.
+    # tests/oracle.py — self-contained F1 scorer (no codeprobe dependency)
+    (tests_dir / "oracle.py").write_text(_ORACLE_PY, encoding="utf-8")
+
+    # tests/test.sh — calls oracle.py, writes reward.txt
     test_script = (
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n\n"
         f"# Oracle verification for org-scale task {safe_id}\n"
-        "# Resolve TASK_DIR relative to this script (works in sandbox)\n"
         'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
         'TASK_DIR="$(dirname "$SCRIPT_DIR")"\n\n'
-        "# Run oracle-check and write reward.txt\n"
-        'codeprobe oracle-check "$TASK_DIR" --metric f1 --write-reward\n'
+        "# Read agent output from $AGENT_OUTPUT (sandbox) or answer.txt\n"
+        'if [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then\n'
+        '    cp "$AGENT_OUTPUT" "$TASK_DIR/answer.txt"\n'
+        "fi\n\n"
+        "# Self-contained oracle check — no codeprobe install required\n"
+        'python3 "$SCRIPT_DIR/oracle.py" "$TASK_DIR"\n'
     )
     test_sh_path = tests_dir / "test.sh"
     test_sh_path.write_text(test_script, encoding="utf-8")
