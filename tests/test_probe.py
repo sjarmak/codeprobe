@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import stat
 import tomllib
 from pathlib import Path
@@ -274,6 +275,193 @@ class TestGenerateProbes:
         probes = generate_probes(tmp_path, count=5, seed=42)
         assert probes == []
 
+    # -- Bead 4: INFO-level summary and timing logs --
+
+    def test_generate_probes_logs_symbol_summary(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import generate_probes
+
+        with caplog.at_level(logging.INFO, logger="codeprobe"):
+            generate_probes(py_repo, count=5, seed=42)
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.name == "codeprobe.probe.generator"
+            and "symbol" in r.getMessage().lower()
+        ]
+        assert len(summary_records) >= 1
+        msg = summary_records[0].getMessage()
+        assert "function" in msg or "class" in msg or "method" in msg
+
+    def test_generate_probes_logs_per_template_counts(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import generate_probes
+
+        with caplog.at_level(logging.INFO, logger="codeprobe"):
+            generate_probes(py_repo, count=5, seed=42)
+        template_records = [
+            r
+            for r in caplog.records
+            if r.name == "codeprobe.probe.generator" and "Generated" in r.getMessage()
+        ]
+        assert len(template_records) >= 1
+        msg = template_records[0].getMessage()
+        assert re.search(r"\d+", msg)
+        assert "find_function" in msg or "count_callers" in msg
+
+    def test_generate_probes_logs_wall_clock_time(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import generate_probes
+
+        with caplog.at_level(logging.INFO, logger="codeprobe"):
+            generate_probes(py_repo, count=5, seed=42)
+        time_records = [
+            r
+            for r in caplog.records
+            if r.name == "codeprobe.probe.generator"
+            and re.search(r"\d+(\.\d+)?\s*s", r.getMessage())
+        ]
+        assert len(time_records) >= 1
+
+    def test_generate_probes_empty_repo_still_logs(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import generate_probes
+
+        with caplog.at_level(logging.INFO, logger="codeprobe"):
+            probes = generate_probes(tmp_path)
+        assert probes == []
+        summary_records = [
+            r
+            for r in caplog.records
+            if r.name == "codeprobe.probe.generator"
+            and "symbol" in r.getMessage().lower()
+        ]
+        assert len(summary_records) >= 1
+        msg = summary_records[0].getMessage()
+        assert "0" in msg
+
+
+# ---------------------------------------------------------------------------
+# Probe logging — DEBUG level (bead 5)
+# ---------------------------------------------------------------------------
+
+
+class TestSlowGenerationWarning:
+    def test_generate_probes_warns_on_slow_run(
+        self,
+        py_repo: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from codeprobe.probe.generator import generate_probes
+
+        # Simulate >60s elapsed by patching time.perf_counter
+        call_count = 0
+
+        def fake_perf_counter() -> float:
+            nonlocal call_count
+            call_count += 1
+            # First call returns 0.0, all subsequent return 65.0
+            return 0.0 if call_count == 1 else 65.0
+
+        import codeprobe.probe.generator as gen_mod
+
+        monkeypatch.setattr(gen_mod.time, "perf_counter", fake_perf_counter)
+
+        with caplog.at_level(logging.WARNING, logger="codeprobe"):
+            generate_probes(py_repo, count=5, seed=42)
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and ("--lang" in r.getMessage() or "--count" in r.getMessage())
+        ]
+        assert len(warning_records) >= 1
+
+    def test_generate_probes_no_warning_on_fast_run(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import generate_probes
+
+        with caplog.at_level(logging.WARNING, logger="codeprobe"):
+            generate_probes(py_repo, count=5, seed=42)
+        warning_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "Probe generation took" in r.getMessage()
+        ]
+        assert len(warning_records) == 0
+
+    def test_collect_symbols_debug_logs_per_file(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import collect_symbols
+
+        with caplog.at_level(logging.DEBUG, logger="codeprobe"):
+            collect_symbols(py_repo)
+        debug_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and r.name == "codeprobe.probe.generator"
+            and "extracted" in r.getMessage()
+        ]
+        assert len(debug_records) >= 1
+
+    def test_collect_symbols_debug_logs_skip_reason(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        pkg = tmp_path / "pkg"
+        pkg.mkdir()
+        # A binary .py file
+        (pkg / "fake.py").write_bytes(b"\x00\x01\x02")
+        # A normal .py file
+        (pkg / "good.py").write_text("def hello(): pass\n", encoding="utf-8")
+
+        from codeprobe.probe.generator import collect_symbols
+
+        with caplog.at_level(logging.DEBUG, logger="codeprobe"):
+            collect_symbols(tmp_path)
+        skip_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and "skip" in r.getMessage()
+            and "fake.py" in r.getMessage()
+        ]
+        assert len(skip_records) >= 1
+
+    def test_collect_symbols_does_not_log_skip_at_info_level(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import collect_symbols
+
+        with caplog.at_level(logging.INFO, logger="codeprobe"):
+            collect_symbols(py_repo)
+        skip_records = [r for r in caplog.records if "skip" in r.getMessage().lower()]
+        assert len(skip_records) == 0
+
+    def test_compute_caller_count_debug_logs_timing(
+        self, py_repo: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from codeprobe.probe.generator import compute_caller_count
+
+        with caplog.at_level(logging.DEBUG, logger="codeprobe"):
+            compute_caller_count(py_repo, "compute_total")
+        timing_records = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG
+            and "caller count" in r.getMessage()
+            and re.search(r"\d+(\.\d+)?\s*s", r.getMessage())
+        ]
+        assert len(timing_records) >= 1
+
 
 # ---------------------------------------------------------------------------
 # write_probe_tasks
@@ -327,6 +515,81 @@ class TestWriteProbeTasks:
         assert "answer" in gt
         assert "answer_type" in gt
         assert "template" in gt
+
+    def test_test_sh_reads_agent_output_env_var(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        """test.sh must read from $AGENT_OUTPUT first (sandbox contract)."""
+        from codeprobe.probe.generator import generate_probes
+        from codeprobe.probe.writer import write_probe_tasks
+
+        probes = generate_probes(py_repo, count=1, seed=42)
+        created = write_probe_tasks(probes, tmp_path / "output")
+        test_sh = (created[0] / "tests" / "test.sh").read_text()
+        assert "AGENT_OUTPUT" in test_sh
+
+    def test_test_sh_passes_with_agent_output_env(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        """test.sh scores correctly when $AGENT_OUTPUT points to answer file."""
+        import subprocess
+
+        from codeprobe.probe.generator import generate_probes
+        from codeprobe.probe.writer import write_probe_tasks
+
+        probes = generate_probes(py_repo, count=1, seed=42)
+        # Pick the first find_function probe (answer is a file path)
+        ff_probes = [p for p in probes if p.template_name == "find_function"]
+        if not ff_probes:
+            pytest.skip("No find_function probe generated")
+        created = write_probe_tasks(ff_probes[:1], tmp_path / "output")
+        task_dir = created[0]
+        gt = json.loads((task_dir / "tests" / "ground_truth.json").read_text())
+
+        # Write correct answer to a file and pass via AGENT_OUTPUT
+        answer_file = tmp_path / "agent_output.txt"
+        answer_file.write_text(gt["answer"], encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(task_dir / "tests" / "test.sh")],
+            env={**{"AGENT_OUTPUT": str(answer_file), "PATH": "/usr/bin:/bin"}},
+            cwd=str(task_dir),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, f"stdout={result.stdout} stderr={result.stderr}"
+        assert "PASS" in result.stdout
+
+    def test_test_sh_fails_with_wrong_answer(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        """test.sh exits non-zero when given the wrong answer."""
+        import subprocess
+
+        from codeprobe.probe.generator import generate_probes
+        from codeprobe.probe.writer import write_probe_tasks
+
+        probes = generate_probes(py_repo, count=1, seed=42)
+        ff_probes = [p for p in probes if p.template_name == "find_function"]
+        if not ff_probes:
+            pytest.skip("No find_function probe generated")
+        created = write_probe_tasks(ff_probes[:1], tmp_path / "output")
+        task_dir = created[0]
+
+        answer_file = tmp_path / "agent_output.txt"
+        answer_file.write_text("totally/wrong/path.py", encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(task_dir / "tests" / "test.sh")],
+            env={**{"AGENT_OUTPUT": str(answer_file), "PATH": "/usr/bin:/bin"}},
+            cwd=str(task_dir),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode != 0
+        assert "FAIL" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -461,9 +724,7 @@ class TestProbeCLI:
         # With -q, the codeprobe logger is set to WARNING, so INFO
         # messages like "Scanning" and "Probe generation complete"
         # should not appear in the captured log records.
-        info_messages = [
-            r.message for r in caplog.records if r.levelno == logging.INFO
-        ]
+        info_messages = [r.message for r in caplog.records if r.levelno == logging.INFO]
         assert not any("Scanning" in m for m in info_messages)
         assert not any("Probe generation complete" in m for m in info_messages)
 
@@ -491,9 +752,7 @@ class TestProbeCLI:
         assert "Scanning" in result.output
         assert "Probe generation complete" in result.output
 
-    def test_probe_no_symbols_logs_warning(
-        self, tmp_path: Path
-    ) -> None:
+    def test_probe_no_symbols_logs_warning(self, tmp_path: Path) -> None:
         runner = CliRunner()
         empty_repo = tmp_path / "empty"
         empty_repo.mkdir()
@@ -506,9 +765,7 @@ class TestProbeCLI:
         # captured in result.output by CliRunner.
         assert "no suitable symbols" in result.output
 
-    def test_probe_final_summary_on_stdout(
-        self, py_repo: Path, tmp_path: Path
-    ) -> None:
+    def test_probe_final_summary_on_stdout(self, py_repo: Path, tmp_path: Path) -> None:
         runner = CliRunner()
         output_dir = tmp_path / "probes"
         result = runner.invoke(

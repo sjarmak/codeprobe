@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from codeprobe.adapters.protocol import AgentConfig, AgentOutput
+
+
+@pytest.fixture(autouse=True)
+def _reset_codeprobe_logger():
+    """Ensure the codeprobe logger is clean before and after every test.
+
+    _configure_logging() sets propagate=False and attaches a StreamHandler.
+    Without cleanup, caplog-based assertions in later tests silently fail
+    because records never propagate to pytest's capture handler.
+    """
+    yield
+    logger = logging.getLogger("codeprobe")
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+    logger.propagate = True
+    logger.setLevel(logging.WARNING)
 
 
 class FakeAdapter:

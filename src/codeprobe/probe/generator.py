@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import random
 import re
+import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_COUNT = 30
 MIN_PROBES = 5
 MAX_PROBES = 50
+SLOW_GENERATION_THRESHOLD_SEC = 60
 
 SKIP_DIRS: frozenset[str] = frozenset(
     {
@@ -280,22 +283,29 @@ def collect_symbols(repo_root: Path, lang_filter: str | None = None) -> list[Sym
             ext = fpath.suffix
             if ext not in extensions:
                 continue
+            rel_path = str(fpath.relative_to(repo_root))
             if _should_skip_file(fpath):
+                logger.debug("skip pattern: %s", rel_path)
                 continue
             if _is_binary_file(fpath):
+                logger.debug("skip binary: %s", rel_path)
                 continue
 
-            rel_path = str(fpath.relative_to(repo_root))
             try:
                 content = fpath.read_text(encoding="utf-8", errors="replace")
-            except (OSError, PermissionError):
+            except (OSError, PermissionError) as exc:
+                logger.debug("skip read-error: %s (%s)", rel_path, exc)
                 continue
 
             lang = extensions[ext]
             if lang == "python":
-                symbols.extend(extract_python_symbols(content, rel_path))
+                file_symbols = extract_python_symbols(content, rel_path)
             elif lang == "typescript":
-                symbols.extend(extract_typescript_symbols(content, rel_path))
+                file_symbols = extract_typescript_symbols(content, rel_path)
+            else:
+                file_symbols = []
+            logger.debug("extracted %d symbols from %s", len(file_symbols), rel_path)
+            symbols.extend(file_symbols)
 
     return symbols
 
@@ -307,7 +317,9 @@ def collect_symbols(repo_root: Path, lang_filter: str | None = None) -> list[Sym
 
 def compute_caller_count(repo_root: Path, symbol_name: str) -> int:
     """Count how many files import or reference a symbol by name."""
+    t0 = time.perf_counter()
     count = 0
+    files_scanned = 0
     pattern = re.compile(r"\b" + re.escape(symbol_name) + r"\b")
     seen_files: set[str] = set()
 
@@ -324,12 +336,19 @@ def compute_caller_count(repo_root: Path, symbol_name: str) -> int:
                 content = fpath.read_text(encoding="utf-8", errors="replace")
             except (OSError, PermissionError):
                 continue
+            files_scanned += 1
             if pattern.search(content):
                 seen_files.add(rel)
                 count += 1
 
     # Subtract 1 for the defining file itself
-    return max(0, count - 1)
+    result = max(0, count - 1)
+    elapsed = time.perf_counter() - t0
+    logger.debug(
+        "caller count for '%s': %d (%.2fs, %d files scanned)",
+        symbol_name, result, elapsed, files_scanned,
+    )
+    return result
 
 
 def check_module_dependency(repo_root: Path, module_a: str, module_b: str) -> bool:
@@ -595,13 +614,28 @@ def generate_probes(
     Returns:
         List of Probe objects. Empty if no symbols found.
     """
+    t0 = time.perf_counter()
+
     if seed is not None:
         random.seed(seed)
 
     templates = BUILTIN_TEMPLATES
     symbols = collect_symbols(repo_root, lang_filter)
 
+    # Symbol summary (always logged, even when empty, to aid debugging)
+    kind_counts = Counter(s.kind for s in symbols)
+    file_count = len({s.file_path for s in symbols})
+    kind_parts = ", ".join(
+        "%d %ss" % (kind_counts[k], k) for k in sorted(kind_counts)
+    )
+    logger.info(
+        "Collected %d symbols (%s) from %d files",
+        len(symbols), kind_parts or "none", file_count,
+    )
+
     if not symbols:
+        elapsed = time.perf_counter() - t0
+        logger.info("Probe generation completed in %.1fs", elapsed)
         return []
 
     # Distribute count across probe types (roughly equal)
@@ -623,5 +657,22 @@ def generate_probes(
     # Trim to requested count
     if len(probes) > count:
         probes = random.sample(probes, count)
+
+    # Per-template summary
+    template_counts = Counter(p.template_name for p in probes)
+    template_parts = ", ".join(
+        "%d %s" % (template_counts[t], t) for t in sorted(template_counts)
+    )
+    logger.info("Generated %s probes", template_parts)
+
+    elapsed = time.perf_counter() - t0
+    if elapsed > SLOW_GENERATION_THRESHOLD_SEC:
+        logger.warning(
+            "Probe generation took %.1fs (>%ds). Consider --lang to filter "
+            "or reducing --count.",
+            elapsed,
+            SLOW_GENERATION_THRESHOLD_SEC,
+        )
+    logger.info("Probe generation completed in %.1fs", elapsed)
 
     return probes

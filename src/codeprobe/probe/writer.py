@@ -122,8 +122,10 @@ fi
 EXPECTED=$(python3 -c "import json; print(json.load(open('$GT_FILE'))['answer'])")
 ANSWER_TYPE=$(python3 -c "import json; print(json.load(open('$GT_FILE'))['answer_type'])")
 
-# Read agent output from answer.txt or stdin
-if [ -f answer.txt ]; then
+# Read agent output: $AGENT_OUTPUT (sandbox), answer.txt (manual), or stdin
+if [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then
+    ACTUAL=$(cat "$AGENT_OUTPUT")
+elif [ -f answer.txt ]; then
     ACTUAL=$(cat answer.txt)
 else
     ACTUAL=$(cat)

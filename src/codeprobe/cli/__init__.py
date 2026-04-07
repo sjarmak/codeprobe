@@ -1,18 +1,91 @@
 """CLI entry point for codeprobe."""
 
+import json as _json
+import logging
+import sys
+
 import click
 
 from codeprobe import __version__
 
 
+class _JsonFormatter(logging.Formatter):
+    """Emit one JSON object per log line."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+        }
+        return _json.dumps(payload)
+
+
+def _configure_logging(
+    verbose: int, quiet: bool, log_format: str = "text"
+) -> None:
+    """Configure namespace-scoped logging for codeprobe.* modules.
+
+    Attaches a StreamHandler to `logging.getLogger("codeprobe")` so that
+    all 26+ codeprobe.* modules emit through hierarchy without touching
+    third-party loggers (httpx, urllib3, etc.).
+    """
+    if quiet:
+        level = logging.WARNING
+    elif verbose >= 1:
+        level = logging.DEBUG
+    else:
+        level = logging.INFO
+
+    logger = logging.getLogger("codeprobe")
+    logger.setLevel(level)
+    logger.propagate = False  # don't bubble to root
+
+    # Idempotent: tests / repeat invocations must not duplicate handlers.
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+
+    handler = logging.StreamHandler(sys.stderr)
+    if log_format == "json":
+        handler.setFormatter(_JsonFormatter())
+    elif verbose >= 1:
+        fmt = "%(levelname)s %(name)s: %(message)s"
+        handler.setFormatter(logging.Formatter(fmt))
+    else:
+        fmt = "%(levelname)s: %(message)s"
+        handler.setFormatter(logging.Formatter(fmt))
+    logger.addHandler(handler)
+
+
 @click.group()
+@click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Increase log verbosity (-v sets DEBUG).",
+)
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress INFO logs (WARNING and above only).",
+)
+@click.option(
+    "--log-format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Log output format (default: text). 'json' emits one JSON object per line.",
+)
 @click.version_option(version=__version__, prog_name="codeprobe")
-def main() -> None:
+def main(verbose: int, quiet: bool, log_format: str) -> None:
     """Benchmark AI coding agents against your own codebase.
 
     Mine real tasks from your repo history, run agents against them,
     and interpret the results to find which setup works best for YOUR code.
     """
+    _configure_logging(verbose=verbose, quiet=quiet, log_format=log_format)
 
 
 @main.command()
