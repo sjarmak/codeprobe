@@ -29,12 +29,44 @@ Ask the user:
 
 Map selection to mining parameters:
 
-| Goal                  | `MIN_FILES`     | Difficulty bias                         | Rationale                                            |
-| --------------------- | --------------- | --------------------------------------- | ---------------------------------------------------- |
-| MCP / tool comparison | `--min-files 6` | Hard: cross-file, deep navigation       | Easy tasks don't differentiate MCP from agentic grep |
-| Model comparison      | `--min-files 2` | Mixed: need variance to separate models |                                                      |
-| Prompt comparison     | `--min-files 2` | Mixed                                   |                                                      |
-| General benchmarking  | (no filter)     | Balanced                                |                                                      |
+| Goal                  | Mining mode                                       | Rationale                                            |
+| --------------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| MCP / tool comparison | `--org-scale --mcp-families` (see MCP flow below) | Org-scale comprehension tasks designed for MCP delta |
+| Model comparison      | SDLC `--min-files 2`, mixed difficulty            | Need variance to separate models                     |
+| Prompt comparison     | SDLC `--min-files 2`, mixed difficulty            | Variety of task types                                |
+| General benchmarking  | SDLC (no filter), balanced                        | Broad coverage                                       |
+
+### MCP / Tool Comparison Flow
+
+When the user selects MCP comparison, switch to org-scale mining with MCP families:
+
+**Question 2b** -- Header: "Sourcegraph repo identifier"
+
+- Question: "What's the Sourcegraph repo name? (e.g., github.com/sg-evals/kubernetes-api)"
+- This is needed so the ground truth can be enriched via Sourcegraph `find_references`, and so the preamble knows which repo to scope queries to.
+- If user doesn't know, derive from the repo's git remote: `github.com/sg-evals/{repo_name}`
+
+**Question 2c** -- Header: "Which MCP families?"
+
+- Options (all selected by default):
+  - **symbol-reference-trace** -- Find all files referencing a symbol (catches aliases, re-exports)
+  - **type-hierarchy-consumers** -- Find implementations and consumers of base classes
+  - **change-scope-audit** -- Blast radius: all files affected by changing a symbol
+- Or: **All MCP families** (default)
+
+Then run:
+
+```bash
+source .env.local 2>/dev/null  # Load SOURCEGRAPH_ACCESS_TOKEN if present
+export SOURCEGRAPH_TOKEN="${SOURCEGRAPH_ACCESS_TOKEN:-}"
+
+codeprobe mine {REPO_PATH} --org-scale --mcp-families \
+  --count {TASK_COUNT} --no-interactive --no-llm \
+  --family {SELECTED_FAMILIES...} \
+  --sg-repo {SG_REPO}
+```
+
+Skip Phase 1 questions about git host (not needed for org-scale mining).
 
 ---
 
