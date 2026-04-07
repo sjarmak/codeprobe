@@ -129,7 +129,7 @@ class TestMineSymbolReferenceTasks:
         task = tasks[0]
         assert task.metadata.category == "symbol-reference-trace"
         assert task.verification.oracle_type == "file_list"
-        assert task.instruction_variant_path == "instruction_discovery.md"
+        assert task.instruction_variant_path is None
         assert task.metadata.org_scale is True
         assert len(task.verification.oracle_answer) >= 5
 

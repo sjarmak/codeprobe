@@ -22,9 +22,7 @@ class _JsonFormatter(logging.Formatter):
         return _json.dumps(payload)
 
 
-def _configure_logging(
-    verbose: int, quiet: bool, log_format: str = "text"
-) -> None:
+def _configure_logging(verbose: int, quiet: bool, log_format: str = "text") -> None:
     """Configure namespace-scoped logging for codeprobe.* modules.
 
     Attaches a StreamHandler to `logging.getLogger("codeprobe")` so that
@@ -363,6 +361,11 @@ def init_experiment(path: str, name: str, description: str) -> None:
 @click.option(
     "--mcp-config", default=None, help="MCP config as JSON string or file path."
 )
+@click.option(
+    "--instruction-variant",
+    default=None,
+    help="Instruction file variant (e.g., instruction_mcp.md). Default: instruction.md.",
+)
 def add_config(
     path: str,
     label: str,
@@ -370,6 +373,7 @@ def add_config(
     model: str | None,
     permission_mode: str,
     mcp_config: str | None,
+    instruction_variant: str | None,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
@@ -381,6 +385,7 @@ def add_config(
         model=model,
         permission_mode=permission_mode,
         mcp_config_str=mcp_config,
+        instruction_variant=instruction_variant,
     )
 
 

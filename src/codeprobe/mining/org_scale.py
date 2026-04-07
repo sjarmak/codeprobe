@@ -524,6 +524,7 @@ def _mine_symbol_reference_tasks(
                     issue_title=heading,
                     issue_body=question,
                     ground_truth_commit=commit_sha,
+                    sg_repo=sg_repo,
                 ),
                 verification=TaskVerification(
                     type="oracle",
@@ -533,7 +534,7 @@ def _mine_symbol_reference_tasks(
                     oracle_answer=tuple(sorted(enriched_files)),
                     oracle_tiers=oracle_tiers,
                 ),
-                instruction_variant_path="instruction_discovery.md",
+                instruction_variant_path=None,
             )
         )
         logger.info(
@@ -606,7 +607,7 @@ def _mine_type_hierarchy_tasks(
                     oracle_answer=tuple(sorted(ground_truth)),
                     oracle_tiers=oracle_tiers,
                 ),
-                instruction_variant_path="instruction_discovery.md",
+                instruction_variant_path=None,
             )
         )
         logger.info(
@@ -674,6 +675,7 @@ def _mine_change_scope_tasks(
                     issue_title=heading,
                     issue_body=question,
                     ground_truth_commit=commit_sha,
+                    sg_repo=sg_repo,
                 ),
                 verification=TaskVerification(
                     type="oracle",
@@ -683,7 +685,7 @@ def _mine_change_scope_tasks(
                     oracle_answer=tuple(sorted(enriched_files)),
                     oracle_tiers=oracle_tiers,
                 ),
-                instruction_variant_path="instruction_discovery.md",
+                instruction_variant_path=None,
             )
         )
         logger.info(

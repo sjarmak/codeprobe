@@ -346,32 +346,21 @@ def _write_oracle_task(
     language = task.metadata.language or "unknown"
     question = task.metadata.issue_body or task.metadata.description
 
-    # instruction.md — question format, tells agent to write answer.txt
-    instruction = (
-        f"# {task.metadata.issue_title or task.metadata.name}\n\n"
-        f"**Repository:** {repo_name}\n"
-        f"**Language:** {language}\n\n"
-        "## Question\n\n"
-        f"{question}\n\n"
-        "## Answer Format\n\n"
-        "Write your answer to `answer.txt` in the repository root, "
-        "listing one file path per line. Do not include explanations "
-        "in the file — only file paths.\n\n"
-        "## Task Contract\n\n"
-        f"- `TASK_REPO_ROOT={repo_path}`\n"
-    )
-    (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
-
-    # instruction_discovery.md — same question with pattern/location hints stripped
+    # instruction.md — discovery question: no hints about specific symbols,
+    # file paths, or regex patterns.  The agent must discover everything.
     family_desc = _get_family_description(task.metadata.category)
     discovery_question = _strip_location_hints(question, family_desc)
-    if discovery_question != question:
-        discovery_instruction = (
-            f"# {task.metadata.issue_title or task.metadata.name}\n\n"
+    # Generic heading — never leaks symbol names or file paths
+    discovery_title = f"Find {task.metadata.category} patterns in {repo_name}"
+
+    def _build_instruction(q: str, extra_sections: str = "") -> str:
+        return (
+            f"# {discovery_title}\n\n"
             f"**Repository:** {repo_name}\n"
             f"**Language:** {language}\n\n"
             "## Question\n\n"
-            f"{discovery_question}\n\n"
+            f"{q}\n\n"
+            f"{extra_sections}"
             "## Answer Format\n\n"
             "Write your answer to `answer.txt` in the repository root, "
             "listing one file path per line. Do not include explanations "
@@ -379,8 +368,23 @@ def _write_oracle_task(
             "## Task Contract\n\n"
             f"- `TASK_REPO_ROOT={repo_path}`\n"
         )
-        (task_dir / "instruction_discovery.md").write_text(
-            discovery_instruction, encoding="utf-8"
+
+    (task_dir / "instruction.md").write_text(
+        _build_instruction(discovery_question), encoding="utf-8"
+    )
+
+    # instruction_mcp.md — same discovery question + SG repo and tool hint
+    if task.metadata.sg_repo:
+        mcp_extra = (
+            "## Tools Available\n\n"
+            "You have access to the Sourcegraph MCP server. Use the "
+            "`sg_find_references` tool to find cross-file references "
+            "that local grep may miss (aliases, re-exports, indirect "
+            "imports).\n\n"
+            f"**Sourcegraph repository:** `{task.metadata.sg_repo}`\n\n"
+        )
+        (task_dir / "instruction_mcp.md").write_text(
+            _build_instruction(discovery_question, mcp_extra), encoding="utf-8"
         )
 
     # ground_truth.json — oracle answer + commit + pattern provenance

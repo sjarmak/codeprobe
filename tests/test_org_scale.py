@@ -460,7 +460,7 @@ class TestWriteOracleTask:
 
         # Check instruction.md
         instruction = (result_path / "instruction.md").read_text()
-        assert "Find deprecated APIs" in instruction
+        assert "migration-inventory" in instruction
         assert "answer.txt" in instruction
         assert "Question" in instruction
 
@@ -694,8 +694,8 @@ class TestStripLocationHints:
         q = "Find all deprecated APIs in the repository."
         assert _strip_location_hints(q) == q
 
-    def test_discovery_variant_written(self, tmp_path: Path) -> None:
-        """_write_oracle_task creates instruction_discovery.md when hints are present."""
+    def test_instruction_md_strips_hints(self, tmp_path: Path) -> None:
+        """instruction.md is the discovery version with hints stripped."""
         from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
@@ -715,7 +715,6 @@ class TestStripLocationHints:
                 oracle_type="file_list",
                 oracle_answer=("src/a.py",),
             ),
-            instruction_variant_path="instruction_discovery.md",
         )
         task_dir = tmp_path / "tasks" / task.id
         task_dir.mkdir(parents=True)
@@ -724,9 +723,9 @@ class TestStripLocationHints:
 
         _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "disc-001")
 
-        discovery = task_dir / "instruction_discovery.md"
-        assert discovery.exists()
-        content = discovery.read_text()
+        instruction = task_dir / "instruction.md"
+        assert instruction.exists()
+        content = instruction.read_text()
         assert "`@Deprecated`" not in content
         assert "test-repo" in content
 

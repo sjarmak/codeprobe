@@ -42,6 +42,7 @@ class TaskMetadata:
     ground_truth_commits: tuple[
         tuple[str, str], ...
     ] = ()  # (repo_name, sha) pairs for multi-repo
+    sg_repo: str = ""  # Sourcegraph repo identifier for MCP instruction variant
 
 
 @dataclass(frozen=True)
