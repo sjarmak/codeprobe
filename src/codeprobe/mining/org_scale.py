@@ -254,7 +254,13 @@ def generate_org_scale_task(
 
     if no_llm:
         heading, question = _deterministic_question(family, scan_result, is_multi_hop)
-        difficulty = "medium" if is_multi_hop else "easy"
+        file_count = len(ground_truth_files)
+        if is_multi_hop or file_count > 10:
+            difficulty = "hard"
+        elif file_count > 3:
+            difficulty = "medium"
+        else:
+            difficulty = "easy"
         llm_succeeded = False
     else:
         heading, question, difficulty, llm_succeeded = _llm_question(
@@ -335,6 +341,9 @@ def _build_dep_trace_task(
 # ---------------------------------------------------------------------------
 
 
+_DIFFICULTY_RANK = {"hard": 0, "medium": 1, "easy": 2}
+
+
 def _mine_pattern_families(
     scan_results: list[FamilyScanResult],
     repo_paths: list[Path],
@@ -345,16 +354,17 @@ def _mine_pattern_families(
     max_files: int,
     include_multi_hop: bool,
 ) -> list[Task]:
-    """Generate tasks from pattern-based scan results (non-dep-trace)."""
-    tasks: list[Task] = []
+    """Generate tasks from pattern-based scan results (non-dep-trace).
+
+    Generates all candidate tasks, then returns the *count* hardest.
+    """
+    candidates: list[Task] = []
     for scan_result in scan_results:
-        if len(tasks) >= count:
-            break
         task = generate_org_scale_task(scan_result, no_llm=no_llm)
         if task is not None:
-            tasks.append(task)
+            candidates.append(task)
 
-        if include_multi_hop and scan_result.family.multi_hop and len(tasks) < count:
+        if include_multi_hop and scan_result.family.multi_hop:
             language = _guess_language(scan_result)
             multi_hop_files = find_callers_of_symbols(
                 repo_paths,
@@ -370,8 +380,11 @@ def _mine_pattern_families(
                     no_llm=no_llm,
                 )
                 if mh_task is not None:
-                    tasks.append(mh_task)
-    return tasks
+                    candidates.append(mh_task)
+
+    # Prefer harder tasks when we have more candidates than needed.
+    candidates.sort(key=lambda t: _DIFFICULTY_RANK.get(t.metadata.difficulty, 1))
+    return candidates[:count]
 
 
 def _mine_dep_trace(
@@ -780,19 +793,39 @@ def mine_org_scale_tasks(
     # Build multi-repo commits mapping
     commits = tuple((rp.name, get_head_sha(rp)) for rp in repo_paths)
 
-    tasks = _mine_pattern_families(
-        scan_results,
-        repo_paths,
-        all_tracked,
-        count=count,
-        no_llm=no_llm,
-        max_files=max_files,
-        include_multi_hop=include_multi_hop,
-    )
+    tasks: list[Task] = []
 
-    # Stamp multi-repo commits onto tasks when there are multiple repos
-    if len(repo_paths) > 1:
-        tasks = [_stamp_multi_repo_commits(t, commits) for t in tasks]
+    # MCP-advantaged families first when requested — these are the primary
+    # signal for MCP comparison experiments and are always hard difficulty.
+    if include_mcp_families:
+        mcp_tasks = _mine_mcp_families(
+            repo_paths,
+            all_tracked,
+            count=count,
+            no_llm=no_llm,
+            sg_repo=sg_repo,
+        )
+        if len(repo_paths) > 1:
+            mcp_tasks = [_stamp_multi_repo_commits(t, commits) for t in mcp_tasks]
+        tasks.extend(mcp_tasks)
+
+    # Fill remaining slots with pattern families
+    if len(tasks) < count:
+        pattern_tasks = _mine_pattern_families(
+            scan_results,
+            repo_paths,
+            all_tracked,
+            count=count - len(tasks),
+            no_llm=no_llm,
+            max_files=max_files,
+            include_multi_hop=include_multi_hop,
+        )
+
+        if len(repo_paths) > 1:
+            pattern_tasks = [
+                _stamp_multi_repo_commits(t, commits) for t in pattern_tasks
+            ]
+        tasks.extend(pattern_tasks)
 
     if want_dep and len(tasks) < count:
         dep_tasks = _mine_dep_trace(
@@ -805,19 +838,6 @@ def mine_org_scale_tasks(
         if len(repo_paths) > 1:
             dep_tasks = [_stamp_multi_repo_commits(t, commits) for t in dep_tasks]
         tasks.extend(dep_tasks)
-
-    # MCP-advantaged families (opt-in via --mcp-families)
-    if include_mcp_families and len(tasks) < count:
-        mcp_tasks = _mine_mcp_families(
-            repo_paths,
-            all_tracked,
-            count=count - len(tasks),
-            no_llm=no_llm,
-            sg_repo=sg_repo,
-        )
-        if len(repo_paths) > 1:
-            mcp_tasks = [_stamp_multi_repo_commits(t, commits) for t in mcp_tasks]
-        tasks.extend(mcp_tasks)
 
     if not tasks:
         logger.info("No org-scale tasks generated from %s", repo_paths)

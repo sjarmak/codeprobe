@@ -54,7 +54,7 @@ When the user selects MCP comparison, switch to org-scale mining with MCP famili
   - **change-scope-audit** -- Blast radius: all files affected by changing a symbol
 - Or: **All MCP families** (default)
 
-Then run:
+Then run (always `--no-llm` — enrichment happens via subagent below):
 
 ```bash
 source .env.local 2>/dev/null  # Load SOURCEGRAPH_ACCESS_TOKEN if present
@@ -65,6 +65,16 @@ codeprobe mine {REPO_PATH} --org-scale --mcp-families \
   --family {SELECTED_FAMILIES...} \
   --sg-repo {SG_REPO}
 ```
+
+### Post-mine enrichment (subagent)
+
+After mining completes, spawn a subagent to enrich each task's `instruction.md`:
+
+1. For each task directory under `{REPO_PATH}/tasks/`:
+   - Read the generated `instruction.md` and `ground_truth.json`
+   - Rewrite the instruction to be a clear, challenging discovery question that does NOT leak file paths or pattern hints from the ground truth
+   - Assess difficulty based on the ground truth scope (file count, cross-directory spread, multi-hop reasoning required) and update `metadata.json`
+2. This runs inside the existing Claude Code session — no API key needed.
 
 Skip Phase 1 questions about git host (not needed for org-scale mining).
 

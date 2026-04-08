@@ -11,6 +11,8 @@ import pytest
 
 from codeprobe.mining.org_scale import (
     OrgScaleMineResult,
+    _DIFFICULTY_RANK,
+    _mine_pattern_families,
     generate_org_scale_task,
     mine_org_scale_tasks,
 )
@@ -422,6 +424,74 @@ class TestGenerateOrgScaleTask:
         # Falls back to deterministic — still produces a task
         assert task is not None
         assert task.metadata.enrichment_source == ""
+
+
+# ---------------------------------------------------------------------------
+# Difficulty prioritization tests
+# ---------------------------------------------------------------------------
+
+
+class TestDifficultyPrioritization:
+    """Ensure mining always prefers harder tasks."""
+
+    def _make_scan_result(
+        self, tmp_path: Path, n_files: int, family: TaskFamily | None = None
+    ) -> FamilyScanResult:
+        files = frozenset(f"src/f{i}.py" for i in range(n_files))
+        hits = tuple(
+            PatternHit(f, 1, "@deprecated", r"@deprecated") for f in sorted(files)
+        )
+        return FamilyScanResult(
+            family=family or MIGRATION_INVENTORY,
+            hits=hits,
+            repo_paths=(tmp_path,),
+            commit_sha="abc12345deadbeef",
+            matched_files=files,
+        )
+
+    def test_no_llm_difficulty_uses_file_count(self, tmp_path: Path) -> None:
+        """--no-llm difficulty scales with ground truth file count, not hardcoded easy."""
+        small = self._make_scan_result(tmp_path, n_files=2)
+        medium = self._make_scan_result(tmp_path, n_files=5)
+        large = self._make_scan_result(tmp_path, n_files=15)
+
+        t_small = generate_org_scale_task(small, no_llm=True)
+        t_medium = generate_org_scale_task(medium, no_llm=True)
+        t_large = generate_org_scale_task(large, no_llm=True)
+
+        assert t_small is not None and t_small.metadata.difficulty == "easy"
+        assert t_medium is not None and t_medium.metadata.difficulty == "medium"
+        assert t_large is not None and t_large.metadata.difficulty == "hard"
+
+    def test_multi_hop_always_hard(self, tmp_path: Path) -> None:
+        scan = self._make_scan_result(tmp_path, n_files=2)
+        caller_files = frozenset({"src/c1.py", "src/c2.py", "src/c3.py"})
+        task = generate_org_scale_task(scan, multi_hop_files=caller_files, no_llm=True)
+        assert task is not None
+        assert task.metadata.difficulty == "hard"
+
+    def test_pattern_families_prefer_harder(self, tmp_path: Path) -> None:
+        """_mine_pattern_families sorts by difficulty, returning hardest first."""
+        # Create scan results that will produce different difficulties.
+        # 2 files → easy, 5 files → medium, 15 files → hard
+        scans = [
+            self._make_scan_result(tmp_path, n_files=2),
+            self._make_scan_result(tmp_path, n_files=15),
+            self._make_scan_result(tmp_path, n_files=5),
+        ]
+        tasks = _mine_pattern_families(
+            scans,
+            [tmp_path],
+            frozenset(),
+            count=2,
+            no_llm=True,
+            max_files=100,
+            include_multi_hop=False,
+        )
+        assert len(tasks) == 2
+        # Hardest should come first
+        assert tasks[0].metadata.difficulty == "hard"
+        assert tasks[1].metadata.difficulty == "medium"
 
 
 # ---------------------------------------------------------------------------
