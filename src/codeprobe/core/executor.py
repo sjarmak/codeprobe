@@ -443,6 +443,7 @@ def execute_config(
     parallel: int = 1,
     isolation: IsolationStrategy | None = None,
     repeats: int = 1,
+    clean_excludes: tuple[str, ...] = (),
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -460,20 +461,6 @@ def execute_config(
     results are returned.  Tasks with ``unknown`` or ``subscription``
     cost models are skipped in accumulation.
     """
-    # Compute directories to exclude from git clean so that experiment
-    # artifacts (runs/, tasks/, experiment.json) survive between tasks.
-    # runs_dir is e.g. <repo>/mcp-comparison/runs/baseline — walk up to
-    # find the experiment root relative to repo_path.
-    _clean_excludes: tuple[str, ...] = ()
-    if runs_dir is not None:
-        try:
-            exp_root = runs_dir.resolve().parent.parent  # runs/<label> → exp dir
-            rel = exp_root.relative_to(repo_path.resolve())
-            # Exclude the top-level experiment directory name
-            _clean_excludes = (str(rel).split("/")[0],)
-        except ValueError:
-            pass  # experiment dir is outside the repo — nothing to exclude
-
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
     # Filter checkpointed results to only include tasks in the current
@@ -578,7 +565,7 @@ def execute_config(
             # Reset working directory between tasks so leftovers from
             # task N don't corrupt task N+1's results.
             if idx > 0:
-                _git_reset_workdir(repo_path, extra_excludes=_clean_excludes)
+                _git_reset_workdir(repo_path, extra_excludes=clean_excludes)
             task_result = _run_one(task_dir, repeat_index=repeat_index)
             _handle_result(task_result)
     else:

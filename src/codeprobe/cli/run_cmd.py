@@ -183,10 +183,22 @@ def run_eval(
 
         click.echo(f"\nRunning config: {exp_config.label} ({len(task_dirs)} tasks)")
 
+        # Compute directories to exclude from git clean between sequential
+        # tasks so the experiment dir (untracked) isn't deleted.
+        _clean_excludes: tuple[str, ...] = ()
+        resolved_repo = Path(path).resolve()
+        try:
+            rel = exp_dir.resolve().relative_to(resolved_repo)
+            top_dir = str(rel).split("/")[0]
+            if top_dir and top_dir != ".":
+                _clean_excludes = (top_dir,)
+        except ValueError:
+            pass  # experiment dir is outside the repo
+
         results = execute_config(
             adapter=config_adapter,
             task_dirs=task_dirs,
-            repo_path=Path(path).resolve(),
+            repo_path=resolved_repo,
             experiment_config=exp_config,
             agent_config=agent_config,
             checkpoint_store=checkpoint_store,
@@ -195,6 +207,7 @@ def run_eval(
             max_cost_usd=max_cost_usd,
             parallel=parallel,
             repeats=repeats,
+            clean_excludes=_clean_excludes,
         )
 
         if owns_sandbox:

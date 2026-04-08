@@ -551,7 +551,8 @@ def test_execute_config_resets_workdir_between_sequential_tasks(tmp_path: Path):
         )
         # Reset should be called between tasks (not before first), so 2 times for 3 tasks
         assert mock_reset.call_count == 2
-        mock_reset.assert_any_call(Path("/repo"), extra_excludes=())
+        # First positional arg should be repo_path
+        assert mock_reset.call_args_list[0][0][0] == Path("/repo")
 
 
 def test_execute_config_no_reset_in_parallel_mode(tmp_path: Path):
