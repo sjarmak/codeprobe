@@ -88,6 +88,14 @@ def _base_prompt(
     references the worktree instead of the original repo path.
     """
     effective_path = worktree_path if worktree_path is not None else repo_path
+    # Rewrite TASK_REPO_ROOT in the instruction so agents write to the
+    # worktree, not the original repo (avoids cross-task collisions and
+    # ensures answer.txt lands where the executor expects it).
+    if worktree_path is not None:
+        instruction = instruction.replace(
+            f"TASK_REPO_ROOT={repo_path}",
+            f"TASK_REPO_ROOT={worktree_path}",
+        )
     return (
         f"You are working on the repository at {effective_path}. "
         "Follow the instruction below.\n\n"

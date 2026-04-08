@@ -617,8 +617,8 @@ class TestWorktreeIsolation:
             assert isinstance(wt, Path)
             assert "slot-0" in str(wt)
 
-    def test_reset_calls_git_checkout_and_clean(self, tmp_path: Path) -> None:
-        """reset() runs git checkout -- . and git clean -fd."""
+    def test_reset_calls_git_restore_and_clean(self, tmp_path: Path) -> None:
+        """reset() runs git restore . and git clean -fd."""
         iso = WorktreeIsolation(tmp_path, pool_size=1)
         wt = tmp_path / "worktree"
         wt.mkdir()
@@ -626,7 +626,7 @@ class TestWorktreeIsolation:
             iso.reset(wt)
             assert mock_run.call_count == 2
             calls = [c[0][0] for c in mock_run.call_args_list]
-            assert calls[0] == ["git", "checkout", "--", "."]
+            assert calls[0] == ["git", "restore", "."]
             assert calls[1] == [
                 "git",
                 "clean",

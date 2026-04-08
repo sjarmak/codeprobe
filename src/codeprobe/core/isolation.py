@@ -12,6 +12,38 @@ from typing import Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 
+def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) -> None:
+    """Restore tracked files and remove untracked files in *workdir*.
+
+    Uses ``git restore .`` (tolerant of empty diffs) followed by
+    ``git clean -fd``.  Always excludes ``.codeprobe`` and
+    ``.codeprobe-worktrees``; pass *extra_excludes* for more.
+    """
+    result = subprocess.run(
+        ["git", "restore", "."],
+        cwd=workdir,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace")
+        # "could not resolve HEAD" is expected in a truly empty/detached
+        # worktree — not worth warning about.
+        if "could not resolve" not in stderr:
+            logger.debug("git restore in %s: %s", workdir, stderr)
+    clean_cmd = [
+        "git",
+        "clean",
+        "-fd",
+        "-e",
+        ".codeprobe",
+        "-e",
+        ".codeprobe-worktrees",
+    ]
+    for exc in extra_excludes:
+        clean_cmd += ["-e", exc]
+    subprocess.run(clean_cmd, cwd=workdir, check=True, capture_output=True)
+
+
 @runtime_checkable
 class IsolationStrategy(Protocol):
     """Protocol for workspace isolation strategies."""
@@ -79,26 +111,7 @@ class WorktreeIsolation:
     def reset(self, workspace: Path) -> None:
         """Reset a worktree to clean state."""
         try:
-            subprocess.run(
-                ["git", "checkout", "--", "."],
-                cwd=workspace,
-                check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                [
-                    "git",
-                    "clean",
-                    "-fd",
-                    "-e",
-                    ".codeprobe",
-                    "-e",
-                    ".codeprobe-worktrees",
-                ],
-                cwd=workspace,
-                check=True,
-                capture_output=True,
-            )
+            git_restore_clean(workspace)
         except subprocess.CalledProcessError as exc:
             logger.warning(
                 "Worktree reset failed for %s (exit %d): %s",

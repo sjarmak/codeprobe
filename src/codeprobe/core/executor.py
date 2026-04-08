@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import shutil
 import subprocess
 import threading
 from collections.abc import Callable
@@ -13,7 +14,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codeprobe.core.checkpoint import CheckpointStore
-from codeprobe.core.isolation import IsolationStrategy, WorktreeIsolation
+from codeprobe.core.isolation import (
+    IsolationStrategy,
+    WorktreeIsolation,
+    git_restore_clean,
+)
 from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
 from codeprobe.core.scoring import get_scorer, sanitize_secrets
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -255,18 +260,25 @@ def execute_task(
     # Done before error checks so partial results from timeouts are scored.
     effective_repo = worktree_path or repo_path
     answer_src = effective_repo / "answer.txt"
+    # Also check the original repo root — agent may have followed
+    # TASK_REPO_ROOT from the instruction (which points to the real repo
+    # when worktree_path wasn't rewritten in older instructions).
+    answer_fallback = repo_path / "answer.txt" if worktree_path else None
+    found_answer = None
     if answer_src.is_file():
+        found_answer = answer_src
+    elif answer_fallback is not None and answer_fallback.is_file():
+        found_answer = answer_fallback
+    if found_answer is not None:
         try:
-            import shutil
-
-            shutil.copy2(answer_src, task_dir / "answer.txt")
+            shutil.copy2(found_answer, task_dir / "answer.txt")
         except OSError:
             pass  # Non-fatal; scorer will report missing answer
 
     # If the agent failed with no output AND no answer.txt was produced,
     # return an error. But if answer.txt exists (e.g. agent timed out
     # after writing it), fall through to scoring.
-    has_answer = (task_dir / "answer.txt").is_file()
+    has_answer = found_answer is not None
     if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
         error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
         return TaskResult(
@@ -325,22 +337,11 @@ _BILLABLE_COST_MODELS = frozenset({"per_token"})
 def _git_reset_workdir(repo_path: Path) -> None:
     """Reset the working directory to a clean state between sequential tasks.
 
-    Runs ``git checkout -- .`` and ``git clean -fd`` to discard modifications
+    Runs ``git restore .`` and ``git clean -fd`` to discard modifications
     and remove untracked files so task N's leftovers don't corrupt task N+1.
     """
     try:
-        subprocess.run(
-            ["git", "checkout", "--", "."],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd", "-e", ".codeprobe", "-e", ".codeprobe-worktrees"],
-            cwd=repo_path,
-            check=True,
-            capture_output=True,
-        )
+        git_restore_clean(repo_path)
     except subprocess.CalledProcessError as exc:
         logger.warning(
             "Git reset failed (exit %d): %s",
