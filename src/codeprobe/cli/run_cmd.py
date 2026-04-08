@@ -212,7 +212,7 @@ def run_eval(
         results = execute_config(
             adapter=config_adapter,
             task_dirs=task_dirs,
-            repo_path=resolved_repo,
+            repo_path=repo_root,
             experiment_config=exp_config,
             agent_config=agent_config,
             checkpoint_store=checkpoint_store,
