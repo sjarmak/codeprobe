@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -501,3 +504,233 @@ class TestRunValidationRepoPaths:
         # NOT a flat list like [Path('/repo-a'), Path('/repo-b'), Path('/repo-a'), Path('/repo-b')]
         assert isinstance(repos_arg[0], list)
         assert all(isinstance(p, Path) for p in repos_arg[0])
+
+
+# ---------------------------------------------------------------------------
+# Budget warning visibility tests (phase0-budget-warning)
+# ---------------------------------------------------------------------------
+
+
+def _make_task_dir(base: Path, name: str, *, passing: bool = True) -> Path:
+    """Create a minimal task directory with instruction and test.sh."""
+    task_dir = base / name
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "instruction.md").write_text("Fix the bug.")
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir()
+    test_sh = tests_dir / "test.sh"
+    exit_code = 0 if passing else 1
+    test_sh.write_text(f"#!/bin/bash\nexit {exit_code}\n")
+    test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
+    return task_dir
+
+
+class TestBudgetWarningVisibility:
+    """Budget warnings must go to stderr and be visible without -v flag."""
+
+    def test_budget_exceeded_message_on_stderr_sequential(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Budget exceeded prints to stderr in sequential mode (parallel=1)."""
+        from codeprobe.adapters.protocol import AgentConfig
+        from codeprobe.core.executor import execute_config
+        from codeprobe.models.experiment import ExperimentConfig
+        from tests.conftest import FakeAdapter
+
+        tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(5)]
+        adapter = FakeAdapter(stdout="output", cost_usd=0.05, cost_model="per_token")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            max_cost_usd=0.10,
+        )
+        captured = capsys.readouterr()
+        assert "Cost budget exceeded" in captured.err
+        assert "$0.10" in captured.err
+        assert "halting" in captured.err
+
+    def test_80_pct_warning_on_stderr_sequential(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """80% budget warning prints to stderr in sequential mode."""
+        from codeprobe.adapters.protocol import AgentConfig
+        from codeprobe.core.executor import execute_config
+        from codeprobe.models.experiment import ExperimentConfig
+        from tests.conftest import SequentialCostAdapter
+
+        tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(5)]
+        # 5 tasks: costs $0.02, $0.02, $0.06, $0.02, $0.02
+        # After task 2: cumulative = $0.04 (40% of $0.10)
+        # After task 3: cumulative = $0.10 (100% of $0.10) -- triggers 80% warning
+        # ... but also triggers budget exceeded (>= budget)
+        # Use budget=$0.12 so 80% = $0.096
+        # After task 3: cumulative = $0.10 (83%) -- triggers 80% warning
+        adapter = SequentialCostAdapter(
+            costs=[
+                (0.02, "per_token"),
+                (0.02, "per_token"),
+                (0.06, "per_token"),
+                (0.02, "per_token"),
+                (0.02, "per_token"),
+            ],
+            stdout="output",
+        )
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            max_cost_usd=0.12,
+        )
+        captured = capsys.readouterr()
+        assert "Cost warning:" in captured.err
+        assert "budget used" in captured.err
+
+    def test_budget_exceeded_message_on_stderr_parallel(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Budget exceeded prints to stderr in parallel mode (parallel>1)."""
+        from codeprobe.adapters.protocol import AgentConfig
+        from codeprobe.core.executor import execute_config
+        from codeprobe.core.isolation import IsolationStrategy
+        from codeprobe.models.experiment import ExperimentConfig
+        from tests.conftest import FakeAdapter
+
+        tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(5)]
+        adapter = FakeAdapter(stdout="output", cost_usd=0.05, cost_model="per_token")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        # Use a fake isolation strategy that just returns tmp dirs
+        class FakeIsolation:
+            def acquire(self) -> Path:
+                p = tmp_path / "worktree"
+                p.mkdir(exist_ok=True)
+                return p
+
+            def release(self, path: Path) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            max_cost_usd=0.10,
+            parallel=2,
+            isolation=FakeIsolation(),
+        )
+        captured = capsys.readouterr()
+        assert "Cost budget exceeded" in captured.err
+        assert "halting" in captured.err
+
+    def test_80_pct_warning_emitted_only_once(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The 80% budget warning is emitted exactly once even with many tasks."""
+        from codeprobe.adapters.protocol import AgentConfig
+        from codeprobe.core.executor import execute_config
+        from codeprobe.models.experiment import ExperimentConfig
+        from tests.conftest import FakeAdapter
+
+        tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(10)]
+        # Each task costs $0.10, budget $1.00 -> 80% threshold at $0.80
+        adapter = FakeAdapter(stdout="output", cost_usd=0.10, cost_model="per_token")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            max_cost_usd=1.00,
+        )
+        captured = capsys.readouterr()
+        assert captured.err.count("Cost warning:") == 1
+
+
+# ---------------------------------------------------------------------------
+# Sandbox thread-safety tests (phase0-budget-warning)
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxThreadSafety:
+    """os.environ['CODEPROBE_SANDBOX'] uses ref-counting, not raw set/pop."""
+
+    def test_acquire_release_sandbox_refcount(self) -> None:
+        """Ref-counting prevents early removal when multiple threads hold sandbox."""
+        from codeprobe.cli.run_cmd import (
+            _acquire_sandbox,
+            _release_sandbox,
+            _sandbox_lock,
+            _sandbox_refcount,
+        )
+        import codeprobe.cli.run_cmd as run_cmd
+
+        # Clean state
+        os.environ.pop("CODEPROBE_SANDBOX", None)
+        run_cmd._sandbox_refcount = 0
+
+        _acquire_sandbox()
+        assert os.environ.get("CODEPROBE_SANDBOX") == "1"
+        assert run_cmd._sandbox_refcount == 1
+
+        _acquire_sandbox()
+        assert os.environ.get("CODEPROBE_SANDBOX") == "1"
+        assert run_cmd._sandbox_refcount == 2
+
+        _release_sandbox()
+        # Still held by one thread — env var should persist
+        assert os.environ.get("CODEPROBE_SANDBOX") == "1"
+        assert run_cmd._sandbox_refcount == 1
+
+        _release_sandbox()
+        # All released — env var should be gone
+        assert os.environ.get("CODEPROBE_SANDBOX") is None
+        assert run_cmd._sandbox_refcount == 0
+
+    def test_concurrent_acquire_release_no_race(self) -> None:
+        """Concurrent acquire/release does not corrupt refcount."""
+        from codeprobe.cli.run_cmd import _acquire_sandbox, _release_sandbox
+        import codeprobe.cli.run_cmd as run_cmd
+
+        os.environ.pop("CODEPROBE_SANDBOX", None)
+        run_cmd._sandbox_refcount = 0
+
+        barrier = threading.Barrier(4)
+        errors: list[str] = []
+
+        def worker() -> None:
+            try:
+                barrier.wait(timeout=5)
+                _acquire_sandbox()
+                # Simulate work
+                _release_sandbox()
+            except Exception as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Thread errors: {errors}"
+        assert run_cmd._sandbox_refcount == 0
+        assert os.environ.get("CODEPROBE_SANDBOX") is None

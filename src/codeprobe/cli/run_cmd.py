@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -56,6 +57,27 @@ def _print_dry_run(estimate: DryRunEstimate) -> None:
     click.echo(f"  Estimated cost range:   ${cost_lo:.2f} - ${cost_hi:.2f}")
 
 
+_sandbox_lock = threading.Lock()
+_sandbox_refcount = 0
+
+
+def _acquire_sandbox() -> None:
+    """Increment sandbox ref-count and set env var (thread-safe)."""
+    global _sandbox_refcount  # noqa: PLW0603
+    with _sandbox_lock:
+        _sandbox_refcount += 1
+        os.environ["CODEPROBE_SANDBOX"] = "1"
+
+
+def _release_sandbox() -> None:
+    """Decrement sandbox ref-count; clear env var when last owner exits."""
+    global _sandbox_refcount  # noqa: PLW0603
+    with _sandbox_lock:
+        _sandbox_refcount = max(0, _sandbox_refcount - 1)
+        if _sandbox_refcount == 0:
+            os.environ.pop("CODEPROBE_SANDBOX", None)
+
+
 def run_eval(
     path: str,
     agent: str = "claude",
@@ -68,6 +90,15 @@ def run_eval(
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
+
+    # Deprecation warning for legacy .evalrc.yaml
+    evalrc_path = Path(path) / ".evalrc.yaml"
+    if evalrc_path.exists():
+        click.echo(
+            "Warning: .evalrc.yaml is no longer used. Configuration is in "
+            "experiment.json. This file can be safely deleted.",
+            err=True,
+        )
 
     try:
         experiment = load_experiment(exp_dir)
@@ -159,12 +190,13 @@ def run_eval(
         # Eval runs need agents to operate autonomously (write files, run
         # commands). When the user hasn't explicitly chosen a permission mode,
         # upgrade to dangerously_skip with CODEPROBE_SANDBOX=1 so the agent
-        # can work without interactive approval.  The sandbox signal is set
-        # on os.environ so preflight() sees it; it's cleaned up after the run.
+        # can work without interactive approval.  Uses ref-counted
+        # acquire/release so parallel config threads don't race on
+        # os.environ.
         owns_sandbox = False
         if perm == "default":
             perm = "dangerously_skip"
-            os.environ["CODEPROBE_SANDBOX"] = "1"
+            _acquire_sandbox()
             owns_sandbox = True
 
         if perm not in ALLOWED_PERMISSION_MODES:
@@ -225,7 +257,7 @@ def run_eval(
         )
 
         if owns_sandbox:
-            os.environ.pop("CODEPROBE_SANDBOX", None)
+            _release_sandbox()
 
         save_config_results(exp_dir, exp_config.label, results)
 

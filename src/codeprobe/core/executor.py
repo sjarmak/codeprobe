@@ -6,6 +6,7 @@ import json as _json
 import logging
 import shutil
 import subprocess
+import sys
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -339,6 +340,17 @@ def execute_task(
 
 
 _BILLABLE_COST_MODELS = frozenset({"per_token"})
+_BUDGET_WARNING_THRESHOLD = 0.80
+
+
+def _budget_msg(msg: str) -> None:
+    """Print a budget-related message to stderr so it is always visible.
+
+    Uses sys.stderr directly rather than logger.warning() which is
+    suppressed at the default INFO log level.
+    """
+    sys.stderr.write(f"{msg}\n")
+    sys.stderr.flush()
 
 
 def _git_reset_workdir(
@@ -537,8 +549,10 @@ def execute_config(
             if sem is not None:
                 sem.release()
 
+    budget_warning_emitted = False
+
     def _handle_result(task_result: TaskResult) -> None:
-        nonlocal cumulative_cost
+        nonlocal cumulative_cost, budget_warning_emitted
         result = task_result.completed
         results.append(result)
 
@@ -557,16 +571,29 @@ def execute_config(
         if result.cost_model in _BILLABLE_COST_MODELS and result.cost_usd is not None:
             cumulative_cost += result.cost_usd
 
+        # Emit 80% budget warning once
+        if (
+            max_cost_usd is not None
+            and not budget_warning_emitted
+            and cumulative_cost >= max_cost_usd * _BUDGET_WARNING_THRESHOLD
+            and cumulative_cost <= max_cost_usd
+        ):
+            budget_warning_emitted = True
+            pct = int(cumulative_cost / max_cost_usd * 100)
+            _budget_msg(
+                f"Cost warning: ${cumulative_cost:.2f} of "
+                f"${max_cost_usd:.2f} budget used ({pct}%)"
+            )
+
     workers = min(parallel, len(pending_work))
 
     if workers <= 1:
         # Sequential — preserves original behavior and budget checks
         for idx, (task_dir, repeat_index) in enumerate(pending_work):
             if max_cost_usd is not None and cumulative_cost > max_cost_usd:
-                logger.warning(
-                    "Cost circuit-breaker: $%.2f exceeds budget $%.2f — halting",
-                    cumulative_cost,
-                    max_cost_usd,
+                _budget_msg(
+                    f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                    f"${max_cost_usd:.2f} — halting"
                 )
                 break
             # Reset working directory between tasks so leftovers from
@@ -640,11 +667,9 @@ def execute_config(
                     _handle_result(task_result)
 
                     if max_cost_usd is not None and cumulative_cost > max_cost_usd:
-                        logger.warning(
-                            "Cost circuit-breaker: $%.2f exceeds budget $%.2f — "
-                            "cancelling remaining tasks",
-                            cumulative_cost,
-                            max_cost_usd,
+                        _budget_msg(
+                            f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                            f"${max_cost_usd:.2f} — halting"
                         )
                         for f in future_to_work:
                             f.cancel()
