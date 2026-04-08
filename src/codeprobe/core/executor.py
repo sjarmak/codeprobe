@@ -191,6 +191,13 @@ def execute_task(
         if task_rt and task_rt != "binary":
             reward_type = task_rt
 
+    # Remove stale answer.txt / reward.txt from prior runs so they don't
+    # leak into this task's scoring sandbox.
+    for stale in ("answer.txt", "reward.txt"):
+        stale_path = task_dir / stale
+        if stale_path.is_file():
+            stale_path.unlink(missing_ok=True)
+
     def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
             completed=CompletedTask(

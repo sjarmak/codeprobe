@@ -467,8 +467,8 @@ def _write_oracle_task(
         f"# Oracle verification for org-scale task {safe_id}\n"
         'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
         'TASK_DIR="$(dirname "$SCRIPT_DIR")"\n\n'
-        "# Read agent output from $AGENT_OUTPUT (sandbox) or answer.txt\n"
-        'if [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then\n'
+        "# Fallback: if agent wrote to stdout instead of answer.txt, use $AGENT_OUTPUT\n"
+        'if [ ! -f "$TASK_DIR/answer.txt" ] && [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then\n'
         '    cp "$AGENT_OUTPUT" "$TASK_DIR/answer.txt"\n'
         "fi\n\n"
         "# Self-contained oracle check — no codeprobe install required\n"
