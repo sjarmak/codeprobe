@@ -14,7 +14,6 @@ from codeprobe.cli.wizard import (
     ask_prompt_comparison,
     validate_experiment_name,
 )
-from codeprobe.cli.yaml_writer import write_evalrc
 from codeprobe.core.experiment import create_experiment_dir
 from codeprobe.core.registry import available
 from codeprobe.models.evalrc import EvalrcConfig
@@ -62,9 +61,6 @@ def run_init(path: str) -> None:
     else:
         evalrc, configs = _goal_custom(agents, experiment_name)
 
-    # Write .evalrc.yaml
-    yaml_path = write_evalrc(target, evalrc)
-
     # Create experiment directory
     experiment = Experiment(
         name=experiment_name,
@@ -77,7 +73,6 @@ def run_init(path: str) -> None:
 
     # Summary
     click.echo()
-    click.echo(f"Created {yaml_path.relative_to(target)}")
     click.echo(f"Created {exp_dir.relative_to(target)}/")
     click.echo(f"  Configurations: {', '.join(c.label for c in configs)}")
     click.echo()

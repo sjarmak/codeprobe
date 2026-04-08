@@ -1,7 +1,15 @@
-"""Write .evalrc.yaml configuration files."""
+"""Write .evalrc.yaml configuration files.
+
+.. deprecated::
+    This module is deprecated.  Configuration is now stored in
+    ``experiment.json`` created by :func:`codeprobe.core.experiment.create_experiment_dir`.
+    The ``write_evalrc`` function is retained only for backward compatibility
+    and will be removed in a future release.
+"""
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 
@@ -11,9 +19,14 @@ from codeprobe.models.evalrc import EvalrcConfig
 def write_evalrc(target_dir: Path, config: EvalrcConfig) -> Path:
     """Serialize an EvalrcConfig to .evalrc.yaml in *target_dir*.
 
-    Tries PyYAML first; falls back to manual YAML for the flat schema.
-    Returns the path to the written file.
+    .. deprecated::
+        Use ``experiment.json`` via :func:`codeprobe.core.experiment.create_experiment_dir` instead.
     """
+    warnings.warn(
+        "write_evalrc is deprecated. Configuration is now stored in experiment.json.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     data = _strip_defaults(asdict(config))
     path = target_dir / ".evalrc.yaml"
     path.write_text(_to_yaml(data), encoding="utf-8")
@@ -28,8 +41,7 @@ def _strip_defaults(data: dict) -> dict:
     return {
         key: value
         for key, value in data.items()
-        if value not in _EMPTY
-        and not (key == "tasks_dir" and value == "tasks")
+        if value not in _EMPTY and not (key == "tasks_dir" and value == "tasks")
     }
 
 
