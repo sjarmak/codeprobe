@@ -12,12 +12,28 @@ from typing import Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 
+def _discover_experiment_dirs(workdir: Path) -> list[str]:
+    """Find top-level directories that contain an experiment.json.
+
+    These are codeprobe experiment directories that must survive git clean.
+    """
+    excludes: list[str] = []
+    try:
+        for entry in workdir.iterdir():
+            if entry.is_dir() and (entry / "experiment.json").is_file():
+                excludes.append(entry.name)
+    except OSError:
+        pass
+    return excludes
+
+
 def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) -> None:
     """Restore tracked files and remove untracked files in *workdir*.
 
     Uses ``git restore .`` (tolerant of empty diffs) followed by
-    ``git clean -fd``.  Always excludes ``.codeprobe`` and
-    ``.codeprobe-worktrees``; pass *extra_excludes* for more.
+    ``git clean -fd``.  Always excludes ``.codeprobe``,
+    ``.codeprobe-worktrees``, and any directories containing
+    ``experiment.json`` (codeprobe experiment dirs).
     """
     result = subprocess.run(
         ["git", "restore", "."],
@@ -39,6 +55,9 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
         "-e",
         ".codeprobe-worktrees",
     ]
+    # Auto-discover experiment directories inside the repo
+    for exp_dir in _discover_experiment_dirs(workdir):
+        clean_cmd += ["-e", exp_dir]
     for exc in extra_excludes:
         clean_cmd += ["-e", exc]
     subprocess.run(clean_cmd, cwd=workdir, check=True, capture_output=True)
