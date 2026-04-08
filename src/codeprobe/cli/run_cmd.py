@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -106,8 +107,22 @@ def run_eval(
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
 
+    # Resolve to the git repo root — `path` may be an experiment subdir.
+    try:
+        repo_root = Path(
+            subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=Path(path).resolve(),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+    except (subprocess.CalledProcessError, OSError):
+        repo_root = Path(path).resolve()
+
     tasks_dir = exp_dir / experiment.tasks_dir
-    repo_tasks = Path(path).resolve() / ".codeprobe" / experiment.tasks_dir
+    repo_tasks = repo_root / ".codeprobe" / experiment.tasks_dir
 
     task_dirs = _find_tasks(tasks_dir, task_ids=experiment.task_ids)
     if not task_dirs and repo_tasks != tasks_dir:
@@ -132,7 +147,7 @@ def run_eval(
             configs_count=len(configs_to_run),
             repeats=repeats,
             parallel=parallel,
-            repo_path=Path(path).resolve(),
+            repo_path=repo_root,
         )
         _print_dry_run(estimate)
         return
@@ -165,7 +180,7 @@ def run_eval(
             permission_mode=perm,
             timeout_seconds=timeout,
             mcp_config=exp_config.mcp_config,
-            cwd=str(Path(path).resolve()),
+            cwd=str(repo_root),
         )
 
         issues = config_adapter.preflight(agent_config)
@@ -186,9 +201,8 @@ def run_eval(
         # Compute directories to exclude from git clean between sequential
         # tasks so the experiment dir (untracked) isn't deleted.
         _clean_excludes: tuple[str, ...] = ()
-        resolved_repo = Path(path).resolve()
         try:
-            rel = exp_dir.resolve().relative_to(resolved_repo)
+            rel = exp_dir.resolve().relative_to(repo_root)
             top_dir = str(rel).split("/")[0]
             if top_dir and top_dir != ".":
                 _clean_excludes = (top_dir,)
