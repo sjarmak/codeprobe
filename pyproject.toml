@@ -57,6 +57,12 @@ claude = "codeprobe.adapters.session:ClaudeSessionCollector"
 codex = "codeprobe.adapters.session:CodexSessionCollector"
 copilot = "codeprobe.adapters.session:CopilotSessionCollector"
 
+[project.entry-points."codeprobe.scorers"]
+binary = "codeprobe.core.scoring:BinaryScorer"
+continuous = "codeprobe.core.scoring:ContinuousScorer"
+checkpoint = "codeprobe.core.scoring:CheckpointScorer"
+test_ratio = "codeprobe.core.scoring:ContinuousScorer"
+
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"

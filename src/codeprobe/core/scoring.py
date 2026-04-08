@@ -409,17 +409,12 @@ class CheckpointScorer:
 
 
 # ---------------------------------------------------------------------------
-# Registry
+# Registry (delegates to core.registry entry-point resolution)
 # ---------------------------------------------------------------------------
 
-_SCORER_REGISTRY: dict[str, type] = {
-    "binary": BinaryScorer,
-    "continuous": ContinuousScorer,
-    "checkpoint": CheckpointScorer,
-    "test_ratio": ContinuousScorer,  # loader backward compat
-}
+from codeprobe.core.registry import available_scorers, resolve_scorer  # noqa: E402
 
-VALID_REWARD_TYPES: frozenset[str] = frozenset(_SCORER_REGISTRY)
+VALID_REWARD_TYPES: frozenset[str] = frozenset(available_scorers())
 
 
 def get_scorer(reward_type: str) -> BinaryScorer | ContinuousScorer | CheckpointScorer:
@@ -427,10 +422,10 @@ def get_scorer(reward_type: str) -> BinaryScorer | ContinuousScorer | Checkpoint
 
     Raises ValueError for unknown reward types (fail loudly — premortem rule).
     """
-    cls = _SCORER_REGISTRY.get(reward_type)
-    if cls is None:
+    try:
+        return resolve_scorer(reward_type)
+    except KeyError:
         raise ValueError(
             f"Unknown reward_type: {reward_type!r}. "
-            f"Expected one of: {sorted(_SCORER_REGISTRY)}"
+            f"Expected one of: {sorted(VALID_REWARD_TYPES)}"
         )
-    return cls()
