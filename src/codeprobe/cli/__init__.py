@@ -312,6 +312,18 @@ def mine(
     default=False,
     help="Print estimated resource requirements without executing any agents.",
 )
+@click.option(
+    "--force-plain",
+    is_flag=True,
+    default=False,
+    help="Force plain-text output even in a TTY (disable Rich dashboard).",
+)
+@click.option(
+    "--force-rich",
+    is_flag=True,
+    default=False,
+    help="Force Rich Live dashboard even in non-TTY environments.",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -322,6 +334,8 @@ def run(
     max_cost_usd: float | None,
     parallel: int,
     dry_run: bool,
+    force_plain: bool,
+    force_rich: bool,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -344,6 +358,8 @@ def run(
         dry_run=dry_run,
         log_format=log_format,
         quiet=quiet,
+        force_plain=force_plain,
+        force_rich=force_rich,
     )
 
 

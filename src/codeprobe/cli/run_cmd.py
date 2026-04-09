@@ -141,6 +141,8 @@ def run_eval(
     dry_run: bool = False,
     log_format: str = "text",
     quiet: bool = False,
+    force_plain: bool = False,
+    force_rich: bool = False,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -298,9 +300,16 @@ def run_eval(
         dispatcher = EventDispatcher()
         if log_format == "json":
             dispatcher.register(JsonLineListener())
-        if not quiet and log_format != "json":
-            dispatcher.register(PlainTextListener())
+        elif not quiet:
+            use_rich = force_rich or (_should_use_rich() and not force_plain)
+            if use_rich:
+                from codeprobe.cli.rich_display import RichLiveListener
 
+                dispatcher.register(RichLiveListener())
+            else:
+                dispatcher.register(PlainTextListener())
+
+        interrupted = False
         try:
             results = execute_config(
                 adapter=config_adapter,
@@ -316,8 +325,22 @@ def run_eval(
                 clean_excludes=_clean_excludes,
                 event_dispatcher=dispatcher,
             )
+        except KeyboardInterrupt:
+            interrupted = True
+            results = []
         finally:
             dispatcher.shutdown()
+
+        if interrupted:
+            partial = checkpoint_store.load_ids()
+            click.echo(
+                f"\nInterrupted — partial results saved "
+                f"({len(partial)} tasks completed)",
+                err=True,
+            )
+            if owns_sandbox:
+                _release_sandbox()
+            raise SystemExit(130)
 
         if owns_sandbox:
             _release_sandbox()

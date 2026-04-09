@@ -25,6 +25,7 @@ dependencies = [
     "openai>=1.66",
     "tiktoken>=0.7,<1",
     "scipy>=1.11,<2",
+    "rich>=13.7,<14",
 ]
 
 [project.urls]
