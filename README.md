@@ -2,11 +2,11 @@
 
 Benchmark AI coding agents against **your own codebase**.
 
-Mine real tasks from your repo history, run agents against them, and find out which setup actually works best for YOUR code — not someone else's benchmark suite.
+Mine real tasks from your repo history, run agents against them, and find out which setup actually works best for **your** code, not someone else's benchmark suite.
 
 ## Why codeprobe?
 
-Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models may have memorized from training data. codeprobe mines tasks from **your private repo history**, producing benchmarks that are impossible to contaminate.
+Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models may have memorized from training data, and as general public benchmarks likely don't capture what is most important to your unique  workflows. codeprobe mines tasks from **your private repo history**, producing benchmarks that are impossible to contaminate. You can also point the tool at any public repo to mine tasks from. 
 
 ## Prerequisites
 
