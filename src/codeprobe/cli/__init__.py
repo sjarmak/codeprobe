@@ -690,3 +690,8 @@ main.add_command(preambles)
 from codeprobe.cli.doctor_cmd import doctor  # noqa: E402
 
 main.add_command(doctor)
+
+# Register the validate command
+from codeprobe.cli.validate_cmd import validate  # noqa: E402
+
+main.add_command(validate)
