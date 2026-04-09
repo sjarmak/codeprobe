@@ -70,10 +70,18 @@ def _clone_repo(url: str) -> Path:
 # ---------------------------------------------------------------------------
 
 _EVAL_GOALS = {
-    "1": ("MCP / tool comparison", 6, "hard"),
-    "2": ("Model comparison", 2, "mixed"),
-    "3": ("Prompt / instruction comparison", 2, "mixed"),
-    "4": ("General benchmarking", 0, "balanced"),
+    "1": ("Code quality comparison", 2, "mixed", "sdlc_code_change"),
+    "2": ("Codebase navigation", 0, "mixed", "architecture_comprehension"),
+    "3": ("MCP / tool benefit", 6, "hard", "mcp_tool_usage"),
+    "4": ("General benchmarking", 0, "balanced", "mixed"),
+}
+
+# Map --goal flag values to _EVAL_GOALS keys
+_GOAL_FLAG_MAP: dict[str, str] = {
+    "quality": "1",
+    "navigation": "2",
+    "mcp": "3",
+    "general": "4",
 }
 
 _COUNT_PRESETS = {
@@ -98,22 +106,29 @@ def _is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
-def _ask_eval_goal() -> tuple[str, int, str]:
-    """Phase 0: Ask what the user is trying to learn."""
+def _ask_eval_goal() -> tuple[str, int, str, str]:
+    """Phase 0: Ask what the user is trying to learn.
+
+    Returns ``(goal_name, min_files, bias, task_type)``.
+    """
     click.echo()
     click.echo("What are you trying to learn?")
     click.echo(
-        "  [1] MCP / tool comparison — harder tasks requiring cross-file navigation"
+        "  [1] Code quality comparison — SDLC tasks to compare code change quality"
     )
-    click.echo("  [2] Model comparison — mixed difficulty to find where models diverge")
-    click.echo("  [3] Prompt / instruction comparison — variety of task types")
+    click.echo(
+        "  [2] Codebase navigation — comprehension tasks for architecture understanding"
+    )
+    click.echo(
+        "  [3] MCP / tool benefit — harder tasks requiring cross-file navigation"
+    )
     click.echo("  [4] General benchmarking — balanced mix")
     click.echo()
 
     choice = click.prompt("Select goal", default="4", show_default=True)
-    goal_name, min_files, bias = _EVAL_GOALS.get(choice, _EVAL_GOALS["4"])
+    goal_name, min_files, bias, task_type = _EVAL_GOALS.get(choice, _EVAL_GOALS["4"])
     click.echo(f"  → {goal_name}")
-    return goal_name, min_files, bias
+    return goal_name, min_files, bias, task_type
 
 
 def _ask_task_count() -> int:
@@ -456,9 +471,13 @@ def _interactive_config(
     subsystems: tuple[str, ...],
     discover_subsystems: bool,
     repo_path: Path,
-) -> tuple[str, int, str, int, str, tuple[str, ...], bool]:
-    """Run interactive configuration phases 0-2. Returns updated params."""
-    goal_name, goal_min_files, bias = _ask_eval_goal()
+) -> tuple[str, int, str, int, str, str, tuple[str, ...], bool]:
+    """Run interactive configuration phases 0-2. Returns updated params.
+
+    Returns ``(goal_name, count, source, min_files, bias, task_type, subsystems,
+    discover_subsystems)``.
+    """
+    goal_name, goal_min_files, bias, task_type = _ask_eval_goal()
     if min_files == 0:
         min_files = goal_min_files
     count = _ask_task_count()
@@ -466,7 +485,16 @@ def _interactive_config(
     if not subsystems and not discover_subsystems:
         if click.confirm("\nDiscover and filter by subsystems?", default=False):
             discover_subsystems = True
-    return goal_name, count, source, min_files, bias, subsystems, discover_subsystems
+    return (
+        goal_name,
+        count,
+        source,
+        min_files,
+        bias,
+        task_type,
+        subsystems,
+        discover_subsystems,
+    )
 
 
 def _enrich_sdlc_tasks(
@@ -498,6 +526,74 @@ def _enrich_sdlc_tasks(
         click.echo("Enriching low-quality tasks via LLM...")
         return enrich_tasks(tasks)
     return tasks
+
+
+import logging as _logging
+
+_log = _logging.getLogger(__name__)
+
+
+def _cold_start_check(repo_path: Path, source_hint: str) -> bool:
+    """Return True when the repo has zero merge commits (cold-start)."""
+    from codeprobe.mining.extractor import list_merged_prs
+    from codeprobe.mining.sources import RepoSource, detect_source
+
+    if source_hint != "auto":
+        source = RepoSource(
+            host=source_hint, owner="", repo=repo_path.name, remote_url=""
+        )
+    else:
+        source = detect_source(repo_path)
+
+    return len(list_merged_prs(source, repo_path, limit=1)) == 0
+
+
+def _comprehension_generator_available() -> bool:
+    """Return True when the comprehension generator module is importable."""
+    try:
+        from codeprobe.mining import comprehension_generator  # noqa: F401
+
+        return True
+    except (ImportError, AttributeError):
+        return False
+
+
+def _resolve_task_type(
+    task_type: str,
+    repo_path: Path,
+    source_hint: str,
+) -> str:
+    """Apply cold-start and comprehension-availability fallbacks.
+
+    Cold-start: when the repo has 0 merge commits, navigation and general
+    goals fall back to ``micro_probe``.
+
+    Comprehension fallback: when ``architecture_comprehension`` is selected
+    but the comprehension generator is not yet available, fall back to
+    ``micro_probe``.
+
+    Returns the (possibly adjusted) *task_type*.
+    """
+    is_cold_start = _cold_start_check(repo_path, source_hint)
+
+    if is_cold_start and task_type in ("architecture_comprehension", "mixed"):
+        _log.warning(
+            "Cold-start repo (0 merge commits): falling back to micro_probe "
+            "for task_type=%s",
+            task_type,
+        )
+        return "micro_probe"
+
+    # --- Comprehension generator availability ---
+    if task_type == "architecture_comprehension":
+        if not _comprehension_generator_available():
+            _log.warning(
+                "Comprehension generator not available: falling back to "
+                "micro_probe for task_type=architecture_comprehension"
+            )
+            return "micro_probe"
+
+    return task_type
 
 
 _CLI_DEFAULTS = {
@@ -539,6 +635,7 @@ _PROFILE_KEYS = frozenset(_CLI_DEFAULTS) | {
     "sg_repo",
     "interactive",
     "preset",
+    "goal",
 }
 
 
@@ -654,6 +751,7 @@ def _apply_preset(
 def run_mine(
     path: str,
     preset: str | None = None,
+    goal: str | None = None,
     count: int = 5,
     source: str = "auto",
     min_files: int = 0,
@@ -734,13 +832,35 @@ def run_mine(
 
     goal_name = "General benchmarking"
     bias = "balanced"
+    task_type = "mixed"
 
-    if interactive:
-        goal_name, count, source, min_files, bias, subsystems, discover_subsystems = (
-            _interactive_config(
-                count, source, min_files, subsystems, discover_subsystems, repo_path
+    # --goal flag: resolve goal without interactive prompt
+    if goal is not None:
+        goal_key = _GOAL_FLAG_MAP.get(goal)
+        if goal_key is None:
+            raise click.UsageError(
+                f"Unknown goal '{goal}'. "
+                f"Choose from: {', '.join(sorted(_GOAL_FLAG_MAP))}"
             )
+        goal_name, goal_min_files, bias, task_type = _EVAL_GOALS[goal_key]
+        if min_files == 0:
+            min_files = goal_min_files
+    elif interactive:
+        (
+            goal_name,
+            count,
+            source,
+            min_files,
+            bias,
+            task_type,
+            subsystems,
+            discover_subsystems,
+        ) = _interactive_config(
+            count, source, min_files, subsystems, discover_subsystems, repo_path
         )
+
+    # Apply cold-start and comprehension-availability fallbacks
+    task_type = _resolve_task_type(task_type, repo_path, source)
 
     if discover_subsystems:
         subsystems = _discover_and_select(repo_path, source)
