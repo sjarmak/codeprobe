@@ -80,3 +80,23 @@ def resolve_session(name: str) -> Any:
 def available_sessions() -> list[str]:
     """Return sorted list of all registered session collector names."""
     return _available(_SESSION_BUILTINS, "codeprobe.sessions")
+
+
+# -- Scorer registry ----------------------------------------------------------
+
+_SCORER_BUILTINS: dict[str, str] = {
+    "binary": "codeprobe.core.scoring:BinaryScorer",
+    "continuous": "codeprobe.core.scoring:ContinuousScorer",
+    "checkpoint": "codeprobe.core.scoring:CheckpointScorer",
+    "test_ratio": "codeprobe.core.scoring:ContinuousScorer",
+}
+
+
+def resolve_scorer(name: str) -> Any:
+    """Resolve a scorer by name. Raises KeyError if not found."""
+    return _resolve(name, _SCORER_BUILTINS, "codeprobe.scorers", "scorer")
+
+
+def available_scorers() -> list[str]:
+    """Return sorted list of all registered scorer names."""
+    return _available(_SCORER_BUILTINS, "codeprobe.scorers")

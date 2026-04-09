@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -11,16 +13,67 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.cli.json_display import JsonLineListener
+from codeprobe.core.events import (
+    BudgetWarning,
+    EventDispatcher,
+    RunEvent,
+    RunFinished,
+    TaskScored,
+)
 from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 
+def _should_use_rich() -> bool:
+    """Return True when the terminal supports a Rich Live display.
+
+    Returns False in CI environments, non-TTY pipes, and dumb terminals.
+    """
+    if not sys.stderr.isatty():
+        return False
+    if os.environ.get("CI") is not None:
+        return False
+    if os.environ.get("GITHUB_ACTIONS") is not None:
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    return True
+
+
 def _on_task_complete(result: CompletedTask) -> None:
-    """Print task result to stdout."""
+    """Print task result to stdout (legacy callback, kept for backward compat)."""
     status = "PASS" if result.automated_score >= 1.0 else "FAIL"
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
+
+
+class PlainTextListener:
+    """RunEventListener that prints human-readable output.
+
+    Handles :class:`TaskScored` (PASS/FAIL to stdout),
+    :class:`BudgetWarning` (to stderr), and :class:`RunFinished`
+    (summary to stdout).
+    """
+
+    def on_event(self, event: RunEvent) -> None:
+        if isinstance(event, TaskScored):
+            status = "PASS" if event.automated_score >= 1.0 else "FAIL"
+            click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s)")
+        elif isinstance(event, BudgetWarning):
+            pct = int(event.threshold_pct * 100)
+            sys.stderr.write(
+                f"Cost warning: ${event.cumulative_cost:.2f} of "
+                f"${event.budget:.2f} budget used ({pct}%)\n"
+            )
+            sys.stderr.flush()
+        elif isinstance(event, RunFinished):
+            click.echo(
+                f"  Finished: {event.completed_count}/{event.total_tasks} tasks, "
+                f"mean score {event.mean_score:.2f}, "
+                f"total cost ${event.total_cost:.2f}"
+            )
 
 
 def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
@@ -56,6 +109,27 @@ def _print_dry_run(estimate: DryRunEstimate) -> None:
     click.echo(f"  Estimated cost range:   ${cost_lo:.2f} - ${cost_hi:.2f}")
 
 
+_sandbox_lock = threading.Lock()
+_sandbox_refcount = 0
+
+
+def _acquire_sandbox() -> None:
+    """Increment sandbox ref-count and set env var (thread-safe)."""
+    global _sandbox_refcount  # noqa: PLW0603
+    with _sandbox_lock:
+        _sandbox_refcount += 1
+        os.environ["CODEPROBE_SANDBOX"] = "1"
+
+
+def _release_sandbox() -> None:
+    """Decrement sandbox ref-count; clear env var when last owner exits."""
+    global _sandbox_refcount  # noqa: PLW0603
+    with _sandbox_lock:
+        _sandbox_refcount = max(0, _sandbox_refcount - 1)
+        if _sandbox_refcount == 0:
+            os.environ.pop("CODEPROBE_SANDBOX", None)
+
+
 def run_eval(
     path: str,
     agent: str = "claude",
@@ -65,9 +139,22 @@ def run_eval(
     parallel: int = 1,
     repeats: int = 1,
     dry_run: bool = False,
+    log_format: str = "text",
+    quiet: bool = False,
+    force_plain: bool = False,
+    force_rich: bool = False,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
+
+    # Deprecation warning for legacy .evalrc.yaml
+    evalrc_path = Path(path) / ".evalrc.yaml"
+    if evalrc_path.exists():
+        click.echo(
+            "Warning: .evalrc.yaml is no longer used. Configuration is in "
+            "experiment.json. This file can be safely deleted.",
+            err=True,
+        )
 
     try:
         experiment = load_experiment(exp_dir)
@@ -159,12 +246,13 @@ def run_eval(
         # Eval runs need agents to operate autonomously (write files, run
         # commands). When the user hasn't explicitly chosen a permission mode,
         # upgrade to dangerously_skip with CODEPROBE_SANDBOX=1 so the agent
-        # can work without interactive approval.  The sandbox signal is set
-        # on os.environ so preflight() sees it; it's cleaned up after the run.
+        # can work without interactive approval.  Uses ref-counted
+        # acquire/release so parallel config threads don't race on
+        # os.environ.
         owns_sandbox = False
         if perm == "default":
             perm = "dangerously_skip"
-            os.environ["CODEPROBE_SANDBOX"] = "1"
+            _acquire_sandbox()
             owns_sandbox = True
 
         if perm not in ALLOWED_PERMISSION_MODES:
@@ -209,23 +297,53 @@ def run_eval(
         except ValueError:
             pass  # experiment dir is outside the repo
 
-        results = execute_config(
-            adapter=config_adapter,
-            task_dirs=task_dirs,
-            repo_path=repo_root,
-            experiment_config=exp_config,
-            agent_config=agent_config,
-            checkpoint_store=checkpoint_store,
-            runs_dir=config_runs_dir,
-            on_task_complete=_on_task_complete,
-            max_cost_usd=max_cost_usd,
-            parallel=parallel,
-            repeats=repeats,
-            clean_excludes=_clean_excludes,
-        )
+        dispatcher = EventDispatcher()
+        if log_format == "json":
+            dispatcher.register(JsonLineListener())
+        elif not quiet:
+            use_rich = force_rich or (_should_use_rich() and not force_plain)
+            if use_rich:
+                from codeprobe.cli.rich_display import RichLiveListener
+
+                dispatcher.register(RichLiveListener())
+            else:
+                dispatcher.register(PlainTextListener())
+
+        interrupted = False
+        try:
+            results = execute_config(
+                adapter=config_adapter,
+                task_dirs=task_dirs,
+                repo_path=repo_root,
+                experiment_config=exp_config,
+                agent_config=agent_config,
+                checkpoint_store=checkpoint_store,
+                runs_dir=config_runs_dir,
+                max_cost_usd=max_cost_usd,
+                parallel=parallel,
+                repeats=repeats,
+                clean_excludes=_clean_excludes,
+                event_dispatcher=dispatcher,
+            )
+        except KeyboardInterrupt:
+            interrupted = True
+            results = []
+        finally:
+            dispatcher.shutdown()
+
+        if interrupted:
+            partial = checkpoint_store.load_ids()
+            click.echo(
+                f"\nInterrupted — partial results saved "
+                f"({len(partial)} tasks completed)",
+                err=True,
+            )
+            if owns_sandbox:
+                _release_sandbox()
+            raise SystemExit(130)
 
         if owns_sandbox:
-            os.environ.pop("CODEPROBE_SANDBOX", None)
+            _release_sandbox()
 
         save_config_results(exp_dir, exp_config.label, results)
 

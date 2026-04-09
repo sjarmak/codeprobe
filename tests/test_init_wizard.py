@@ -17,26 +17,33 @@ from codeprobe.cli.wizard import (
     ask_prompt_comparison,
     validate_experiment_name,
 )
+import warnings
+
 from codeprobe.cli.yaml_writer import write_evalrc
 from codeprobe.models.evalrc import EvalrcConfig
 
 # ---------------------------------------------------------------------------
-# yaml_writer tests
+# yaml_writer tests (deprecated module — all calls emit DeprecationWarning)
 # ---------------------------------------------------------------------------
 
 
 class TestWriteEvalrc:
-    """Tests for .evalrc.yaml serialization."""
+    """Tests for .evalrc.yaml serialization (deprecated)."""
 
-    def test_writes_file(self, tmp_path: Path) -> None:
+    def test_writes_file_with_deprecation_warning(self, tmp_path: Path) -> None:
         config = EvalrcConfig(name="test-exp", agents=["claude"])
-        result = write_evalrc(tmp_path, config)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = write_evalrc(tmp_path, config)
+            assert any(issubclass(x.category, DeprecationWarning) for x in w)
         assert result.exists()
         assert result.name == ".evalrc.yaml"
 
     def test_content_has_name(self, tmp_path: Path) -> None:
         config = EvalrcConfig(name="my-experiment", agents=["claude", "copilot"])
-        result = write_evalrc(tmp_path, config)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = write_evalrc(tmp_path, config)
         content = result.read_text()
         assert "my-experiment" in content
         assert "claude" in content
@@ -44,7 +51,9 @@ class TestWriteEvalrc:
 
     def test_omits_defaults(self, tmp_path: Path) -> None:
         config = EvalrcConfig(name="minimal")
-        result = write_evalrc(tmp_path, config)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = write_evalrc(tmp_path, config)
         content = result.read_text()
         # Should not include empty description or empty models list
         assert "description" not in content
@@ -55,15 +64,19 @@ class TestWriteEvalrc:
             agents=["claude"],
             models=["claude-sonnet-4-6", "claude-opus-4-6"],
         )
-        result = write_evalrc(tmp_path, config)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            result = write_evalrc(tmp_path, config)
         content = result.read_text()
         assert "claude-sonnet-4-6" in content
         assert "claude-opus-4-6" in content
 
     def test_fallback_without_pyyaml(self, tmp_path: Path) -> None:
         config = EvalrcConfig(name="fallback-test", agents=["claude"])
-        with patch.dict("sys.modules", {"yaml": None}):
-            result = write_evalrc(tmp_path, config)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            with patch.dict("sys.modules", {"yaml": None}):
+                result = write_evalrc(tmp_path, config)
         assert result.exists()
         content = result.read_text()
         assert "fallback-test" in content
@@ -415,6 +428,37 @@ class TestDetectSourcegraphInMcp:
         assert _detect_sourcegraph_in_mcp(discovered, mcp_data) is True
 
 
+class TestEvalrcDeprecationWarning:
+    """run_cmd prints a deprecation warning when .evalrc.yaml exists."""
+
+    def test_warning_printed_when_evalrc_exists(self, tmp_path: Path) -> None:
+        """run_eval should warn on stderr when .evalrc.yaml is present."""
+        # Create a legacy .evalrc.yaml file
+        (tmp_path / ".evalrc.yaml").write_text("name: old\n")
+
+        runner = CliRunner()
+        # run_eval will fail because there's no experiment.json, but the
+        # deprecation warning should still be emitted before the error.
+        result = runner.invoke(main, ["run", str(tmp_path)])
+        assert ".evalrc.yaml is no longer used" in result.output
+
+    def test_no_warning_when_evalrc_absent(self, tmp_path: Path) -> None:
+        """run_eval should NOT warn when .evalrc.yaml is absent."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["run", str(tmp_path)])
+        assert ".evalrc.yaml" not in result.output
+
+    def test_init_no_longer_creates_evalrc(self, tmp_path: Path) -> None:
+        """codeprobe init should NOT create .evalrc.yaml."""
+        runner = CliRunner()
+        input_text = "2\n\nclaude\nclaude-sonnet-4-6, claude-opus-4-6\n"
+        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / ".evalrc.yaml").exists()
+        # experiment.json should still be created
+        assert (tmp_path / ".codeprobe").is_dir()
+
+
 class TestInitCliIntegration:
     """End-to-end tests via CliRunner."""
 
@@ -425,7 +469,7 @@ class TestInitCliIntegration:
         mcp_file.write_text(json.dumps({"mcpServers": {}}))
 
         # Patch discovery so the prompt falls through to manual path entry
-        monkeypatch.setattr("codeprobe.cli.init_cmd._discover_mcp_configs", lambda: [])
+        monkeypatch.setattr("codeprobe.cli.init_cmd.discover_mcp_configs", lambda: [])
 
         runner = CliRunner()
         # Inputs: goal=1, experiment name (enter=default), agent (enter=default),
@@ -433,14 +477,14 @@ class TestInitCliIntegration:
         input_text = f"1\n\nclaude\n\nN\n{mcp_file}\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
-        assert (tmp_path / ".evalrc.yaml").exists()
+        assert not (tmp_path / ".evalrc.yaml").exists()
         assert (tmp_path / ".codeprobe").is_dir()
 
     def test_goal1_sourcegraph_flow(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test Goal 1 with Sourcegraph HTTP MCP."""
-        monkeypatch.setattr("codeprobe.cli.init_cmd._discover_mcp_configs", lambda: [])
+        monkeypatch.setattr("codeprobe.cli.init_cmd.discover_mcp_configs", lambda: [])
         monkeypatch.delenv("SOURCEGRAPH_TOKEN", raising=False)
 
         runner = CliRunner()
@@ -449,7 +493,7 @@ class TestInitCliIntegration:
         input_text = "1\n\nclaude\n\nY\ntok_test123\n\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
-        assert (tmp_path / ".evalrc.yaml").exists()
+        assert not (tmp_path / ".evalrc.yaml").exists()
 
         # Verify experiment.json has HTTP MCP config
         exp_json = tmp_path / ".codeprobe" / "mcp-comparison" / "experiment.json"
@@ -464,14 +508,14 @@ class TestInitCliIntegration:
         input_text = "2\n\nclaude\nclaude-sonnet-4-6, claude-opus-4-6\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
-        assert (tmp_path / ".evalrc.yaml").exists()
+        assert not (tmp_path / ".evalrc.yaml").exists()
 
     def test_goal3_prompt_flow(self, tmp_path: Path) -> None:
         runner = CliRunner()
         input_text = "3\n\nclaude\n\nprompts/a.md, prompts/b.md\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
-        assert (tmp_path / ".evalrc.yaml").exists()
+        assert not (tmp_path / ".evalrc.yaml").exists()
 
     def test_prints_next_steps(self, tmp_path: Path) -> None:
         runner = CliRunner()

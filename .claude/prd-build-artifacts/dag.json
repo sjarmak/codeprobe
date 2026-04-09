@@ -1,0 +1,242 @@
+[
+  {
+    "id": "phase0-budget-warning",
+    "name": "Fix cost budget warning visibility",
+    "description": "The cost circuit-breaker in executor.py fires logger.warning() which is suppressed at default log level (INFO). Users hit their budget and see tasks silently stop. Fix: (1) Change the budget-exceeded message from logger.warning to click.echo(err=True) so it's always visible, (2) Add an 80% budget warning threshold, (3) When budget is hit, print a clear message explaining WHY tasks stopped. Also fix the os.environ['CODEPROBE_SANDBOX'] thread-safety race in run_cmd.py:167 \u2014 use a threading.local or per-thread env dict instead of shared os.environ.",
+    "deps": [],
+    "tier": "small",
+    "acceptance": [
+      "Running with --max-cost 0.10 and tasks that cost >$0.10 total produces a visible message on stderr (no -v flag) explaining 'Cost budget exceeded: $X.XX > $0.10 \u2014 halting'",
+      "When cumulative cost crosses 80% of --max-cost, a warning appears: 'Cost warning: $X.XX of $Y.YY budget used (80%)'",
+      "The budget warning and halt messages appear in both sequential (parallel=1) and parallel (parallel>1) modes",
+      "os.environ['CODEPROBE_SANDBOX'] is no longer set/cleared on the shared os.environ from parallel config threads \u2014 uses a thread-safe mechanism instead",
+      "Existing tests pass: pytest tests/ -x"
+    ],
+    "layer": 0,
+    "scope": [
+      "src/codeprobe/core/executor.py",
+      "src/codeprobe/cli/run_cmd.py",
+      "tests/test_pipeline_integration.py"
+    ],
+    "status": "landed",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "phase0-kill-evalrc",
+    "name": "Kill dead .evalrc.yaml with deprecation warning",
+    "description": "init_cmd.py writes .evalrc.yaml via yaml_writer.write_evalrc(), but run_cmd.py never reads it. Fix: (1) Remove the write_evalrc() call from init_cmd.py, (2) Add detection in run_cmd.py's run() function: if .evalrc.yaml exists in the experiment directory, print a deprecation warning ('Warning: .evalrc.yaml is no longer used. Configuration is in experiment.json. This file can be safely deleted.'), (3) Remove or deprecate the yaml_writer module. Do NOT remove EvalrcConfig model yet \u2014 it may be used elsewhere.",
+    "deps": [],
+    "tier": "small",
+    "acceptance": [
+      "codeprobe init no longer creates .evalrc.yaml in the experiment directory",
+      "If an .evalrc.yaml file exists in the experiment dir, running 'codeprobe run' prints a deprecation warning to stderr",
+      "The yaml_writer.write_evalrc function is removed or marked deprecated",
+      "init_cmd.py no longer imports write_evalrc",
+      "Existing tests pass: pytest tests/ -x"
+    ],
+    "layer": 0,
+    "scope": [
+      "src/codeprobe/cli/init_cmd.py",
+      "src/codeprobe/cli/run_cmd.py",
+      "src/codeprobe/cli/yaml_writer.py",
+      "tests/test_init_wizard.py"
+    ],
+    "status": "landed",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "event-types",
+    "name": "Typed event dataclasses and dispatcher",
+    "description": "Create src/codeprobe/core/events.py with: (1) Frozen dataclass event types: RunStarted(total_tasks, config_label, timestamp), TaskStarted(task_id, config_label, timestamp), TaskScored(task_id, config_label, automated_score, duration_seconds, cost_usd, input_tokens, output_tokens, cache_read_tokens, cost_model, cost_source, error, timestamp), BudgetWarning(cumulative_cost, budget, threshold_pct, timestamp), RunFinished(total_tasks, completed_count, mean_score, total_cost, total_duration, timestamp). (2) RunEvent type alias = Union of all 5. (3) RunEventListener Protocol with on_event(event: RunEvent) -> None. (4) EventDispatcher class that owns a queue.Queue (unbounded), a daemon dispatcher thread, and a list of listeners. Workers call dispatcher.emit(event) which does queue.put(event). The dispatcher thread drains the queue and calls each listener.on_event(). dispatcher.shutdown() joins the thread after draining remaining events. (5) BudgetChecker class that implements RunEventListener and sets a threading.Event flag when budget is exceeded \u2014 the executor polls this flag instead of checking cumulative_cost inline. Write comprehensive tests.",
+    "deps": [],
+    "tier": "medium",
+    "acceptance": [
+      "src/codeprobe/core/events.py exists with all 5 frozen dataclass event types",
+      "RunEvent is a Union type alias of all 5 events",
+      "RunEventListener Protocol exists with on_event(event: RunEvent) -> None",
+      "EventDispatcher class uses queue.Queue internally; emit() is non-blocking from caller's perspective",
+      "EventDispatcher starts a daemon thread that drains the queue and calls listeners sequentially",
+      "EventDispatcher.shutdown() blocks until all queued events are processed",
+      "BudgetChecker implements RunEventListener, accumulates cost from TaskScored events, sets a threading.Event when cumulative_cost > budget",
+      "All dataclasses are frozen=True",
+      "Tests in tests/test_events.py verify: event creation, dispatcher delivers to multiple listeners, BudgetChecker fires at correct threshold, shutdown drains queue, thread safety with 10 concurrent emit() calls",
+      "pytest tests/test_events.py passes"
+    ],
+    "layer": 0,
+    "scope": [
+      "src/codeprobe/core/events.py",
+      "tests/test_events.py"
+    ],
+    "status": "landed",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "scorer-entrypoints",
+    "name": "Scorer entry_points via registry",
+    "description": "Unify scorer registration with the existing registry._resolve() pattern. (1) In registry.py, add _SCORER_BUILTINS dict mapping 'binary' -> 'codeprobe.core.scoring:BinaryScorer', 'continuous' -> 'codeprobe.core.scoring:ContinuousScorer', 'checkpoint' -> 'codeprobe.core.scoring:CheckpointScorer', 'test_ratio' -> 'codeprobe.core.scoring:ContinuousScorer'. Add resolve_scorer(name) and available_scorers() functions using _resolve() and _available() with ep_group='codeprobe.scorers'. (2) In scoring.py, replace _SCORER_REGISTRY dict and get_scorer() with a call to registry.resolve_scorer(). Keep VALID_REWARD_TYPES using registry.available_scorers(). (3) In pyproject.toml, add [project.entry-points.'codeprobe.scorers'] section with the 4 built-in scorers. (4) Update existing tests.",
+    "deps": [],
+    "tier": "small",
+    "acceptance": [
+      "registry.py has resolve_scorer() and available_scorers() functions using _resolve/_available with ep_group='codeprobe.scorers'",
+      "scoring.py's get_scorer() delegates to registry.resolve_scorer()",
+      "pyproject.toml has [project.entry-points.'codeprobe.scorers'] with binary, continuous, checkpoint, test_ratio entries",
+      "_SCORER_REGISTRY dict is removed from scoring.py",
+      "VALID_REWARD_TYPES is computed from registry.available_scorers()",
+      "Existing tests pass: pytest tests/ -x"
+    ],
+    "layer": 0,
+    "scope": [
+      "src/codeprobe/core/registry.py",
+      "src/codeprobe/core/scoring.py",
+      "pyproject.toml",
+      "tests/test_registry.py"
+    ],
+    "status": "landed",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "wire-events-executor",
+    "name": "Wire event dispatcher into executor",
+    "description": "Modify execute_config() in executor.py to use the EventDispatcher from events.py instead of the bare on_task_complete callback. (1) Add an optional 'event_dispatcher: EventDispatcher | None = None' parameter to execute_config(). Keep on_task_complete for backward compat \u2014 if provided without a dispatcher, wrap it in a simple listener. (2) Emit RunStarted at the start, TaskStarted before each _run_one call, TaskScored after scoring (from _handle_result), RunFinished at the end. (3) Replace the inline cumulative_cost budget check with BudgetChecker: create a BudgetChecker listener, register it with the dispatcher, and poll its exceeded event instead of comparing cumulative_cost inline. (4) Remove the os.environ CODEPROBE_SANDBOX race by passing sandbox flag through session_env dict. (5) Emit BudgetWarning at 80% and 100% thresholds. (6) In run_cmd.py, create an EventDispatcher, register a PlainTextListener (wrapping the existing _on_task_complete logic), and pass the dispatcher to execute_config(). The old callback path still works for backward compat.",
+    "deps": [
+      "event-types",
+      "phase0-budget-warning"
+    ],
+    "tier": "large",
+    "acceptance": [
+      "execute_config() accepts an optional event_dispatcher parameter",
+      "RunStarted is emitted at the start of execute_config()",
+      "TaskStarted is emitted before each task execution",
+      "TaskScored is emitted after each task scores (replaces the inline on_task_complete call)",
+      "RunFinished is emitted at the end with summary stats",
+      "BudgetWarning is emitted at 80% and 100% of max_cost_usd",
+      "BudgetChecker.exceeded threading.Event is polled by the executor instead of inline cumulative_cost comparison",
+      "The existing on_task_complete callback parameter still works (wrapped in a listener adapter)",
+      "run_cmd.py creates an EventDispatcher and registers a PlainTextListener",
+      "Existing tests pass: pytest tests/ -x",
+      "New test in tests/test_executor_events.py verifies all 5 event types fire in correct order for a mock 3-task run"
+    ],
+    "layer": 1,
+    "scope": [
+      "src/codeprobe/core/executor.py",
+      "src/codeprobe/cli/run_cmd.py",
+      "tests/test_executor_events.py",
+      "tests/test_pipeline_integration.py"
+    ],
+    "status": "pending",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "rich-dashboard",
+    "name": "Rich Live terminal dashboard consumer",
+    "description": "Create src/codeprobe/cli/rich_display.py with a RichLiveListener that implements RunEventListener and renders a live dashboard on stderr using Rich. (1) Add 'rich>=13.7,<14' to dependencies in pyproject.toml. (2) RichLiveListener.__init__ takes a Console(stderr=True). On RunStarted: create a Rich Live context with a table layout. On TaskStarted: update current task indicator. On TaskScored: update table row with task_id, PASS/FAIL, duration, cost. Update summary row: tasks completed/total, running pass rate, cumulative cost, ETA (rolling average of completed task durations * remaining tasks). On BudgetWarning: display warning in prominent color. On RunFinished: finalize display, print summary. (3) TTY detection: check sys.stderr.isatty() AND os.environ.get('CI') is None AND os.environ.get('TERM') != 'dumb'. Add --force-plain and --force-rich flags to run command. (4) In run_cmd.py: if TTY detected (and not --quiet, not --force-plain), register RichLiveListener; else register PlainTextListener. (5) Handle Ctrl+C: wrap the executor call in try/except KeyboardInterrupt, call dispatcher.shutdown() in finally block to drain events before exiting. Write partial results before exit.",
+    "deps": [
+      "wire-events-executor"
+    ],
+    "tier": "large",
+    "acceptance": [
+      "src/codeprobe/cli/rich_display.py exists with RichLiveListener class implementing RunEventListener",
+      "'rich>=13.7,<14' appears in pyproject.toml dependencies",
+      "Running 'codeprobe run' in a TTY shows a live-updating Rich display on stderr with: tasks completed/total, pass rate percentage, cumulative cost in USD, ETA",
+      "Running with --quiet shows no Rich display, only plain text fallback",
+      "Running with --force-plain forces plain text even in a TTY",
+      "CI detection: if CI=true or GITHUB_ACTIONS=true env var is set, defaults to plain text",
+      "Ctrl+C during a run produces a clean exit with partial results saved (no traceback spam)",
+      "BudgetWarning events render as a visible colored warning in the Rich display",
+      "Existing tests pass: pytest tests/ -x"
+    ],
+    "layer": 2,
+    "scope": [
+      "src/codeprobe/cli/rich_display.py",
+      "src/codeprobe/cli/run_cmd.py",
+      "pyproject.toml"
+    ],
+    "status": "pending",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "jsonline-consumer",
+    "name": "JSON Line event consumer for CI",
+    "description": "Create a JsonLineListener in src/codeprobe/cli/json_display.py that implements RunEventListener. On each event, serialize it as a single JSON line to stderr (using dataclasses.asdict + json.dumps). Each line has a 'type' field matching the event class name (e.g., 'RunStarted', 'TaskScored'). In run_cmd.py, when --log-format json is active, register JsonLineListener instead of RichLiveListener/PlainTextListener. Ensure --quiet + --log-format json still emits JSON (--quiet suppresses display, not structured events). Add tests.",
+    "deps": [
+      "wire-events-executor"
+    ],
+    "tier": "small",
+    "acceptance": [
+      "src/codeprobe/cli/json_display.py exists with JsonLineListener class",
+      "Running 'codeprobe run . --log-format json 2>events.jsonl' produces valid JSON lines on stderr",
+      "Each JSON line has a 'type' field with the event class name",
+      "Each JSON line is parseable by jq",
+      "'codeprobe run . --quiet --log-format json' still emits JSON events (--quiet suppresses display, not JSON)",
+      "tests/test_json_display.py exists and passes",
+      "Existing tests pass: pytest tests/ -x"
+    ],
+    "layer": 2,
+    "scope": [
+      "src/codeprobe/cli/json_display.py",
+      "src/codeprobe/cli/run_cmd.py",
+      "tests/test_json_display.py"
+    ],
+    "status": "pending",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  },
+  {
+    "id": "mine-presets",
+    "name": "Mine command presets and flag grouping",
+    "description": "Add --preset flag to codeprobe mine and organize --help into flag groups. (1) Define presets as a dict in mine_cmd.py: 'quick' -> {'count': 3, 'source': 'sdlc'}, 'mcp' -> {'count': 8, 'source': 'org-scale', 'org_scale': True, 'mcp_families': True, 'enrich': True}. When --preset is provided, apply preset values as defaults; explicit flags override preset values. (2) Organize mine --help text into sections using Click's help formatting: Basic (--count, --source, --enrich, --preset), Filtering (--subsystem, --min-files, --max-files, --discover-subsystems), Org-Scale (--org-scale, --family, --repos, --mcp-families, --sg-repo), Advanced (--no-llm, --scan-timeout, --backends). (3) Extract _discover_mcp_configs from init_cmd.py into src/codeprobe/core/mcp_discovery.py as a shared utility. Update init_cmd.py to import from the new location. Use it in experiment_cmd.py's add-config when --mcp-config is omitted in a TTY.",
+    "deps": [],
+    "tier": "medium",
+    "acceptance": [
+      "'codeprobe mine --preset quick /path/to/repo' runs with count=3",
+      "'codeprobe mine --preset mcp /path/to/repo' runs with org-scale MCP families and enrichment",
+      "'codeprobe mine --preset quick --count 5 /path/to/repo' uses count=5 (explicit flag overrides preset)",
+      "'codeprobe mine --help' shows flags organized into labeled sections (Basic, Filtering, Org-Scale, Advanced)",
+      "src/codeprobe/core/mcp_discovery.py exists with _discover_mcp_configs function",
+      "init_cmd.py imports _discover_mcp_configs from core.mcp_discovery",
+      "experiment_cmd.py's add-config uses mcp_discovery when --mcp-config is omitted in a TTY",
+      "Existing tests pass: pytest tests/ -x"
+    ],
+    "layer": 0,
+    "scope": [
+      "src/codeprobe/cli/mine_cmd.py",
+      "src/codeprobe/cli/init_cmd.py",
+      "src/codeprobe/cli/experiment_cmd.py",
+      "src/codeprobe/core/mcp_discovery.py",
+      "tests/test_mine_presets.py"
+    ],
+    "status": "landed",
+    "branch": null,
+    "pipeline_stage": null,
+    "pipeline_output": {},
+    "eviction_context": null,
+    "pass_number": 1
+  }
+]

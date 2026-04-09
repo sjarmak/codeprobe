@@ -25,6 +25,7 @@ dependencies = [
     "openai>=1.66",
     "tiktoken>=0.7,<1",
     "scipy>=1.11,<2",
+    "rich>=13.7,<14",
 ]
 
 [project.urls]
@@ -56,6 +57,12 @@ openai = "codeprobe.adapters.openai_compat:OpenAICompatAdapter"
 claude = "codeprobe.adapters.session:ClaudeSessionCollector"
 codex = "codeprobe.adapters.session:CodexSessionCollector"
 copilot = "codeprobe.adapters.session:CopilotSessionCollector"
+
+[project.entry-points."codeprobe.scorers"]
+binary = "codeprobe.core.scoring:BinaryScorer"
+continuous = "codeprobe.core.scoring:ContinuousScorer"
+checkpoint = "codeprobe.core.scoring:CheckpointScorer"
+test_ratio = "codeprobe.core.scoring:ContinuousScorer"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

@@ -84,6 +84,10 @@ def main(verbose: int, quiet: bool, log_format: str) -> None:
     and interpret the results to find which setup works best for YOUR code.
     """
     _configure_logging(verbose=verbose, quiet=quiet, log_format=log_format)
+    ctx = click.get_current_context()
+    ctx.ensure_object(dict)
+    ctx.obj["log_format"] = log_format
+    ctx.obj["quiet"] = quiet
 
 
 @main.command()
@@ -101,6 +105,12 @@ def init(path: str) -> None:
 
 @main.command()
 @click.argument("path", default=".")
+@click.option(
+    "--preset",
+    type=click.Choice(["quick", "mcp"], case_sensitive=False),
+    default=None,
+    help="Apply a named preset: 'quick' (count=3) or 'mcp' (org-scale + MCP families).",
+)
 @click.option("--count", default=5, help="Number of tasks to mine (3-20).")
 @click.option(
     "--source",
@@ -208,6 +218,7 @@ def init(path: str) -> None:
 )
 def mine(
     path: str,
+    preset: str | None,
     count: int,
     source: str,
     min_files: int,
@@ -232,6 +243,12 @@ def mine(
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics.
 
+    \b
+    Presets (--preset):
+      quick  — Fast scan: count=3, default SDLC mode
+      mcp    — MCP eval: count=8, org-scale + MCP families + enrich
+
+    \b
     Use --org-scale to mine comprehension/IR tasks with oracle verification
     instead of SDLC code-change tasks.
 
@@ -246,6 +263,7 @@ def mine(
 
     run_mine(
         path,
+        preset=preset,
         count=count,
         source=source,
         min_files=min_files,
@@ -294,7 +312,21 @@ def mine(
     default=False,
     help="Print estimated resource requirements without executing any agents.",
 )
+@click.option(
+    "--force-plain",
+    is_flag=True,
+    default=False,
+    help="Force plain-text output even in a TTY (disable Rich dashboard).",
+)
+@click.option(
+    "--force-rich",
+    is_flag=True,
+    default=False,
+    help="Force Rich Live dashboard even in non-TTY environments.",
+)
+@click.pass_context
 def run(
+    ctx: click.Context,
     path: str,
     agent: str,
     model: str | None,
@@ -302,6 +334,8 @@ def run(
     max_cost_usd: float | None,
     parallel: int,
     dry_run: bool,
+    force_plain: bool,
+    force_rich: bool,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -309,6 +343,10 @@ def run(
     automated tests, and produces a results summary.
     """
     from codeprobe.cli.run_cmd import run_eval
+
+    ctx.ensure_object(dict)
+    log_format = ctx.obj.get("log_format", "text")
+    quiet = ctx.obj.get("quiet", False)
 
     run_eval(
         path,
@@ -318,6 +356,10 @@ def run(
         max_cost_usd=max_cost_usd,
         parallel=parallel,
         dry_run=dry_run,
+        log_format=log_format,
+        quiet=quiet,
+        force_plain=force_plain,
+        force_rich=force_rich,
     )
 
 

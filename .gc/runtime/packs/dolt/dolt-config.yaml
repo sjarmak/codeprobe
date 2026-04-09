@@ -1,0 +1,20 @@
+# Dolt SQL server configuration — managed by gc-beads-bd
+# Do not edit manually; changes are overwritten on each server start.
+# To customize, set environment variables:
+#   GC_DOLT_PORT, GC_DOLT_HOST, GC_DOLT_USER, GC_DOLT_PASSWORD, GC_DOLT_LOGLEVEL
+
+log_level: warning
+
+listener:
+  port: 35690
+  host: 0.0.0.0
+  max_connections: 1000
+  read_timeout_millis: 300000
+  write_timeout_millis: 300000
+
+data_dir: "/home/ds/codeprobe/.beads/dolt"
+
+behavior:
+  auto_gc_behavior:
+    enable: true
+    archive_level: 1
