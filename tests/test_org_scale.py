@@ -826,3 +826,137 @@ class TestStripLocationHints:
         _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "disc-002")
 
         assert not (task_dir / "instruction_discovery.md").exists()
+
+    def test_mcp_family_preserves_symbol_name(self, tmp_path: Path) -> None:
+        """MCP-advantaged families preserve symbol name in instruction.md."""
+        from codeprobe.mining.writer import _write_oracle_task
+
+        task = Task(
+            id="mcp-sym-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="symbol-reference-trace",
+                org_scale=True,
+                issue_title="Find references to AgentConfig in test-repo",
+                issue_body=(
+                    "Find all files that reference `AgentConfig` (defined in "
+                    "`src/config.py`), including through aliases, re-exports, "
+                    "and wildcard imports."
+                ),
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.py", "src/b.py"),
+            ),
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-sym-001")
+
+        content = (task_dir / "instruction.md").read_text()
+        assert "AgentConfig" in content
+        assert "src/config.py" in content
+
+    def test_mcp_family_type_hierarchy_preserves_symbol(self, tmp_path: Path) -> None:
+        """type-hierarchy-consumers preserves base type name in instruction.md."""
+        from codeprobe.mining.writer import _write_oracle_task
+
+        task = Task(
+            id="mcp-th-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="type-hierarchy-consumers",
+                org_scale=True,
+                issue_title="Find implementations and consumers of BaseHandler",
+                issue_body=(
+                    "Find all files that implement `BaseHandler` and all files "
+                    "that use those implementations."
+                ),
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.py",),
+            ),
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-th-001")
+
+        content = (task_dir / "instruction.md").read_text()
+        assert "BaseHandler" in content
+
+    def test_mcp_family_change_scope_preserves_symbol(self, tmp_path: Path) -> None:
+        """change-scope-audit preserves symbol name in instruction.md."""
+        from codeprobe.mining.writer import _write_oracle_task
+
+        task = Task(
+            id="mcp-cs-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="change-scope-audit",
+                org_scale=True,
+                issue_title="Blast radius of changing process_data in test-repo",
+                issue_body=(
+                    "The symbol `process_data` (defined in `src/core.py`) is "
+                    "about to change its signature. Find all files that depend "
+                    "on it and would need review."
+                ),
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.py",),
+            ),
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-cs-001")
+
+        content = (task_dir / "instruction.md").read_text()
+        assert "process_data" in content
+        assert "src/core.py" in content
+
+    def test_mcp_family_uses_specific_heading(self, tmp_path: Path) -> None:
+        """MCP-advantaged families use the task-specific heading, not generic."""
+        from codeprobe.mining.writer import _write_oracle_task
+
+        task = Task(
+            id="mcp-head-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="symbol-reference-trace",
+                org_scale=True,
+                issue_title="Find references to AgentConfig in test-repo",
+                issue_body=(
+                    "Find all files that reference `AgentConfig` (defined in "
+                    "`src/config.py`)."
+                ),
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.py",),
+            ),
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-head-001")
+
+        content = (task_dir / "instruction.md").read_text()
+        assert "Find references to AgentConfig" in content
+        # Should NOT use generic pattern-based heading
+        assert "Find symbol-reference-trace patterns" not in content

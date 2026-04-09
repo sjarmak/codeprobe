@@ -63,6 +63,19 @@ def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _decode_timeout_output(raw: str | bytes | None) -> str:
+    """Decode stdout/stderr from a TimeoutExpired exception.
+
+    The exception may carry ``str``, ``bytes``, or ``None`` depending on
+    how ``subprocess.run`` was called and how the process was killed.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw
+
+
 class BaseAdapter:
     """Base class for CLI-based agent adapters.
 
@@ -162,12 +175,51 @@ class BaseAdapter:
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start
+            timeout_error = f"Agent timed out after {config.timeout_seconds}s"
+
+            # Decode stdout/stderr — TimeoutExpired may carry bytes or str.
+            raw_stdout = _decode_timeout_output(exc.stdout)
+            raw_stderr = (
+                _decode_timeout_output(exc.stderr) if exc.stderr is not None else None
+            )
+
+            # Attempt telemetry extraction from partial output via parse_output.
+            if raw_stdout:
+                try:
+                    partial_result = subprocess.CompletedProcess(
+                        args=cmd,
+                        returncode=-1,
+                        stdout=raw_stdout,
+                        stderr=raw_stderr or "",
+                    )
+                    parsed = self.parse_output(partial_result, duration)
+                    # Merge: keep parsed telemetry but override exit_code and
+                    # prepend timeout error to any parse error.
+                    merged_error = timeout_error
+                    if parsed.error:
+                        merged_error = f"{timeout_error}; {parsed.error}"
+                    return AgentOutput(
+                        stdout=parsed.stdout,
+                        stderr=parsed.stderr,
+                        exit_code=-1,
+                        duration_seconds=duration,
+                        input_tokens=parsed.input_tokens,
+                        output_tokens=parsed.output_tokens,
+                        cache_read_tokens=parsed.cache_read_tokens,
+                        cost_usd=parsed.cost_usd,
+                        cost_model=parsed.cost_model,
+                        cost_source=parsed.cost_source,
+                        error=merged_error,
+                    )
+                except Exception:
+                    pass  # Fall through to bare timeout output below.
+
             return AgentOutput(
-                stdout=exc.stdout if isinstance(exc.stdout, str) else "",
-                stderr=exc.stderr if isinstance(exc.stderr, str) else None,
+                stdout=raw_stdout,
+                stderr=raw_stderr,
                 exit_code=-1,
                 duration_seconds=duration,
-                error=f"Agent timed out after {config.timeout_seconds}s",
+                error=timeout_error,
             )
         except FileNotFoundError as exc:
             raise AdapterSetupError(f"Binary not found at runtime: {exc}") from exc

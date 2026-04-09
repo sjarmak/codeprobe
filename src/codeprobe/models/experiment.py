@@ -19,6 +19,20 @@ class ExperimentConfig:
     reward_type: str = "binary"
     extra: dict = field(default_factory=dict)
 
+    def __repr__(self) -> str:
+        # Lazy import: config/__init__.py → loader.py → this module (circular)
+        from codeprobe.config.redact import redact_mcp_headers
+
+        redacted_mcp = redact_mcp_headers(self.mcp_config)
+        return (
+            f"ExperimentConfig(label={self.label!r}, agent={self.agent!r}, "
+            f"model={self.model!r}, permission_mode={self.permission_mode!r}, "
+            f"mcp_config={redacted_mcp!r}, "
+            f"instruction_variant={self.instruction_variant!r}, "
+            f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
+            f"extra={self.extra!r})"
+        )
+
 
 @dataclass(frozen=True)
 class CompletedTask:

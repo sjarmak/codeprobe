@@ -352,7 +352,7 @@ class TestBaseAdapterRunErrors:
         exc.stderr = "partial err"
         with patch("subprocess.run", side_effect=exc):
             output = adapter.run("test prompt", config)
-        assert output.error == "Agent timed out after 5s"
+        assert "timed out" in output.error
         assert output.exit_code == -1
         assert output.stdout == "partial out"
         assert output.stderr == "partial err"
@@ -383,6 +383,128 @@ class TestBaseAdapterRunErrors:
         with patch.object(adapter, "find_binary", return_value=None):
             with pytest.raises(AdapterSetupError, match="CLI not found"):
                 adapter._require_binary()
+
+
+# -- Timeout telemetry extraction -----------------------------------------------
+
+
+class TestTimeoutTelemetryExtraction:
+    """When a process times out with partial stdout, parse_output() should
+    be called to extract whatever telemetry is available."""
+
+    def test_claude_timeout_extracts_partial_telemetry(self) -> None:
+        """Claude adapter should extract tokens/cost from partial output on timeout."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        partial_json = json.dumps(
+            {
+                "result": "partial work...",
+                "usage": {
+                    "input_tokens": 8000,
+                    "output_tokens": 2000,
+                    "cache_read_input_tokens": 500,
+                },
+                "total_cost_usd": 0.035,
+            }
+        )
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = partial_json
+        exc.stderr = ""
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert "timed out" in output.error
+        assert output.exit_code == -1
+        assert output.input_tokens == 8000
+        assert output.output_tokens == 2000
+        assert output.cache_read_tokens == 500
+        assert output.cost_usd == pytest.approx(0.035)
+        assert output.cost_source == "api_reported"
+
+    def test_claude_timeout_with_invalid_json_still_returns_timeout_error(self) -> None:
+        """When partial stdout is not valid JSON, timeout error is still reported."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = "not valid json {{"
+        exc.stderr = "some stderr"
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert "timed out" in output.error
+        assert output.exit_code == -1
+        assert output.input_tokens is None
+        assert output.cost_usd is None
+
+    def test_claude_timeout_with_none_stdout_returns_no_telemetry(self) -> None:
+        """When timeout has no stdout at all, no telemetry is extracted."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = None
+        exc.stderr = None
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert "timed out" in output.error
+        assert output.exit_code == -1
+        assert output.input_tokens is None
+        assert output.cost_usd is None
+
+    def test_timeout_with_bytes_stdout_decoded(self) -> None:
+        """TimeoutExpired.stdout can be bytes — should be decoded."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        partial_json = json.dumps(
+            {
+                "result": "partial",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "total_cost_usd": 0.001,
+            }
+        )
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = partial_json.encode("utf-8")
+        exc.stderr = b"err"
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert "timed out" in output.error
+        assert output.input_tokens == 100
+        assert output.output_tokens == 50
+        assert output.cost_usd == pytest.approx(0.001)
+
+    def test_timeout_parse_output_failure_still_returns_timeout_error(self) -> None:
+        """If parse_output itself raises on timeout path, we still get a valid AgentOutput."""
+
+        class ExplodingParser(BaseAdapter):
+            _binary_name = "exploding"
+            _install_hint = "n/a"
+
+            def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+                return ["exploding", "-p", prompt]
+
+            def parse_output(
+                self, result: subprocess.CompletedProcess[str], duration: float
+            ) -> AgentOutput:
+                raise RuntimeError("parser exploded")
+
+        adapter = ExplodingParser()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["exploding"], timeout=5)
+        exc.stdout = "some output"
+        exc.stderr = ""
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test", config)
+        assert "timed out" in output.error
+        assert output.exit_code == -1
 
 
 # -- BaseAdapter parse_output() ------------------------------------------------

@@ -116,6 +116,16 @@ _NOISE_FENCED_BLOCKS = re.compile(r"```(?:release-note|docs)\b.*?```", re.DOTALL
 # <details> blocks (often contain verbose reproduction steps, version dumps)
 _DETAILS_BLOCK = re.compile(r"<details>.*?</details>", re.DOTALL)
 
+# MCP-advantaged families where the symbol name and definition file are
+# essential task information and must NOT be stripped from instruction.md.
+_MCP_CATEGORIES: frozenset[str] = frozenset(
+    {
+        "symbol-reference-trace",
+        "type-hierarchy-consumers",
+        "change-scope-audit",
+    }
+)
+
 # ---------------------------------------------------------------------------
 # Self-contained oracle scorer (vendored into each task's tests/oracle.py)
 # No codeprobe install required — only stdlib imports.
@@ -509,12 +519,20 @@ def _write_oracle_task(
     language = task.metadata.language or "unknown"
     question = task.metadata.issue_body or task.metadata.description
 
-    # instruction.md — discovery question: no hints about specific symbols,
-    # file paths, or regex patterns.  The agent must discover everything.
-    family_desc = _get_family_description(task.metadata.category)
-    discovery_question = _strip_location_hints(question, family_desc)
-    # Generic heading — never leaks symbol names or file paths
-    discovery_title = f"Find {task.metadata.category} patterns in {repo_name}"
+    # MCP-advantaged families embed the symbol name and definition file
+    # as essential task information — stripping them makes the task ambiguous.
+    # Pattern-based families strip regex hints so the agent must discover them.
+    is_mcp_family = task.metadata.category in _MCP_CATEGORIES
+
+    if is_mcp_family:
+        discovery_question = question
+        discovery_title = task.metadata.issue_title or (
+            f"Find {task.metadata.category} patterns in {repo_name}"
+        )
+    else:
+        family_desc = _get_family_description(task.metadata.category)
+        discovery_question = _strip_location_hints(question, family_desc)
+        discovery_title = f"Find {task.metadata.category} patterns in {repo_name}"
 
     def _build_instruction(q: str, extra_sections: str = "") -> str:
         return (

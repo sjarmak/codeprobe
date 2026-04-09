@@ -54,9 +54,14 @@ def _dim_by_name(score: AssessmentScore, name: str) -> DimensionScore:
 
 # Reusable "rich repo" heuristics for tests that need a realistic baseline.
 _RICH_REPO = _make_heuristics(
-    total_commits=300, merge_commits=30, contributors=4,
-    has_ci=True, has_tests=True, test_frameworks=["jest"],
-    total_files=80, recent_activity=True,
+    total_commits=300,
+    merge_commits=30,
+    contributors=4,
+    has_ci=True,
+    has_tests=True,
+    test_frameworks=["jest"],
+    total_files=80,
+    recent_activity=True,
 )
 
 
@@ -238,7 +243,9 @@ class TestHeuristicReturnsAllRubricDimensions:
         )
         score = score_repo_heuristic(h)
         for d in score.dimensions:
-            assert 0.0 <= d.score <= 1.0, f"Dimension {d.name!r} score out of range: {d.score}"
+            assert (
+                0.0 <= d.score <= 1.0
+            ), f"Dimension {d.name!r} score out of range: {d.score}"
 
 
 # ---------------------------------------------------------------------------
@@ -348,12 +355,18 @@ class TestBothPathsSameShape:
                 for name in RUBRIC_V1
             ],
         }
-        model_score = _parse_model_assessment(model_response, model_used="haiku", details={})
+        model_score = _parse_model_assessment(
+            model_response, model_used="haiku", details={}
+        )
 
         # Same top-level fields
-        assert set(heuristic_score.__dataclass_fields__) == set(model_score.__dataclass_fields__)
+        assert set(heuristic_score.__dataclass_fields__) == set(
+            model_score.__dataclass_fields__
+        )
         # Same dimension names in same order
-        assert tuple(d.name for d in heuristic_score.dimensions) == tuple(d.name for d in model_score.dimensions)
+        assert tuple(d.name for d in heuristic_score.dimensions) == tuple(
+            d.name for d in model_score.dimensions
+        )
         # Different scoring methods
         assert heuristic_score.scoring_method == "heuristic"
         assert model_score.scoring_method == "model"
@@ -369,7 +382,9 @@ class TestFallbackOnMissingBinary:
 
     def test_fallback_when_no_claude(self) -> None:
         with (
-            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO),
+            patch(
+                "codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO
+            ),
             patch("codeprobe.core.llm.claude_available", return_value=False),
         ):
             result = assess_repo(Path("/any/path"))
@@ -386,7 +401,9 @@ class TestFallbackOnParseError:
         from codeprobe.core.llm import LLMParseError
 
         with (
-            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO),
+            patch(
+                "codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO
+            ),
             patch("codeprobe.core.llm.claude_available", return_value=True),
             patch(
                 "codeprobe.assess.heuristics.score_repo_with_model",
@@ -450,7 +467,9 @@ class TestGatherHeuristicsMockSubprocess:
                 # Test glob queries for test files
                 return FakeResult("")
             if cmd == "ls-files":
-                return FakeResult("src/main.py\nsrc/utils.py\ntests/test_main.py\nREADME.md\n")
+                return FakeResult(
+                    "src/main.py\nsrc/utils.py\ntests/test_main.py\nREADME.md\n"
+                )
             if cmd == "log" and "--reverse" in rest:
                 return FakeResult("2023-01-01T00:00:00+00:00")
             if cmd == "log" and "--since=30.days" in rest:
@@ -513,7 +532,9 @@ class TestAssessRepoPipeline:
 
     def test_assess_repo_pipeline(self) -> None:
         with (
-            patch("codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO) as mock_gh,
+            patch(
+                "codeprobe.assess.heuristics.gather_heuristics", return_value=_RICH_REPO
+            ) as mock_gh,
             patch("codeprobe.core.llm.claude_available", return_value=False),
         ):
             result = assess_repo(Path("/any/path"))
@@ -540,3 +561,61 @@ class TestScoreRepoAlias:
         result = score_repo(h)
         assert result.scoring_method == "heuristic"
         assert isinstance(result, AssessmentScore)
+
+
+# ---------------------------------------------------------------------------
+# _has_tests — nested test directory detection
+# ---------------------------------------------------------------------------
+
+
+class TestHasTestsNestedDirs:
+    """_has_tests must detect test dirs nested inside packages (e.g. numpy)."""
+
+    def test_top_level_tests_dir(self, tmp_path: Path) -> None:
+        """Standard top-level tests/ directory is detected."""
+        from codeprobe.assess.heuristics import _has_tests
+
+        (tmp_path / "tests").mkdir()
+        assert _has_tests(tmp_path) is True
+
+    def test_nested_tests_dir_via_git_ls_files(self, tmp_path: Path) -> None:
+        """Nested test dirs like numpy/_core/tests/ are detected via git."""
+        from codeprobe.assess.heuristics import _has_tests
+
+        # No top-level test dirs exist
+        # Mock _run_git to simulate git ls-files returning nested test files
+        def fake_run_git(args: list[str], cwd: Path) -> str:
+            if args[0] == "ls-files" and any(
+                "**/test" in a or "**/tests" in a for a in args
+            ):
+                return "numpy/_core/tests/test_numeric.py"
+            if args[0] == "ls-files":
+                return ""
+            return ""
+
+        with patch("codeprobe.assess.heuristics._run_git", side_effect=fake_run_git):
+            assert _has_tests(tmp_path) is True
+
+    def test_nested_test_files_via_recursive_glob(self, tmp_path: Path) -> None:
+        """Test files like src/pkg/test_foo.py are detected via recursive glob."""
+        from codeprobe.assess.heuristics import _has_tests
+
+        def fake_run_git(args: list[str], cwd: Path) -> str:
+            if args[0] == "ls-files" and any("**/test_*.py" in a for a in args):
+                return "src/pkg/test_foo.py"
+            if args[0] == "ls-files":
+                return ""
+            return ""
+
+        with patch("codeprobe.assess.heuristics._run_git", side_effect=fake_run_git):
+            assert _has_tests(tmp_path) is True
+
+    def test_no_tests_at_all(self, tmp_path: Path) -> None:
+        """Repos with no test dirs or files return False."""
+        from codeprobe.assess.heuristics import _has_tests
+
+        def fake_run_git(args: list[str], cwd: Path) -> str:
+            return ""
+
+        with patch("codeprobe.assess.heuristics._run_git", side_effect=fake_run_git):
+            assert _has_tests(tmp_path) is False

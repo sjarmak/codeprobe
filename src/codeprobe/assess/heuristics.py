@@ -69,6 +69,26 @@ _TEST_GLOBS: list[str] = [
     "*.spec.js",
 ]
 
+# Recursive variants for repos with nested test layouts (e.g. numpy/_core/tests/).
+_RECURSIVE_TEST_DIR_GLOBS: list[str] = [
+    "**/tests/**",
+    "**/test/**",
+    "**/spec/**",
+    "**/__tests__/**",
+]
+
+_RECURSIVE_TEST_FILE_GLOBS: list[str] = [
+    "**/*_test.go",
+    "**/*_test.py",
+    "**/test_*.py",
+    "**/*.test.ts",
+    "**/*.test.js",
+    "**/*.test.tsx",
+    "**/*.test.jsx",
+    "**/*.spec.ts",
+    "**/*.spec.js",
+]
+
 # ---------------------------------------------------------------------------
 # Fixed rubric — model scores against these, doesn't invent them
 # ---------------------------------------------------------------------------
@@ -217,12 +237,23 @@ def _detect_primary_languages(file_list: str) -> list[str]:
 
 
 def _has_tests(repo_path: Path) -> bool:
-    """Check whether the repo appears to contain tests."""
+    """Check whether the repo appears to contain tests.
+
+    Checks top-level test directories first, then falls back to recursive
+    git ls-files glob patterns to catch repos with nested test layouts
+    (e.g. numpy/_core/tests/, numpy/tests/).
+    """
+    # Fast path: top-level test directories
     for d in _TEST_DIRS:
         if (repo_path / d).is_dir():
             return True
-    # Check for test files via git ls-files
+    # Check for test files via git ls-files (top-level patterns)
     for pattern in _TEST_GLOBS:
+        out = _run_git(["ls-files", "--", pattern], cwd=repo_path)
+        if out:
+            return True
+    # Recursive search for nested test directories and files
+    for pattern in _RECURSIVE_TEST_DIR_GLOBS + _RECURSIVE_TEST_FILE_GLOBS:
         out = _run_git(["ls-files", "--", pattern], cwd=repo_path)
         if out:
             return True

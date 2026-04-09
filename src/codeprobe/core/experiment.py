@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
+from codeprobe.config.redact import redact_mcp_headers
 from codeprobe.models.experiment import (
     CompletedTask,
     ConfigResults,
@@ -51,11 +52,16 @@ def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
 
 def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
     """Write experiment.json to the experiment directory."""
+    serialized_configs = []
+    for c in experiment.configs:
+        d = asdict(c)
+        d["mcp_config"] = redact_mcp_headers(c.mcp_config)
+        serialized_configs.append(d)
     data: dict = {
         "name": experiment.name,
         "description": experiment.description,
         "tasks_dir": experiment.tasks_dir,
-        "configs": [asdict(c) for c in experiment.configs],
+        "configs": serialized_configs,
     }
     if experiment.task_ids:
         data["task_ids"] = list(experiment.task_ids)
