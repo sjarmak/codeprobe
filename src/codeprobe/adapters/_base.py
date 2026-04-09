@@ -210,6 +210,7 @@ class BaseAdapter:
                         cost_model=parsed.cost_model,
                         cost_source=parsed.cost_source,
                         error=merged_error,
+                        tool_call_count=parsed.tool_call_count,
                     )
                 except Exception:
                     pass  # Fall through to bare timeout output below.

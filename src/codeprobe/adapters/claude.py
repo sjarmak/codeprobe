@@ -132,4 +132,5 @@ class ClaudeAdapter(BaseAdapter):
             cost_model=usage.cost_model,
             cost_source=usage.cost_source,
             error=usage.error,
+            tool_call_count=usage.tool_call_count,
         )

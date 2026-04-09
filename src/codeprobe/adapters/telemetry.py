@@ -65,6 +65,7 @@ class UsageData:
     cost_model: str = "unknown"
     cost_source: str = "unavailable"
     error: str | None = None
+    tool_call_count: int | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:
@@ -84,6 +85,28 @@ class TelemetryCollector(Protocol):
     """Protocol for extracting telemetry from raw agent output."""
 
     def collect(self, raw_output: str, **context: Any) -> UsageData: ...
+
+
+def _count_tool_use_blocks(envelope: dict[str, Any]) -> int | None:
+    """Count ``tool_use`` content blocks in a Claude CLI JSON envelope.
+
+    Iterates the ``messages`` array (when present) and counts content
+    blocks with ``type == "tool_use"`` in assistant messages.
+    Returns ``None`` when the envelope has no ``messages`` key.
+    """
+    messages = envelope.get("messages")
+    if messages is None:
+        return None
+
+    count = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                count += 1
+    return count
 
 
 class JsonStdoutCollector:
@@ -125,6 +148,8 @@ class JsonStdoutCollector:
             cost_model = "unknown"
             cost_source = "unavailable"
 
+        tool_call_count = _count_tool_use_blocks(envelope)
+
         return UsageData(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -132,6 +157,7 @@ class JsonStdoutCollector:
             cost_usd=cost_usd_raw,
             cost_model=cost_model,
             cost_source=cost_source,
+            tool_call_count=tool_call_count,
         )
 
 

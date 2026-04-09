@@ -49,6 +49,7 @@ class CompletedTask:
     cost_usd: float | None = None
     cost_model: str = "unknown"
     cost_source: str = "unavailable"
+    tool_call_count: int | None = None
     error_category: str | None = None
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)

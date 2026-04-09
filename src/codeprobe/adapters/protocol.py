@@ -44,6 +44,7 @@ class AgentOutput:
     cost_model: str = "unknown"
     error: str | None = None
     cost_source: str = "unavailable"
+    tool_call_count: int | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:

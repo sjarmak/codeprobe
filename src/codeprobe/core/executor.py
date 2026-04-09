@@ -315,6 +315,7 @@ def execute_task(
             cost_usd=output.cost_usd,
             cost_model=output.cost_model,
             cost_source=output.cost_source,
+            tool_call_count=output.tool_call_count,
         )
 
     # For oracle tasks, the agent writes answer.txt to the repo root.
@@ -559,6 +560,7 @@ def _restore_checkpointed(
                 cost_usd=entry.get("cost_usd"),
                 cost_model=entry.get("cost_model", "unknown"),
                 cost_source=entry.get("cost_source", "unavailable"),
+                tool_call_count=entry.get("tool_call_count"),
                 error_category=entry.get("error_category"),
                 scoring_details=entry.get("scoring_details", {}),
                 metadata=entry.get("metadata", {}),

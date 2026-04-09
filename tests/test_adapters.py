@@ -108,6 +108,17 @@ class TestAgentOutputTokenFields:
         assert output.output_tokens is None
         assert output.cache_read_tokens is None
         assert output.cost_model == "unknown"
+        assert output.tool_call_count is None
+
+    def test_tool_call_count(self) -> None:
+        output = AgentOutput(
+            stdout="ok",
+            stderr=None,
+            exit_code=0,
+            duration_seconds=1.0,
+            tool_call_count=5,
+        )
+        assert output.tool_call_count == 5
 
     def test_per_token_cost_model(self) -> None:
         output = AgentOutput(
@@ -617,6 +628,21 @@ class TestClaudeParseOutput:
         assert output.output_tokens is None
         assert output.cost_source == "unavailable"
         assert output.error is not None
+
+    def test_tool_call_count_from_messages(self) -> None:
+        adapter = ClaudeAdapter()
+        result = _make_result("claude_with_tools.json")
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.tool_call_count == 3
+        assert output.error is None
+
+    def test_tool_call_count_none_without_messages(self) -> None:
+        adapter = ClaudeAdapter()
+        result = _make_result("claude_normal.json")
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.tool_call_count is None
 
 
 # -- CopilotAdapter parse_output() --------------------------------------------

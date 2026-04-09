@@ -58,6 +58,16 @@ def test_completed_task_repeat_index_explicit():
     assert task.repeat_index == 3
 
 
+def test_completed_task_tool_call_count_default():
+    task = CompletedTask(task_id="t-001", automated_score=1.0)
+    assert task.tool_call_count is None
+
+
+def test_completed_task_tool_call_count_explicit():
+    task = CompletedTask(task_id="t-001", automated_score=1.0, tool_call_count=7)
+    assert task.tool_call_count == 7
+
+
 def test_config_results():
     results = ConfigResults(
         config="baseline",

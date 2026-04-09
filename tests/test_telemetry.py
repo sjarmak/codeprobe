@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,12 @@ def test_usage_data_defaults():
     assert usage.cost_model == "unknown"
     assert usage.cost_source == "unavailable"
     assert usage.error is None
+    assert usage.tool_call_count is None
+
+
+def test_usage_data_tool_call_count():
+    usage = UsageData(tool_call_count=5)
+    assert usage.tool_call_count == 5
 
 
 # -- Protocol conformance -----------------------------------------------------
@@ -102,6 +109,35 @@ class TestJsonStdoutCollector:
         assert usage.cost_model == "unknown"
         assert usage.cost_source == "unavailable"
         assert usage.error is None
+
+    def test_tool_call_count_from_messages(self):
+        """Count tool_use content blocks in the messages array."""
+        raw = (FIXTURES / "claude_with_tools.json").read_text()
+        usage = self.collector.collect(raw)
+        assert usage.tool_call_count == 3
+        assert usage.error is None
+
+    def test_tool_call_count_none_without_messages(self):
+        """When no messages array is present, tool_call_count is None."""
+        raw = (FIXTURES / "claude_normal.json").read_text()
+        usage = self.collector.collect(raw)
+        assert usage.tool_call_count is None
+
+    def test_tool_call_count_zero_no_tool_use(self):
+        """Messages present but no tool_use blocks → count is 0."""
+        raw = json.dumps(
+            {
+                "result": "done",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "total_cost_usd": 0.01,
+                "messages": [
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+                ],
+            }
+        )
+        usage = self.collector.collect(raw)
+        assert usage.tool_call_count == 0
 
     def test_malformed_json(self):
         raw = (FIXTURES / "claude_malformed.json").read_text()

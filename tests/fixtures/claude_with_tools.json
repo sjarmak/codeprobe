@@ -1,0 +1,78 @@
+{
+  "result": "I've fixed the bug by editing the file.",
+  "usage": {
+    "input_tokens": 5000,
+    "output_tokens": 2000,
+    "cache_read_input_tokens": 500
+  },
+  "total_cost_usd": 0.05,
+  "model": "claude-sonnet-4-6",
+  "session_id": "sess_tools_01",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Fix the bug in main.py"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Let me read the file first." },
+        {
+          "type": "tool_use",
+          "id": "toolu_01",
+          "name": "Read",
+          "input": { "file_path": "main.py" }
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_02",
+          "name": "Edit",
+          "input": {
+            "file_path": "main.py",
+            "old_string": "bug",
+            "new_string": "fix"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01",
+          "content": "file contents"
+        },
+        { "type": "tool_result", "tool_use_id": "toolu_02", "content": "ok" }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Now let me verify." },
+        {
+          "type": "tool_use",
+          "id": "toolu_03",
+          "name": "Bash",
+          "input": { "command": "python -m pytest" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_03",
+          "content": "all passed"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "I've fixed the bug by editing the file." }
+      ]
+    }
+  ]
+}
