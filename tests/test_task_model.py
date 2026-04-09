@@ -89,6 +89,23 @@ class TestTaskVerification:
         v = TaskVerification()
         assert v.answer_schema == ""
 
+    def test_ground_truth_schema_version_default(self) -> None:
+        v = TaskVerification()
+        assert v.ground_truth_schema_version == ""
+
+    def test_ground_truth_schema_version_custom(self) -> None:
+        v = TaskVerification(ground_truth_schema_version="v2")
+        assert v.ground_truth_schema_version == "v2"
+
+    def test_oracle_tiers_default(self) -> None:
+        v = TaskVerification()
+        assert v.oracle_tiers == ()
+
+    def test_oracle_tiers_custom(self) -> None:
+        tiers = (("file_a.py", "required"), ("file_b.py", "supplementary"))
+        v = TaskVerification(oracle_tiers=tiers)
+        assert v.oracle_tiers == tiers
+
     def test_custom_artifact_fields(self) -> None:
         v = TaskVerification(
             verification_mode="dual",
@@ -117,6 +134,36 @@ class TestTaskVerification:
         assert v.eval_command == ""
 
 
+class TestHashability:
+    """Frozen dataclasses must be hashable for use in sets/dicts."""
+
+    def test_task_metadata_hashable(self) -> None:
+        m = TaskMetadata(name="test")
+        assert isinstance(hash(m), int)
+        # Can be used in a set
+        s = {m, TaskMetadata(name="test")}
+        assert len(s) == 1
+
+    def test_task_verification_hashable(self) -> None:
+        v = TaskVerification()
+        assert isinstance(hash(v), int)
+        s = {v, TaskVerification()}
+        assert len(s) == 1
+
+    def test_task_verification_with_oracle_tiers_hashable(self) -> None:
+        tiers = (("a.py", "required"), ("b.py", "context"))
+        v = TaskVerification(oracle_tiers=tiers)
+        assert isinstance(hash(v), int)
+
+    def test_task_hashable(self) -> None:
+        t = Task(
+            id="t1",
+            repo="r",
+            metadata=TaskMetadata(name="test"),
+        )
+        assert isinstance(hash(t), int)
+
+
 class TestTaskRoundTrip:
     """Ensure new fields survive dataclass asdict serialization."""
 
@@ -135,3 +182,5 @@ class TestTaskRoundTrip:
         assert d["verification"]["eval_command"] == ""
         assert d["verification"]["ground_truth_path"] == "tests/ground_truth.json"
         assert d["verification"]["answer_schema"] == ""
+        assert d["verification"]["ground_truth_schema_version"] == ""
+        assert d["verification"]["oracle_tiers"] == ()

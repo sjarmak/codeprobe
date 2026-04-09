@@ -237,12 +237,12 @@ def generate_org_scale_task(
     # When curation is provided, use curated files as ground truth.
     if curation_result is not None:
         ground_truth_files = curation_result.matched_files
-        oracle_tiers = {cf.path: cf.tier for cf in curation_result.files}
+        oracle_tiers = tuple((cf.path, cf.tier) for cf in curation_result.files)
     else:
         ground_truth_files = (
             multi_hop_files if is_multi_hop else scan_result.matched_files
         )
-        oracle_tiers = {}
+        oracle_tiers = ()
 
     if not ground_truth_files:
         return None
@@ -469,19 +469,20 @@ def _maybe_enrich(
     symbol: str,
     def_file: str,
     grep_files: frozenset[str],
-) -> tuple[frozenset[str], dict[str, str]]:
+) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
     """Enrich ground truth via Sourcegraph if available, else return grep-only."""
     if not sg_available:
-        return grep_files, {}
+        return grep_files, ()
 
     from codeprobe.mining.sg_ground_truth import enrich_ground_truth
 
-    return enrich_ground_truth(
+    files, tier_dict = enrich_ground_truth(
         symbol=symbol,
         defining_file=def_file,
         grep_files=grep_files,
         repo_sg_name=sg_repo,
     )
+    return files, tuple(tier_dict.items())
 
 
 # ---------------------------------------------------------------------------
@@ -591,11 +592,10 @@ def _mine_type_hierarchy_tasks(
         )
 
         # Tier assignment: subclass_files → required, usage_files → supplementary
-        oracle_tiers: dict[str, str] = {}
-        for f in subclass_files:
-            oracle_tiers[f] = "required"
-        for f in usage_files:
-            oracle_tiers[f] = "supplementary"
+        oracle_tiers: tuple[tuple[str, str], ...] = tuple(
+            [(f, "required") for f in subclass_files]
+            + [(f, "supplementary") for f in usage_files]
+        )
 
         tasks.append(
             Task(

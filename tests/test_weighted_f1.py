@@ -16,19 +16,19 @@ from codeprobe.models.task import TaskVerification
 
 
 class TestTaskVerificationOracleTiers:
-    def test_default_empty_dict(self) -> None:
+    def test_default_empty_tuple(self) -> None:
         tv = TaskVerification()
-        assert tv.oracle_tiers == {}
+        assert tv.oracle_tiers == ()
 
     def test_with_tiers(self) -> None:
-        tiers = {"a.go": "required", "b.go": "context"}
+        tiers = (("a.go", "required"), ("b.go", "context"))
         tv = TaskVerification(oracle_tiers=tiers)
         assert tv.oracle_tiers == tiers
 
     def test_frozen_field_ref(self) -> None:
-        tv = TaskVerification(oracle_tiers={"a.go": "required"})
+        tv = TaskVerification(oracle_tiers=(("a.go", "required"),))
         with pytest.raises(AttributeError):
-            tv.oracle_tiers = {}  # type: ignore[misc]
+            tv.oracle_tiers = ()  # type: ignore[misc]
 
 
 # ---------------------------------------------------------------------------

@@ -132,9 +132,9 @@ class TaskVerification:
     weight_artifact: float = 0.5
     oracle_type: str = ""  # "file_list", "count", "boolean" — empty for SDLC
     oracle_answer: tuple[str, ...] = ()  # expected answer set for oracle tasks
-    oracle_tiers: dict[str, str] = field(
-        default_factory=dict
-    )  # file→tier mapping: "required"|"supplementary"|"context"
+    oracle_tiers: tuple[
+        tuple[str, str], ...
+    ] = ()  # file→tier mapping: "required"|"supplementary"|"context"
     ground_truth_schema_version: str = ""
     checkpoints: tuple[Checkpoint, ...] = ()  # from [[checkpoints]] in task.toml
 
