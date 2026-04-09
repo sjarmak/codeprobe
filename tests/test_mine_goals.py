@@ -271,3 +271,248 @@ class TestGoalFlag:
         mock_rtt.assert_called_once()
         call_args = mock_rtt.call_args
         assert call_args[0][0] == "mixed"
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_by_task_type — routing to correct pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchByTaskType:
+    """Verify _dispatch_by_task_type routes to the correct generation pipeline."""
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_sdlc")
+    def test_sdlc_code_change_routes_to_sdlc(self, mock_sdlc, tmp_path) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_by_task_type
+
+        _dispatch_by_task_type(
+            task_type="sdlc_code_change",
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="Code quality comparison",
+            bias="mixed",
+        )
+        mock_sdlc.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_sdlc")
+    def test_mcp_tool_usage_routes_to_sdlc(self, mock_sdlc, tmp_path) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_by_task_type
+
+        _dispatch_by_task_type(
+            task_type="mcp_tool_usage",
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=6,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="MCP / tool benefit",
+            bias="hard",
+        )
+        mock_sdlc.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_probes")
+    def test_micro_probe_routes_to_probes(self, mock_probes, tmp_path) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_by_task_type
+
+        _dispatch_by_task_type(
+            task_type="micro_probe",
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="Codebase navigation",
+            bias="mixed",
+        )
+        mock_probes.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_comprehension")
+    def test_architecture_comprehension_routes_to_comprehension(
+        self, mock_comp, tmp_path
+    ) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_by_task_type
+
+        _dispatch_by_task_type(
+            task_type="architecture_comprehension",
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="Codebase navigation",
+            bias="mixed",
+        )
+        mock_comp.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_mixed")
+    def test_mixed_routes_to_mixed(self, mock_mixed, tmp_path) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_by_task_type
+
+        _dispatch_by_task_type(
+            task_type="mixed",
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="General benchmarking",
+            bias="balanced",
+        )
+        mock_mixed.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_sdlc")
+    def test_unknown_task_type_falls_back_to_sdlc(self, mock_sdlc, tmp_path) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_by_task_type
+
+        _dispatch_by_task_type(
+            task_type="unknown_type",
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="Test",
+            bias="mixed",
+        )
+        mock_sdlc.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Dispatch pipeline integration — verify each pipeline is callable
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchPipelineIntegration:
+    """Verify dispatch pipelines call expected generators."""
+
+    @patch("codeprobe.cli.mine_cmd._show_next_steps")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.cli.mine_cmd._enrich_sdlc_tasks")
+    @patch("codeprobe.mining.write_task_dir")
+    @patch("codeprobe.mining.mine_tasks")
+    def test_dispatch_sdlc_calls_mine_tasks(
+        self,
+        mock_mine,
+        mock_write,
+        mock_enrich,
+        mock_clear,
+        mock_record,
+        mock_next,
+        tmp_path,
+    ) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_sdlc
+
+        mock_task = MagicMock()
+        mock_task.id = "task-001"
+        mock_task.metadata.difficulty = "medium"
+        mock_task.metadata.language = "python"
+        mock_task.metadata.quality_score = 0.8
+        mock_task.metadata.description = "A test task with enough description"
+        mock_task.verification.command = "bash tests/test.sh"
+        mock_mine.return_value = MagicMock(
+            tasks=[mock_task], pr_bodies={}, changed_files_map={}
+        )
+        mock_enrich.return_value = [mock_task]
+        mock_clear.return_value = tmp_path / "tasks"
+
+        _dispatch_sdlc(
+            repo_path=tmp_path,
+            count=5,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=False,
+            enrich=False,
+            goal_name="Code quality",
+            bias="mixed",
+        )
+        mock_mine.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._show_next_steps")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.probe.adapter.ProbeTaskAdapter.convert_batch")
+    @patch("codeprobe.cli.mine_cmd.generate_probes", create=True)
+    def test_dispatch_probes_calls_generate_probes(
+        self,
+        mock_gen,
+        mock_batch,
+        mock_clear,
+        mock_record,
+        mock_next,
+        tmp_path,
+    ) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_probes
+
+        # Patch at the point of import inside _dispatch_probes
+        mock_probe = MagicMock()
+        mock_probe.template_name = "find_function"
+        with patch(
+            "codeprobe.probe.generator.generate_probes", return_value=[mock_probe]
+        ):
+            mock_clear.return_value = tmp_path / "tasks"
+            task_dir = tmp_path / "tasks" / "probe-findfunction-000"
+            task_dir.mkdir(parents=True)
+            mock_batch.return_value = [task_dir]
+
+            _dispatch_probes(
+                repo_path=tmp_path,
+                count=5,
+                goal_name="Navigation",
+                bias="mixed",
+            )
+            mock_batch.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._show_next_steps")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.cli.mine_cmd._show_results_table")
+    @patch("codeprobe.mining.writer.write_task_dir")
+    def test_dispatch_comprehension_calls_generator(
+        self,
+        mock_write,
+        mock_table,
+        mock_clear,
+        mock_record,
+        mock_next,
+        tmp_path,
+    ) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_comprehension
+
+        mock_task = MagicMock()
+        mock_task.id = "comp-001"
+        mock_task.metadata.difficulty = "hard"
+        mock_task.metadata.language = "python"
+        mock_task.metadata.quality_score = 0.9
+        mock_task.metadata.description = "Comprehension task"
+        mock_task.verification.command = "bash tests/test.sh"
+
+        mock_clear.return_value = tmp_path / "tasks"
+
+        with patch("codeprobe.mining.comprehension.ComprehensionGenerator") as MockGen:
+            instance = MockGen.return_value
+            instance.generate.return_value = [mock_task]
+
+            _dispatch_comprehension(
+                repo_path=tmp_path,
+                count=5,
+                goal_name="Navigation",
+                bias="mixed",
+            )
+            instance.generate.assert_called_once_with(count=5)

@@ -748,6 +748,292 @@ def _apply_preset(
     return effective
 
 
+# ---------------------------------------------------------------------------
+# Task-type dispatch
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_by_task_type(
+    *,
+    task_type: str,
+    repo_path: Path,
+    count: int,
+    source: str,
+    min_files: int,
+    subsystems: tuple[str, ...],
+    no_llm: bool,
+    enrich: bool,
+    goal_name: str,
+    bias: str,
+) -> None:
+    """Route to the correct generation pipeline based on *task_type*.
+
+    - ``sdlc_code_change`` / ``mcp_tool_usage`` → PR-based SDLC mining
+    - ``micro_probe`` → probe generation (code-navigation micro-benchmarks)
+    - ``architecture_comprehension`` → comprehension generator
+    - ``mixed`` → SDLC mining + probe generation
+    """
+    from codeprobe.mining import mine_tasks, write_task_dir
+
+    if task_type in ("sdlc_code_change", "mcp_tool_usage"):
+        _dispatch_sdlc(
+            repo_path=repo_path,
+            count=count,
+            source=source,
+            min_files=min_files,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            enrich=enrich,
+            goal_name=goal_name,
+            bias=bias,
+        )
+    elif task_type == "micro_probe":
+        _dispatch_probes(
+            repo_path=repo_path,
+            count=count,
+            goal_name=goal_name,
+            bias=bias,
+        )
+    elif task_type == "architecture_comprehension":
+        _dispatch_comprehension(
+            repo_path=repo_path,
+            count=count,
+            goal_name=goal_name,
+            bias=bias,
+        )
+    elif task_type == "mixed":
+        _dispatch_mixed(
+            repo_path=repo_path,
+            count=count,
+            source=source,
+            min_files=min_files,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            enrich=enrich,
+            goal_name=goal_name,
+            bias=bias,
+        )
+    else:
+        _log.warning("Unknown task_type '%s'; falling back to SDLC mining", task_type)
+        _dispatch_sdlc(
+            repo_path=repo_path,
+            count=count,
+            source=source,
+            min_files=min_files,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            enrich=enrich,
+            goal_name=goal_name,
+            bias=bias,
+        )
+
+
+def _dispatch_sdlc(
+    *,
+    repo_path: Path,
+    count: int,
+    source: str,
+    min_files: int,
+    subsystems: tuple[str, ...],
+    no_llm: bool,
+    enrich: bool,
+    goal_name: str,
+    bias: str,
+) -> None:
+    """Run PR-based SDLC mining pipeline."""
+    from codeprobe.mining import mine_tasks, write_task_dir
+
+    mine_result = mine_tasks(
+        repo_path,
+        count=count,
+        source_hint=source,
+        min_files=min_files,
+        subsystems=subsystems,
+    )
+    tasks = mine_result.tasks
+
+    if not tasks:
+        click.echo(
+            "No suitable tasks found. Try a repo with merged PRs that include tests."
+        )
+        return
+
+    tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
+
+    tasks_dir = _clear_tasks_dir(repo_path)
+    for task in tasks:
+        write_task_dir(task, tasks_dir, repo_path)
+
+    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
+    _show_results_table(tasks)
+    _finish_mine_output(tasks, tasks_dir, goal_name, bias, subsystems, repo_path)
+
+
+def _dispatch_probes(
+    *,
+    repo_path: Path,
+    count: int,
+    goal_name: str,
+    bias: str,
+) -> None:
+    """Generate micro-benchmark probe tasks."""
+    from codeprobe.probe.adapter import ProbeTaskAdapter
+    from codeprobe.probe.generator import generate_probes
+
+    probes = generate_probes(repo_path, count=count)
+
+    if not probes:
+        click.echo(
+            "No probes generated. The repo may not contain enough "
+            "extractable symbols (functions, classes)."
+        )
+        return
+
+    tasks_dir = _clear_tasks_dir(repo_path)
+    created = ProbeTaskAdapter.convert_batch(
+        probes, tasks_dir, repo_name=repo_path.name
+    )
+
+    _record_task_ids_in_experiment(repo_path, [p.name for p in created])
+
+    click.echo()
+    click.echo(f"Generated {len(created)} probe tasks:")
+    click.echo()
+    for i, p in enumerate(created, 1):
+        click.echo(f"  {i:>2}  {p.name}")
+    click.echo()
+    click.echo(f"Tasks written to {tasks_dir}")
+    click.echo()
+    _show_next_steps(repo_path, 0)
+
+
+def _dispatch_comprehension(
+    *,
+    repo_path: Path,
+    count: int,
+    goal_name: str,
+    bias: str,
+) -> None:
+    """Generate architecture comprehension tasks."""
+    from codeprobe.mining.comprehension import ComprehensionGenerator
+    from codeprobe.mining.writer import write_task_dir
+
+    generator = ComprehensionGenerator(repo_path)
+    tasks = generator.generate(count=count)
+
+    if not tasks:
+        click.echo(
+            "No comprehension tasks generated. The repo may not have enough "
+            "import structure for transitive reasoning tasks."
+        )
+        return
+
+    tasks_dir = _clear_tasks_dir(repo_path)
+    for task in tasks:
+        write_task_dir(task, tasks_dir, repo_path)
+
+    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
+    _show_results_table(tasks)
+    _finish_mine_output(tasks, tasks_dir, goal_name, bias, (), repo_path)
+
+
+def _dispatch_mixed(
+    *,
+    repo_path: Path,
+    count: int,
+    source: str,
+    min_files: int,
+    subsystems: tuple[str, ...],
+    no_llm: bool,
+    enrich: bool,
+    goal_name: str,
+    bias: str,
+) -> None:
+    """Run SDLC mining + probe generation, combining results."""
+    from codeprobe.mining import mine_tasks, write_task_dir as write_mining_task
+    from codeprobe.probe.adapter import ProbeTaskAdapter
+    from codeprobe.probe.generator import generate_probes
+
+    # Split count: half SDLC, half probes (at least 1 each when count >= 2)
+    sdlc_count = max(1, count // 2)
+    probe_count = max(1, count - sdlc_count)
+
+    tasks_dir = _clear_tasks_dir(repo_path)
+    all_task_ids: list[str] = []
+    sdlc_tasks: list = []
+
+    # SDLC mining (may produce 0 tasks on cold-start repos)
+    mine_result = mine_tasks(
+        repo_path,
+        count=sdlc_count,
+        source_hint=source,
+        min_files=min_files,
+        subsystems=subsystems,
+    )
+    sdlc_tasks = mine_result.tasks
+    if sdlc_tasks:
+        sdlc_tasks = _enrich_sdlc_tasks(sdlc_tasks, mine_result, no_llm, enrich)
+        for task in sdlc_tasks:
+            write_mining_task(task, tasks_dir, repo_path)
+        all_task_ids.extend(t.id for t in sdlc_tasks)
+
+    # Probe generation
+    probes = generate_probes(repo_path, count=probe_count)
+    probe_dirs: list[Path] = []
+    if probes:
+        probe_dirs = ProbeTaskAdapter.convert_batch(
+            probes, tasks_dir, repo_name=repo_path.name
+        )
+        all_task_ids.extend(p.name for p in probe_dirs)
+
+    if not sdlc_tasks and not probes:
+        click.echo(
+            "No tasks generated. Try a repo with merged PRs or more "
+            "extractable symbols."
+        )
+        return
+
+    _record_task_ids_in_experiment(repo_path, all_task_ids)
+
+    # Show combined results
+    if sdlc_tasks:
+        _show_results_table(sdlc_tasks)
+    if probe_dirs:
+        click.echo(f"Generated {len(probe_dirs)} probe tasks:")
+        for i, p in enumerate(probe_dirs, 1):
+            click.echo(f"  {i:>2}  {p.name}")
+        click.echo()
+
+    click.echo(f"Tasks written to {tasks_dir}")
+    if subsystems:
+        click.echo(f"Subsystems: {', '.join(subsystems)}")
+    click.echo()
+    _show_next_steps(repo_path, min_files)
+
+
+def _finish_mine_output(
+    tasks: list,
+    tasks_dir: Path,
+    goal_name: str,
+    bias: str,
+    subsystems: tuple[str, ...],
+    repo_path: Path,
+) -> None:
+    """Shared output: quality warnings, path, subsystems, next steps."""
+    warnings = _quality_review(tasks, goal_name, bias)
+    if warnings:
+        click.echo("Quality warnings:")
+        for w in warnings:
+            click.echo(f"  ! {w}")
+        click.echo()
+
+    click.echo(f"Tasks written to {tasks_dir}")
+    if subsystems:
+        click.echo(f"Subsystems: {', '.join(subsystems)}")
+    click.echo()
+    _show_next_steps(repo_path, 0)
+
+
 def run_mine(
     path: str,
     preset: str | None = None,
@@ -878,43 +1164,19 @@ def run_mine(
     if interactive:
         click.echo("\nMining tasks...")
 
-    mine_result = mine_tasks(
-        repo_path,
+    # Dispatch based on resolved task_type
+    _dispatch_by_task_type(
+        task_type=task_type,
+        repo_path=repo_path,
         count=count,
-        source_hint=source,
+        source=source,
         min_files=min_files,
         subsystems=subsystems,
+        no_llm=no_llm,
+        enrich=enrich,
+        goal_name=goal_name,
+        bias=bias,
     )
-    tasks = mine_result.tasks
-
-    if not tasks:
-        click.echo(
-            "No suitable tasks found. Try a repo with merged PRs that include tests."
-        )
-        return
-
-    tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
-
-    tasks_dir = _clear_tasks_dir(repo_path)
-    for task in tasks:
-        write_task_dir(task, tasks_dir, repo_path)
-
-    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
-
-    _show_results_table(tasks)
-
-    warnings = _quality_review(tasks, goal_name, bias)
-    if warnings:
-        click.echo("Quality warnings:")
-        for w in warnings:
-            click.echo(f"  ! {w}")
-        click.echo()
-
-    click.echo(f"Tasks written to {tasks_dir}")
-    if subsystems:
-        click.echo(f"Subsystems: {', '.join(subsystems)}")
-    click.echo()
-    _show_next_steps(repo_path, min_files)
 
 
 # ---------------------------------------------------------------------------
