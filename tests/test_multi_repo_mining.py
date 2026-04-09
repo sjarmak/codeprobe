@@ -218,7 +218,6 @@ def test_sourcegraph_resolver_find_references() -> None:
     from codeprobe.mining.sg_ground_truth import SourcegraphSymbolResolver
 
     resolver = SourcegraphSymbolResolver(
-        sg_token=token,
         defining_file="src/lib.py",
     )
     refs = resolver.find_references("os", ["github.com/python/cpython"])

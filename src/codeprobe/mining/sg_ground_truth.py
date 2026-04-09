@@ -27,7 +27,6 @@ def enrich_ground_truth(
     defining_file: str,
     grep_files: frozenset[str],
     repo_sg_name: str,
-    sg_token: str,
     sg_url: str = "https://demo.sourcegraph.com",
 ) -> tuple[frozenset[str], dict[str, str]]:
     """Call Sourcegraph find_references, return (all_files, tier_map).
@@ -37,6 +36,7 @@ def enrich_ground_truth(
     - ``"supplementary"`` — found only by Sourcegraph
 
     On any API failure the function gracefully degrades to grep-only results.
+    Authentication is resolved internally via :func:`sg_auth.get_valid_token`.
 
     Args:
         symbol: The symbol name to search for references.
@@ -44,7 +44,6 @@ def enrich_ground_truth(
         grep_files: Files already found by local grep.
         repo_sg_name: Sourcegraph repo identifier, e.g.
             ``"github.com/sg-evals/numpy"``.
-        sg_token: Sourcegraph access token (never logged).
         sg_url: Sourcegraph instance URL.
 
     Returns:
@@ -55,7 +54,6 @@ def enrich_ground_truth(
         symbol=symbol,
         defining_file=defining_file,
         repo_sg_name=repo_sg_name,
-        sg_token=sg_token,
         sg_url=sg_url,
     )
 
@@ -80,13 +78,25 @@ def _call_find_references(
     symbol: str,
     defining_file: str,
     repo_sg_name: str,
-    sg_token: str,
     sg_url: str,
 ) -> frozenset[str] | None:
     """Call Sourcegraph ``sg_find_references`` via Streamable HTTP MCP transport.
 
+    Authentication is resolved via :func:`sg_auth.get_valid_token`.
+    On a 401 response, the token is refreshed once and the request retried.
+
     Returns a frozenset of repo-relative file paths, or None on failure.
     """
+    from codeprobe.mining.sg_auth import AuthError, get_valid_token
+
+    try:
+        cached = get_valid_token(sg_url)
+    except AuthError:
+        logger.warning(
+            "No Sourcegraph auth available for %s — skipping find_references",
+            sg_url,
+        )
+        return None
 
     url = f"{sg_url.rstrip('/')}/.api/mcp/v1"
     payload = {
@@ -102,30 +112,42 @@ def _call_find_references(
             },
         },
     }
-    headers = {
-        "Authorization": f"token {sg_token}",
-        "Content-Type": "application/json",
-    }
 
-    try:
-        resp = requests.post(
-            url,
-            json=payload,
-            headers=headers,
-            timeout=30,
-            stream=True,
-        )
-        resp.raise_for_status()
-        return _parse_sse_references(resp, repo_sg_name)
-    except Exception:
-        # Log without leaking the token value
-        logger.warning(
-            "Sourcegraph find_references failed for %s in %s (repo: %s)",
-            symbol,
-            defining_file,
-            repo_sg_name,
-        )
-        return None
+    for attempt in range(2):
+        headers = {
+            "Authorization": f"token {cached.access_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=30,
+                stream=True,
+            )
+            if resp.status_code == 401 and attempt == 0:
+                try:
+                    cached = get_valid_token(sg_url, force_refresh=True)
+                    continue
+                except AuthError:
+                    logger.warning(
+                        "Sourcegraph 401 for %s and refresh failed. "
+                        "Run `codeprobe auth sourcegraph`.",
+                        sg_url,
+                    )
+                    return None
+            resp.raise_for_status()
+            return _parse_sse_references(resp, repo_sg_name)
+        except Exception:
+            logger.warning(
+                "Sourcegraph find_references failed for %s in %s (repo: %s)",
+                symbol,
+                defining_file,
+                repo_sg_name,
+            )
+            return None
+    return None
 
 
 class SourcegraphSymbolResolver:
@@ -141,11 +163,9 @@ class SourcegraphSymbolResolver:
 
     def __init__(
         self,
-        sg_token: str,
         defining_file: str = "",
         sg_url: str = "https://demo.sourcegraph.com",
     ) -> None:
-        self._token = sg_token
         self._defining_file = defining_file
         self._sg_url = sg_url
 
@@ -164,7 +184,6 @@ class SourcegraphSymbolResolver:
                 symbol=symbol,
                 defining_file=self._defining_file,
                 repo_sg_name=repo_sg_name,
-                sg_token=self._token,
                 sg_url=self._sg_url,
             )
             if paths is None:

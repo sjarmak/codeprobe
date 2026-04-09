@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import re
@@ -12,6 +13,61 @@ from pathlib import Path
 from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+
+def write_suite_manifest(
+    tasks_dir: Path,
+    goal_name: str,
+    task_types: tuple[str, ...],
+    description: str,
+) -> Path:
+    """Write a suite.toml alongside the tasks directory.
+
+    Derives the suite name from the goal name and current date::
+
+        codeprobe-<goal-slug>-<YYYY-MM-DD>
+
+    The emitted TOML is compatible with :func:`codeprobe.loaders.suite.load_suite`.
+
+    Returns the path to the written suite.toml.
+    """
+    goal_slug = goal_name.lower().replace(" ", "-")
+    date_str = datetime.date.today().isoformat()
+    suite_name = f"codeprobe-{goal_slug}-{date_str}"
+
+    # Format task_types as a TOML array
+    types_items = ", ".join(f'"{t}"' for t in task_types)
+    types_toml = f"[{types_items}]"
+
+    # Escape for TOML basic strings (double-quoted)
+    def _toml_escape(s: str) -> str:
+        return (
+            s.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
+
+    escaped_desc = _toml_escape(description)
+    escaped_name = _toml_escape(suite_name)
+    escaped_goal = _toml_escape(goal_name)
+
+    content = (
+        "[suite]\n"
+        f'name = "{escaped_name}"\n'
+        f'description = "{escaped_desc}"\n'
+        f'task_dir = "tasks"\n'
+        f'eval_goal = "{escaped_goal}"\n'
+        f"task_types = {types_toml}\n"
+    )
+
+    suite_path = tasks_dir.parent / "suite.toml"
+    suite_path.write_text(content, encoding="utf-8")
+
+    logger.info("Wrote suite manifest → %s", suite_path)
+    return suite_path
+
 
 # Pattern for stripping backtick-wrapped code patterns from instructions
 _BACKTICK_PATTERN = re.compile(r"`[^`]+`")

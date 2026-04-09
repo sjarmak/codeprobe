@@ -213,7 +213,45 @@ def refresh_token(cached: CachedToken) -> CachedToken | None:
     return None
 
 
-def get_valid_token(endpoint: str = DEFAULT_ENDPOINT) -> CachedToken:
+def clear_cached_token(
+    service: str = "sourcegraph",
+    endpoint: str = DEFAULT_ENDPOINT,
+) -> None:
+    """Remove cached auth for *service* at *endpoint*.
+
+    Silently succeeds if no cache exists or the entry is missing.
+    """
+    path = _cache_path()
+    if not path.exists():
+        return
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(raw, dict):
+        return
+    section = raw.get(service)
+    if isinstance(section, dict) and endpoint in section:
+        del section[endpoint]
+        if not section:
+            del raw[service]
+        # Rewrite with restrictive perms; delete on write failure to avoid
+        # leaving a truncated/empty file that corrupts all cached tokens.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(raw, f, indent=2, sort_keys=True)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        os.chmod(path, 0o600)
+
+
+def get_valid_token(
+    endpoint: str = DEFAULT_ENDPOINT,
+    *,
+    force_refresh: bool = False,
+) -> CachedToken:
     """Resolve a usable token for *endpoint*.
 
     Order of precedence:
@@ -221,11 +259,19 @@ def get_valid_token(endpoint: str = DEFAULT_ENDPOINT) -> CachedToken:
     2. Cached token for *endpoint* if present and not expired.
     3. Expired cached token with a refresh token — attempt refresh, persist.
 
+    When *force_refresh* is True, skip the cached-token-is-valid shortcut
+    and attempt a refresh (useful after a 401 from the API).
+
     Raises :class:`AuthError` if none of the above yield a usable token.
     Error messages never include token material.
     """
     env_value = os.environ.get(ENV_VAR)
     if env_value:
+        if force_refresh:
+            raise AuthError(
+                f"Token from {ENV_VAR} was rejected (401). "
+                f"Rotate the environment variable or run `codeprobe auth sourcegraph`."
+            )
         return CachedToken(
             access_token=env_value,
             refresh_token=None,
@@ -240,11 +286,16 @@ def get_valid_token(endpoint: str = DEFAULT_ENDPOINT) -> CachedToken:
             f"Set {ENV_VAR} or run `codeprobe auth sourcegraph`."
         )
 
-    if not cached.is_expired():
+    if not force_refresh and not cached.is_expired():
         return cached
 
     refreshed = refresh_token(cached)
     if refreshed is None:
+        if force_refresh:
+            raise AuthError(
+                f"Sourcegraph token for {endpoint} was rejected and cannot "
+                f"be refreshed. Set {ENV_VAR} or run `codeprobe auth sourcegraph`."
+            )
         raise AuthError(
             f"Cached Sourcegraph token for {endpoint} is expired and cannot "
             f"be refreshed. Set {ENV_VAR} or run `codeprobe auth sourcegraph`."
@@ -258,6 +309,7 @@ __all__ = [
     "CachedToken",
     "DEFAULT_ENDPOINT",
     "ENV_VAR",
+    "clear_cached_token",
     "device_code_flow",
     "get_valid_token",
     "load_cached_token",

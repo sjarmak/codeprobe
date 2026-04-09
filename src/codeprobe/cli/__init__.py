@@ -186,6 +186,13 @@ def init(path: str) -> None:
     help="Show available profiles from user and project levels.",
 )
 @click.option(
+    "--cross-repo",
+    "cross_repo",
+    multiple=True,
+    metavar="REPO",
+    help="Additional repo (path or git URL) for cross-repo task mining. Can be passed multiple times.",
+)
+@click.option(
     "--advanced",
     is_flag=True,
     default=False,
@@ -327,6 +334,7 @@ def mine(
     save_profile_name: str | None,
     list_profiles_flag: bool,
     count: int,
+    cross_repo: tuple[str, ...],
     source: str,
     min_files: int,
     subsystem: tuple[str, ...],
@@ -442,7 +450,9 @@ def mine(
 
         # Apply profile values for params NOT explicitly set on CLI.
         # Tuple-typed params (click multiple=True) need list→tuple coercion.
-        _TUPLE_PARAMS = frozenset({"subsystem", "family", "repos", "backends"})
+        _TUPLE_PARAMS = frozenset(
+            {"subsystem", "family", "repos", "backends", "cross_repo"}
+        )
 
         def _prof_val(key: str, current: object) -> object:
             if key in explicitly_set or key not in prof:
@@ -472,6 +482,7 @@ def mine(
         family = _prof_val("family", family)  # type: ignore[assignment]
         repos = _prof_val("repos", repos)  # type: ignore[assignment]
         backends = _prof_val("backends", backends)  # type: ignore[assignment]
+        cross_repo = _prof_val("cross_repo", cross_repo)  # type: ignore[assignment]
         interactive = _prof_val("interactive", interactive)  # type: ignore[assignment]
 
         # Profile preset/goal are ignored when either --goal or --preset was
@@ -486,6 +497,7 @@ def mine(
         preset=preset,
         goal=goal,
         count=count,
+        cross_repo=cross_repo,
         source=source,
         min_files=min_files,
         subsystems=subsystem,
@@ -806,3 +818,8 @@ main.add_command(doctor)
 from codeprobe.cli.validate_cmd import validate  # noqa: E402
 
 main.add_command(validate)
+
+# Register the auth command group
+from codeprobe.cli.auth_cmd import auth  # noqa: E402
+
+main.add_command(auth)

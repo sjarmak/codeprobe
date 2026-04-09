@@ -441,26 +441,30 @@ def _mine_dep_trace(
 # ---------------------------------------------------------------------------
 
 
-def _get_sg_config(sg_repo: str) -> tuple[str, bool]:
+def _get_sg_config(sg_repo: str) -> tuple[bool]:
     """Check if Sourcegraph enrichment is available.
 
-    Returns ``(sg_token, is_available)``.  Logs a warning when *sg_repo* is
-    provided but the env var is missing.
+    Returns ``(is_available,)``.  Auth is resolved internally by
+    :func:`sg_auth.get_valid_token` when ``enrich_ground_truth`` is called.
     """
-    import os
+    if not sg_repo:
+        return (False,)
 
-    sg_token = os.environ.get("SOURCEGRAPH_TOKEN", "")
-    if not sg_token or not sg_repo:
-        if sg_repo and not sg_token:
-            logger.warning("SOURCEGRAPH_TOKEN not set — using grep-only ground truth")
-        return "", False
+    from codeprobe.mining.sg_auth import AuthError, get_valid_token
 
-    return sg_token, True
+    try:
+        get_valid_token()
+        return (True,)
+    except AuthError:
+        logger.warning(
+            "No Sourcegraph auth available — using grep-only ground truth. "
+            "Run `codeprobe auth sourcegraph` or set SRC_ACCESS_TOKEN."
+        )
+        return (False,)
 
 
 def _maybe_enrich(
     sg_available: bool,
-    sg_token: str,
     sg_repo: str,
     symbol: str,
     def_file: str,
@@ -477,7 +481,6 @@ def _maybe_enrich(
         defining_file=def_file,
         grep_files=grep_files,
         repo_sg_name=sg_repo,
-        sg_token=sg_token,
     )
 
 
@@ -501,13 +504,13 @@ def _mine_symbol_reference_tasks(
         return []
 
     # Optional Sourcegraph enrichment
-    sg_token, sg_available = _get_sg_config(sg_repo)
+    (sg_available,) = _get_sg_config(sg_repo)
 
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
         enriched_files, oracle_tiers = _maybe_enrich(
-            sg_available, sg_token, sg_repo, symbol, def_file, ref_files
+            sg_available, sg_repo, symbol, def_file, ref_files
         )
 
         task_id = hashlib.sha256(
@@ -652,13 +655,13 @@ def _mine_change_scope_tasks(
         return []
 
     # Optional Sourcegraph enrichment
-    sg_token, sg_available = _get_sg_config(sg_repo)
+    (sg_available,) = _get_sg_config(sg_repo)
 
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
         enriched_files, oracle_tiers = _maybe_enrich(
-            sg_available, sg_token, sg_repo, symbol, def_file, ref_files
+            sg_available, sg_repo, symbol, def_file, ref_files
         )
 
         task_id = hashlib.sha256(
