@@ -7,12 +7,12 @@ approximation, and symbol extraction (reused from ``probe/generator``).
 Task templates (all ``task_type="architecture_comprehension"``,
 ``verification_mode="artifact_eval"``):
 
-1. ``import_chain`` — "List all files that transitively import module X"
-2. ``dependency_analysis`` — "Which modules need to change if function X in
+1. ``import_chain`` -- "List all files that transitively import module X"
+2. ``dependency_analysis`` -- "Which modules need to change if function X in
    module Y changed its signature?"
-3. ``return_type_resolution`` — "What is the return type annotation of the
+3. ``return_type_resolution`` -- "What is the return type annotation of the
    function called by Class.method()?"
-4. ``transitive_dependency`` — "Does module A transitively depend on B?"
+4. ``transitive_dependency`` -- "Does module A transitively depend on B?"
 
 Ground truth format (new):
 
@@ -31,22 +31,23 @@ return. This ensures the task actually requires transitive traversal.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
-import os
-import re
-from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from codeprobe.mining._graph import (
+    _RepoIndex,
+    _answer_files_beat_grep,
+    _build_index,
+    _call_regex,
+    _reachable_modules,
+    _shortest_path_length,
+    _single_grep_importers,
+    _transitive_importers,
+)
 from codeprobe.mining.writer import logger as _writer_logger  # noqa: F401
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-from codeprobe.probe.generator import (
-    SKIP_DIRS,
-    Symbol,
-    extract_python_symbols,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -71,303 +72,11 @@ class ComprehensionTaskSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# Spec registry — populated by generate(), consumed by write_comprehension_tasks().
+# Spec registry -- populated by generate(), consumed by write_comprehension_tasks().
 # Prefer passing specs explicitly via generate()'s return value and
 # write_comprehension_tasks(specs=...) parameter. The module-level dict is
 # kept as a fallback for backwards compatibility but may be removed.
 _TASK_SPECS: dict[str, ComprehensionTaskSpec] = {}
-
-
-# ---------------------------------------------------------------------------
-# Import-graph construction
-# ---------------------------------------------------------------------------
-
-_IMPORT_RE = re.compile(r"^\s*import\s+([\w\.]+)", re.MULTILINE)
-_FROM_RE = re.compile(
-    r"^\s*from\s+(\.*)([\w\.]*)\s+import\s+(?P<names>[^\n#]+)",
-    re.MULTILINE,
-)
-_NAME_RE = re.compile(r"[A-Za-z_][\w]*")
-_CALL_RE_CACHE: dict[str, re.Pattern[str]] = {}
-
-
-def _call_regex(name: str) -> re.Pattern[str]:
-    """Cached compiled regex for detecting `name(` call sites."""
-    pat = _CALL_RE_CACHE.get(name)
-    if pat is None:
-        pat = re.compile(r"\b" + re.escape(name) + r"\s*\(")
-        _CALL_RE_CACHE[name] = pat
-    return pat
-
-
-def _path_to_module(rel_path: str) -> str:
-    """Convert a relative .py path to a dotted module name.
-
-    Strips a leading ``src/`` segment if present and drops trailing
-    ``__init__`` so packages resolve to their directory module name.
-    """
-    parts = Path(rel_path).with_suffix("").parts
-    if parts and parts[0] == "src":
-        parts = parts[1:]
-    if parts and parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
-
-def _resolve_relative(
-    current_module: str, dots: int, tail: str, package_modules: set[str]
-) -> str | None:
-    """Resolve a relative import to an absolute module name."""
-    if dots == 0:
-        return tail or None
-    parts = current_module.split(".")
-    # dots=1 means current package, dots=2 means parent, etc.
-    up = dots - 1
-    if up >= len(parts):
-        return None
-    base = parts[: len(parts) - up - 1] if (len(parts) - up - 1) >= 0 else []
-    # If the current module has no explicit package, resolving from it is
-    # ambiguous; we still try to combine.
-    combined_parts = [*base]
-    if tail:
-        combined_parts.extend(tail.split("."))
-    combined = ".".join(p for p in combined_parts if p)
-    if not combined:
-        return None
-    # Resolve to the closest known package/module.
-    return combined
-
-
-@dataclass
-class _RepoIndex:
-    """Flattened static index of a Python repo."""
-
-    # module_name -> relative file path
-    module_to_file: dict[str, str]
-    # relative file path -> module_name
-    file_to_module: dict[str, str]
-    # module_name -> set of module_names it imports (internal only)
-    graph: dict[str, set[str]]
-    # reverse: module_name -> set of module_names that import it
-    rgraph: dict[str, set[str]]
-    # relative file path -> raw source text
-    sources: dict[str, str]
-    # relative file path -> extracted symbols
-    symbols: dict[str, list[Symbol]]
-
-
-def _build_index(repo_path: Path) -> _RepoIndex:
-    """Walk ``repo_path`` and build an internal import graph + symbol map."""
-    module_to_file: dict[str, str] = {}
-    file_to_module: dict[str, str] = {}
-    sources: dict[str, str] = {}
-    symbols_map: dict[str, list[Symbol]] = {}
-
-    # Pass 1: collect files & modules
-    for root, dirs, files in os.walk(repo_path, followlinks=False):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-        for fname in files:
-            if not fname.endswith(".py"):
-                continue
-            fpath = Path(root) / fname
-            try:
-                content = fpath.read_text(encoding="utf-8", errors="replace")
-            except (OSError, PermissionError):
-                continue
-            rel = str(fpath.relative_to(repo_path))
-            mod = _path_to_module(rel)
-            if not mod:
-                continue
-            # If two files collapse to the same module (package/__init__ vs
-            # module.py), prefer the package form.
-            if mod in module_to_file:
-                existing = module_to_file[mod]
-                if "__init__" in rel and "__init__" not in existing:
-                    module_to_file[mod] = rel
-                    file_to_module.pop(existing, None)
-                    file_to_module[rel] = mod
-                else:
-                    file_to_module[rel] = mod
-                    continue
-            else:
-                module_to_file[mod] = rel
-                file_to_module[rel] = mod
-            sources[rel] = content
-            symbols_map[rel] = extract_python_symbols(content, rel)
-
-    known_modules = set(module_to_file.keys())
-
-    # Pass 2: build graph
-    graph: dict[str, set[str]] = {m: set() for m in known_modules}
-    rgraph: dict[str, set[str]] = {m: set() for m in known_modules}
-
-    for rel, content in sources.items():
-        current_mod = file_to_module.get(rel)
-        if current_mod is None:
-            continue
-
-        raw_targets: set[str] = set()
-        for m in _IMPORT_RE.finditer(content):
-            raw_targets.add(m.group(1))
-        for m in _FROM_RE.finditer(content):
-            dots = len(m.group(1))
-            tail = m.group(2)
-            base = _resolve_relative(current_mod, dots, tail, known_modules)
-            if base:
-                raw_targets.add(base)
-            # Also consider each imported name as a potential submodule:
-            # ``from pkg import b`` -> try ``pkg.b``.
-            names_blob = m.group("names")
-            # Strip parenthesised lists, trailing backslash continuations.
-            names_blob = names_blob.replace("(", " ").replace(")", " ")
-            for name_match in _NAME_RE.finditer(names_blob):
-                name = name_match.group(0)
-                if name in {"as", "import"}:
-                    continue
-                if base:
-                    raw_targets.add(f"{base}.{name}")
-
-        for target in raw_targets:
-            resolved_mod = _resolve_import_target(target, known_modules)
-            if resolved_mod and resolved_mod != current_mod:
-                graph[current_mod].add(resolved_mod)
-                rgraph[resolved_mod].add(current_mod)
-
-    return _RepoIndex(
-        module_to_file=module_to_file,
-        file_to_module=file_to_module,
-        graph=graph,
-        rgraph=rgraph,
-        sources=sources,
-        symbols=symbols_map,
-    )
-
-
-def _resolve_import_target(raw: str, known_modules: set[str]) -> str | None:
-    """Best-effort match of a raw import target to an internal module.
-
-    Tries the full dotted name, then progressively shorter prefixes. Also
-    tries each known module that is a prefix of ``raw``.
-    """
-    if raw in known_modules:
-        return raw
-    # Longest-prefix match: e.g. ``from codeprobe.models.task import Task``
-    # resolves to ``codeprobe.models.task``. If Task is a submodule we catch
-    # it below.
-    parts = raw.split(".")
-    for i in range(len(parts), 0, -1):
-        candidate = ".".join(parts[:i])
-        if candidate in known_modules:
-            return candidate
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Graph traversals
-# ---------------------------------------------------------------------------
-
-
-def _transitive_importers(rgraph: dict[str, set[str]], target: str) -> set[str]:
-    """Return all modules that can reach ``target`` via the import graph.
-
-    Excludes ``target`` itself. Includes both direct and indirect importers.
-    """
-    seen: set[str] = set()
-    queue: deque[str] = deque(rgraph.get(target, set()))
-    while queue:
-        mod = queue.popleft()
-        if mod in seen:
-            continue
-        seen.add(mod)
-        for parent in rgraph.get(mod, set()):
-            if parent not in seen:
-                queue.append(parent)
-    return seen
-
-
-def _indirect_importers(rgraph: dict[str, set[str]], target: str) -> set[str]:
-    """Transitive importers that are NOT direct importers of ``target``."""
-    all_t = _transitive_importers(rgraph, target)
-    direct = rgraph.get(target, set())
-    return all_t - direct
-
-
-def _reachable_modules(graph: dict[str, set[str]], start: str) -> set[str]:
-    """All modules reachable from ``start`` (excluding ``start`` itself)."""
-    seen: set[str] = set()
-    queue: deque[str] = deque(graph.get(start, set()))
-    while queue:
-        mod = queue.popleft()
-        if mod in seen:
-            continue
-        seen.add(mod)
-        for child in graph.get(mod, set()):
-            if child not in seen:
-                queue.append(child)
-    return seen
-
-
-def _shortest_path_length(
-    graph: dict[str, set[str]], start: str, goal: str
-) -> int | None:
-    """BFS shortest path length from ``start`` to ``goal``; ``None`` if unreachable."""
-    if start == goal:
-        return 0
-    seen: set[str] = {start}
-    queue: deque[tuple[str, int]] = deque([(start, 0)])
-    while queue:
-        node, dist = queue.popleft()
-        for child in graph.get(node, set()):
-            if child == goal:
-                return dist + 1
-            if child not in seen:
-                seen.add(child)
-                queue.append((child, dist + 1))
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Discrimination gate
-# ---------------------------------------------------------------------------
-
-
-def _single_grep_importers(index: _RepoIndex, target_module: str) -> set[str]:
-    """Files that would be found by a single grep for ``import <target>``.
-
-    Simulates ``grep -l "import target"`` + ``grep -l "from target"`` over
-    the repo. Used as the baseline to reject trivially-grepable tasks.
-    """
-    last = target_module.split(".")[-1]
-    patterns = [
-        re.compile(r"^\s*import\s+" + re.escape(target_module) + r"\b", re.MULTILINE),
-        re.compile(r"^\s*from\s+" + re.escape(target_module) + r"\b", re.MULTILINE),
-        re.compile(r"^\s*import\s+.*\b" + re.escape(last) + r"\b", re.MULTILINE),
-        re.compile(r"^\s*from\s+.*\b" + re.escape(last) + r"\b", re.MULTILINE),
-    ]
-    hits: set[str] = set()
-    target_file = index.module_to_file.get(target_module)
-    for rel, content in index.sources.items():
-        if rel == target_file:
-            continue
-        for pat in patterns:
-            if pat.search(content):
-                hits.add(rel)
-                break
-    return hits
-
-
-def _answer_files_beat_grep(
-    index: _RepoIndex, target_module: str, answer_files: set[str]
-) -> bool:
-    """Return True iff the answer set cannot be produced by a single grep.
-
-    The gate passes if the answer contains at least one file that a
-    single-grep for the target module would NOT find. This guarantees the
-    task requires transitive reasoning.
-    """
-    grep_set = _single_grep_importers(index, target_module)
-    # Answer must include files not reachable by the grep baseline.
-    return bool(answer_files - grep_set)
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +147,7 @@ class ComprehensionGenerator:
             indirect = transitive - direct
             if not indirect:
                 continue  # no transitive hop => trivially grepable
-            # Convert module set → file set
+            # Convert module set -> file set
             answer_files = {
                 self._index.module_to_file[m]
                 for m in transitive
@@ -508,10 +217,6 @@ class ComprehensionGenerator:
                 # `grep -l "funcname("` across the repo.
                 naive = self._grep_call_sites(sym.name, exclude=rel)
                 if caller_files == naive:
-                    # If it equals the grep result BUT the grep result was
-                    # filtered by the import requirement, still accept when
-                    # the task added value by pruning false positives.
-                    # Strict rule: require non-equality.
                     continue
                 candidates.append(
                     ComprehensionTaskSpec(
@@ -569,7 +274,7 @@ class ComprehensionGenerator:
             return []
 
         # Build an index of top-level functions with return types.
-        typed_functions: dict[str, tuple[Symbol, str]] = {}
+        typed_functions: dict[str, tuple] = {}
         for rel, symbols in self._index.symbols.items():
             for sym in symbols:
                 if (
@@ -749,103 +454,20 @@ class ComprehensionGenerator:
 
 
 # ---------------------------------------------------------------------------
-# Writer
+# Backward-compatible re-exports
 # ---------------------------------------------------------------------------
+# Tests and other modules import graph/writer functions directly from this
+# module. Re-export them so existing imports continue to work.
 
-
-def write_comprehension_tasks(
-    tasks: list[Task],
-    output_dir: Path,
-    specs: dict[str, ComprehensionTaskSpec] | None = None,
-) -> list[Path]:
-    """Write comprehension tasks to disk with the new ground_truth format.
-
-    Produces::
-
-        output_dir/<task.id>/
-            instruction.md
-            metadata.json
-            tests/ground_truth.json
-
-    Ground truth JSON::
-
-        {
-          "answer": ...,
-          "answer_type": "file_list" | "count" | "boolean" | "text",
-          "confidence": 0.95,
-          "provenance": "deterministic"
-        }
-
-    Tasks must have been produced by ``ComprehensionGenerator.generate`` —
-    the spec is looked up from a process-wide registry keyed on ``task.id``.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-
-    registry = specs if specs is not None else _TASK_SPECS
-    for task in tasks:
-        spec = registry.get(task.id)
-        if spec is None:
-            logger.warning("No spec registered for task %s, skipping", task.id)
-            continue
-
-        safe_id = Path(task.id).name
-        if not safe_id or safe_id != task.id:
-            raise ValueError(f"Invalid task id for filesystem use: {task.id!r}")
-
-        task_dir = output_dir / safe_id
-        tests_dir = task_dir / "tests"
-        tests_dir.mkdir(parents=True, exist_ok=True)
-
-        instruction = _build_instruction(task, spec)
-        (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
-
-        metadata_payload = asdict(task)
-        (task_dir / "metadata.json").write_text(
-            json.dumps(metadata_payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-        ground_truth = {
-            "answer": spec.answer,
-            "answer_type": spec.answer_type,
-            "confidence": spec.confidence,
-            "provenance": spec.provenance,
-        }
-        (tests_dir / "ground_truth.json").write_text(
-            json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-        written.append(task_dir)
-        logger.info("Wrote comprehension task %s -> %s", task.id, task_dir)
-
-    return written
-
-
-def _build_instruction(task: Task, spec: ComprehensionTaskSpec) -> str:
-    """Render instruction.md for a comprehension task."""
-    answer_format = {
-        "file_list": (
-            "Return a JSON array of file paths (strings) relative to the "
-            "repository root, sorted lexicographically."
-        ),
-        "boolean": "Answer with the single word `true` or `false`.",
-        "text": "Return only the exact text, with no extra commentary.",
-        "count": "Return only a single integer.",
-    }.get(spec.answer_type, "Provide your answer.")
-
-    return (
-        f"# {task.metadata.name}\n\n"
-        f"**Repository:** {task.repo}\n"
-        f"**Task type:** {task.metadata.task_type}\n"
-        f"**Template:** {spec.template}\n\n"
-        "## Question\n\n"
-        f"{spec.question}\n\n"
-        "## Answer Format\n\n"
-        f"{answer_format}\n\n"
-        "Write your answer to `answer.json` in the repository root.\n"
-        'For file lists: `{"answer": ["path/a.py", "path/b.py"]}`\n'
-        'For other types: `{"answer": "your answer"}`\n'
-    )
+from codeprobe.mining._graph import (  # noqa: E402, F811
+    _RepoIndex as _RepoIndex,
+    _answer_files_beat_grep as _answer_files_beat_grep,
+    _build_index as _build_index,
+    _reachable_modules as _reachable_modules,
+    _shortest_path_length as _shortest_path_length,
+    _single_grep_importers as _single_grep_importers,
+    _transitive_importers as _transitive_importers,
+)
+from codeprobe.mining.comprehension_writer import (  # noqa: E402, F811
+    write_comprehension_tasks as write_comprehension_tasks,
+)

@@ -292,10 +292,25 @@ def execute_task(
         except OSError:
             pass  # Non-fatal; scorer will report missing answer
 
-    # If the agent failed with no output AND no answer.txt was produced,
-    # return an error. But if answer.txt exists (e.g. agent timed out
+    # Comprehension tasks use answer.json instead of answer.txt.
+    # Same copy logic: workspace root → task_dir so ArtifactScorer finds it.
+    answer_json_src = effective_repo / "answer.json"
+    answer_json_fallback = repo_path / "answer.json" if worktree_path else None
+    found_answer_json = None
+    if answer_json_src.is_file():
+        found_answer_json = answer_json_src
+    elif answer_json_fallback is not None and answer_json_fallback.is_file():
+        found_answer_json = answer_json_fallback
+    if found_answer_json is not None:
+        try:
+            shutil.copy2(found_answer_json, task_dir / "answer.json")
+        except OSError:
+            pass  # Non-fatal; scorer will report missing answer
+
+    # If the agent failed with no output AND no answer file was produced,
+    # return an error. But if an answer exists (e.g. agent timed out
     # after writing it), fall through to scoring.
-    has_answer = found_answer is not None
+    has_answer = found_answer is not None or found_answer_json is not None
     if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
         error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
         return TaskResult(

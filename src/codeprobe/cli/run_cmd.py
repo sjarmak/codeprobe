@@ -100,6 +100,66 @@ def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
     )
 
 
+def _filter_tasks_by_suite(
+    task_dirs: list[Path],
+    suite: "Suite",  # noqa: F821
+) -> list[Path]:
+    """Filter task directories according to suite criteria.
+
+    Loads each task's task.toml (or metadata.json) to check task_type,
+    difficulty, and tags against the suite filters.  Tasks that lack a
+    loadable metadata file are excluded when any filter is active.
+    """
+    from codeprobe.loaders import load_task
+    from codeprobe.models.suite import Suite  # noqa: F811
+
+    has_filters = bool(
+        suite.task_types or suite.difficulties or suite.tags or suite.task_ids
+    )
+    if not has_filters:
+        return task_dirs
+
+    # Pre-filter by explicit task_ids (directory name match)
+    if suite.task_ids:
+        allowed_ids = set(suite.task_ids)
+        task_dirs = [td for td in task_dirs if td.name in allowed_ids]
+
+    # If only task_ids filter was set, we're done
+    if not (suite.task_types or suite.difficulties or suite.tags):
+        return task_dirs
+
+    filtered: list[Path] = []
+    for td in task_dirs:
+        toml_path = td / "task.toml"
+        json_path = td / "metadata.json"
+        meta_path = (
+            toml_path
+            if toml_path.exists()
+            else (json_path if json_path.exists() else None)
+        )
+        if meta_path is None:
+            continue  # no metadata to filter on
+
+        try:
+            task = load_task(meta_path)
+        except (ValueError, KeyError):
+            logger.warning("Skipping %s: failed to load metadata", td.name)
+            continue
+
+        if suite.task_types and task.metadata.task_type not in suite.task_types:
+            continue
+        if suite.difficulties and task.metadata.difficulty not in suite.difficulties:
+            continue
+        if suite.tags:
+            task_tags = set(task.metadata.tags)
+            if not task_tags.intersection(suite.tags):
+                continue
+
+        filtered.append(td)
+
+    return filtered
+
+
 def _print_dry_run(estimate: DryRunEstimate) -> None:
     """Pretty-print a DryRunEstimate to stdout."""
     cost_lo, cost_hi = estimate.estimated_cost_range
@@ -237,6 +297,7 @@ def run_eval(
     force_plain: bool = False,
     force_rich: bool = False,
     timeout: int | None = None,
+    suite_path: str | None = None,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -317,6 +378,22 @@ def run_eval(
         if repo_tasks != tasks_dir:
             click.echo(f"  Checked: {repo_tasks}", err=True)
         raise SystemExit(1)
+
+    # Apply suite filtering when a suite.toml path is provided
+    if suite_path is not None:
+        from codeprobe.loaders.suite import load_suite
+
+        suite = load_suite(Path(suite_path))
+        pre_count = len(task_dirs)
+        task_dirs = _filter_tasks_by_suite(task_dirs, suite)
+        if not task_dirs:
+            click.echo(
+                f"Suite '{suite.name}' matched 0 of {pre_count} tasks. "
+                "Check suite.toml filters.",
+                err=True,
+            )
+            raise SystemExit(1)
+        click.echo(f"Suite '{suite.name}': {len(task_dirs)}/{pre_count} tasks selected")
 
     configs_to_run = experiment.configs or [
         ExperimentConfig(label="default", agent=agent, model=model),

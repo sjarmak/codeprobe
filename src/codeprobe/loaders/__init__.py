@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from codeprobe.core.scoring import VALID_REWARD_TYPES
-from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
 
 
 def load_task(path: Path) -> Task:
@@ -35,6 +35,7 @@ def _build_task(
     verif: dict[str, Any],
     time_limit_sec: int = 300,
     verification_modes: list[str] | None = None,
+    checkpoints_raw: list[dict[str, Any]] | None = None,
 ) -> Task:
     """Build a Task from normalized dicts. Shared by TOML and JSON loaders."""
     reward_type = verif.get("reward_type", "binary")
@@ -62,6 +63,19 @@ def _build_task(
             f"Expected one of: {sorted(valid_resource_tiers)}"
         )
 
+    # Parse [[checkpoints]] into frozen Checkpoint dataclasses
+    parsed_checkpoints: tuple[Checkpoint, ...] = ()
+    if checkpoints_raw:
+        parsed_checkpoints = tuple(
+            Checkpoint(
+                name=cp["name"],
+                weight=float(cp["weight"]),
+                verifier=cp["verifier"],
+                description=cp.get("description", ""),
+            )
+            for cp in checkpoints_raw
+        )
+
     return Task(
         id=task_id,
         repo=repo,
@@ -74,6 +88,7 @@ def _build_task(
             category=meta.get("category", "sdlc"),
             org_scale=meta.get("org_scale", False),
             mcp_suite=meta.get("mcp_suite"),
+            task_type=meta.get("task_type", "sdlc_code_change"),
             tags=tuple(tags_raw),
             estimated_duration_sec=meta.get("estimated_duration_sec", 300),
             resource_tier=resource_tier,
@@ -82,6 +97,7 @@ def _build_task(
             type=verif.get("type", "test_script"),
             command=verif.get("command", "bash tests/test.sh"),
             reward_type=reward_type,
+            checkpoints=parsed_checkpoints,
         ),
         time_limit_sec=time_limit_sec,
         verification_modes=tuple(modes_raw),
@@ -112,6 +128,7 @@ def _load_toml(path: Path) -> Task:
         "category": task_sec.get("category", "sdlc"),
         "org_scale": task_sec.get("org_scale", False),
         "mcp_suite": task_sec.get("mcp_suite"),
+        "task_type": task_sec.get("task_type", "sdlc_code_change"),
         "tags": task_sec.get("tags", ()),
         "estimated_duration_sec": task_sec.get("estimated_duration_sec", 300),
         "resource_tier": task_sec.get("resource_tier", "medium"),
@@ -125,6 +142,7 @@ def _load_toml(path: Path) -> Task:
         verif=raw.get("verification", {}),
         time_limit_sec=task_sec.get("time_limit_sec", 300),
         verification_modes=task_sec.get("verification_modes"),
+        checkpoints_raw=raw.get("checkpoints"),
     )
 
 

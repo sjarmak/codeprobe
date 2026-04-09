@@ -318,14 +318,14 @@ class ContinuousScorer:
 class CheckpointScorer:
     """Runs weighted checkpoint verifiers and computes a composite score.
 
-    Expects tests/checkpoints.json with structure:
-    [
-      {"name": "...", "weight": 0.6, "verifier": "check1.sh"},
-      {"name": "...", "weight": 0.4, "verifier": "check2.sh"}
-    ]
+    Checkpoint definitions are resolved in order of precedence:
 
-    Verifier scripts live in tests/verifiers/ and emit JSON on stdout:
-    {"score": 0.0-1.0, "passed": bool}
+    1. ``metadata_checkpoints`` passed at construction (from task.toml
+       ``[[checkpoints]]`` via :class:`~codeprobe.models.task.Checkpoint`)
+    2. ``tests/checkpoints.json`` on disk (legacy format)
+
+    Verifier scripts live in ``tests/verifiers/`` and emit JSON on stdout:
+    ``{"score": 0.0-1.0, "passed": bool}``
 
     Fallback: exit 0 = {score: 1.0, passed: true},
               exit nonzero = {score: 0.0, passed: false}
@@ -333,7 +333,26 @@ class CheckpointScorer:
 
     _WEIGHT_TOLERANCE = 1e-6
 
-    def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+    def __init__(
+        self,
+        metadata_checkpoints: (
+            tuple[dict[str, object], ...] | list[dict[str, object]] | None
+        ) = None,
+    ) -> None:
+        self._metadata_checkpoints = metadata_checkpoints
+
+    def _load_checkpoints(
+        self, task_dir: Path
+    ) -> list[dict[str, object]] | ScoreResult:
+        """Resolve checkpoint list — metadata first, then checkpoints.json.
+
+        Returns the list on success or a ``ScoreResult`` error on failure.
+        """
+        # Prefer metadata checkpoints when provided
+        if self._metadata_checkpoints:
+            return list(self._metadata_checkpoints)
+
+        # Fall back to on-disk checkpoints.json
         checkpoints_file = task_dir / "tests" / "checkpoints.json"
         if not checkpoints_file.is_file():
             return ScoreResult(
@@ -352,6 +371,13 @@ class CheckpointScorer:
                 passed=False,
                 error=f"Invalid checkpoints.json: {exc}",
             )
+        return checkpoints  # type: ignore[no-any-return]
+
+    def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+        loaded = self._load_checkpoints(task_dir)
+        if isinstance(loaded, ScoreResult):
+            return loaded
+        checkpoints = loaded
 
         # Validate weights sum to 1.0
         total_weight = sum(cp.get("weight", 0.0) for cp in checkpoints)

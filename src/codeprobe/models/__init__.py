@@ -1,7 +1,13 @@
 """Core data models — all frozen dataclasses."""
 
 from codeprobe.models.evalrc import EvalrcConfig
-from codeprobe.models.experiment import CompletedTask, ConfigResults, Experiment, ExperimentConfig
+from codeprobe.models.experiment import (
+    CompletedTask,
+    ConfigResults,
+    Experiment,
+    ExperimentConfig,
+)
+from codeprobe.models.suite import Suite
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 __all__ = [
@@ -13,4 +19,5 @@ __all__ = [
     "ConfigResults",
     "CompletedTask",
     "EvalrcConfig",
+    "Suite",
 ]

@@ -67,6 +67,19 @@ class TaskMetadata:
 
 
 @dataclass(frozen=True)
+class Checkpoint:
+    """A single weighted checkpoint verifier defined in task metadata.
+
+    Mirrors the EnterpriseBench ``[[checkpoints]]`` TOML pattern.
+    """
+
+    name: str
+    weight: float
+    verifier: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class TaskVerification:
     """How to verify task completion."""
 
@@ -83,6 +96,7 @@ class TaskVerification:
         default_factory=dict
     )  # file→tier mapping: "required"|"supplementary"|"context"
     ground_truth_schema_version: str = ""
+    checkpoints: tuple[Checkpoint, ...] = ()  # from [[checkpoints]] in task.toml
 
 
 @dataclass(frozen=True)

@@ -474,6 +474,13 @@ def mine(
     default=False,
     help="Print the fully-resolved prompt for the first task and exit (no agent spawned).",
 )
+@click.option(
+    "--suite",
+    "suite_path",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to a suite.toml manifest to filter tasks by type, difficulty, and tags.",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -489,6 +496,7 @@ def run(
     timeout: int | None,
     repeats: int | None,
     show_prompt: bool,
+    suite_path: str | None,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -521,6 +529,7 @@ def run(
         force_rich=force_rich,
         timeout=timeout,
         repeats=repeats if repeats is not None else 1,
+        suite_path=suite_path,
     )
 
 

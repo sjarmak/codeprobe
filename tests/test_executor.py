@@ -1214,3 +1214,170 @@ class TestRewardTypeAutoDetect:
         )
         # Binary: exit 0 → score 1.0
         assert result.completed.automated_score == 1.0
+
+
+# --- answer.json copy tests ---
+
+
+class TestAnswerJsonCopy:
+    """Executor copies answer.json from workspace root to task_dir."""
+
+    def _make_adapter_mock(self) -> MagicMock:
+        adapter = MagicMock()
+        adapter.run.return_value = MagicMock(
+            stdout="done",
+            stderr="",
+            exit_code=0,
+            duration_seconds=1.0,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            cost_model="per_token",
+            cost_source="estimated",
+            error=None,
+        )
+        return adapter
+
+    def test_answer_json_copied_from_workspace_to_task_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """answer.json written to workspace root is copied to task_dir."""
+        task_dir = tmp_path / "task-json"
+        task_dir.mkdir()
+        (task_dir / "instruction.md").write_text("Answer the question.\n")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        # Simulate agent writing answer.json to workspace (repo) root
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        import json
+
+        answer_data = {"answer": ["foo", "bar"]}
+        (repo / "answer.json").write_text(json.dumps(answer_data))
+
+        adapter = self._make_adapter_mock()
+
+        result = execute_task(
+            adapter=adapter,
+            task_dir=task_dir,
+            repo_path=repo,
+            agent_config=AgentConfig(),
+            reward_type="binary",
+        )
+        # answer.json should now exist in task_dir
+        copied = task_dir / "answer.json"
+        assert copied.is_file(), "answer.json was not copied to task_dir"
+        assert json.loads(copied.read_text()) == answer_data
+
+    def test_answer_json_fallback_from_original_repo(self, tmp_path: Path) -> None:
+        """answer.json is found via repo_path fallback when worktree is used."""
+        task_dir = tmp_path / "task-json-fb"
+        task_dir.mkdir()
+        (task_dir / "instruction.md").write_text("Answer the question.\n")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        import json
+
+        answer_data = {"answer": ["baz"]}
+        # Agent wrote to real repo root, not worktree
+        (repo / "answer.json").write_text(json.dumps(answer_data))
+
+        adapter = self._make_adapter_mock()
+
+        result = execute_task(
+            adapter=adapter,
+            task_dir=task_dir,
+            repo_path=repo,
+            agent_config=AgentConfig(),
+            reward_type="binary",
+            worktree_path=worktree,
+        )
+        copied = task_dir / "answer.json"
+        assert copied.is_file(), "answer.json was not copied via fallback"
+        assert json.loads(copied.read_text()) == answer_data
+
+    def test_answer_txt_still_copied(self, tmp_path: Path) -> None:
+        """Existing answer.txt copy logic is not broken."""
+        task_dir = tmp_path / "task-txt"
+        task_dir.mkdir()
+        (task_dir / "instruction.md").write_text("Answer.\n")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "answer.txt").write_text("42")
+
+        adapter = self._make_adapter_mock()
+
+        result = execute_task(
+            adapter=adapter,
+            task_dir=task_dir,
+            repo_path=repo,
+            agent_config=AgentConfig(),
+            reward_type="binary",
+        )
+        copied = task_dir / "answer.txt"
+        assert copied.is_file(), "answer.txt was not copied to task_dir"
+        assert copied.read_text() == "42"
+
+    def test_answer_json_triggers_has_answer(self, tmp_path: Path) -> None:
+        """Agent that writes answer.json but exits non-zero still gets scored."""
+        task_dir = tmp_path / "task-json-err"
+        task_dir.mkdir()
+        (task_dir / "instruction.md").write_text("Answer.\n")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        import json
+
+        (repo / "answer.json").write_text(json.dumps({"answer": ["x"]}))
+
+        adapter = MagicMock()
+        adapter.run.return_value = MagicMock(
+            stdout="",  # empty stdout
+            stderr="timeout",
+            exit_code=1,  # non-zero exit
+            duration_seconds=1.0,
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            cost_usd=0.0,
+            cost_model="per_token",
+            cost_source="estimated",
+            error=None,
+        )
+
+        result = execute_task(
+            adapter=adapter,
+            task_dir=task_dir,
+            repo_path=repo,
+            agent_config=AgentConfig(),
+            reward_type="binary",
+        )
+        # Should NOT be an error — has_answer is True due to answer.json
+        assert (
+            result.completed.status != "error"
+        ), "answer.json should prevent early error return"
