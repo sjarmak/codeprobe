@@ -78,22 +78,32 @@ class ClaudeAdapter(BaseAdapter):
         """Return a per-slot CLAUDE_CONFIG_DIR for session isolation.
 
         Copies authentication credentials from the real ``~/.claude/``
-        directory so the agent subprocess can authenticate.
+        directory so the agent subprocess can authenticate.  If no credential
+        files are found (e.g. auth lives in the system keychain), skips
+        isolation and lets the agent use the real config dir.
         """
+        real_config = Path.home() / ".claude"
+        _CRED_NAMES = ("credentials.json", ".credentials.json")
+
+        # Check whether any copyable credential files exist.
+        has_creds = real_config.is_dir() and any(
+            (real_config / name).is_file() for name in _CRED_NAMES
+        )
+        if not has_creds:
+            # No file-based credentials found — don't override config dir
+            # so the CLI can use keychain / default auth.
+            return {}
+
         config_dir = (
             Path(tempfile.gettempdir()) / "codeprobe-claude" / f"slot-{slot_id}"
         )
         config_dir.mkdir(parents=True, exist_ok=True)
 
-        # Copy auth credentials from the user's real config dir.
-        # Without these the subprocess gets "Not logged in".
-        real_config = Path.home() / ".claude"
-        if real_config.is_dir():
-            for name in ("credentials.json", ".credentials.json"):
-                src = real_config / name
-                dst = config_dir / name
-                if src.is_file():
-                    shutil.copy2(src, dst)
+        for name in _CRED_NAMES:
+            src = real_config / name
+            dst = config_dir / name
+            if src.is_file():
+                shutil.copy2(src, dst)
 
         return {"CLAUDE_CONFIG_DIR": str(config_dir)}
 
