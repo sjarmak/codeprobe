@@ -56,39 +56,9 @@ def codex_output() -> AgentOutput:
     )
 
 
-@pytest.fixture()
-def aider_output() -> AgentOutput:
-    return AgentOutput(
-        stdout="Tokens: 1.2k sent, 856 received. Cost: $0.0034 message, $0.0034 session.",
-        stderr=None,
-        exit_code=0,
-        duration_seconds=10.2,
-        input_tokens=1200,
-        output_tokens=856,
-        cost_usd=0.0034,
-        cost_model="per_token",
-        cost_source="log_parsed",
-    )
-
-
-@pytest.fixture()
-def openai_compat_output() -> AgentOutput:
-    return AgentOutput(
-        stdout="Generated response via compatible API",
-        stderr=None,
-        exit_code=0,
-        duration_seconds=4.7,
-        input_tokens=600,
-        output_tokens=310,
-        cost_usd=0.0018,
-        cost_model="per_token",
-        cost_source="calculated",
-    )
-
-
 # -- Contract assertions -------------------------------------------------------
 
-_ADAPTERS = ["claude", "copilot", "codex", "aider", "openai_compat"]
+_ADAPTERS = ["claude", "copilot", "codex"]
 
 
 @pytest.fixture(params=_ADAPTERS)

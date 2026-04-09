@@ -58,7 +58,6 @@ def _available(builtins: dict[str, str], ep_group: str) -> list[str]:
 # -- Agent adapter registry ---------------------------------------------------
 
 _BUILTINS: dict[str, str] = {
-    "aider": "codeprobe.adapters.aider:AiderAdapter",
     "claude": "codeprobe.adapters.claude:ClaudeAdapter",
     "codex": "codeprobe.adapters.codex:CodexAdapter",
     "copilot": "codeprobe.adapters.copilot:CopilotAdapter",

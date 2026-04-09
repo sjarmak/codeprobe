@@ -83,7 +83,6 @@ def run_checks() -> list[CheckResult]:
         _check_tool(
             "codex", "Install OpenAI Codex CLI: https://github.com/openai/codex"
         ),
-        _check_tool("aider", "Install aider: https://aider.chat/docs/install.html"),
         _check_env_key(
             "ANTHROPIC_API_KEY", "Set ANTHROPIC_API_KEY in your environment."
         ),

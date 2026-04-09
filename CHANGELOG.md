@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 (2026-04-09)
+
+### Fixes
+
+- Remove unsupported `aider` and `openai` agent adapters from registry, entry points, and init wizard — supported agents are now `claude`, `codex`, and `copilot`
+
 ## 0.3.0 (2026-04-09)
 
 ### Features
