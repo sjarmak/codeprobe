@@ -274,9 +274,10 @@ class _StubAdapter(BaseAdapter):
 
 
 class TestBaseAdapterEnvWhitelist:
-    """Verify subprocess.run() uses a filtered environment, not full parent env."""
+    """Verify subprocess.run() env handling: inherit when no isolation, filter when isolated."""
 
-    def test_subprocess_receives_explicit_env(self) -> None:
+    def test_inherits_full_env_without_session_env(self) -> None:
+        """Without session isolation, subprocess inherits the full parent env."""
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(
@@ -286,22 +287,36 @@ class TestBaseAdapterEnvWhitelist:
             adapter.run("test", config)
 
         _, kwargs = mock_run.call_args
-        assert "env" in kwargs, "subprocess.run must receive explicit env"
-        env = kwargs["env"]
-        assert isinstance(env, dict)
+        assert kwargs.get("env") is None, "env=None inherits parent process env"
 
-    def test_env_includes_path_and_home(self) -> None:
+    def test_filters_env_with_session_env(self) -> None:
+        """With session isolation, subprocess gets a filtered env."""
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(
             args=["fake-agent"], returncode=0, stdout="ok", stderr=""
         )
+        session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
+        with patch("subprocess.run", return_value=fake_result) as mock_run:
+            adapter.run("test", config, session_env=session_env)
+
+        env = mock_run.call_args[1]["env"]
+        assert isinstance(env, dict)
+        assert env.get("CLAUDE_CONFIG_DIR") == "/tmp/test"
+
+    def test_filtered_env_includes_path_and_home(self) -> None:
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        fake_result = subprocess.CompletedProcess(
+            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
+        )
+        session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             import os
 
             old_path = os.environ.get("PATH", "")
             old_home = os.environ.get("HOME", "")
-            adapter.run("test", config)
+            adapter.run("test", config, session_env=session_env)
 
         env = mock_run.call_args[1]["env"]
         if old_path:
@@ -309,18 +324,19 @@ class TestBaseAdapterEnvWhitelist:
         if old_home:
             assert env.get("HOME") == old_home
 
-    def test_env_excludes_random_secrets(self) -> None:
+    def test_filtered_env_excludes_random_secrets(self) -> None:
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(
             args=["fake-agent"], returncode=0, stdout="ok", stderr=""
         )
+        session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
         import os
 
         os.environ["MY_SUPER_SECRET_DB_PASSWORD"] = "hunter2"
         try:
             with patch("subprocess.run", return_value=fake_result) as mock_run:
-                adapter.run("test", config)
+                adapter.run("test", config, session_env=session_env)
             env = mock_run.call_args[1]["env"]
             assert "MY_SUPER_SECRET_DB_PASSWORD" not in env
         finally:

@@ -158,7 +158,7 @@ class BaseAdapter:
                 text=True,
                 timeout=config.timeout_seconds,
                 cwd=config.cwd,
-                env=_adapter_safe_env(session_env),
+                env=_adapter_safe_env(session_env) if session_env else None,
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start
