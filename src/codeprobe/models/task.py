@@ -18,6 +18,26 @@ ORG_SCALE_CATEGORIES: frozenset[str] = frozenset(
     }
 )
 
+# Valid task type categories.
+TASK_TYPES: frozenset[str] = frozenset(
+    {
+        "sdlc_code_change",
+        "micro_probe",
+        "mcp_tool_usage",
+        "architecture_comprehension",
+        "org_scale_cross_repo",
+    }
+)
+
+# Valid verification modes.
+VERIFICATION_MODES: frozenset[str] = frozenset(
+    {
+        "test_script",
+        "artifact_eval",
+        "dual",
+    }
+)
+
 
 @dataclass(frozen=True)
 class TaskMetadata:
@@ -31,6 +51,7 @@ class TaskMetadata:
     category: str = "sdlc"
     org_scale: bool = False
     mcp_suite: str | None = None
+    task_type: str = "sdlc_code_change"
     tags: tuple[str, ...] = ()
     estimated_duration_sec: int = 300
     resource_tier: str = "medium"
@@ -51,6 +72,10 @@ class TaskVerification:
 
     type: str = "test_script"
     command: str = "bash tests/test.sh"
+    verification_mode: str = "test_script"
+    eval_command: str = ""
+    ground_truth_path: str = "tests/ground_truth.json"
+    answer_schema: str = ""
     reward_type: str = "binary"
     oracle_type: str = ""  # "file_list", "count", "boolean" — empty for SDLC
     oracle_answer: tuple[str, ...] = ()  # expected answer set for oracle tasks
