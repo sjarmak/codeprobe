@@ -112,6 +112,14 @@ def init(path: str) -> None:
     help="Apply a named preset: 'quick' (count=3) or 'mcp' (org-scale + MCP families).",
 )
 @click.option(
+    "--goal",
+    type=click.Choice(
+        ["quality", "navigation", "mcp", "general"], case_sensitive=False
+    ),
+    default=None,
+    help="Eval goal: quality, navigation, mcp, general. Skips interactive goal prompt.",
+)
+@click.option(
     "--profile",
     "profile_name",
     default=None,
@@ -241,6 +249,7 @@ def mine(
     ctx: click.Context,
     path: str,
     preset: str | None,
+    goal: str | None,
     profile_name: str | None,
     save_profile_name: str | None,
     list_profiles_flag: bool,
@@ -381,10 +390,12 @@ def mine(
         backends = _prof_val("backends", backends)  # type: ignore[assignment]
         interactive = _prof_val("interactive", interactive)  # type: ignore[assignment]
         preset = _prof_val("preset", preset)  # type: ignore[assignment]
+        goal = _prof_val("goal", goal)  # type: ignore[assignment]
 
     run_mine(
         path,
         preset=preset,
+        goal=goal,
         count=count,
         source=source,
         min_files=min_files,
@@ -690,3 +701,8 @@ main.add_command(preambles)
 from codeprobe.cli.doctor_cmd import doctor  # noqa: E402
 
 main.add_command(doctor)
+
+# Register the validate command
+from codeprobe.cli.validate_cmd import validate  # noqa: E402
+
+main.add_command(validate)

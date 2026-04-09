@@ -56,6 +56,13 @@ from codeprobe.probe.generator import DEFAULT_COUNT, MAX_PROBES, MIN_PROBES
     default=False,
     help="Output JSON summary to stdout.",
 )
+@click.option(
+    "--emit-tasks",
+    "emit_tasks",
+    is_flag=True,
+    default=False,
+    help="Write task directories via ProbeTaskAdapter (task_type=micro_probe).",
+)
 def probe(
     repo: str,
     count: int,
@@ -64,6 +71,7 @@ def probe(
     seed: int | None,
     repo_name: str | None,
     output_json: bool,
+    emit_tasks: bool,
 ) -> None:
     """Generate micro-benchmark probe tasks from a repository.
 
@@ -91,10 +99,22 @@ def probe(
         logger.warning("No probes generated -- no suitable symbols found.")
         raise SystemExit(1)
 
-    logger.info(
-        "Generated %d probes, writing to %s...", len(probes), output_dir
-    )
-    created = write_probe_tasks(probes, output_dir, effective_repo_name)
+    if emit_tasks:
+        from codeprobe.probe.adapter import ProbeTaskAdapter
+
+        logger.info(
+            "Generated %d probes, emitting task dirs to %s...",
+            len(probes),
+            output_dir,
+        )
+        created = ProbeTaskAdapter.convert_batch(
+            probes,
+            output_dir,
+            repo_name=effective_repo_name,
+        )
+    else:
+        logger.info("Generated %d probes, writing to %s...", len(probes), output_dir)
+        created = write_probe_tasks(probes, output_dir, effective_repo_name)
 
     # Summary
     by_template: dict[str, int] = {}

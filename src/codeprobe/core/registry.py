@@ -97,6 +97,7 @@ def available_sessions() -> list[str]:
 # -- Scorer registry ----------------------------------------------------------
 
 _SCORER_BUILTINS: dict[str, str] = {
+    "artifact": "codeprobe.core.scoring:ArtifactScorer",
     "binary": "codeprobe.core.scoring:BinaryScorer",
     "continuous": "codeprobe.core.scoring:ContinuousScorer",
     "checkpoint": "codeprobe.core.scoring:CheckpointScorer",
