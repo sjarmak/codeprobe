@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -67,6 +68,7 @@ def _make_experiment_repo(tmp_path: Path) -> Path:
 
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGINT not portable on Windows")
+@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not installed")
 def test_sigint_produces_exit_130_no_traceback(tmp_path: Path) -> None:
     """Sending SIGINT to ``codeprobe run`` must exit 130 without a traceback."""
     repo = _make_experiment_repo(tmp_path)
