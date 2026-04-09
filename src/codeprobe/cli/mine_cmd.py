@@ -500,8 +500,65 @@ def _enrich_sdlc_tasks(
     return tasks
 
 
+_CLI_DEFAULTS = {
+    "count": 5,
+    "source": "auto",
+    "min_files": 0,
+    "enrich": False,
+    "org_scale": False,
+    "mcp_families": False,
+}
+
+# Named presets — values are merged as defaults; explicit CLI flags override.
+PRESETS: dict[str, dict] = {
+    "quick": {"count": 3},
+    "mcp": {
+        "count": 8,
+        "org_scale": True,
+        "mcp_families": True,
+        "enrich": True,
+    },
+}
+
+
+def _apply_preset(
+    preset: str | None,
+    *,
+    count: int,
+    source: str,
+    min_files: int,
+    enrich: bool,
+    org_scale: bool,
+    mcp_families: bool,
+) -> dict:
+    """Return a dict of effective parameter values after applying *preset*.
+
+    Explicit CLI flags (values that differ from their Click defaults) take
+    precedence over preset values.
+    """
+    effective: dict = {
+        "count": count,
+        "source": source,
+        "min_files": min_files,
+        "enrich": enrich,
+        "org_scale": org_scale,
+        "mcp_families": mcp_families,
+    }
+    if preset is None:
+        return effective
+
+    preset_values = PRESETS.get(preset, {})
+    for key, preset_val in preset_values.items():
+        # Only apply preset value when the CLI value is still the default
+        if effective[key] == _CLI_DEFAULTS.get(key):
+            effective[key] = preset_val
+
+    return effective
+
+
 def run_mine(
     path: str,
+    preset: str | None = None,
     count: int = 5,
     source: str = "auto",
     min_files: int = 0,
@@ -523,6 +580,23 @@ def run_mine(
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.mining import mine_tasks, write_task_dir
+
+    # Apply preset defaults — explicit CLI flags override
+    resolved = _apply_preset(
+        preset,
+        count=count,
+        source=source,
+        min_files=min_files,
+        enrich=enrich,
+        org_scale=org_scale,
+        mcp_families=mcp_families,
+    )
+    count = resolved["count"]
+    source = resolved["source"]
+    min_files = resolved["min_files"]
+    enrich = resolved["enrich"]
+    org_scale = resolved["org_scale"]
+    mcp_families = resolved["mcp_families"]
 
     # CLI validation: --backends agent --no-llm is incompatible
     if no_llm and "agent" in backends:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +57,36 @@ def experiment_init(
     )
 
 
+def _interactive_mcp_selection() -> str | None:
+    """Offer interactive MCP config selection when available.
+
+    Returns a file path string if the user selects a config, or None to skip.
+    """
+    from codeprobe.core.mcp_discovery import discover_mcp_configs
+
+    discovered = discover_mcp_configs()
+    if not discovered:
+        return None
+
+    click.echo()
+    click.echo("Discovered MCP configurations:")
+    for i, (p, servers) in enumerate(discovered, 1):
+        click.echo(f"  {i}. {p}  ({len(servers)} servers)")
+        for s in servers:
+            click.echo(f"     - {s}")
+    click.echo(f"  {len(discovered) + 1}. Skip (no MCP config)")
+    click.echo()
+
+    choice = click.prompt(
+        "Select MCP config",
+        type=click.IntRange(1, len(discovered) + 1),
+        default=len(discovered) + 1,
+    )
+    if choice <= len(discovered):
+        return str(discovered[choice - 1][0])
+    return None
+
+
 def experiment_add_config(
     path: str,
     label: str,
@@ -84,7 +115,7 @@ def experiment_add_config(
         )
         raise SystemExit(1)
 
-    # Parse MCP config
+    # Parse MCP config — offer interactive discovery when omitted in a TTY
     mcp_config: dict | None = None
     if mcp_config_str:
         try:
@@ -99,6 +130,12 @@ def experiment_add_config(
                     err=True,
                 )
                 raise SystemExit(1)
+    elif sys.stderr.isatty():
+        mcp_config_str = _interactive_mcp_selection()
+        if mcp_config_str:
+            mcp_path = Path(mcp_config_str).expanduser().resolve()
+            if mcp_path.is_file():
+                mcp_config = json.loads(mcp_path.read_text(encoding="utf-8"))
 
     new_config = ExperimentConfig(
         label=label,

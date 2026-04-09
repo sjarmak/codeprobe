@@ -469,7 +469,7 @@ class TestInitCliIntegration:
         mcp_file.write_text(json.dumps({"mcpServers": {}}))
 
         # Patch discovery so the prompt falls through to manual path entry
-        monkeypatch.setattr("codeprobe.cli.init_cmd._discover_mcp_configs", lambda: [])
+        monkeypatch.setattr("codeprobe.cli.init_cmd.discover_mcp_configs", lambda: [])
 
         runner = CliRunner()
         # Inputs: goal=1, experiment name (enter=default), agent (enter=default),
@@ -484,7 +484,7 @@ class TestInitCliIntegration:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test Goal 1 with Sourcegraph HTTP MCP."""
-        monkeypatch.setattr("codeprobe.cli.init_cmd._discover_mcp_configs", lambda: [])
+        monkeypatch.setattr("codeprobe.cli.init_cmd.discover_mcp_configs", lambda: [])
         monkeypatch.delenv("SOURCEGRAPH_TOKEN", raising=False)
 
         runner = CliRunner()

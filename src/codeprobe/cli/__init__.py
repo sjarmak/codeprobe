@@ -101,6 +101,12 @@ def init(path: str) -> None:
 
 @main.command()
 @click.argument("path", default=".")
+@click.option(
+    "--preset",
+    type=click.Choice(["quick", "mcp"], case_sensitive=False),
+    default=None,
+    help="Apply a named preset: 'quick' (count=3) or 'mcp' (org-scale + MCP families).",
+)
 @click.option("--count", default=5, help="Number of tasks to mine (3-20).")
 @click.option(
     "--source",
@@ -208,6 +214,7 @@ def init(path: str) -> None:
 )
 def mine(
     path: str,
+    preset: str | None,
     count: int,
     source: str,
     min_files: int,
@@ -232,6 +239,12 @@ def mine(
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics.
 
+    \b
+    Presets (--preset):
+      quick  — Fast scan: count=3, default SDLC mode
+      mcp    — MCP eval: count=8, org-scale + MCP families + enrich
+
+    \b
     Use --org-scale to mine comprehension/IR tasks with oracle verification
     instead of SDLC code-change tasks.
 
@@ -246,6 +259,7 @@ def mine(
 
     run_mine(
         path,
+        preset=preset,
         count=count,
         source=source,
         min_files=min_files,
