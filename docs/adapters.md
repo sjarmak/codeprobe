@@ -89,6 +89,7 @@ Immutable dataclass returned by `run()`:
 | `cache_read_tokens` | `int \| None`   | `None`          | Prompt-cache hits                                   |
 | `cost_model`        | `str`           | `"unknown"`     | See [cost_model values](#cost_model-values)         |
 | `cost_source`       | `str`           | `"unavailable"` | See [cost_source values](#cost_source-values)       |
+| `tool_call_count`   | `int \| None`   | `None`          | Number of `tool_use` blocks in agent output         |
 | `error`             | `str \| None`   | `None`          | Error description (partial results still preserved) |
 
 Validation rules enforced by `__post_init__`:

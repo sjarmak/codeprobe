@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.2 (2026-04-09)
+
+### Features
+
+- **Tool-call count tracking** — claude adapter now parses `tool_use` content blocks and propagates `tool_call_count` through `AgentOutput` → `CompletedTask` → `results.json` for tool efficiency analysis
+- **Secret redaction** — new `config/redact.py` unconditionally redacts all Authorization header values in `ExperimentConfig.__repr__()` and `experiment.json` serialization
+
+### Fixes
+
+- **Timeout telemetry recovery** — timed-out agent sessions now extract partial token/cost data from stdout instead of discarding all telemetry
+- **MCP instruction template** — `mine --goal mcp` now embeds the actual symbol name and definition file into `instruction.md` instead of generic phrasing
+- **Test detection heuristic** — broadened to recursive `**/test*/` glob patterns, fixing false negatives for repos with nested test layouts (e.g. numpy)
+
+### Refactoring
+
+- Batch all test detection globs into a single `git ls-files` call (was up to 22 sequential subprocess calls)
+- Surface `parse_output` exceptions in timeout error field instead of silently swallowing
+- Derive recursive test file globs from base list to eliminate copy-paste
+
 ## 0.3.1 (2026-04-09)
 
 ### Fixes
