@@ -324,6 +324,24 @@ def mine(
     default=False,
     help="Force Rich Live dashboard even in non-TTY environments.",
 )
+@click.option(
+    "--timeout",
+    default=None,
+    type=int,
+    help="Timeout in seconds per task (overrides experiment.json extra.timeout_seconds).",
+)
+@click.option(
+    "--repeats",
+    default=None,
+    type=int,
+    help="Number of repeats per task (overrides default of 1).",
+)
+@click.option(
+    "--show-prompt",
+    is_flag=True,
+    default=False,
+    help="Print the fully-resolved prompt for the first task and exit (no agent spawned).",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -336,6 +354,9 @@ def run(
     dry_run: bool,
     force_plain: bool,
     force_rich: bool,
+    timeout: int | None,
+    repeats: int | None,
+    show_prompt: bool,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -347,6 +368,12 @@ def run(
     ctx.ensure_object(dict)
     log_format = ctx.obj.get("log_format", "text")
     quiet = ctx.obj.get("quiet", False)
+
+    if show_prompt:
+        from codeprobe.cli.run_cmd import show_prompt_and_exit
+
+        show_prompt_and_exit(path, config=config, agent=agent, model=model)
+        return
 
     run_eval(
         path,
@@ -360,6 +387,8 @@ def run(
         quiet=quiet,
         force_plain=force_plain,
         force_rich=force_rich,
+        timeout=timeout,
+        repeats=repeats if repeats is not None else 1,
     )
 
 
@@ -530,3 +559,13 @@ main.add_command(scaffold)
 from codeprobe.cli.probe_cmd import probe  # noqa: E402
 
 main.add_command(probe)
+
+# Register the preambles subcommand group
+from codeprobe.cli.preamble_cmd import preambles  # noqa: E402
+
+main.add_command(preambles)
+
+# Register the doctor command
+from codeprobe.cli.doctor_cmd import doctor  # noqa: E402
+
+main.add_command(doctor)
