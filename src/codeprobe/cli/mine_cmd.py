@@ -520,6 +520,101 @@ PRESETS: dict[str, dict] = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# User-defined mine profiles
+# ---------------------------------------------------------------------------
+
+# Keys that profiles may contain (matching Click parameter names).
+_PROFILE_KEYS = frozenset(_CLI_DEFAULTS) | {
+    "subsystem",
+    "discover_subsystems",
+    "no_llm",
+    "family",
+    "repos",
+    "scan_timeout",
+    "validate_flag",
+    "curate",
+    "backends",
+    "verify_curation_flag",
+    "sg_repo",
+    "interactive",
+    "preset",
+}
+
+
+def _user_profiles_path() -> Path:
+    """Return ~/.codeprobe/mine-profiles.json."""
+    return Path.home() / ".codeprobe" / "mine-profiles.json"
+
+
+def _project_profiles_path(repo_path: Path | None = None) -> Path:
+    """Return .codeprobe/mine-profiles.json relative to *repo_path* or cwd."""
+    base = repo_path if repo_path is not None else Path.cwd()
+    return base / ".codeprobe" / "mine-profiles.json"
+
+
+def _load_profiles_from(path: Path) -> dict[str, dict]:
+    """Load profiles from a JSON file, returning an empty dict on missing/invalid."""
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def load_all_profiles(repo_path: Path | None = None) -> dict[str, tuple[dict, str]]:
+    """Load profiles from user and project levels.
+
+    Returns ``{name: (profile_dict, source_label)}`` where *source_label* is
+    ``"user"`` or ``"project"``.  Project-level profiles override user-level
+    profiles with the same name.
+    """
+    merged: dict[str, tuple[dict, str]] = {}
+    for name, prof in _load_profiles_from(_user_profiles_path()).items():
+        merged[name] = (prof, "user")
+    for name, prof in _load_profiles_from(_project_profiles_path(repo_path)).items():
+        merged[name] = (prof, "project")
+    return merged
+
+
+def load_profile(name: str, repo_path: Path | None = None) -> dict:
+    """Load a single profile by *name*.
+
+    Project-level profiles take precedence over user-level ones.
+    Raises ``click.UsageError`` if the profile is not found.
+    """
+    all_profiles = load_all_profiles(repo_path)
+    entry = all_profiles.get(name)
+    if entry is None:
+        available = ", ".join(sorted(all_profiles)) if all_profiles else "(none)"
+        raise click.UsageError(
+            f"Profile '{name}' not found. Available profiles: {available}"
+        )
+    return entry[0]
+
+
+def save_profile(name: str, values: dict) -> Path:
+    """Save *values* as profile *name* to the user-level config file.
+
+    Creates ``~/.codeprobe/`` if it doesn't exist.  Returns the file path.
+    """
+    path = _user_profiles_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _load_profiles_from(path)
+    existing[name] = {k: v for k, v in values.items() if k in _PROFILE_KEYS}
+    path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def list_profiles(repo_path: Path | None = None) -> list[tuple[str, str, dict]]:
+    """Return ``[(name, source_label, profile_dict), ...]`` sorted by name."""
+    all_profiles = load_all_profiles(repo_path)
+    return sorted((name, source, prof) for name, (prof, source) in all_profiles.items())
+
 
 def _apply_preset(
     preset: str | None,

@@ -22,13 +22,25 @@ def _resolve(
 ) -> Any:
     """Generic resolve: check builtins, then entry_points, raise KeyError."""
     if name in builtins:
-        cls = _import_class(builtins[name])
+        try:
+            cls = _import_class(builtins[name])
+        except ImportError as exc:
+            raise KeyError(
+                f"{kind} {name!r} could not be loaded — a required dependency "
+                f"is missing: {exc}. Check that the tool is installed."
+            ) from exc
         return cls()
 
     eps = importlib.metadata.entry_points(group=ep_group)
     for ep in eps:
         if ep.name == name:
-            cls = ep.load()
+            try:
+                cls = ep.load()
+            except ImportError as exc:
+                raise KeyError(
+                    f"{kind} {name!r} could not be loaded — a required dependency "
+                    f"is missing: {exc}. Check that the tool is installed."
+                ) from exc
             return cls()
 
     all_names = _available(builtins, ep_group)

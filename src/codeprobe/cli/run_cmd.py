@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -12,6 +13,8 @@ from pathlib import Path
 import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
+
+logger = logging.getLogger(__name__)
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.core.events import (
@@ -130,6 +133,96 @@ def _release_sandbox() -> None:
             os.environ.pop("CODEPROBE_SANDBOX", None)
 
 
+def show_prompt_and_exit(
+    path: str,
+    *,
+    config: str | None = None,
+    agent: str = "claude",
+    model: str | None = None,
+) -> None:
+    """Print the fully-resolved prompt for the first task and exit."""
+    from codeprobe.core.executor import load_instruction
+    from codeprobe.core.preamble import (
+        DefaultPreambleResolver,
+        _base_prompt,
+        compose_instruction,
+    )
+
+    exp_dir = Path(config) if config else Path(path)
+
+    try:
+        experiment = load_experiment(exp_dir)
+    except (FileNotFoundError, ValueError):
+        experiment = None
+        codeprobe_dir = Path(path) / ".codeprobe"
+        if codeprobe_dir.is_dir():
+            candidates = sorted(
+                d
+                for d in codeprobe_dir.iterdir()
+                if d.is_dir() and (d / "experiment.json").is_file()
+            )
+            if len(candidates) == 1:
+                exp_dir = candidates[0]
+                experiment = load_experiment(exp_dir)
+        if experiment is None:
+            click.echo(
+                f"Error: No experiment found in {Path(path) / '.codeprobe'}",
+                err=True,
+            )
+            raise SystemExit(1)
+
+    # Resolve repo root
+    try:
+        repo_root = Path(
+            subprocess.run(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=Path(path).resolve(),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+    except (subprocess.CalledProcessError, OSError):
+        repo_root = Path(path).resolve()
+
+    tasks_dir = exp_dir / experiment.tasks_dir
+    repo_tasks = repo_root / ".codeprobe" / experiment.tasks_dir
+
+    task_dirs = _find_tasks(tasks_dir, task_ids=experiment.task_ids)
+    if not task_dirs and repo_tasks != tasks_dir:
+        task_dirs = _find_tasks(repo_tasks, task_ids=experiment.task_ids)
+
+    if not task_dirs:
+        click.echo("No tasks found. Run 'codeprobe mine' first.", err=True)
+        raise SystemExit(1)
+
+    first_task = task_dirs[0]
+    exp_config = (experiment.configs or [None])[0]
+
+    instruction_variant = exp_config.instruction_variant if exp_config else None
+    preamble_names = exp_config.preambles if exp_config else ()
+
+    instruction = load_instruction(first_task, variant=instruction_variant)
+
+    if preamble_names:
+        resolver = DefaultPreambleResolver(
+            task_dir=first_task,
+            project_dir=repo_root,
+            user_dir=Path.home(),
+        )
+        prompt, _ = compose_instruction(
+            instruction,
+            repo_root,
+            preamble_names=list(preamble_names),
+            resolver=resolver,
+            task_id=first_task.name,
+        )
+    else:
+        prompt = _base_prompt(instruction, repo_root)
+
+    click.echo(prompt)
+
+
 def run_eval(
     path: str,
     agent: str = "claude",
@@ -143,6 +236,7 @@ def run_eval(
     quiet: bool = False,
     force_plain: bool = False,
     force_rich: bool = False,
+    timeout: int | None = None,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -262,11 +356,27 @@ def run_eval(
             )
 
         config_adapter = resolve(exp_config.agent or agent)
-        timeout = exp_config.extra.get("timeout_seconds", 300)
+
+        # Layered config resolution: defaults < experiment.json < CLI flags
+        resolved_model = model if model is not None else exp_config.model
+        resolved_timeout = (
+            timeout
+            if timeout is not None
+            else exp_config.extra.get("timeout_seconds", 300)
+        )
+
+        logger.debug(
+            "Config resolution: model=%s (%s), timeout=%ds (%s)",
+            resolved_model,
+            "CLI override" if model is not None else "experiment.json",
+            resolved_timeout,
+            "CLI override" if timeout is not None else "experiment.json",
+        )
+
         agent_config = AgentConfig(
-            model=exp_config.model or model,
+            model=resolved_model,
             permission_mode=perm,
-            timeout_seconds=timeout,
+            timeout_seconds=resolved_timeout,
             mcp_config=exp_config.mcp_config,
             cwd=str(repo_root),
         )

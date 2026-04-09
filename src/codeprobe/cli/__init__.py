@@ -111,6 +111,26 @@ def init(path: str) -> None:
     default=None,
     help="Apply a named preset: 'quick' (count=3) or 'mcp' (org-scale + MCP families).",
 )
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Load a user-defined profile from ~/.codeprobe/mine-profiles.json "
+    "or .codeprobe/mine-profiles.json. Explicit flags override profile values.",
+)
+@click.option(
+    "--save-profile",
+    "save_profile_name",
+    default=None,
+    help="Save current flag values as a named profile to ~/.codeprobe/mine-profiles.json.",
+)
+@click.option(
+    "--list-profiles",
+    "list_profiles_flag",
+    is_flag=True,
+    default=False,
+    help="Show available profiles from user and project levels.",
+)
 @click.option("--count", default=5, help="Number of tasks to mine (3-20).")
 @click.option(
     "--source",
@@ -216,9 +236,14 @@ def init(path: str) -> None:
     "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
     "when --mcp-families is used. Requires SOURCEGRAPH_TOKEN env var.",
 )
+@click.pass_context
 def mine(
+    ctx: click.Context,
     path: str,
     preset: str | None,
+    profile_name: str | None,
+    save_profile_name: str | None,
+    list_profiles_flag: bool,
     count: int,
     source: str,
     min_files: int,
@@ -249,6 +274,15 @@ def mine(
       mcp    — MCP eval: count=8, org-scale + MCP families + enrich
 
     \b
+    Profiles (--profile / --save-profile / --list-profiles):
+      Save:  codeprobe mine --save-profile my-setup --count 10 --org-scale .
+      Load:  codeprobe mine --profile my-setup /path/to/repo
+      List:  codeprobe mine --list-profiles
+
+    \b
+    Precedence: built-in defaults < profile < --preset < explicit CLI flags.
+
+    \b
     Use --org-scale to mine comprehension/IR tasks with oracle verification
     instead of SDLC code-change tasks.
 
@@ -259,7 +293,94 @@ def mine(
     choosing an eval goal, task count, and git host before mining.
     Use --no-interactive to skip the prompts and use defaults/flags directly.
     """
-    from codeprobe.cli.mine_cmd import run_mine
+    from pathlib import Path as _Path
+
+    from codeprobe.cli.mine_cmd import (
+        list_profiles,
+        load_profile,
+        run_mine,
+        save_profile,
+    )
+
+    # --list-profiles: show and exit
+    if list_profiles_flag:
+        repo_path = _Path(path).resolve() if path != "." else _Path.cwd()
+        entries = list_profiles(repo_path)
+        if not entries:
+            click.echo("No profiles found.")
+        else:
+            click.echo(f"{'Name':<20s} {'Source':<10s} {'Settings'}")
+            click.echo("-" * 60)
+            for name, source_label, prof in entries:
+                summary = ", ".join(f"{k}={v}" for k, v in sorted(prof.items()))
+                click.echo(f"{name:<20s} {source_label:<10s} {summary}")
+        return
+
+    # --save-profile: save current flags and exit
+    if save_profile_name is not None:
+        # Collect all current param values, keeping only those that differ
+        # from Click defaults.
+        param_defaults = {p.name: p.default for p in ctx.command.params}
+        # Exclude meta-params that aren't mining flags
+        _EXCLUDE_FROM_PROFILE = frozenset(
+            {
+                "path",
+                "profile_name",
+                "save_profile_name",
+                "list_profiles_flag",
+            }
+        )
+        values = {
+            k: (list(v) if isinstance(v, tuple) else v)
+            for k, v in ctx.params.items()
+            if k not in _EXCLUDE_FROM_PROFILE and v != param_defaults.get(k)
+        }
+        saved_path = save_profile(save_profile_name, values)
+        click.echo(f"Profile '{save_profile_name}' saved to {saved_path}")
+        return
+
+    # --profile: load profile values as defaults, then apply preset and CLI overrides
+    if profile_name is not None:
+        repo_path = _Path(path).resolve() if path != "." else _Path.cwd()
+        prof = load_profile(profile_name, repo_path)
+
+        # Determine which params were explicitly set on the CLI
+        explicitly_set = {
+            p.name
+            for p in ctx.command.params
+            if ctx.get_parameter_source(p.name) is not None
+            and ctx.get_parameter_source(p.name).name == "COMMANDLINE"
+        }
+
+        # Apply profile values for params NOT explicitly set on CLI.
+        # Tuple-typed params (click multiple=True) need list→tuple coercion.
+        _TUPLE_PARAMS = frozenset({"subsystem", "family", "repos", "backends"})
+
+        def _prof_val(key: str, current: object) -> object:
+            if key in explicitly_set or key not in prof:
+                return current
+            v = prof[key]
+            return tuple(v) if key in _TUPLE_PARAMS else v
+
+        count = _prof_val("count", count)  # type: ignore[assignment]
+        source = _prof_val("source", source)  # type: ignore[assignment]
+        min_files = _prof_val("min_files", min_files)  # type: ignore[assignment]
+        enrich = _prof_val("enrich", enrich)  # type: ignore[assignment]
+        org_scale = _prof_val("org_scale", org_scale)  # type: ignore[assignment]
+        mcp_families = _prof_val("mcp_families", mcp_families)  # type: ignore[assignment]
+        no_llm = _prof_val("no_llm", no_llm)  # type: ignore[assignment]
+        discover_subsystems = _prof_val("discover_subsystems", discover_subsystems)  # type: ignore[assignment]
+        scan_timeout = _prof_val("scan_timeout", scan_timeout)  # type: ignore[assignment]
+        validate_flag = _prof_val("validate_flag", validate_flag)  # type: ignore[assignment]
+        curate = _prof_val("curate", curate)  # type: ignore[assignment]
+        verify_curation_flag = _prof_val("verify_curation_flag", verify_curation_flag)  # type: ignore[assignment]
+        sg_repo = _prof_val("sg_repo", sg_repo)  # type: ignore[assignment]
+        subsystem = _prof_val("subsystem", subsystem)  # type: ignore[assignment]
+        family = _prof_val("family", family)  # type: ignore[assignment]
+        repos = _prof_val("repos", repos)  # type: ignore[assignment]
+        backends = _prof_val("backends", backends)  # type: ignore[assignment]
+        interactive = _prof_val("interactive", interactive)  # type: ignore[assignment]
+        preset = _prof_val("preset", preset)  # type: ignore[assignment]
 
     run_mine(
         path,
@@ -324,6 +445,24 @@ def mine(
     default=False,
     help="Force Rich Live dashboard even in non-TTY environments.",
 )
+@click.option(
+    "--timeout",
+    default=None,
+    type=int,
+    help="Timeout in seconds per task (overrides experiment.json extra.timeout_seconds).",
+)
+@click.option(
+    "--repeats",
+    default=None,
+    type=int,
+    help="Number of repeats per task (overrides default of 1).",
+)
+@click.option(
+    "--show-prompt",
+    is_flag=True,
+    default=False,
+    help="Print the fully-resolved prompt for the first task and exit (no agent spawned).",
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -336,6 +475,9 @@ def run(
     dry_run: bool,
     force_plain: bool,
     force_rich: bool,
+    timeout: int | None,
+    repeats: int | None,
+    show_prompt: bool,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -347,6 +489,12 @@ def run(
     ctx.ensure_object(dict)
     log_format = ctx.obj.get("log_format", "text")
     quiet = ctx.obj.get("quiet", False)
+
+    if show_prompt:
+        from codeprobe.cli.run_cmd import show_prompt_and_exit
+
+        show_prompt_and_exit(path, config=config, agent=agent, model=model)
+        return
 
     run_eval(
         path,
@@ -360,6 +508,8 @@ def run(
         quiet=quiet,
         force_plain=force_plain,
         force_rich=force_rich,
+        timeout=timeout,
+        repeats=repeats if repeats is not None else 1,
     )
 
 
@@ -530,3 +680,13 @@ main.add_command(scaffold)
 from codeprobe.cli.probe_cmd import probe  # noqa: E402
 
 main.add_command(probe)
+
+# Register the preambles subcommand group
+from codeprobe.cli.preamble_cmd import preambles  # noqa: E402
+
+main.add_command(preambles)
+
+# Register the doctor command
+from codeprobe.cli.doctor_cmd import doctor  # noqa: E402
+
+main.add_command(doctor)
