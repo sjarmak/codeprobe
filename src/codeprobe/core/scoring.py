@@ -447,8 +447,11 @@ class ArtifactScorer:
     """
 
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
-        # Load ground truth
-        gt_path = task_dir / "ground_truth.json"
+        # Load ground truth — check tests/ subdir first (standard location),
+        # then task_dir root (legacy). Keep in sync with mining/writer._ORACLE_PY.
+        gt_path = task_dir / "tests" / "ground_truth.json"
+        if not gt_path.exists():
+            gt_path = task_dir / "ground_truth.json"
         gt = _load_json_file(gt_path)
         if gt is None or not isinstance(gt, dict):
             return ScoreResult(
@@ -571,16 +574,14 @@ class ArtifactScorer:
         return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
 
     @staticmethod
-    def _score_boolean(expected: object, actual: object) -> ScoreResult:
-        """Case-insensitive boolean match."""
+    def _score_exact_match(expected: object, actual: object) -> ScoreResult:
+        """Normalised exact match (strip + lowercase). Used for boolean and text."""
         passed = str(expected).strip().lower() == str(actual).strip().lower()
         return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
 
-    @staticmethod
-    def _score_text(expected: object, actual: object) -> ScoreResult:
-        """Stripped lowercase exact text match."""
-        passed = str(expected).strip().lower() == str(actual).strip().lower()
-        return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
+    # Aliases for dispatch table readability
+    _score_boolean = _score_exact_match
+    _score_text = _score_exact_match
 
 
 # ---------------------------------------------------------------------------

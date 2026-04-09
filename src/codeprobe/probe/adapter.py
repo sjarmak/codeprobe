@@ -15,89 +15,12 @@ import re
 from pathlib import Path
 
 from codeprobe.probe.generator import Probe
+from codeprobe.probe.writer import _TEST_SH_TEMPLATE  # reuse, don't duplicate
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Test script template (same verifier as writer.py)
-# ---------------------------------------------------------------------------
 
-_TEST_SH_TEMPLATE = """\
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Probe verification script — compares agent output against ground truth.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GT_FILE="$SCRIPT_DIR/ground_truth.json"
-
-if [ ! -f "$GT_FILE" ]; then
-    echo "FAIL: ground_truth.json not found"
-    exit 1
-fi
-
-EXPECTED=$(python3 -c "import json; print(json.load(open('$GT_FILE'))['answer'])")
-ANSWER_TYPE=$(python3 -c "import json; print(json.load(open('$GT_FILE'))['answer_type'])")
-
-# Read agent output: $AGENT_OUTPUT (sandbox), answer.txt (manual), or stdin
-if [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then
-    ACTUAL=$(cat "$AGENT_OUTPUT")
-elif [ -f answer.txt ]; then
-    ACTUAL=$(cat answer.txt)
-else
-    ACTUAL=$(cat)
-fi
-
-# Trim whitespace
-ACTUAL=$(echo "$ACTUAL" | xargs)
-EXPECTED=$(echo "$EXPECTED" | xargs)
-
-# Normalize based on answer type
-case "$ANSWER_TYPE" in
-    file_path)
-        ACTUAL=$(echo "$ACTUAL" | sed 's|\\\\\\\\|/|g; s|^\\\\./||')
-        EXPECTED=$(echo "$EXPECTED" | sed 's|\\\\\\\\|/|g; s|^\\\\./||')
-        ACTUAL_LOWER=$(echo "$ACTUAL" | tr '[:upper:]' '[:lower:]')
-        EXPECTED_LOWER=$(echo "$EXPECTED" | tr '[:upper:]' '[:lower:]')
-        if [ "$ACTUAL_LOWER" = "$EXPECTED_LOWER" ]; then
-            echo "PASS: $ACTUAL"
-            exit 0
-        fi
-        ;;
-    integer)
-        ACTUAL_INT=$(echo "$ACTUAL" | grep -oE '[0-9]+' | head -1)
-        if [ "$ACTUAL_INT" = "$EXPECTED" ]; then
-            echo "PASS: $ACTUAL_INT"
-            exit 0
-        fi
-        ACTUAL="$ACTUAL_INT"
-        ;;
-    boolean)
-        ACTUAL_BOOL=$(echo "$ACTUAL" | tr '[:upper:]' '[:lower:]')
-        case "$ACTUAL_BOOL" in
-            yes|true|1) ACTUAL_BOOL="yes" ;;
-            no|false|0) ACTUAL_BOOL="no" ;;
-        esac
-        EXPECTED_BOOL=$(echo "$EXPECTED" | tr '[:upper:]' '[:lower:]')
-        if [ "$ACTUAL_BOOL" = "$EXPECTED_BOOL" ]; then
-            echo "PASS: $ACTUAL_BOOL"
-            exit 0
-        fi
-        ACTUAL="$ACTUAL_BOOL"
-        EXPECTED="$EXPECTED_BOOL"
-        ;;
-    text|*)
-        ACTUAL_NORM=$(echo "$ACTUAL" | tr '[:upper:]' '[:lower:]' | tr -s ' ')
-        EXPECTED_NORM=$(echo "$EXPECTED" | tr '[:upper:]' '[:lower:]' | tr -s ' ')
-        if [ "$ACTUAL_NORM" = "$EXPECTED_NORM" ]; then
-            echo "PASS: $ACTUAL"
-            exit 0
-        fi
-        ;;
-esac
-
-echo "FAIL: expected='$EXPECTED' actual='$ACTUAL'"
-exit 1
-"""
+# Test script template imported from probe/writer.py — single source of truth.
 
 
 class ProbeTaskAdapter:

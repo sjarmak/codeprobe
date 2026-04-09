@@ -71,10 +71,10 @@ class ComprehensionTaskSpec:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-# Module-level registry so the writer can look up ground truth for a task
-# without mutating the frozen Task dataclass. Populated by
-# ``ComprehensionGenerator.generate`` and consumed by
-# ``write_comprehension_tasks``.
+# Spec registry — populated by generate(), consumed by write_comprehension_tasks().
+# Prefer passing specs explicitly via generate()'s return value and
+# write_comprehension_tasks(specs=...) parameter. The module-level dict is
+# kept as a fallback for backwards compatibility but may be removed.
 _TASK_SPECS: dict[str, ComprehensionTaskSpec] = {}
 
 
@@ -749,7 +749,11 @@ class ComprehensionGenerator:
 # ---------------------------------------------------------------------------
 
 
-def write_comprehension_tasks(tasks: list[Task], output_dir: Path) -> list[Path]:
+def write_comprehension_tasks(
+    tasks: list[Task],
+    output_dir: Path,
+    specs: dict[str, ComprehensionTaskSpec] | None = None,
+) -> list[Path]:
     """Write comprehension tasks to disk with the new ground_truth format.
 
     Produces::
@@ -775,8 +779,9 @@ def write_comprehension_tasks(tasks: list[Task], output_dir: Path) -> list[Path]
     output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
+    registry = specs if specs is not None else _TASK_SPECS
     for task in tasks:
-        spec = _TASK_SPECS.get(task.id)
+        spec = registry.get(task.id)
         if spec is None:
             logger.warning("No spec registered for task %s, skipping", task.id)
             continue
