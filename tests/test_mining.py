@@ -1843,3 +1843,144 @@ class TestMineInteractive:
         ]
         warnings = _quality_review(tasks, "General benchmarking", "balanced")
         assert any("generic test stubs" in w for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# MCP-specific task mining tests
+# ---------------------------------------------------------------------------
+
+
+class TestMCPGoalConfig:
+    """Verify that --goal mcp wires the correct defaults."""
+
+    def test_mcp_goal_sets_min_files_6(self) -> None:
+        """MCP goal extras include min_files=6 for cross-file bias."""
+        from codeprobe.cli.mine_cmd import _EVAL_GOALS
+
+        mcp_goal = _EVAL_GOALS["mcp"]
+        assert mcp_goal["extras"]["min_files"] == 6
+
+    def test_mcp_goal_sets_task_type(self) -> None:
+        """MCP goal maps to mcp_tool_usage task_type."""
+        from codeprobe.cli.mine_cmd import _EVAL_GOALS
+
+        assert _EVAL_GOALS["mcp"]["task_type"] == "mcp_tool_usage"
+
+
+class TestMCPInstructionVariant:
+    """Tests for instruction_mcp.md generation in write_task_dir."""
+
+    def test_mcp_task_generates_instruction_mcp_md(self, tmp_path: Path) -> None:
+        """MCP tasks produce both instruction.md and instruction_mcp.md."""
+        task = Task(
+            id="mcp00001",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-mcp00001",
+                difficulty="hard",
+                description="Cross-file refactor of auth module",
+                language="python",
+                task_type="mcp_tool_usage",
+                mcp_suite="sourcegraph",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_auth.py",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+        result_path = write_task_dir(task, base_dir, repo_path)
+
+        # instruction.md must exist
+        assert (result_path / "instruction.md").is_file()
+
+        # instruction_mcp.md must also exist for MCP tasks
+        mcp_instruction = result_path / "instruction_mcp.md"
+        assert mcp_instruction.is_file()
+
+        content = mcp_instruction.read_text(encoding="utf-8")
+        # Must reference MCP tools
+        assert "MCP" in content or "mcp" in content.lower()
+        assert "keyword_search" in content
+        assert "read_file" in content
+
+    def test_non_mcp_task_no_instruction_mcp_md(self, tmp_path: Path) -> None:
+        """Non-MCP tasks do NOT produce instruction_mcp.md."""
+        task = Task(
+            id="sdlc0001",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-sdlc0001",
+                difficulty="easy",
+                description="Fix a small bug",
+                language="python",
+                task_type="sdlc_code_change",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_bug.py",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+        result_path = write_task_dir(task, base_dir, repo_path)
+
+        assert (result_path / "instruction.md").is_file()
+        assert not (result_path / "instruction_mcp.md").exists()
+
+
+class TestMCPSuiteInMetadata:
+    """Tests for mcp_suite field in metadata.json."""
+
+    def test_mcp_task_metadata_has_mcp_suite(self, tmp_path: Path) -> None:
+        """MCP tasks include mcp_suite in metadata.json."""
+        task = Task(
+            id="mcp00002",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-mcp00002",
+                difficulty="hard",
+                description="Cross-file refactor",
+                language="python",
+                task_type="mcp_tool_usage",
+                mcp_suite="sourcegraph",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_refactor.py",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+        result_path = write_task_dir(task, base_dir, repo_path)
+
+        meta = json.loads((result_path / "metadata.json").read_text(encoding="utf-8"))
+        assert meta["metadata"]["mcp_suite"] == "sourcegraph"
+
+    def test_non_mcp_task_metadata_mcp_suite_null(self, tmp_path: Path) -> None:
+        """Non-MCP tasks have mcp_suite=null in metadata.json."""
+        task = Task(
+            id="sdlc0002",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="merge-sdlc0002",
+                difficulty="easy",
+                description="Simple fix",
+                language="python",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="pytest tests/test_simple.py",
+                reward_type="binary",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+        result_path = write_task_dir(task, base_dir, repo_path)
+
+        meta = json.loads((result_path / "metadata.json").read_text(encoding="utf-8"))
+        assert meta["metadata"]["mcp_suite"] is None

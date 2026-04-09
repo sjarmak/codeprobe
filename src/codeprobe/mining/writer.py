@@ -351,6 +351,10 @@ def write_task_dir(
     instruction_path = task_dir / "instruction.md"
     instruction_path.write_text(instruction, encoding="utf-8")
 
+    # Write instruction_mcp.md variant for MCP tasks
+    if task.metadata.task_type == "mcp_tool_usage":
+        _write_mcp_instruction_variant(task, task_dir, instruction)
+
     # Write tests/test.sh — validate command against allowlist prefixes
     cmd = task.verification.command
     if not any(
@@ -378,6 +382,52 @@ def write_task_dir(
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir
+
+
+# ---------------------------------------------------------------------------
+# MCP instruction variant
+# ---------------------------------------------------------------------------
+
+_MCP_TOOLS_SECTION = """\
+## Available MCP Tools
+
+You have access to the following MCP tools for code navigation and comprehension:
+
+| Tool | Description |
+|------|-------------|
+| `keyword_search` | Search for keywords or patterns across the repository |
+| `read_file` | Read the contents of a specific file |
+| `find_references` | Find all references to a symbol across the codebase |
+| `go_to_definition` | Navigate to the definition of a symbol |
+| `list_files` | List files in a directory or matching a pattern |
+| `nls_search` | Natural language search across the codebase |
+
+Use these tools to navigate the codebase, understand dependencies, and locate
+the files that need changes. Start by searching for relevant symbols and
+reading the key files before making modifications.
+"""
+
+
+def _write_mcp_instruction_variant(
+    task: Task,
+    task_dir: Path,
+    base_instruction: str,
+) -> None:
+    """Write instruction_mcp.md alongside instruction.md for MCP tasks.
+
+    Appends MCP tool references to the base instruction so agents with
+    MCP access know which tools are available for code navigation.
+    """
+    mcp_suite = task.metadata.mcp_suite or "sourcegraph"
+    mcp_instruction = (
+        base_instruction.rstrip()
+        + "\n\n"
+        + _MCP_TOOLS_SECTION
+        + f"\n**MCP Suite:** {mcp_suite}\n"
+    )
+    mcp_path = task_dir / "instruction_mcp.md"
+    mcp_path.write_text(mcp_instruction, encoding="utf-8")
+    logger.info("Wrote MCP instruction variant → %s", mcp_path)
 
 
 def _get_family_description(category: str) -> str:
