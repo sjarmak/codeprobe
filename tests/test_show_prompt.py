@@ -52,6 +52,10 @@ def test_show_prompt_prints_instruction(tmp_path: Path) -> None:
 
 def test_show_prompt_with_preamble(tmp_path: Path) -> None:
     """--show-prompt resolves preamble templates into the output."""
+    from unittest.mock import patch
+
+    from codeprobe.models.experiment import Experiment, ExperimentConfig
+
     exp_dir = _setup_experiment(tmp_path, preambles=("custom",))
 
     # Create a custom preamble in the task's preambles dir
@@ -62,10 +66,22 @@ def test_show_prompt_with_preamble(tmp_path: Path) -> None:
         "You have access to repository at {{repo_path}}.", encoding="utf-8"
     )
 
-    runner = CliRunner()
-    result = runner.invoke(
-        main, ["run", str(exp_dir), "--show-prompt"], catch_exceptions=False
+    # Patch load_experiment to return config with preambles set
+    exp_with_preambles = Experiment(
+        name="my-exp",
+        configs=[
+            ExperimentConfig(label="baseline", agent="claude", preambles=("custom",))
+        ],
+        tasks_dir="tasks",
+        task_ids=("task-001",),
     )
+    with patch(
+        "codeprobe.cli.run_cmd.load_experiment", return_value=exp_with_preambles
+    ):
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["run", str(exp_dir), "--show-prompt"], catch_exceptions=False
+        )
 
     assert result.exit_code == 0
     assert "Fix the bug in main.py" in result.output
