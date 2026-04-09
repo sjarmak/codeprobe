@@ -21,7 +21,11 @@ from codeprobe.core.executor import (
     load_instruction,
     set_max_concurrency,
 )
-from codeprobe.core.isolation import IsolationStrategy, WorktreeIsolation
+from codeprobe.core.isolation import (
+    IsolationStrategy,
+    WorktreeIsolation,
+    git_pin_commit,
+)
 from codeprobe.core.preamble import _base_prompt
 from codeprobe.core.preamble import DefaultPreambleResolver
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -534,7 +538,7 @@ def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
 
 
 def test_execute_config_resets_workdir_between_sequential_tasks(tmp_path: Path):
-    """Git reset runs between tasks in sequential mode (parallel<=1)."""
+    """Git reset runs between tasks and once after the last task."""
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
     adapter = FakeAdapter(stdout="output")
     exp_config = ExperimentConfig(label="baseline")
@@ -549,8 +553,8 @@ def test_execute_config_resets_workdir_between_sequential_tasks(tmp_path: Path):
             agent_config=agent_config,
             parallel=1,
         )
-        # Reset should be called between tasks (not before first), so 2 times for 3 tasks
-        assert mock_reset.call_count == 2
+        # Reset between tasks (2) + final cleanup (1) = 3
+        assert mock_reset.call_count == 3
         # First positional arg should be repo_path
         assert mock_reset.call_args_list[0][0][0] == Path("/repo")
 
@@ -579,8 +583,8 @@ def test_execute_config_no_reset_in_parallel_mode(tmp_path: Path):
         mock_reset.assert_not_called()
 
 
-def test_execute_config_no_reset_for_single_task(tmp_path: Path):
-    """No git reset when there's only one task (nothing to reset between)."""
+def test_execute_config_final_reset_for_single_task(tmp_path: Path):
+    """Even with one task, final cleanup reset runs to restore original HEAD."""
     tasks = [_make_task(tmp_path / "task-000", passing=True)]
     adapter = FakeAdapter(stdout="output")
     exp_config = ExperimentConfig(label="baseline")
@@ -595,7 +599,8 @@ def test_execute_config_no_reset_for_single_task(tmp_path: Path):
             agent_config=agent_config,
             parallel=1,
         )
-        mock_reset.assert_not_called()
+        # Final cleanup reset after the single task
+        assert mock_reset.call_count == 1
 
 
 # --- Worktree isolation tests ---
@@ -680,6 +685,30 @@ class TestWorktreeIsolation:
         with patch("subprocess.run"):
             iso = WorktreeIsolation(tmp_path, pool_size=1)
             assert isinstance(iso, IsolationStrategy)
+
+
+class TestGitPinCommit:
+    def test_calls_git_checkout_detach(self, tmp_path: Path) -> None:
+        """git_pin_commit runs git checkout --detach <commit>."""
+        with patch("subprocess.run") as mock_run:
+            git_pin_commit(tmp_path, "abc123^")
+            mock_run.assert_called_once_with(
+                ["git", "checkout", "--detach", "abc123^"],
+                cwd=tmp_path,
+                check=True,
+                capture_output=True,
+            )
+
+    def test_raises_on_failure(self, tmp_path: Path) -> None:
+        """git_pin_commit propagates CalledProcessError."""
+        import pytest
+
+        with patch(
+            "subprocess.run",
+            side_effect=subprocess.CalledProcessError(128, "git"),
+        ):
+            with pytest.raises(subprocess.CalledProcessError):
+                git_pin_commit(tmp_path, "badref")
 
 
 # --- Preamble repo_path rewriting ---
@@ -1389,3 +1418,147 @@ class TestAnswerJsonCopy:
         assert (
             result.completed.status != "error"
         ), "answer.json should prevent early error return"
+
+
+# --- Commit pinning tests ---
+
+
+class TestCommitPinning:
+    """execute_task pins the workspace to the pre-merge commit when
+    ground_truth_commit is present in task metadata."""
+
+    def _make_task_with_metadata(
+        self, task_dir: Path, *, ground_truth_commit: str = ""
+    ) -> Path:
+        """Create a task with metadata.json containing ground_truth_commit."""
+        import json
+
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "instruction.md").write_text("Fix the bug.")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+
+        metadata = {
+            "id": task_dir.name,
+            "repo": "test-repo",
+            "metadata": {
+                "name": f"merge-{task_dir.name}",
+                "ground_truth_commit": ground_truth_commit,
+            },
+            "verification": {"type": "test_script", "command": "bash tests/test.sh"},
+        }
+        (task_dir / "metadata.json").write_text(json.dumps(metadata))
+        return task_dir
+
+    def test_pins_to_parent_of_merge_commit(self, tmp_path: Path) -> None:
+        """When ground_truth_commit is set, git_pin_commit is called with sha^."""
+        task_dir = self._make_task_with_metadata(
+            tmp_path / "task-pin", ground_truth_commit="abc123def456"
+        )
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            mock_pin.assert_called_once_with(Path("/repo"), "abc123def456^")
+            assert result.completed.status == "completed"
+
+    def test_no_pin_without_ground_truth_commit(self, tmp_path: Path) -> None:
+        """When ground_truth_commit is empty, git_pin_commit is NOT called."""
+        task_dir = self._make_task_with_metadata(
+            tmp_path / "task-nopin", ground_truth_commit=""
+        )
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            mock_pin.assert_not_called()
+            assert result.completed.status == "completed"
+
+    def test_no_pin_without_metadata(self, tmp_path: Path) -> None:
+        """When metadata.json is absent, git_pin_commit is NOT called."""
+        task_dir = _make_task(tmp_path / "task-nometa", passing=True)
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            mock_pin.assert_not_called()
+
+    def test_pin_failure_returns_error(self, tmp_path: Path) -> None:
+        """When git checkout fails, task returns error with system category."""
+        task_dir = self._make_task_with_metadata(
+            tmp_path / "task-pinfail", ground_truth_commit="deadbeef12345678"
+        )
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch(
+            "codeprobe.core.executor.git_pin_commit",
+            side_effect=subprocess.CalledProcessError(
+                128, "git", stderr=b"fatal: reference is not a tree"
+            ),
+        ):
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            assert result.completed.status == "error"
+            assert result.completed.error_category == "system"
+            assert "deadbeef" in result.completed.metadata["error"]
+
+    def test_pin_uses_worktree_path_when_provided(self, tmp_path: Path) -> None:
+        """When worktree_path is set, pinning targets the worktree, not repo_path."""
+        task_dir = self._make_task_with_metadata(
+            tmp_path / "task-wt", ground_truth_commit="abc123def456"
+        )
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+        wt = Path("/worktrees/slot-0")
+
+        with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
+            execute_task(adapter, task_dir, Path("/repo"), config, worktree_path=wt)
+            mock_pin.assert_called_once_with(wt, "abc123def456^")
+
+    def test_sequential_restore_ref_passed_to_reset(self, tmp_path: Path) -> None:
+        """In sequential mode, _git_reset_workdir receives restore_ref."""
+        import json
+
+        tasks = []
+        for i in range(2):
+            td = tmp_path / f"task-{i:03d}"
+            td.mkdir(parents=True)
+            (td / "instruction.md").write_text("Fix.")
+            tests = td / "tests"
+            tests.mkdir()
+            test_sh = tests / "test.sh"
+            test_sh.write_text("#!/bin/bash\nexit 0\n")
+            test_sh.chmod(0o755)
+            (td / "metadata.json").write_text(
+                json.dumps({"metadata": {"ground_truth_commit": f"sha{i}"}})
+            )
+            tasks.append(td)
+
+        adapter = FakeAdapter(stdout="output")
+        exp_config = ExperimentConfig(label="baseline")
+        agent_config = AgentConfig()
+
+        with (
+            patch("codeprobe.core.executor._git_reset_workdir") as mock_reset,
+            patch("codeprobe.core.executor.git_pin_commit"),
+            patch("codeprobe.core.executor._get_head_ref", return_value="main"),
+        ):
+            execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=Path("/repo"),
+                experiment_config=exp_config,
+                agent_config=agent_config,
+                parallel=1,
+            )
+            # Between-task reset + final cleanup = 2 calls
+            assert mock_reset.call_count == 2
+            # All calls should pass restore_ref="main"
+            for c in mock_reset.call_args_list:
+                assert c[1]["restore_ref"] == "main"

@@ -492,6 +492,7 @@ def extract_task_from_merge(
         category="sdlc",
         issue_title=pr_meta.issue_title,
         issue_body=pr_meta.issue_body,
+        ground_truth_commit=merge_sha,
     )
 
     verification = TaskVerification(

@@ -63,6 +63,22 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
     subprocess.run(clean_cmd, cwd=workdir, check=True, capture_output=True)
 
 
+def git_pin_commit(workdir: Path, commit: str) -> None:
+    """Checkout a specific commit in *workdir* (detached HEAD).
+
+    Used to pin a worktree or repo to the parent of a merge commit so
+    the agent starts from the pre-merge state.
+
+    Raises ``subprocess.CalledProcessError`` if the commit is unreachable.
+    """
+    subprocess.run(
+        ["git", "checkout", "--detach", commit],
+        cwd=workdir,
+        check=True,
+        capture_output=True,
+    )
+
+
 @runtime_checkable
 class IsolationStrategy(Protocol):
     """Protocol for workspace isolation strategies."""

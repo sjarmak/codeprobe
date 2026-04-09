@@ -27,6 +27,7 @@ from codeprobe.core.events import (
 from codeprobe.core.isolation import (
     IsolationStrategy,
     WorktreeIsolation,
+    git_pin_commit,
     git_restore_clean,
 )
 from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
@@ -253,6 +254,26 @@ def execute_task(
     else:
         prompt = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
 
+    # Pin workspace to pre-merge commit when task has a ground_truth_commit.
+    # The agent starts from the parent of the merge commit (the state before
+    # the PR landed) and must reproduce the changes.
+    pin_commit = (_task_meta.get("metadata") or {}).get("ground_truth_commit", "")
+    effective_workspace = worktree_path or repo_path
+    if pin_commit:
+        try:
+            git_pin_commit(effective_workspace, f"{pin_commit}^")
+            logger.info(
+                "[%s] Pinned workspace to %s^ (pre-merge state)",
+                task_id,
+                pin_commit[:8],
+            )
+        except subprocess.CalledProcessError as exc:
+            return _error_result(
+                f"Failed to pin workspace to {pin_commit[:8]}^: "
+                + (exc.stderr.decode(errors="replace") if exc.stderr else str(exc)),
+                error_category="system",
+            )
+
     try:
         output = adapter.run(prompt, agent_config, session_env=session_env)
     except Exception as exc:
@@ -377,15 +398,62 @@ def _budget_msg(msg: str) -> None:
     sys.stderr.flush()
 
 
+def _get_head_ref(repo_path: Path) -> str:
+    """Return the current branch name or commit SHA.
+
+    If on a branch, returns the branch name (e.g. ``main``).
+    If detached, returns the full commit SHA.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "--short", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    # Detached HEAD — return commit SHA
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return "HEAD"
+
+
 def _git_reset_workdir(
-    repo_path: Path, *, extra_excludes: tuple[str, ...] = ()
+    repo_path: Path,
+    *,
+    extra_excludes: tuple[str, ...] = (),
+    restore_ref: str = "",
 ) -> None:
     """Reset the working directory to a clean state between sequential tasks.
 
     Runs ``git restore .`` and ``git clean -fd`` to discard modifications
     and remove untracked files so task N's leftovers don't corrupt task N+1.
+
+    When *restore_ref* is set, also checks out that ref to undo any commit
+    pinning from the previous task.
     """
     try:
+        if restore_ref:
+            subprocess.run(
+                ["git", "checkout", restore_ref],
+                cwd=repo_path,
+                check=True,
+                capture_output=True,
+            )
         git_restore_clean(repo_path, extra_excludes=extra_excludes)
     except subprocess.CalledProcessError as exc:
         logger.warning(
@@ -664,6 +732,9 @@ def execute_config(
             return budget_checker.is_exceeded
         return max_cost_usd is not None and cumulative_cost > max_cost_usd
 
+    # Capture original HEAD so we can restore it after commit pinning.
+    original_ref = _get_head_ref(repo_path)
+
     if workers <= 1:
         # Sequential — preserves original behavior and budget checks
         for idx, (task_dir, repeat_index) in enumerate(pending_work):
@@ -683,11 +754,22 @@ def execute_config(
                     )
                 )
             # Reset working directory between tasks so leftovers from
-            # task N don't corrupt task N+1's results.
+            # task N don't corrupt task N+1's results.  Also restores
+            # the original branch/HEAD in case the previous task pinned
+            # to a specific commit.
             if idx > 0:
-                _git_reset_workdir(repo_path, extra_excludes=clean_excludes)
+                _git_reset_workdir(
+                    repo_path,
+                    extra_excludes=clean_excludes,
+                    restore_ref=original_ref,
+                )
             task_result = _run_one(task_dir, repeat_index=repeat_index)
             _handle_result(task_result)
+        # Restore original HEAD after all sequential tasks complete so
+        # the repo isn't left on a detached commit from the last task.
+        _git_reset_workdir(
+            repo_path, extra_excludes=clean_excludes, restore_ref=original_ref
+        )
     else:
         # Parallel — dispatch all pending tasks to thread pool
         logger.info(

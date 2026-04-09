@@ -218,6 +218,7 @@ class TestExtractTaskFromMerge:
         assert task.repo == "myrepo"
         assert task.metadata.difficulty == "easy"
         assert task.metadata.language == "python"
+        assert task.metadata.ground_truth_commit == "abc12345deadbeef"
         assert pr_meta.source_tier == "commit_message"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
