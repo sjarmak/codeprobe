@@ -434,7 +434,8 @@ class ComprehensionGenerator:
         candidates: list[tuple[str, set[str]]] = []
         for module in sorted(self._index.module_to_file.keys()):
             transitive = _transitive_importers(self._index.rgraph, module)
-            indirect = _indirect_importers(self._index.rgraph, module)
+            direct = self._index.rgraph.get(module, set())
+            indirect = transitive - direct
             if not indirect:
                 continue  # no transitive hop => trivially grepable
             # Convert module set → file set
@@ -646,29 +647,32 @@ class ComprehensionGenerator:
         want_true = max(1, count // 2)
         want_false = count - want_true
 
-        # True cases: chain length >= 2 (requires traversal)
+        # Compute reachability once per module, reuse for both true and false.
         true_candidates: list[tuple[str, str]] = []
-        for a in modules:
-            reachable = _reachable_modules(self._index.graph, a)
-            for b in reachable:
-                path_len = _shortest_path_length(self._index.graph, a, b)
-                if path_len is not None and path_len >= 2:
-                    true_candidates.append((a, b))
-            if len(true_candidates) >= want_true * 3:
-                break
-
-        # False cases: b not reachable from a
         false_candidates: list[tuple[str, str]] = []
+        enough_true = want_true * 3
+        enough_false = want_false * 3
         for a in modules:
-            reachable = _reachable_modules(self._index.graph, a)
-            for b in modules:
-                if b == a or b in reachable:
-                    continue
-                false_candidates.append((a, b))
-                if len(false_candidates) >= want_false * 3:
-                    break
-            if len(false_candidates) >= want_false * 3:
+            if (
+                len(true_candidates) >= enough_true
+                and len(false_candidates) >= enough_false
+            ):
                 break
+            reachable = _reachable_modules(self._index.graph, a)
+            # True cases: chain length >= 2 (requires traversal)
+            if len(true_candidates) < enough_true:
+                for b in reachable:
+                    path_len = _shortest_path_length(self._index.graph, a, b)
+                    if path_len is not None and path_len >= 2:
+                        true_candidates.append((a, b))
+            # False cases: b not reachable from a
+            if len(false_candidates) < enough_false:
+                for b in modules:
+                    if b == a or b in reachable:
+                        continue
+                    false_candidates.append((a, b))
+                    if len(false_candidates) >= enough_false:
+                        break
 
         for a, b in true_candidates[:want_true]:
             out.append(
@@ -835,11 +839,13 @@ def _build_instruction(task: Task, spec: ComprehensionTaskSpec) -> str:
     return (
         f"# {task.metadata.name}\n\n"
         f"**Repository:** {task.repo}\n"
-        f"**Task type:** architecture_comprehension\n"
+        f"**Task type:** {task.metadata.task_type}\n"
         f"**Template:** {spec.template}\n\n"
         "## Question\n\n"
         f"{spec.question}\n\n"
         "## Answer Format\n\n"
         f"{answer_format}\n\n"
-        "Write your answer to `answer.txt` in the repository root.\n"
+        "Write your answer to `answer.json` in the repository root as "
+        '`{"answer": "<your answer>"}`. '
+        "For file lists, separate paths with newlines in the answer string.\n"
     )

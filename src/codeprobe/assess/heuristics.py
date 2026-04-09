@@ -142,7 +142,12 @@ def _run_git(args: list[str], cwd: Path) -> str:
             timeout=30,
         )
         if result.returncode != 0:
-            logger.debug("git %s exited %d: %s", " ".join(args), result.returncode, result.stderr.strip())
+            logger.debug(
+                "git %s exited %d: %s",
+                " ".join(args),
+                result.returncode,
+                result.stderr.strip(),
+            )
             return ""
         return result.stdout.strip()
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -307,7 +312,9 @@ def gather_heuristics(repo_path: Path) -> RepoHeuristics:
     history, CI presence, test coverage, languages, and activity.
     """
     total_commits_str = _run_git(["rev-list", "--count", "HEAD"], cwd=repo_path)
-    merge_commits_str = _run_git(["rev-list", "--merges", "--count", "HEAD"], cwd=repo_path)
+    merge_commits_str = _run_git(
+        ["rev-list", "--merges", "--count", "HEAD"], cwd=repo_path
+    )
     contributors_str = _run_git(["shortlog", "-sn", "HEAD"], cwd=repo_path)
     file_list = _run_git(["ls-files"], cwd=repo_path)
 
@@ -354,7 +361,10 @@ def score_repo_heuristic(heuristics: RepoHeuristics) -> AssessmentScore:
     has_ci = heuristics.has_ci
     has_fw = len(heuristics.test_frameworks) > 0
     if has_tests and has_ci and has_fw:
-        tc_score, tc_reason = 1.0, f"Tests + CI + framework ({', '.join(heuristics.test_frameworks)})"
+        tc_score, tc_reason = (
+            1.0,
+            f"Tests + CI + framework ({', '.join(heuristics.test_frameworks)})",
+        )
     elif has_tests and (has_ci or has_fw):
         tc_score, tc_reason = 0.7, "Tests present with partial CI/framework support"
     elif has_tests:
@@ -409,15 +419,29 @@ def score_repo_heuristic(heuristics: RepoHeuristics) -> AssessmentScore:
         DimensionScore(name="ci_maturity", score=ci_score, reasoning=ci_reason),
     )
 
-    # Equal weights for heuristic path (model path lets the model weight them).
-    overall = sum(d.score for d in dimensions) / len(dimensions)
+    # Weighted average — ci_maturity is a weak signal because CI configs are
+    # often absent in shallow clones / Sourcegraph views, and codeprobe
+    # validates via mined test.sh scripts, not CI pipelines.
+    _WEIGHTS: dict[str, float] = {
+        "task_richness": 0.25,
+        "test_coverage": 0.25,
+        "complexity": 0.20,
+        "activity": 0.15,
+        "documentation": 0.10,
+        "ci_maturity": 0.05,
+    }
+    overall = sum(d.score * _WEIGHTS[d.name] for d in dimensions)
 
     if overall >= 0.7:
         recommendation = "Excellent benchmarking candidate — rich history with tests"
     elif overall >= 0.5:
-        recommendation = "Good candidate — may need more merge history for diverse tasks"
+        recommendation = (
+            "Good candidate — may need more merge history for diverse tasks"
+        )
     elif overall >= 0.3:
-        recommendation = "Fair candidate — limited test coverage may reduce task quality"
+        recommendation = (
+            "Fair candidate — limited test coverage may reduce task quality"
+        )
     else:
         recommendation = "Poor candidate — consider a repo with more history and tests"
 
@@ -458,11 +482,15 @@ def _parse_model_assessment(
         score_val = float(item.get("score", 0))
         score_val = max(0.0, min(1.0, score_val))
         reasoning = str(item.get("reasoning", ""))
-        dim_by_name[name] = DimensionScore(name=name, score=score_val, reasoning=reasoning)
+        dim_by_name[name] = DimensionScore(
+            name=name, score=score_val, reasoning=reasoning
+        )
 
     missing = set(RUBRIC_V1) - set(dim_by_name)
     if missing:
-        raise LLMParseError(f"Model response missing dimensions: {', '.join(sorted(missing))}")
+        raise LLMParseError(
+            f"Model response missing dimensions: {', '.join(sorted(missing))}"
+        )
 
     dimensions = tuple(dim_by_name[name] for name in RUBRIC_V1)
 
@@ -498,6 +526,11 @@ def score_repo_with_model(heuristics: RepoHeuristics) -> AssessmentScore:
         "You are evaluating a code repository's suitability for AI agent benchmarking.\n\n"
         f"Here are the raw repository statistics:\n{stats_json}\n\n"
         f"Score this repository on each of these dimensions (0.0 to 1.0):\n{rubric_list}\n\n"
+        "Weighting guidance for the overall score: task_richness and test_coverage "
+        "are the most important (~25% each), followed by complexity (~20%), "
+        "activity (~15%), documentation (~10%). ci_maturity should be a minor "
+        "signal (~5%) because CI configs are often absent in cloned repos and "
+        "codeprobe validates via mined test scripts, not CI pipelines.\n\n"
         "Respond with ONLY valid JSON matching this exact schema:\n"
         "{\n"
         '  "overall": <float 0.0-1.0>,\n'
