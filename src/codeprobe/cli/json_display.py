@@ -8,9 +8,12 @@ where structured output is easier to parse than human-readable text.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from dataclasses import asdict
 from typing import IO
+
+logger = logging.getLogger(__name__)
 
 from codeprobe.core.events import RunEvent
 
@@ -40,4 +43,6 @@ class JsonLineListener:
             self._file.flush()
         except Exception:
             # Gracefully skip malformed events — never crash the dispatcher.
-            pass
+            logger.debug(
+                "Failed to serialize event %s", type(event).__name__, exc_info=True
+            )
