@@ -1146,17 +1146,34 @@ class TestClaudeMcpConfig:
 
 
 class TestIsolateSession:
-    def test_claude_isolate_session_returns_config_dir(self) -> None:
+    def test_claude_isolate_session_returns_config_dir(self, tmp_path: Path) -> None:
         adapter = ClaudeAdapter()
-        env = adapter.isolate_session(0)
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        (fake_home / ".claude" / ".credentials.json").write_text("{}")
+        with patch.object(Path, "home", return_value=fake_home):
+            env = adapter.isolate_session(0)
         assert "CLAUDE_CONFIG_DIR" in env
         assert "slot-0" in env["CLAUDE_CONFIG_DIR"]
 
-    def test_claude_isolate_session_different_slots(self) -> None:
+    def test_claude_isolate_session_different_slots(self, tmp_path: Path) -> None:
         adapter = ClaudeAdapter()
-        env0 = adapter.isolate_session(0)
-        env1 = adapter.isolate_session(1)
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        (fake_home / ".claude" / ".credentials.json").write_text("{}")
+        with patch.object(Path, "home", return_value=fake_home):
+            env0 = adapter.isolate_session(0)
+            env1 = adapter.isolate_session(1)
         assert env0["CLAUDE_CONFIG_DIR"] != env1["CLAUDE_CONFIG_DIR"]
+
+    def test_claude_isolate_session_skips_when_no_creds(self, tmp_path: Path) -> None:
+        """When no credential files exist, returns empty dict."""
+        adapter = ClaudeAdapter()
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        with patch.object(Path, "home", return_value=fake_home):
+            env = adapter.isolate_session(0)
+        assert env == {}
 
     def test_base_adapter_isolate_session_returns_empty(self) -> None:
         adapter = _StubAdapter()
