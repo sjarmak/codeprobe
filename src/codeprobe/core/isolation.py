@@ -53,7 +53,7 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
         "-e",
         ".codeprobe",
         "-e",
-        ".codeprobe-worktrees",
+        ".codeprobe-worktrees*",
     ]
     # Auto-discover experiment directories inside the repo
     for exp_dir in _discover_experiment_dirs(workdir):
@@ -91,12 +91,15 @@ class WorktreeIsolation:
     slot is free, ``release()`` resets and returns the slot to the pool.
     """
 
-    def __init__(self, repo_path: Path, pool_size: int) -> None:
+    def __init__(self, repo_path: Path, pool_size: int, namespace: str = "") -> None:
         if pool_size < 1:
             raise ValueError(f"pool_size must be >= 1, got {pool_size}")
         self._repo_path = repo_path.resolve()
         self._pool_size = pool_size
-        self._base_dir = self._repo_path / ".codeprobe-worktrees"
+        base_name = ".codeprobe-worktrees"
+        if namespace:
+            base_name = f"{base_name}-{namespace}"
+        self._base_dir = self._repo_path / base_name
         self._available: queue.Queue[Path] = queue.Queue()
         self._all_paths: list[Path] = []
         self._lock = threading.Lock()
@@ -177,6 +180,8 @@ class WorktreeIsolation:
 
     def cleanup(self) -> None:
         """Remove all managed worktrees."""
+        import shutil
+
         for wt_path in self._all_paths:
             try:
                 subprocess.run(
@@ -185,8 +190,16 @@ class WorktreeIsolation:
                     check=True,
                     capture_output=True,
                 )
-            except (subprocess.CalledProcessError, OSError) as exc:
-                logger.warning("Failed to remove worktree %s: %s", wt_path, exc)
+            except (subprocess.CalledProcessError, OSError):
+                # Force-remove failed — delete the directory and let prune
+                # clean up git's internal records.
+                try:
+                    if wt_path.exists():
+                        shutil.rmtree(wt_path)
+                except OSError as rm_exc:
+                    logger.warning(
+                        "Failed to remove worktree dir %s: %s", wt_path, rm_exc
+                    )
         self._all_paths.clear()
         # Prune any stale records so future runs start clean
         subprocess.run(

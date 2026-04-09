@@ -641,7 +641,7 @@ class TestWorktreeIsolation:
                 "-e",
                 ".codeprobe",
                 "-e",
-                ".codeprobe-worktrees",
+                ".codeprobe-worktrees*",
             ]
 
     def test_release_resets_and_returns_to_pool(self, tmp_path: Path) -> None:

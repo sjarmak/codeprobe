@@ -700,7 +700,9 @@ def execute_config(
         owns_isolation = False
         active_isolation = isolation
         if active_isolation is None:
-            active_isolation = WorktreeIsolation(repo_path, pool_size=workers)
+            active_isolation = WorktreeIsolation(
+                repo_path, pool_size=workers, namespace=experiment_config.label
+            )
             owns_isolation = True
 
         def _run_isolated(task_dir: Path, repeat_index: int) -> TaskResult:
