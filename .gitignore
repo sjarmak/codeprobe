@@ -45,6 +45,9 @@ experiments/
 .beads-credential-key
 .beads/
 
+# Claude Code local config
+.claude/
+
 # Internal working documents (PRDs, premortems, agent docs)
 prd_*.md
 premortem_*.md
