@@ -13,6 +13,7 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.core.events import (
     BudgetWarning,
     EventDispatcher,
@@ -24,6 +25,22 @@ from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_co
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+
+
+def _should_use_rich() -> bool:
+    """Return True when the terminal supports a Rich Live display.
+
+    Returns False in CI environments, non-TTY pipes, and dumb terminals.
+    """
+    if not sys.stderr.isatty():
+        return False
+    if os.environ.get("CI") is not None:
+        return False
+    if os.environ.get("GITHUB_ACTIONS") is not None:
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    return True
 
 
 def _on_task_complete(result: CompletedTask) -> None:
@@ -122,6 +139,8 @@ def run_eval(
     parallel: int = 1,
     repeats: int = 1,
     dry_run: bool = False,
+    log_format: str = "text",
+    quiet: bool = False,
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -277,7 +296,10 @@ def run_eval(
             pass  # experiment dir is outside the repo
 
         dispatcher = EventDispatcher()
-        dispatcher.register(PlainTextListener())
+        if log_format == "json":
+            dispatcher.register(JsonLineListener())
+        if not quiet and log_format != "json":
+            dispatcher.register(PlainTextListener())
 
         try:
             results = execute_config(

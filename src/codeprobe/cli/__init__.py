@@ -84,6 +84,10 @@ def main(verbose: int, quiet: bool, log_format: str) -> None:
     and interpret the results to find which setup works best for YOUR code.
     """
     _configure_logging(verbose=verbose, quiet=quiet, log_format=log_format)
+    ctx = click.get_current_context()
+    ctx.ensure_object(dict)
+    ctx.obj["log_format"] = log_format
+    ctx.obj["quiet"] = quiet
 
 
 @main.command()
@@ -308,7 +312,9 @@ def mine(
     default=False,
     help="Print estimated resource requirements without executing any agents.",
 )
+@click.pass_context
 def run(
+    ctx: click.Context,
     path: str,
     agent: str,
     model: str | None,
@@ -324,6 +330,10 @@ def run(
     """
     from codeprobe.cli.run_cmd import run_eval
 
+    ctx.ensure_object(dict)
+    log_format = ctx.obj.get("log_format", "text")
+    quiet = ctx.obj.get("quiet", False)
+
     run_eval(
         path,
         agent=agent,
@@ -332,6 +342,8 @@ def run(
         max_cost_usd=max_cost_usd,
         parallel=parallel,
         dry_run=dry_run,
+        log_format=log_format,
+        quiet=quiet,
     )
 
 
