@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.0 (2026-04-09)
+
+### Features
+
+- **Layered config resolution** — `--model`, `--timeout`, `--repeats` CLI flags override experiment.json values; precedence logged at debug level
+- **`codeprobe doctor`** — environment readiness checker for agents, API keys, git status, Python version with PASS/FAIL and fix suggestions
+- **`codeprobe preambles list`** — shows available preambles at built-in/user/project levels with template variables
+- **`codeprobe run --show-prompt`** — prints the fully-resolved prompt without spawning an agent (debugging aid)
+- **User-defined mine profiles** — `--save-profile`, `--profile`, `--list-profiles` for saving and loading custom flag combinations
+- **Mine presets** — `--preset quick` (count=3) and `--preset mcp` (org-scale + MCP families + enrich)
+- **Adapter lazy imports** — missing CLI tools no longer crash at import time; clear error at resolve time
+- **Adapter output contract tests** — 25 fixture-based tests asserting all adapters report cost/token fields
+
+### Observability (v0.3 backfill)
+
+- **Typed event protocol** — `core/events.py` with 5 frozen dataclass events, queue-based EventDispatcher
+- **Rich Live dashboard** — progress, pass rate, cost, ETA during `codeprobe run` (TTY auto-detected)
+- **JSON event lines** — `--log-format json` emits structured events on stderr for CI
+- **Cost budget warnings** — 80% and 100% thresholds visible on stderr without `-v`
+- **Scorer entry_points** — `codeprobe.scorers` group in pyproject.toml; built-in scorers registered through the same mechanism as adapters
+- **MCP config discovery** — shared between `init` and `experiment add-config`
+
+### Fixes
+
+- Kill dead `.evalrc.yaml` — removed write from init, deprecation warning when file exists
+- Ctrl+C integration test — verifies SIGINT produces exit 130 with no traceback
+
 ## 0.1.7 (2026-04-05)
 
 ### Features

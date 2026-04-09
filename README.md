@@ -49,18 +49,20 @@ codeprobe interpret .   # Get recommendations
 
 ## Commands
 
-| Command                  | Purpose                                          |
-| ------------------------ | ------------------------------------------------ |
-| `codeprobe assess`       | Score a codebase's benchmarking potential        |
-| `codeprobe init`         | Interactive wizard — choose what to compare      |
-| `codeprobe mine`         | Mine eval tasks from merged PRs/MRs              |
-| `codeprobe probe`        | Generate fast micro-benchmark probes (30s each)  |
-| `codeprobe experiment`   | Manage comparison experiments (init, add-config) |
-| `codeprobe run`          | Execute tasks against AI agents                  |
-| `codeprobe interpret`    | Analyze results, rank configurations             |
-| `codeprobe oracle-check` | Compare agent answer against oracle ground truth |
-| `codeprobe scaffold`     | Create/validate eval task directories            |
-| `codeprobe ratings`      | Record and analyze agent session quality ratings |
+| Command                    | Purpose                                          |
+| -------------------------- | ------------------------------------------------ |
+| `codeprobe assess`         | Score a codebase's benchmarking potential        |
+| `codeprobe init`           | Interactive wizard — choose what to compare      |
+| `codeprobe mine`           | Mine eval tasks from merged PRs/MRs              |
+| `codeprobe probe`          | Generate fast micro-benchmark probes (30s each)  |
+| `codeprobe experiment`     | Manage comparison experiments (init, add-config) |
+| `codeprobe run`            | Execute tasks against AI agents                  |
+| `codeprobe interpret`      | Analyze results, rank configurations             |
+| `codeprobe doctor`         | Check environment readiness (agents, keys, git)  |
+| `codeprobe preambles list` | List available preambles at all search levels    |
+| `codeprobe oracle-check`   | Compare agent answer against oracle ground truth |
+| `codeprobe scaffold`       | Create/validate eval task directories            |
+| `codeprobe ratings`        | Record and analyze agent session quality ratings |
 
 ## Two Ways to Generate Tasks
 
@@ -146,16 +148,31 @@ Template variables: `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}
 codeprobe run . --parallel 5          # Run 5 tasks concurrently (worktree-isolated)
 codeprobe run . --max-cost-usd 2.00   # Stop when cost budget is reached
 codeprobe run . --dry-run             # Estimate resource usage without running
+codeprobe run . --model opus-4        # Override experiment.json model
+codeprobe run . --timeout 600         # Override default 300s timeout
+codeprobe run . --repeats 3           # Run each task 3 times
+codeprobe run . --show-prompt         # Print resolved prompt without running agent
 
 # Mining
 codeprobe mine . --enrich             # Use LLM to improve weak task instructions
 codeprobe mine . --org-scale          # Mine comprehension tasks (not SDLC)
 codeprobe mine . --mcp-families       # Include MCP-optimized task families
 codeprobe mine . --sg-repo REPO       # Sourcegraph repo for ground truth enrichment
+codeprobe mine . --preset quick       # Quick scan: count=3
+codeprobe mine . --preset mcp         # MCP eval: org-scale + MCP families + enrich
+
+# Mine profiles (save/load custom flag combinations)
+codeprobe mine --save-profile my-setup --count 10 --org-scale .
+codeprobe mine --profile my-setup .   # Load saved flags
+codeprobe mine --list-profiles        # Show available profiles
 
 # Experiment configs
 codeprobe experiment add-config . --preamble sourcegraph  # Attach MCP preamble
 codeprobe experiment add-config . --mcp-config config.json  # Attach MCP server
+
+# Diagnostics
+codeprobe doctor                      # Check agents, API keys, git, Python
+codeprobe preambles list              # Show available preambles at all levels
 
 # Output
 codeprobe interpret . --format csv    # Export for pivot tables
@@ -175,14 +192,9 @@ GitHub, GitLab, Bitbucket, Azure DevOps, Gitea/Forgejo, and local repos.
 
 ## Configuration
 
-Create a `.evalrc.yaml` in your repo root:
+Configuration lives in `experiment.json` (created by `codeprobe init` or `codeprobe experiment init`). CLI flags override experiment.json values — precedence: built-in defaults < experiment.json < CLI flags.
 
-```yaml
-name: my-experiment
-agents: [claude, copilot]
-models: [claude-sonnet-4-6, claude-opus-4-6]
-tasks_dir: .codeprobe/tasks
-```
+Run-time observability is on by default: Rich Live dashboard in TTY, JSON event lines with `--log-format json` for CI. Cost budget warnings at 80% and 100% thresholds are always visible on stderr.
 
 ## License
 
