@@ -111,6 +111,26 @@ def init(path: str) -> None:
     default=None,
     help="Apply a named preset: 'quick' (count=3) or 'mcp' (org-scale + MCP families).",
 )
+@click.option(
+    "--profile",
+    "profile_name",
+    default=None,
+    help="Load a user-defined profile from ~/.codeprobe/mine-profiles.json "
+    "or .codeprobe/mine-profiles.json. Explicit flags override profile values.",
+)
+@click.option(
+    "--save-profile",
+    "save_profile_name",
+    default=None,
+    help="Save current flag values as a named profile to ~/.codeprobe/mine-profiles.json.",
+)
+@click.option(
+    "--list-profiles",
+    "list_profiles_flag",
+    is_flag=True,
+    default=False,
+    help="Show available profiles from user and project levels.",
+)
 @click.option("--count", default=5, help="Number of tasks to mine (3-20).")
 @click.option(
     "--source",
@@ -216,9 +236,14 @@ def init(path: str) -> None:
     "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
     "when --mcp-families is used. Requires SOURCEGRAPH_TOKEN env var.",
 )
+@click.pass_context
 def mine(
+    ctx: click.Context,
     path: str,
     preset: str | None,
+    profile_name: str | None,
+    save_profile_name: str | None,
+    list_profiles_flag: bool,
     count: int,
     source: str,
     min_files: int,
@@ -249,6 +274,15 @@ def mine(
       mcp    — MCP eval: count=8, org-scale + MCP families + enrich
 
     \b
+    Profiles (--profile / --save-profile / --list-profiles):
+      Save:  codeprobe mine --save-profile my-setup --count 10 --org-scale .
+      Load:  codeprobe mine --profile my-setup /path/to/repo
+      List:  codeprobe mine --list-profiles
+
+    \b
+    Precedence: built-in defaults < profile < --preset < explicit CLI flags.
+
+    \b
     Use --org-scale to mine comprehension/IR tasks with oracle verification
     instead of SDLC code-change tasks.
 
@@ -259,7 +293,129 @@ def mine(
     choosing an eval goal, task count, and git host before mining.
     Use --no-interactive to skip the prompts and use defaults/flags directly.
     """
-    from codeprobe.cli.mine_cmd import run_mine
+    from pathlib import Path as _Path
+
+    from codeprobe.cli.mine_cmd import (
+        list_profiles,
+        load_profile,
+        run_mine,
+        save_profile,
+    )
+
+    # --list-profiles: show and exit
+    if list_profiles_flag:
+        repo_path = _Path(path).resolve() if path != "." else _Path.cwd()
+        entries = list_profiles(repo_path)
+        if not entries:
+            click.echo("No profiles found.")
+        else:
+            click.echo(f"{'Name':<20s} {'Source':<10s} {'Settings'}")
+            click.echo("-" * 60)
+            for name, source_label, prof in entries:
+                summary = ", ".join(f"{k}={v}" for k, v in sorted(prof.items()))
+                click.echo(f"{name:<20s} {source_label:<10s} {summary}")
+        return
+
+    # --save-profile: save current flags and exit
+    if save_profile_name is not None:
+        values: dict = {}
+        # Collect all flag values that differ from Click defaults
+        param_defaults = {p.name: p.default for p in ctx.command.params}
+        all_values = {
+            "count": count,
+            "source": source,
+            "min_files": min_files,
+            "enrich": enrich,
+            "org_scale": org_scale,
+            "mcp_families": mcp_families,
+            "no_llm": no_llm,
+            "discover_subsystems": discover_subsystems,
+            "scan_timeout": scan_timeout,
+            "validate_flag": validate_flag,
+            "curate": curate,
+            "verify_curation_flag": verify_curation_flag,
+            "sg_repo": sg_repo,
+        }
+        if subsystem:
+            all_values["subsystem"] = list(subsystem)
+        if family:
+            all_values["family"] = list(family)
+        if repos:
+            all_values["repos"] = list(repos)
+        if backends:
+            all_values["backends"] = list(backends)
+        if interactive is not None:
+            all_values["interactive"] = interactive
+        if preset is not None:
+            all_values["preset"] = preset
+        # Only save values that differ from Click defaults
+        for key, val in all_values.items():
+            default = param_defaults.get(key)
+            if val != default:
+                values[key] = val
+        saved_path = save_profile(save_profile_name, values)
+        click.echo(f"Profile '{save_profile_name}' saved to {saved_path}")
+        return
+
+    # --profile: load profile values as defaults, then apply preset and CLI overrides
+    if profile_name is not None:
+        repo_path = _Path(path).resolve() if path != "." else _Path.cwd()
+        prof = load_profile(profile_name, repo_path)
+
+        # Determine which params were explicitly set on the CLI
+        explicitly_set = {
+            p.name
+            for p in ctx.command.params
+            if p.name in ctx.params
+            and ctx.get_parameter_source(p.name) is not None
+            and ctx.get_parameter_source(p.name).name == "COMMANDLINE"
+        }
+
+        # Apply profile values for params NOT explicitly set on CLI
+        if "count" not in explicitly_set and "count" in prof:
+            count = prof["count"]
+        if "source" not in explicitly_set and "source" in prof:
+            source = prof["source"]
+        if "min_files" not in explicitly_set and "min_files" in prof:
+            min_files = prof["min_files"]
+        if "enrich" not in explicitly_set and "enrich" in prof:
+            enrich = prof["enrich"]
+        if "org_scale" not in explicitly_set and "org_scale" in prof:
+            org_scale = prof["org_scale"]
+        if "mcp_families" not in explicitly_set and "mcp_families" in prof:
+            mcp_families = prof["mcp_families"]
+        if "no_llm" not in explicitly_set and "no_llm" in prof:
+            no_llm = prof["no_llm"]
+        if (
+            "discover_subsystems" not in explicitly_set
+            and "discover_subsystems" in prof
+        ):
+            discover_subsystems = prof["discover_subsystems"]
+        if "scan_timeout" not in explicitly_set and "scan_timeout" in prof:
+            scan_timeout = prof["scan_timeout"]
+        if "validate_flag" not in explicitly_set and "validate_flag" in prof:
+            validate_flag = prof["validate_flag"]
+        if "curate" not in explicitly_set and "curate" in prof:
+            curate = prof["curate"]
+        if (
+            "verify_curation_flag" not in explicitly_set
+            and "verify_curation_flag" in prof
+        ):
+            verify_curation_flag = prof["verify_curation_flag"]
+        if "sg_repo" not in explicitly_set and "sg_repo" in prof:
+            sg_repo = prof["sg_repo"]
+        if "subsystem" not in explicitly_set and "subsystem" in prof:
+            subsystem = tuple(prof["subsystem"])
+        if "family" not in explicitly_set and "family" in prof:
+            family = tuple(prof["family"])
+        if "repos" not in explicitly_set and "repos" in prof:
+            repos = tuple(prof["repos"])
+        if "backends" not in explicitly_set and "backends" in prof:
+            backends = tuple(prof["backends"])
+        if "interactive" not in explicitly_set and "interactive" in prof:
+            interactive = prof["interactive"]
+        if "preset" not in explicitly_set and "preset" in prof:
+            preset = prof["preset"]
 
     run_mine(
         path,
