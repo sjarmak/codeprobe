@@ -75,6 +75,9 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: requires external services (skipped by default in CI)",
+]
 
 [tool.mypy]
 python_version = "3.11"

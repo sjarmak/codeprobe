@@ -12,9 +12,12 @@ set arithmetic.  No semantic judgment.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 import requests
+
+if TYPE_CHECKING:
+    from codeprobe.mining.multi_repo import FileRef
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +87,6 @@ def _call_find_references(
 
     Returns a frozenset of repo-relative file paths, or None on failure.
     """
-    import json as _json
 
     url = f"{sg_url.rstrip('/')}/.api/mcp/v1"
     payload = {
@@ -123,6 +125,60 @@ def _call_find_references(
             defining_file,
             repo_sg_name,
         )
+        return None
+
+
+class SourcegraphSymbolResolver:
+    """SymbolResolver implementation backed by Sourcegraph ``find_references``.
+
+    Wraps :func:`_call_find_references` so cross-repo mining can use
+    Sourcegraph's cross-repo code intelligence when available.
+
+    This class intentionally mirrors the ``SymbolResolver`` Protocol from
+    :mod:`codeprobe.mining.multi_repo` via duck typing — it does not import
+    the Protocol to avoid a circular dependency.
+    """
+
+    def __init__(
+        self,
+        sg_token: str,
+        defining_file: str = "",
+        sg_url: str = "https://demo.sourcegraph.com",
+    ) -> None:
+        self._token = sg_token
+        self._defining_file = defining_file
+        self._sg_url = sg_url
+
+    def find_references(self, symbol: str, repos: list[str]) -> list[FileRef]:
+        """Return cross-repo references for *symbol* across *repos*.
+
+        *repos* are Sourcegraph repo identifiers (e.g.
+        ``github.com/owner/name``), not local paths.
+        """
+        # Local import to avoid circular dependency with multi_repo module.
+        from codeprobe.mining.multi_repo import FileRef
+
+        refs: list[FileRef] = []
+        for repo_sg_name in repos:
+            paths = _call_find_references(
+                symbol=symbol,
+                defining_file=self._defining_file,
+                repo_sg_name=repo_sg_name,
+                sg_token=self._token,
+                sg_url=self._sg_url,
+            )
+            if paths is None:
+                continue
+            for path in paths:
+                refs.append(FileRef(repo=repo_sg_name, path=path))
+        return refs
+
+    def resolve_symbol_at(self, repo: str, path: str, line: int) -> object | None:
+        """Not implemented for Sourcegraph — returns None.
+
+        Call-site resolution via Sourcegraph ``go_to_definition`` is a
+        follow-up; callers should fall back to :class:`RipgrepResolver`.
+        """
         return None
 
 

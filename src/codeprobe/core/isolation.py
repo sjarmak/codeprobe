@@ -4,12 +4,39 @@ from __future__ import annotations
 
 import logging
 import queue
+import shutil
 import subprocess
 import threading
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from codeprobe.models.task import RepoRef
+
 logger = logging.getLogger(__name__)
+
+
+# Shared cache directory for cloned secondary repos.  Sibling beads may
+# override via environment or a future config; for now hardcode the
+# documented location.
+DEFAULT_REPO_CACHE_DIR = Path.home() / ".codeprobe" / "repo-cache"
+
+# Process-level lock to serialise cache clones so concurrent task
+# executions don't race on the same on-disk directory.
+_cache_lock = threading.Lock()
+
+
+def _coerce_repo_ref(value: object) -> RepoRef:
+    """Accept either a RepoRef or a mapping with the expected keys."""
+    if isinstance(value, RepoRef):
+        return value
+    if isinstance(value, dict):
+        return RepoRef(
+            name=str(value.get("name", "")),
+            ground_truth_commit=str(value.get("ground_truth_commit", "")),
+            url=str(value.get("url", "")),
+            local_path=str(value.get("local_path", "")),
+        )
+    raise TypeError(f"Cannot coerce {type(value).__name__} to RepoRef")
 
 
 def _discover_experiment_dirs(workdir: Path) -> list[str]:
@@ -77,6 +104,101 @@ def git_pin_commit(workdir: Path, commit: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def _ensure_cached_clone(url: str, name: str, cache_dir: Path) -> Path:
+    """Ensure a bare-ish clone of *url* exists at ``cache_dir/name``.
+
+    Performs ``git clone`` if missing, otherwise reuses the existing
+    checkout (callers copy from the cache into the workspace so the
+    cache itself is never mutated per-task).
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / name
+    with _cache_lock:
+        if target.exists():
+            return target
+        subprocess.run(
+            ["git", "clone", url, str(target)],
+            check=True,
+            capture_output=True,
+        )
+    return target
+
+
+def _copy_tree(src: Path, dst: Path) -> None:
+    """Copy *src* to *dst*, preserving symlinks.  Overwrites *dst*."""
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, symlinks=True)
+
+
+def setup_multi_repo_workspace(
+    workspace: Path,
+    additional_repos: list[RepoRef] | list[dict],
+    cache_dir: Path = DEFAULT_REPO_CACHE_DIR,
+) -> list[Path]:
+    """Lay out secondary repos as ``workspace/repos/<name>`` and pin each.
+
+    For every RepoRef:
+
+    1. If ``local_path`` is set, copy that directory into
+       ``workspace/repos/<name>``.
+    2. Otherwise, clone (or reuse cache) from ``url`` at
+       ``cache_dir/<name>``, then copy into the workspace.
+    3. Pin the resulting workspace copy to ``ground_truth_commit^`` via
+       :func:`git_pin_commit`.
+
+    Returns the list of workspace-relative repo paths (one per input).
+
+    On failure, any already-created repo dirs are removed so the caller
+    never observes a half-pinned state.
+    """
+    repos_root = workspace / "repos"
+    repos_root.mkdir(parents=True, exist_ok=True)
+
+    created: list[Path] = []
+    try:
+        for raw in additional_repos:
+            ref = _coerce_repo_ref(raw)
+            target = repos_root / ref.name
+            if ref.local_path:
+                src = Path(ref.local_path)
+                if not src.is_dir():
+                    raise FileNotFoundError(f"RepoRef local_path does not exist: {src}")
+                _copy_tree(src, target)
+            else:
+                cached = _ensure_cached_clone(ref.url, ref.name, cache_dir)
+                _copy_tree(cached, target)
+            created.append(target)
+            git_pin_commit(target, f"{ref.ground_truth_commit}^")
+    except Exception:
+        # Roll back partial state so the caller never sees a half-set-up
+        # workspace.
+        for path in created:
+            try:
+                if path.exists():
+                    shutil.rmtree(path)
+            except OSError as rm_exc:  # pragma: no cover — defensive
+                logger.warning("Cleanup failed for %s: %s", path, rm_exc)
+        try:
+            if repos_root.exists() and not any(repos_root.iterdir()):
+                repos_root.rmdir()
+        except OSError:  # pragma: no cover — defensive
+            pass
+        raise
+    return created
+
+
+def cleanup_multi_repo_workspace(workspace: Path) -> None:
+    """Remove ``workspace/repos`` if present (used between sequential tasks)."""
+    repos_root = workspace / "repos"
+    if not repos_root.exists():
+        return
+    try:
+        shutil.rmtree(repos_root)
+    except OSError as exc:
+        logger.warning("Failed to remove %s: %s", repos_root, exc)
 
 
 @runtime_checkable

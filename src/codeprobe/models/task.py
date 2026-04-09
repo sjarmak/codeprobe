@@ -4,6 +4,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+__all__ = [
+    "ORG_SCALE_CATEGORIES",
+    "TASK_TYPES",
+    "VERIFICATION_MODES",
+    "RepoRef",
+    "TaskMetadata",
+    "Checkpoint",
+    "TaskVerification",
+    "Task",
+]
+
+
+@dataclass(frozen=True)
+class RepoRef:
+    """Reference to a secondary repository needed by a cross-repo task.
+
+    Canonical definition — imported by both ``mining.multi_repo`` and
+    ``core.isolation``.
+    """
+
+    name: str
+    ground_truth_commit: str
+    url: str = ""  # empty when ``local_path`` is provided
+    local_path: str = ""  # absolute path to a local clone to copy
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("RepoRef.name must be non-empty")
+        if not self.ground_truth_commit:
+            raise ValueError("RepoRef.ground_truth_commit must be non-empty")
+        if not self.url and not self.local_path:
+            raise ValueError("RepoRef requires either url or local_path")
+
+
 # Valid org-scale task family categories.
 ORG_SCALE_CATEGORIES: frozenset[str] = frozenset(
     {
@@ -64,6 +98,9 @@ class TaskMetadata:
         tuple[str, str], ...
     ] = ()  # (repo_name, sha) pairs for multi-repo
     sg_repo: str = ""  # Sourcegraph repo identifier for MCP instruction variant
+    # Secondary repos required to complete the task (cross-repo mining).
+    # Empty tuple for single-repo tasks (backwards compatible).
+    additional_repos: tuple[RepoRef, ...] = ()
 
 
 @dataclass(frozen=True)

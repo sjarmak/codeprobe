@@ -81,6 +81,13 @@ class AgentAdapter(Protocol):
 
         [project.entry-points."codeprobe.agents"]
         myagent = "my_package:MyAgentAdapter"
+
+    For cross-repo tasks, the executor may lay out additional
+    repositories under ``<workspace>/repos/<name>``, each pinned to its
+    own pre-merge commit.  Adapters don't need special handling — the
+    paths are available for the model to navigate, and the primary
+    workspace remains at its existing location for backwards
+    compatibility with single-repo tasks.
     """
 
     @property

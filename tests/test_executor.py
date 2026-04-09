@@ -1562,3 +1562,126 @@ class TestCommitPinning:
             # All calls should pass restore_ref="main"
             for c in mock_reset.call_args_list:
                 assert c[1]["restore_ref"] == "main"
+
+
+class TestExecuteTaskMultiRepo:
+    """execute_task sets up workspace/repos/<name> when metadata has
+    additional_repos."""
+
+    def _make_task(self, task_dir: Path, *, additional_repos: list[dict]) -> Path:
+        import json
+
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "instruction.md").write_text("Fix the bug.")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+        metadata = {
+            "id": task_dir.name,
+            "metadata": {
+                "additional_repos": additional_repos,
+            },
+            "verification": {"type": "test_script", "command": "bash tests/test.sh"},
+        }
+        (task_dir / "metadata.json").write_text(json.dumps(metadata))
+        return task_dir
+
+    def test_calls_setup_multi_repo_workspace(self, tmp_path: Path) -> None:
+        additional = [
+            {
+                "name": "repoB",
+                "ground_truth_commit": "cafef00d",
+                "local_path": "/some/path",
+            }
+        ]
+        task_dir = self._make_task(tmp_path / "task-mr", additional_repos=additional)
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch("codeprobe.core.executor.setup_multi_repo_workspace") as mock_setup:
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            mock_setup.assert_called_once_with(Path("/repo"), additional)
+            assert result.completed.status == "completed"
+
+    def test_setup_failure_returns_system_error(self, tmp_path: Path) -> None:
+        task_dir = self._make_task(
+            tmp_path / "task-mrfail",
+            additional_repos=[
+                {
+                    "name": "repoB",
+                    "ground_truth_commit": "deadbeef",
+                    "local_path": "/some/path",
+                }
+            ],
+        )
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch(
+            "codeprobe.core.executor.setup_multi_repo_workspace",
+            side_effect=subprocess.CalledProcessError(128, "git", stderr=b"bad ref"),
+        ):
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            assert result.completed.status == "error"
+            assert result.completed.error_category == "system"
+            assert "multi-repo" in result.completed.metadata["error"]
+
+    def test_no_setup_when_additional_repos_empty(self, tmp_path: Path) -> None:
+        task_dir = self._make_task(tmp_path / "task-none", additional_repos=[])
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch("codeprobe.core.executor.setup_multi_repo_workspace") as mock_setup:
+            execute_task(adapter, task_dir, Path("/repo"), config)
+            mock_setup.assert_not_called()
+
+    def test_uses_worktree_path_when_provided(self, tmp_path: Path) -> None:
+        additional = [
+            {
+                "name": "repoB",
+                "ground_truth_commit": "abc",
+                "local_path": "/x",
+            }
+        ]
+        task_dir = self._make_task(tmp_path / "task-mrwt", additional_repos=additional)
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+        wt = Path("/worktrees/slot-0")
+
+        with patch("codeprobe.core.executor.setup_multi_repo_workspace") as mock_setup:
+            execute_task(adapter, task_dir, Path("/repo"), config, worktree_path=wt)
+            mock_setup.assert_called_once_with(wt, additional)
+
+
+class TestGitResetWorkdirMultiRepo:
+    """_git_reset_workdir also cleans workspace/repos/ between tasks."""
+
+    def test_removes_repos_dir(self, tmp_path: Path) -> None:
+        from codeprobe.core.executor import _git_reset_workdir
+
+        # Fake git repo
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "config", "commit.gpgsign", "false"],
+            cwd=tmp_path,
+            check=True,
+        )
+        (tmp_path / "a.txt").write_text("a")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        # Simulate leftover multi-repo layout
+        (tmp_path / "repos" / "repoB").mkdir(parents=True)
+        (tmp_path / "repos" / "repoB" / "file.txt").write_text("leftover")
+
+        _git_reset_workdir(tmp_path)
+        assert not (tmp_path / "repos").exists()

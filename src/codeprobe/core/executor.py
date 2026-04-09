@@ -27,8 +27,10 @@ from codeprobe.core.events import (
 from codeprobe.core.isolation import (
     IsolationStrategy,
     WorktreeIsolation,
+    cleanup_multi_repo_workspace,
     git_pin_commit,
     git_restore_clean,
+    setup_multi_repo_workspace,
 )
 from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
 from codeprobe.core.scoring import get_scorer, sanitize_secrets
@@ -274,6 +276,28 @@ def execute_task(
                 error_category="system",
             )
 
+    # Cross-repo tasks: lay out additional repos as workspace/repos/<name>
+    # and pin each to its own ground_truth_commit^.  Primary repo keeps
+    # its existing location so single-repo tasks are unaffected.
+    additional_repos = (_task_meta.get("metadata") or {}).get("additional_repos", [])
+    if additional_repos:
+        try:
+            setup_multi_repo_workspace(effective_workspace, additional_repos)
+            logger.info(
+                "[%s] Set up %d additional repo(s) under %s/repos/",
+                task_id,
+                len(additional_repos),
+                effective_workspace,
+            )
+        except (subprocess.CalledProcessError, OSError, ValueError, TypeError) as exc:
+            stderr = ""
+            if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+                stderr = exc.stderr.decode(errors="replace")
+            return _error_result(
+                f"Failed to set up multi-repo workspace: {stderr or exc}",
+                error_category="system",
+            )
+
     try:
         output = adapter.run(prompt, agent_config, session_env=session_env)
     except Exception as exc:
@@ -445,7 +469,11 @@ def _git_reset_workdir(
 
     When *restore_ref* is set, also checks out that ref to undo any commit
     pinning from the previous task.
+
+    Also removes ``repo_path/repos/`` if present so multi-repo layouts
+    from the previous task don't leak into the next one.
     """
+    cleanup_multi_repo_workspace(repo_path)
     try:
         if restore_ref:
             subprocess.run(

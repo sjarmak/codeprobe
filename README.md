@@ -6,7 +6,7 @@ Mine real tasks from your repo history, run agents against them, and find out wh
 
 ## Why codeprobe?
 
-Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models may have memorized from training data, and as general public benchmarks likely don't capture what is most important to your unique  workflows. codeprobe mines tasks from **your private repo history**, producing benchmarks that are impossible to contaminate. You can also point the tool at any public repo to mine tasks from. 
+Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models may have memorized from training data, and as general public benchmarks likely don't capture what is most important to your unique workflows. codeprobe mines tasks from **your private repo history**, producing benchmarks that are impossible to contaminate. You can also point the tool at any public repo to mine tasks from.
 
 ## Prerequisites
 
@@ -85,6 +85,73 @@ codeprobe probe . -n 10 -l python -s 42 -o ./probes
 ```
 
 Generates four probe types: find-function, count-callers, return-type, module-dependency.
+
+## Curation Workflows
+
+End-to-end flows from a raw repo to ranked agent results. Both paths end in the same `validate → run → interpret` loop; they differ in how tasks get created.
+
+### Standard path (repos with merge history)
+
+Use when the target repo has merged PRs/MRs you can mine ground truth from.
+
+```bash
+# 1. Score benchmarking potential (sanity check)
+codeprobe assess /path/to/repo
+
+# 2. Mine tasks for the eval goal you care about
+codeprobe mine /path/to/repo --goal quality --count 10 --no-interactive
+
+# 3. Validate each generated task directory
+codeprobe validate /path/to/repo/.codeprobe/tasks/<task-id>
+
+# 4. Run agents against the tasks
+codeprobe run /path/to/repo --agent claude --max-cost-usd 5.00
+
+# 5. Rank configurations and read recommendations
+codeprobe interpret /path/to/repo
+```
+
+### Cold-start path (no merge history / greenfield / vendored code)
+
+Use when `codeprobe mine` has nothing to pull from — new repos, monorepos with squashed history, or third-party drops. Generate synthetic comprehension tasks with `probe`, or use `mine --goal navigation` which does not require rich SDLC history.
+
+```bash
+# 1. Assess first — confirms whether mining is viable at all
+codeprobe assess /path/to/repo
+
+# 2a. Generate micro-benchmark probes (no git history needed)
+codeprobe probe /path/to/repo -n 10 -l python -s 42 -o /path/to/repo/probes --emit-tasks
+
+# 2b. Or mine navigation tasks (comprehension, lighter history requirements)
+codeprobe mine /path/to/repo --goal navigation --count 10 --no-interactive
+
+# 3. Validate the scaffolded tasks
+codeprobe validate /path/to/repo/probes/<task-id>
+
+# 4. Run and interpret (same as standard path)
+codeprobe run /path/to/repo --agent claude --max-cost-usd 2.00
+codeprobe interpret /path/to/repo
+```
+
+### One example per eval goal
+
+`codeprobe mine --goal` picks the task type, defaults, and extras for you. Each example below is copy-pasteable.
+
+```bash
+# quality — SDLC tasks for comparing code-change quality
+codeprobe mine /path/to/repo --goal quality --count 10 --no-interactive
+
+# navigation — comprehension tasks for architecture understanding
+codeprobe mine /path/to/repo --goal navigation --count 10 --no-interactive
+
+# mcp — cross-file, org-scale tasks that benefit from MCP tools
+codeprobe mine /path/to/repo --goal mcp --count 5 --no-interactive
+
+# general — balanced mix (default if --goal is omitted)
+codeprobe mine /path/to/repo --goal general --count 10 --no-interactive
+```
+
+For the full MCP comparison setup (preambles, baseline vs with-MCP configs), see the next section.
 
 ## MCP Comparison Experiments
 
