@@ -318,41 +318,23 @@ def mine(
 
     # --save-profile: save current flags and exit
     if save_profile_name is not None:
-        values: dict = {}
-        # Collect all flag values that differ from Click defaults
+        # Collect all current param values, keeping only those that differ
+        # from Click defaults.
         param_defaults = {p.name: p.default for p in ctx.command.params}
-        all_values = {
-            "count": count,
-            "source": source,
-            "min_files": min_files,
-            "enrich": enrich,
-            "org_scale": org_scale,
-            "mcp_families": mcp_families,
-            "no_llm": no_llm,
-            "discover_subsystems": discover_subsystems,
-            "scan_timeout": scan_timeout,
-            "validate_flag": validate_flag,
-            "curate": curate,
-            "verify_curation_flag": verify_curation_flag,
-            "sg_repo": sg_repo,
+        # Exclude meta-params that aren't mining flags
+        _EXCLUDE_FROM_PROFILE = frozenset(
+            {
+                "path",
+                "profile_name",
+                "save_profile_name",
+                "list_profiles_flag",
+            }
+        )
+        values = {
+            k: (list(v) if isinstance(v, tuple) else v)
+            for k, v in ctx.params.items()
+            if k not in _EXCLUDE_FROM_PROFILE and v != param_defaults.get(k)
         }
-        if subsystem:
-            all_values["subsystem"] = list(subsystem)
-        if family:
-            all_values["family"] = list(family)
-        if repos:
-            all_values["repos"] = list(repos)
-        if backends:
-            all_values["backends"] = list(backends)
-        if interactive is not None:
-            all_values["interactive"] = interactive
-        if preset is not None:
-            all_values["preset"] = preset
-        # Only save values that differ from Click defaults
-        for key, val in all_values.items():
-            default = param_defaults.get(key)
-            if val != default:
-                values[key] = val
         saved_path = save_profile(save_profile_name, values)
         click.echo(f"Profile '{save_profile_name}' saved to {saved_path}")
         return
@@ -366,56 +348,39 @@ def mine(
         explicitly_set = {
             p.name
             for p in ctx.command.params
-            if p.name in ctx.params
-            and ctx.get_parameter_source(p.name) is not None
+            if ctx.get_parameter_source(p.name) is not None
             and ctx.get_parameter_source(p.name).name == "COMMANDLINE"
         }
 
-        # Apply profile values for params NOT explicitly set on CLI
-        if "count" not in explicitly_set and "count" in prof:
-            count = prof["count"]
-        if "source" not in explicitly_set and "source" in prof:
-            source = prof["source"]
-        if "min_files" not in explicitly_set and "min_files" in prof:
-            min_files = prof["min_files"]
-        if "enrich" not in explicitly_set and "enrich" in prof:
-            enrich = prof["enrich"]
-        if "org_scale" not in explicitly_set and "org_scale" in prof:
-            org_scale = prof["org_scale"]
-        if "mcp_families" not in explicitly_set and "mcp_families" in prof:
-            mcp_families = prof["mcp_families"]
-        if "no_llm" not in explicitly_set and "no_llm" in prof:
-            no_llm = prof["no_llm"]
-        if (
-            "discover_subsystems" not in explicitly_set
-            and "discover_subsystems" in prof
-        ):
-            discover_subsystems = prof["discover_subsystems"]
-        if "scan_timeout" not in explicitly_set and "scan_timeout" in prof:
-            scan_timeout = prof["scan_timeout"]
-        if "validate_flag" not in explicitly_set and "validate_flag" in prof:
-            validate_flag = prof["validate_flag"]
-        if "curate" not in explicitly_set and "curate" in prof:
-            curate = prof["curate"]
-        if (
-            "verify_curation_flag" not in explicitly_set
-            and "verify_curation_flag" in prof
-        ):
-            verify_curation_flag = prof["verify_curation_flag"]
-        if "sg_repo" not in explicitly_set and "sg_repo" in prof:
-            sg_repo = prof["sg_repo"]
-        if "subsystem" not in explicitly_set and "subsystem" in prof:
-            subsystem = tuple(prof["subsystem"])
-        if "family" not in explicitly_set and "family" in prof:
-            family = tuple(prof["family"])
-        if "repos" not in explicitly_set and "repos" in prof:
-            repos = tuple(prof["repos"])
-        if "backends" not in explicitly_set and "backends" in prof:
-            backends = tuple(prof["backends"])
-        if "interactive" not in explicitly_set and "interactive" in prof:
-            interactive = prof["interactive"]
-        if "preset" not in explicitly_set and "preset" in prof:
-            preset = prof["preset"]
+        # Apply profile values for params NOT explicitly set on CLI.
+        # Tuple-typed params (click multiple=True) need list→tuple coercion.
+        _TUPLE_PARAMS = frozenset({"subsystem", "family", "repos", "backends"})
+
+        def _prof_val(key: str, current: object) -> object:
+            if key in explicitly_set or key not in prof:
+                return current
+            v = prof[key]
+            return tuple(v) if key in _TUPLE_PARAMS else v
+
+        count = _prof_val("count", count)  # type: ignore[assignment]
+        source = _prof_val("source", source)  # type: ignore[assignment]
+        min_files = _prof_val("min_files", min_files)  # type: ignore[assignment]
+        enrich = _prof_val("enrich", enrich)  # type: ignore[assignment]
+        org_scale = _prof_val("org_scale", org_scale)  # type: ignore[assignment]
+        mcp_families = _prof_val("mcp_families", mcp_families)  # type: ignore[assignment]
+        no_llm = _prof_val("no_llm", no_llm)  # type: ignore[assignment]
+        discover_subsystems = _prof_val("discover_subsystems", discover_subsystems)  # type: ignore[assignment]
+        scan_timeout = _prof_val("scan_timeout", scan_timeout)  # type: ignore[assignment]
+        validate_flag = _prof_val("validate_flag", validate_flag)  # type: ignore[assignment]
+        curate = _prof_val("curate", curate)  # type: ignore[assignment]
+        verify_curation_flag = _prof_val("verify_curation_flag", verify_curation_flag)  # type: ignore[assignment]
+        sg_repo = _prof_val("sg_repo", sg_repo)  # type: ignore[assignment]
+        subsystem = _prof_val("subsystem", subsystem)  # type: ignore[assignment]
+        family = _prof_val("family", family)  # type: ignore[assignment]
+        repos = _prof_val("repos", repos)  # type: ignore[assignment]
+        backends = _prof_val("backends", backends)  # type: ignore[assignment]
+        interactive = _prof_val("interactive", interactive)  # type: ignore[assignment]
+        preset = _prof_val("preset", preset)  # type: ignore[assignment]
 
     run_mine(
         path,

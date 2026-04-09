@@ -12,7 +12,6 @@ from codeprobe.preambles import get_builtin, list_builtins
 _TEMPLATE_VAR_RE = re.compile(r"\{\{(\w+)\}\}")
 
 _USER_DIR = Path.home() / ".codeprobe" / "preambles"
-_PROJECT_DIR = Path(".codeprobe") / "preambles"
 
 
 def _extract_vars(template: str) -> list[str]:
@@ -25,6 +24,28 @@ def _scan_dir(directory: Path) -> list[str]:
     if not directory.is_dir():
         return []
     return sorted(p.stem for p in directory.glob("*.md"))
+
+
+def _print_dir_preambles(directory: Path, label: str) -> bool:
+    """Print preambles from a directory with their template variables.
+
+    Returns True if any preambles were found.
+    """
+    names = _scan_dir(directory)
+    if not names:
+        return False
+    click.echo()
+    click.echo(f"{label} ({directory}):")
+    for name in names:
+        path = directory / f"{name}.md"
+        template = path.read_text(encoding="utf-8").strip()
+        variables = _extract_vars(template)
+        var_str = ", ".join(f"{{{{{v}}}}}" for v in variables) if variables else ""
+        line = f"  {name}"
+        if var_str:
+            line += f"  [{var_str}]"
+        click.echo(line)
+    return True
 
 
 @click.group()
@@ -59,37 +80,13 @@ def list_cmd() -> None:
             click.echo(line)
 
     # User-level preambles
-    user_names = _scan_dir(_USER_DIR)
-    if user_names:
+    if _print_dir_preambles(_USER_DIR, "User preambles"):
         found_any = True
-        click.echo()
-        click.echo(f"User preambles ({_USER_DIR}):")
-        for name in user_names:
-            path = _USER_DIR / f"{name}.md"
-            template = path.read_text(encoding="utf-8").strip()
-            variables = _extract_vars(template)
-            var_str = ", ".join(f"{{{{{v}}}}}" for v in variables) if variables else ""
-            line = f"  {name}"
-            if var_str:
-                line += f"  [{var_str}]"
-            click.echo(line)
 
     # Project-level preambles
     project_dir = Path.cwd() / ".codeprobe" / "preambles"
-    project_names = _scan_dir(project_dir)
-    if project_names:
+    if _print_dir_preambles(project_dir, "Project preambles"):
         found_any = True
-        click.echo()
-        click.echo(f"Project preambles ({project_dir}):")
-        for name in project_names:
-            path = project_dir / f"{name}.md"
-            template = path.read_text(encoding="utf-8").strip()
-            variables = _extract_vars(template)
-            var_str = ", ".join(f"{{{{{v}}}}}" for v in variables) if variables else ""
-            line = f"  {name}"
-            if var_str:
-                line += f"  [{var_str}]"
-            click.echo(line)
 
     if not found_any:
         click.echo("No preambles found.")

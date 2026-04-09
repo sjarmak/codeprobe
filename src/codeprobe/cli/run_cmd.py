@@ -358,16 +358,12 @@ def run_eval(
         config_adapter = resolve(exp_config.agent or agent)
 
         # Layered config resolution: defaults < experiment.json < CLI flags
-        resolved_model = exp_config.model or model
-        resolved_timeout = exp_config.extra.get("timeout_seconds", 300)
-
-        # CLI --model overrides experiment.json model
-        if model is not None and model != resolved_model:
-            resolved_model = model
-
-        # CLI --timeout overrides experiment.json extra.timeout_seconds
-        if timeout is not None:
-            resolved_timeout = timeout
+        resolved_model = model if model is not None else exp_config.model
+        resolved_timeout = (
+            timeout
+            if timeout is not None
+            else exp_config.extra.get("timeout_seconds", 300)
+        )
 
         logger.debug(
             "Config resolution: model=%s (%s), timeout=%ds (%s)",
