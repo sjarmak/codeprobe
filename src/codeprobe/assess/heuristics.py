@@ -77,17 +77,7 @@ _RECURSIVE_TEST_DIR_GLOBS: list[str] = [
     "**/__tests__/**",
 ]
 
-_RECURSIVE_TEST_FILE_GLOBS: list[str] = [
-    "**/*_test.go",
-    "**/*_test.py",
-    "**/test_*.py",
-    "**/*.test.ts",
-    "**/*.test.js",
-    "**/*.test.tsx",
-    "**/*.test.jsx",
-    "**/*.spec.ts",
-    "**/*.spec.js",
-]
+_RECURSIVE_TEST_FILE_GLOBS: list[str] = [f"**/{p}" for p in _TEST_GLOBS]
 
 # ---------------------------------------------------------------------------
 # Fixed rubric — model scores against these, doesn't invent them
@@ -247,17 +237,10 @@ def _has_tests(repo_path: Path) -> bool:
     for d in _TEST_DIRS:
         if (repo_path / d).is_dir():
             return True
-    # Check for test files via git ls-files (top-level patterns)
-    for pattern in _TEST_GLOBS:
-        out = _run_git(["ls-files", "--", pattern], cwd=repo_path)
-        if out:
-            return True
-    # Recursive search for nested test directories and files
-    for pattern in _RECURSIVE_TEST_DIR_GLOBS + _RECURSIVE_TEST_FILE_GLOBS:
-        out = _run_git(["ls-files", "--", pattern], cwd=repo_path)
-        if out:
-            return True
-    return False
+    # Single git ls-files call with all patterns (top-level + recursive)
+    all_patterns = _TEST_GLOBS + _RECURSIVE_TEST_DIR_GLOBS + _RECURSIVE_TEST_FILE_GLOBS
+    out = _run_git(["ls-files", "--", *all_patterns], cwd=repo_path)
+    return bool(out)
 
 
 def _has_ci(repo_path: Path) -> bool:

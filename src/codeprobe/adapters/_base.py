@@ -177,13 +177,9 @@ class BaseAdapter:
             duration = time.monotonic() - start
             timeout_error = f"Agent timed out after {config.timeout_seconds}s"
 
-            # Decode stdout/stderr — TimeoutExpired may carry bytes or str.
             raw_stdout = _decode_timeout_output(exc.stdout)
-            raw_stderr = (
-                _decode_timeout_output(exc.stderr) if exc.stderr is not None else None
-            )
+            raw_stderr = _decode_timeout_output(exc.stderr) or None
 
-            # Attempt telemetry extraction from partial output via parse_output.
             if raw_stdout:
                 try:
                     partial_result = subprocess.CompletedProcess(
@@ -193,8 +189,6 @@ class BaseAdapter:
                         stderr=raw_stderr or "",
                     )
                     parsed = self.parse_output(partial_result, duration)
-                    # Merge: keep parsed telemetry but override exit_code and
-                    # prepend timeout error to any parse error.
                     merged_error = timeout_error
                     if parsed.error:
                         merged_error = f"{timeout_error}; {parsed.error}"
@@ -212,8 +206,8 @@ class BaseAdapter:
                         error=merged_error,
                         tool_call_count=parsed.tool_call_count,
                     )
-                except Exception:
-                    pass  # Fall through to bare timeout output below.
+                except Exception as parse_exc:
+                    timeout_error = f"{timeout_error}; parse_output failed: {parse_exc}"
 
             return AgentOutput(
                 stdout=raw_stdout,
