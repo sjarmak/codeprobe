@@ -48,9 +48,24 @@ experiments/
 # Internal working documents (PRDs, premortems, agent docs)
 prd_*.md
 premortem_*.md
+docs/prd/
 AGENTS.md
 
 # RFC-DAG orchestration artifacts
 .claude/rfc-dag-artifacts/
 .claude/rfc-dag.log.md
 .claude/rfc-dag.state.json
+
+# PRD-build orchestration artifacts
+.claude/prd-build-artifacts/
+.claude/prd-build.log.md
+.claude/prd-build.state.json
+
+# GasCity infrastructure
+city.toml
+formulas/
+hooks/
+orders/
+prompts/
+.runtime/
+.gc/
