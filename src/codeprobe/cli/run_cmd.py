@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -12,6 +13,13 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.events import (
+    BudgetWarning,
+    EventDispatcher,
+    RunEvent,
+    RunFinished,
+    TaskScored,
+)
 from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
@@ -19,9 +27,36 @@ from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 
 def _on_task_complete(result: CompletedTask) -> None:
-    """Print task result to stdout."""
+    """Print task result to stdout (legacy callback, kept for backward compat)."""
     status = "PASS" if result.automated_score >= 1.0 else "FAIL"
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
+
+
+class PlainTextListener:
+    """RunEventListener that prints human-readable output.
+
+    Handles :class:`TaskScored` (PASS/FAIL to stdout),
+    :class:`BudgetWarning` (to stderr), and :class:`RunFinished`
+    (summary to stdout).
+    """
+
+    def on_event(self, event: RunEvent) -> None:
+        if isinstance(event, TaskScored):
+            status = "PASS" if event.automated_score >= 1.0 else "FAIL"
+            click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s)")
+        elif isinstance(event, BudgetWarning):
+            pct = int(event.threshold_pct * 100)
+            sys.stderr.write(
+                f"Cost warning: ${event.cumulative_cost:.2f} of "
+                f"${event.budget:.2f} budget used ({pct}%)\n"
+            )
+            sys.stderr.flush()
+        elif isinstance(event, RunFinished):
+            click.echo(
+                f"  Finished: {event.completed_count}/{event.total_tasks} tasks, "
+                f"mean score {event.mean_score:.2f}, "
+                f"total cost ${event.total_cost:.2f}"
+            )
 
 
 def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
@@ -241,20 +276,26 @@ def run_eval(
         except ValueError:
             pass  # experiment dir is outside the repo
 
-        results = execute_config(
-            adapter=config_adapter,
-            task_dirs=task_dirs,
-            repo_path=repo_root,
-            experiment_config=exp_config,
-            agent_config=agent_config,
-            checkpoint_store=checkpoint_store,
-            runs_dir=config_runs_dir,
-            on_task_complete=_on_task_complete,
-            max_cost_usd=max_cost_usd,
-            parallel=parallel,
-            repeats=repeats,
-            clean_excludes=_clean_excludes,
-        )
+        dispatcher = EventDispatcher()
+        dispatcher.register(PlainTextListener())
+
+        try:
+            results = execute_config(
+                adapter=config_adapter,
+                task_dirs=task_dirs,
+                repo_path=repo_root,
+                experiment_config=exp_config,
+                agent_config=agent_config,
+                checkpoint_store=checkpoint_store,
+                runs_dir=config_runs_dir,
+                max_cost_usd=max_cost_usd,
+                parallel=parallel,
+                repeats=repeats,
+                clean_excludes=_clean_excludes,
+                event_dispatcher=dispatcher,
+            )
+        finally:
+            dispatcher.shutdown()
 
         if owns_sandbox:
             _release_sandbox()

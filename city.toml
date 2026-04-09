@@ -1,0 +1,11 @@
+[workspace]
+name = "codeprobe"
+provider = "claude"
+
+[[agent]]
+name = "mayor"
+prompt_template = "prompts/mayor.md"
+
+[[named_session]]
+template = "mayor"
+mode = "always"

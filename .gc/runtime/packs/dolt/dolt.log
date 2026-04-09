@@ -1,0 +1,304 @@
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+time="2026-04-06T11:53:59-04:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-04-06T11:53:59-04:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-04-06T11:53:59-04:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+time="2026-04-06T11:54:33-04:00" level=warning msg="error running query" connectTime="2026-04-06 11:54:33.353503788 -0400 EDT m=+33.820564256" connectionDb=codeprobe connectionID=110 error="nothing to commit" queryTime="2026-04-06 11:54:33.357480681 -0400 EDT m=+33.824541149"
+time="2026-04-06T11:54:33-04:00" level=warning msg="error running query" connectTime="2026-04-06 11:54:33.392946959 -0400 EDT m=+33.860007427" connectionDb=codeprobe connectionID=113 error="nothing to commit" queryTime="2026-04-06 11:54:33.396204341 -0400 EDT m=+33.863264809"
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+time="2026-04-06T12:01:28-04:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-04-06T12:01:28-04:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-04-06T12:01:28-04:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+Starting server with Config HP="0.0.0.0:35691"|T="300000"|R="false"|L="warning"
+time="2026-04-06T12:02:30-04:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-04-06T12:02:30-04:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-04-06T12:02:30-04:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+time="2026-04-06T12:02:34-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:34.830652959 -0400 EDT m=+4.418048087" connectionDb=codeprobe connectionID=56 error="Duplicate key name 'idx_issues_issue_type'" queryTime="2026-04-06 12:02:34.833476036 -0400 EDT m=+4.420871154"
+time="2026-04-06T12:02:34-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:34.830652959 -0400 EDT m=+4.418048087" connectionDb=codeprobe connectionID=56 error="foreign key `fk_dep_depends_on` was not found on the table `dependencies`" queryTime="2026-04-06 12:02:34.833623665 -0400 EDT m=+4.421018793"
+time="2026-04-06T12:02:34-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:34.830652959 -0400 EDT m=+4.418048087" connectionDb=codeprobe connectionID=56 error="nothing to commit" queryTime="2026-04-06 12:02:34.846937304 -0400 EDT m=+4.434332432"
+time="2026-04-06T12:02:36-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:36.899996992 -0400 EDT m=+6.487392110" connectionDb=codeprobe connectionID=60 error="nothing to commit" queryTime="2026-04-06 12:02:36.903343969 -0400 EDT m=+6.490739097"
+time="2026-04-06T12:02:37-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:37.151286795 -0400 EDT m=+6.738681923" connectionDb=codeprobe connectionID=80 error="nothing to commit" queryTime="2026-04-06 12:02:37.15455362 -0400 EDT m=+6.741948748"
+time="2026-04-06T12:02:37-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:37.240487395 -0400 EDT m=+6.827882523" connectionDb=codeprobe connectionID=84 error="nothing to commit" queryTime="2026-04-06 12:02:37.243884316 -0400 EDT m=+6.831279434"
+time="2026-04-06T12:02:37-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:37.436575391 -0400 EDT m=+7.023970519" connectionDb=codeprobe connectionID=100 error="nothing to commit" queryTime="2026-04-06 12:02:37.440417013 -0400 EDT m=+7.027812131"
+time="2026-04-06T12:02:37-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:37.550563571 -0400 EDT m=+7.137958699" connectionDb=codeprobe connectionID=104 error="nothing to commit" queryTime="2026-04-06 12:02:37.553717884 -0400 EDT m=+7.141113012"
+time="2026-04-06T12:02:37-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:02:37.634752105 -0400 EDT m=+7.222147233" connectionDb=codeprobe connectionID=108 error="nothing to commit" queryTime="2026-04-06 12:02:37.637989906 -0400 EDT m=+7.225385034"
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+time="2026-04-06T12:03:04-04:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-04-06T12:03:04-04:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-04-06T12:03:04-04:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+time="2026-04-06T12:03:15-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:03:15.900473723 -0400 EDT m=+10.941571050" connectionDb=codeprobe connectionID=164 error="nothing to commit" queryTime="2026-04-06 12:03:15.903902775 -0400 EDT m=+10.945000092"
+time="2026-04-06T12:03:16-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:03:16.009420887 -0400 EDT m=+11.050518214" connectionDb=codeprobe connectionID=168 error="nothing to commit" queryTime="2026-04-06 12:03:16.01382855 -0400 EDT m=+11.054925877"
+time="2026-04-06T12:03:16-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:03:16.092513546 -0400 EDT m=+11.133610873" connectionDb=codeprobe connectionID=172 error="nothing to commit" queryTime="2026-04-06 12:03:16.095705139 -0400 EDT m=+11.136802456"
+time="2026-04-06T12:03:44-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:03:44.523070188 -0400 EDT m=+39.564167515" connectionDb=codeprobe connectionID=262 error="nothing to commit" queryTime="2026-04-06 12:03:44.526459385 -0400 EDT m=+39.567556702"
+time="2026-04-06T12:03:51-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:03:51.121351821 -0400 EDT m=+46.162449138" connectionDb=codeprobe connectionID=269 error="nothing to commit" queryTime="2026-04-06 12:03:51.12496963 -0400 EDT m=+46.166066947"
+time="2026-04-06T12:04:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:04:00.781875138 -0400 EDT m=+55.822972465" connectionDb=codeprobe connectionID=326 error="nothing to commit" queryTime="2026-04-06 12:04:00.786235741 -0400 EDT m=+55.827333068"
+time="2026-04-06T12:04:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:04:00.892824481 -0400 EDT m=+55.933921808" connectionDb=codeprobe connectionID=330 error="nothing to commit" queryTime="2026-04-06 12:04:00.896449223 -0400 EDT m=+55.937546550"
+time="2026-04-06T12:04:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:04:00.973676499 -0400 EDT m=+56.014773816" connectionDb=codeprobe connectionID=334 error="nothing to commit" queryTime="2026-04-06 12:04:00.976799683 -0400 EDT m=+56.017897010"
+time="2026-04-06T12:05:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:05:00.779721953 -0400 EDT m=+115.820819270" connectionDb=codeprobe connectionID=546 error="nothing to commit" queryTime="2026-04-06 12:05:00.786319113 -0400 EDT m=+115.827416451"
+time="2026-04-06T12:05:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:05:00.890008876 -0400 EDT m=+115.931106203" connectionDb=codeprobe connectionID=550 error="nothing to commit" queryTime="2026-04-06 12:05:00.893490848 -0400 EDT m=+115.934588175"
+time="2026-04-06T12:05:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:05:00.968081866 -0400 EDT m=+116.009179193" connectionDb=codeprobe connectionID=554 error="nothing to commit" queryTime="2026-04-06 12:05:00.971163481 -0400 EDT m=+116.012260798"
+time="2026-04-06T12:06:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:00.779140648 -0400 EDT m=+175.820237975" connectionDb=codeprobe connectionID=692 error="nothing to commit" queryTime="2026-04-06 12:06:00.782741274 -0400 EDT m=+175.823838601"
+time="2026-04-06T12:06:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:00.887937969 -0400 EDT m=+175.929035296" connectionDb=codeprobe connectionID=696 error="nothing to commit" queryTime="2026-04-06 12:06:00.891021307 -0400 EDT m=+175.932118634"
+time="2026-04-06T12:06:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:00.968025712 -0400 EDT m=+176.009123039" connectionDb=codeprobe connectionID=700 error="nothing to commit" queryTime="2026-04-06 12:06:00.971155708 -0400 EDT m=+176.012253035"
+time="2026-04-06T12:06:23-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:23.562741177 -0400 EDT m=+198.603838504" connectionDb=codeprobe connectionID=756 error="nothing to commit" queryTime="2026-04-06 12:06:23.567464384 -0400 EDT m=+198.608561711"
+time="2026-04-06T12:06:23-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:23.69109997 -0400 EDT m=+198.732197297" connectionDb=codeprobe connectionID=759 error="nothing to commit" queryTime="2026-04-06 12:06:23.6994219 -0400 EDT m=+198.740519227"
+time="2026-04-06T12:06:23-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:23.808028308 -0400 EDT m=+198.849125625" connectionDb=codeprobe connectionID=762 error="nothing to commit" queryTime="2026-04-06 12:06:23.812820586 -0400 EDT m=+198.853917903"
+time="2026-04-06T12:06:23-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:23.928036507 -0400 EDT m=+198.969133824" connectionDb=codeprobe connectionID=765 error="nothing to commit" queryTime="2026-04-06 12:06:23.935645739 -0400 EDT m=+198.976743066"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.067935052 -0400 EDT m=+199.109032379" connectionDb=codeprobe connectionID=768 error="nothing to commit" queryTime="2026-04-06 12:06:24.074501103 -0400 EDT m=+199.115598420"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.195879903 -0400 EDT m=+199.236977230" connectionDb=codeprobe connectionID=771 error="nothing to commit" queryTime="2026-04-06 12:06:24.202878652 -0400 EDT m=+199.243975989"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.326967153 -0400 EDT m=+199.368064480" connectionDb=codeprobe connectionID=774 error="nothing to commit" queryTime="2026-04-06 12:06:24.333139751 -0400 EDT m=+199.374237078"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.449522106 -0400 EDT m=+199.490619433" connectionDb=codeprobe connectionID=777 error="nothing to commit" queryTime="2026-04-06 12:06:24.455791036 -0400 EDT m=+199.496888363"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.575210923 -0400 EDT m=+199.616308250" connectionDb=codeprobe connectionID=780 error="nothing to commit" queryTime="2026-04-06 12:06:24.580919152 -0400 EDT m=+199.622016479"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.699126788 -0400 EDT m=+199.740224115" connectionDb=codeprobe connectionID=783 error="nothing to commit" queryTime="2026-04-06 12:06:24.704527286 -0400 EDT m=+199.745624603"
+time="2026-04-06T12:06:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:24.830763647 -0400 EDT m=+199.871860974" connectionDb=codeprobe connectionID=786 error="nothing to commit" queryTime="2026-04-06 12:06:24.836411393 -0400 EDT m=+199.877508720"
+time="2026-04-06T12:06:35-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:35.331709413 -0400 EDT m=+210.372806740" connectionDb=codeprobe connectionID=896 error="nothing to commit" queryTime="2026-04-06 12:06:35.337975808 -0400 EDT m=+210.379073135"
+time="2026-04-06T12:06:35-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:35.430489566 -0400 EDT m=+210.471586893" connectionDb=codeprobe connectionID=899 error="nothing to commit" queryTime="2026-04-06 12:06:35.434356124 -0400 EDT m=+210.475453451"
+time="2026-04-06T12:06:41-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:41.410750142 -0400 EDT m=+216.451847470" connectionDb=codeprobe connectionID=909 error="nothing to commit" queryTime="2026-04-06 12:06:41.42577891 -0400 EDT m=+216.466876237"
+time="2026-04-06T12:06:41-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:41.510527079 -0400 EDT m=+216.551624396" connectionDb=codeprobe connectionID=912 error="nothing to commit" queryTime="2026-04-06 12:06:41.513881018 -0400 EDT m=+216.554978345"
+time="2026-04-06T12:06:41-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:41.59644562 -0400 EDT m=+216.637542937" connectionDb=codeprobe connectionID=915 error="nothing to commit" queryTime="2026-04-06 12:06:41.600183766 -0400 EDT m=+216.641281093"
+time="2026-04-06T12:06:49-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:49.916195394 -0400 EDT m=+224.957292711" connectionDb=codeprobe connectionID=933 error="nothing to commit" queryTime="2026-04-06 12:06:49.931839464 -0400 EDT m=+224.972936791"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.015803951 -0400 EDT m=+225.056901268" connectionDb=codeprobe connectionID=936 error="nothing to commit" queryTime="2026-04-06 12:06:50.019452548 -0400 EDT m=+225.060549865"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.10351513 -0400 EDT m=+225.144612457" connectionDb=codeprobe connectionID=939 error="nothing to commit" queryTime="2026-04-06 12:06:50.10668907 -0400 EDT m=+225.147786397"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.188868713 -0400 EDT m=+225.229966040" connectionDb=codeprobe connectionID=942 error="nothing to commit" queryTime="2026-04-06 12:06:50.191827296 -0400 EDT m=+225.232924613"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.274286728 -0400 EDT m=+225.315384055" connectionDb=codeprobe connectionID=945 error="nothing to commit" queryTime="2026-04-06 12:06:50.277450358 -0400 EDT m=+225.318547685"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.361619813 -0400 EDT m=+225.402717130" connectionDb=codeprobe connectionID=948 error="nothing to commit" queryTime="2026-04-06 12:06:50.364727076 -0400 EDT m=+225.405824403"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.448093353 -0400 EDT m=+225.489190680" connectionDb=codeprobe connectionID=951 error="nothing to commit" queryTime="2026-04-06 12:06:50.451196077 -0400 EDT m=+225.492293394"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.537536996 -0400 EDT m=+225.578634313" connectionDb=codeprobe connectionID=954 error="nothing to commit" queryTime="2026-04-06 12:06:50.540599926 -0400 EDT m=+225.581697253"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.626751066 -0400 EDT m=+225.667848393" connectionDb=codeprobe connectionID=957 error="nothing to commit" queryTime="2026-04-06 12:06:50.630025015 -0400 EDT m=+225.671122342"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.712907317 -0400 EDT m=+225.754004634" connectionDb=codeprobe connectionID=960 error="nothing to commit" queryTime="2026-04-06 12:06:50.715944016 -0400 EDT m=+225.757041343"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.800233198 -0400 EDT m=+225.841330515" connectionDb=codeprobe connectionID=963 error="nothing to commit" queryTime="2026-04-06 12:06:50.80320232 -0400 EDT m=+225.844299647"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.890203317 -0400 EDT m=+225.931300644" connectionDb=codeprobe connectionID=966 error="nothing to commit" queryTime="2026-04-06 12:06:50.893255375 -0400 EDT m=+225.934352702"
+time="2026-04-06T12:06:50-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:50.977037839 -0400 EDT m=+226.018135166" connectionDb=codeprobe connectionID=969 error="nothing to commit" queryTime="2026-04-06 12:06:50.980070561 -0400 EDT m=+226.021167888"
+time="2026-04-06T12:06:51-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:51.064972099 -0400 EDT m=+226.106069426" connectionDb=codeprobe connectionID=972 error="nothing to commit" queryTime="2026-04-06 12:06:51.068047593 -0400 EDT m=+226.109144920"
+time="2026-04-06T12:06:51-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:51.154503429 -0400 EDT m=+226.195600756" connectionDb=codeprobe connectionID=975 error="nothing to commit" queryTime="2026-04-06 12:06:51.157494012 -0400 EDT m=+226.198591329"
+time="2026-04-06T12:06:51-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:51.239446506 -0400 EDT m=+226.280543833" connectionDb=codeprobe connectionID=978 error="nothing to commit" queryTime="2026-04-06 12:06:51.242430096 -0400 EDT m=+226.283527423"
+time="2026-04-06T12:06:51-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:51.327598799 -0400 EDT m=+226.368696126" connectionDb=codeprobe connectionID=981 error="nothing to commit" queryTime="2026-04-06 12:06:51.330483992 -0400 EDT m=+226.371581320"
+time="2026-04-06T12:06:56-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:06:56.730187635 -0400 EDT m=+231.771284952" connectionDb=codeprobe connectionID=994 error="nothing to commit" queryTime="2026-04-06 12:06:56.736661692 -0400 EDT m=+231.777759019"
+time="2026-04-06T12:07:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:07:00.792845248 -0400 EDT m=+235.833942575" connectionDb=codeprobe connectionID=1102 error="nothing to commit" queryTime="2026-04-06 12:07:00.796081154 -0400 EDT m=+235.837178481"
+time="2026-04-06T12:07:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:07:00.90656683 -0400 EDT m=+235.947664157" connectionDb=codeprobe connectionID=1106 error="nothing to commit" queryTime="2026-04-06 12:07:00.910080341 -0400 EDT m=+235.951177668"
+time="2026-04-06T12:07:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:07:00.993188459 -0400 EDT m=+236.034285786" connectionDb=codeprobe connectionID=1113 error="nothing to commit" queryTime="2026-04-06 12:07:00.996160778 -0400 EDT m=+236.037258095"
+time="2026-04-06T12:07:27-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:07:27.91032971 -0400 EDT m=+262.951427037" connectionDb=codeprobe connectionID=1243 error="nothing to commit" queryTime="2026-04-06 12:07:27.913393371 -0400 EDT m=+262.954490698"
+time="2026-04-06T12:08:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:08:00.795343429 -0400 EDT m=+295.836440756" connectionDb=codeprobe connectionID=1378 error="nothing to commit" queryTime="2026-04-06 12:08:00.799459749 -0400 EDT m=+295.840557076"
+time="2026-04-06T12:08:03-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:08:03.22655756 -0400 EDT m=+298.267654887" connectionDb=codeprobe connectionID=1382 error="nothing to commit" queryTime="2026-04-06 12:08:03.229868598 -0400 EDT m=+298.270965915"
+time="2026-04-06T12:08:03-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:08:03.30403443 -0400 EDT m=+298.345131747" connectionDb=codeprobe connectionID=1386 error="nothing to commit" queryTime="2026-04-06 12:08:03.307068916 -0400 EDT m=+298.348166243"
+time="2026-04-06T12:08:47-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:08:47.453869882 -0400 EDT m=+342.494967199" connectionDb=codeprobe connectionID=1544 error="nothing to commit" queryTime="2026-04-06 12:08:47.48577743 -0400 EDT m=+342.526874757"
+time="2026-04-06T12:09:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:09:00.760221149 -0400 EDT m=+355.801318466" connectionDb=codeprobe connectionID=1613 error="nothing to commit" queryTime="2026-04-06 12:09:00.76423695 -0400 EDT m=+355.805334277"
+time="2026-04-06T12:09:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:09:00.868765967 -0400 EDT m=+355.909863294" connectionDb=codeprobe connectionID=1617 error="nothing to commit" queryTime="2026-04-06 12:09:00.872164981 -0400 EDT m=+355.913262298"
+time="2026-04-06T12:09:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:09:00.948571385 -0400 EDT m=+355.989668702" connectionDb=codeprobe connectionID=1621 error="nothing to commit" queryTime="2026-04-06 12:09:00.95167961 -0400 EDT m=+355.992776937"
+time="2026-04-06T12:10:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:10:00.759922931 -0400 EDT m=+415.801020258" connectionDb=codeprobe connectionID=1747 error="nothing to commit" queryTime="2026-04-06 12:10:00.764447974 -0400 EDT m=+415.805545311"
+time="2026-04-06T12:10:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:10:00.867053311 -0400 EDT m=+415.908150628" connectionDb=codeprobe connectionID=1751 error="nothing to commit" queryTime="2026-04-06 12:10:00.870437547 -0400 EDT m=+415.911534874"
+time="2026-04-06T12:10:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:10:00.946368169 -0400 EDT m=+415.987465496" connectionDb=codeprobe connectionID=1755 error="nothing to commit" queryTime="2026-04-06 12:10:00.949454853 -0400 EDT m=+415.990552180"
+time="2026-04-06T12:11:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:11:00.751528111 -0400 EDT m=+475.792625438" connectionDb=codeprobe connectionID=1967 error="nothing to commit" queryTime="2026-04-06 12:11:00.755724051 -0400 EDT m=+475.796821378"
+time="2026-04-06T12:11:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:11:00.858721055 -0400 EDT m=+475.899818372" connectionDb=codeprobe connectionID=1971 error="nothing to commit" queryTime="2026-04-06 12:11:00.861925722 -0400 EDT m=+475.903023039"
+time="2026-04-06T12:11:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:11:00.935011203 -0400 EDT m=+475.976108531" connectionDb=codeprobe connectionID=1975 error="nothing to commit" queryTime="2026-04-06 12:11:00.938114419 -0400 EDT m=+475.979211746"
+time="2026-04-06T12:12:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:12:00.75863132 -0400 EDT m=+535.799728647" connectionDb=codeprobe connectionID=2101 error="nothing to commit" queryTime="2026-04-06 12:12:00.763183403 -0400 EDT m=+535.804280730"
+time="2026-04-06T12:12:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:12:00.864624614 -0400 EDT m=+535.905721941" connectionDb=codeprobe connectionID=2105 error="nothing to commit" queryTime="2026-04-06 12:12:00.867758257 -0400 EDT m=+535.908855584"
+time="2026-04-06T12:12:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:12:00.944624111 -0400 EDT m=+535.985721438" connectionDb=codeprobe connectionID=2109 error="nothing to commit" queryTime="2026-04-06 12:12:00.948257608 -0400 EDT m=+535.989354935"
+time="2026-04-06T12:13:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:13:00.764021638 -0400 EDT m=+595.805118965" connectionDb=codeprobe connectionID=2321 error="nothing to commit" queryTime="2026-04-06 12:13:00.768241133 -0400 EDT m=+595.809338450"
+time="2026-04-06T12:13:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:13:00.8721848 -0400 EDT m=+595.913282128" connectionDb=codeprobe connectionID=2325 error="nothing to commit" queryTime="2026-04-06 12:13:00.875567454 -0400 EDT m=+595.916664771"
+time="2026-04-06T12:13:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:13:00.952307117 -0400 EDT m=+595.993404434" connectionDb=codeprobe connectionID=2329 error="nothing to commit" queryTime="2026-04-06 12:13:00.955381427 -0400 EDT m=+595.996478754"
+time="2026-04-06T12:14:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:14:00.779619749 -0400 EDT m=+655.820717066" connectionDb=codeprobe connectionID=2455 error="nothing to commit" queryTime="2026-04-06 12:14:00.784797274 -0400 EDT m=+655.825894601"
+time="2026-04-06T12:14:02-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:14:02.889536738 -0400 EDT m=+657.930634065" connectionDb=codeprobe connectionID=2459 error="nothing to commit" queryTime="2026-04-06 12:14:02.892812399 -0400 EDT m=+657.933909726"
+time="2026-04-06T12:14:02-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:14:02.968062565 -0400 EDT m=+658.009159892" connectionDb=codeprobe connectionID=2463 error="nothing to commit" queryTime="2026-04-06 12:14:02.971267743 -0400 EDT m=+658.012365070"
+time="2026-04-06T12:15:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:15:00.758561336 -0400 EDT m=+715.799658663" connectionDb=codeprobe connectionID=2675 error="nothing to commit" queryTime="2026-04-06 12:15:00.762059226 -0400 EDT m=+715.803156543"
+time="2026-04-06T12:15:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:15:00.868281766 -0400 EDT m=+715.909379093" connectionDb=codeprobe connectionID=2679 error="nothing to commit" queryTime="2026-04-06 12:15:00.871414897 -0400 EDT m=+715.912512214"
+time="2026-04-06T12:15:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:15:00.946466447 -0400 EDT m=+715.987563764" connectionDb=codeprobe connectionID=2683 error="nothing to commit" queryTime="2026-04-06 12:15:00.94939387 -0400 EDT m=+715.990491187"
+time="2026-04-06T12:16:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:16:00.772177917 -0400 EDT m=+775.813275254" connectionDb=codeprobe connectionID=2809 error="nothing to commit" queryTime="2026-04-06 12:16:00.776831612 -0400 EDT m=+775.817928949"
+time="2026-04-06T12:16:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:16:00.882153578 -0400 EDT m=+775.923250905" connectionDb=codeprobe connectionID=2813 error="nothing to commit" queryTime="2026-04-06 12:16:00.885420632 -0400 EDT m=+775.926517949"
+time="2026-04-06T12:16:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:16:00.962104575 -0400 EDT m=+776.003201902" connectionDb=codeprobe connectionID=2817 error="nothing to commit" queryTime="2026-04-06 12:16:00.965201318 -0400 EDT m=+776.006298645"
+time="2026-04-06T12:17:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:17:00.770035634 -0400 EDT m=+835.811132961" connectionDb=codeprobe connectionID=3269 error="nothing to commit" queryTime="2026-04-06 12:17:00.77412959 -0400 EDT m=+835.815226918"
+time="2026-04-06T12:17:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:17:00.876159423 -0400 EDT m=+835.917256750" connectionDb=codeprobe connectionID=3273 error="nothing to commit" queryTime="2026-04-06 12:17:00.879339843 -0400 EDT m=+835.920437170"
+time="2026-04-06T12:17:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:17:00.956075713 -0400 EDT m=+835.997173040" connectionDb=codeprobe connectionID=3277 error="nothing to commit" queryTime="2026-04-06 12:17:00.959427648 -0400 EDT m=+836.000524965"
+
+time="2026-04-06T12:18:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:18:00.77757935 -0400 EDT m=+895.818676677" connectionDb=codeprobe connectionID=3403 error="nothing to commit" queryTime="2026-04-06 12:18:00.781908261 -0400 EDT m=+895.823005588"
+time="2026-04-06T12:18:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:18:00.884502899 -0400 EDT m=+895.925600226" connectionDb=codeprobe connectionID=3407 error="nothing to commit" queryTime="2026-04-06 12:18:00.887776806 -0400 EDT m=+895.928874133"
+time="2026-04-06T12:18:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:18:00.964793526 -0400 EDT m=+896.005890853" connectionDb=codeprobe connectionID=3411 error="nothing to commit" queryTime="2026-04-06 12:18:00.967730947 -0400 EDT m=+896.008828274"
+time="2026-04-06T12:19:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:19:00.77465927 -0400 EDT m=+955.815756597" connectionDb=codeprobe connectionID=3851 error="nothing to commit" queryTime="2026-04-06 12:19:00.779201003 -0400 EDT m=+955.820298330"
+time="2026-04-06T12:19:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:19:00.883503147 -0400 EDT m=+955.924600474" connectionDb=codeprobe connectionID=3855 error="nothing to commit" queryTime="2026-04-06 12:19:00.887179835 -0400 EDT m=+955.928277162"
+time="2026-04-06T12:19:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:19:00.962328163 -0400 EDT m=+956.003425490" connectionDb=codeprobe connectionID=3859 error="nothing to commit" queryTime="2026-04-06 12:19:00.96548564 -0400 EDT m=+956.006582957"
+time="2026-04-06T12:20:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:20:00.750985706 -0400 EDT m=+1015.792083033" connectionDb=codeprobe connectionID=4213 error="nothing to commit" queryTime="2026-04-06 12:20:00.755644199 -0400 EDT m=+1015.796741526"
+time="2026-04-06T12:20:03-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:20:03.136789927 -0400 EDT m=+1018.177887254" connectionDb=codeprobe connectionID=4217 error="nothing to commit" queryTime="2026-04-06 12:20:03.140245137 -0400 EDT m=+1018.181342464"
+time="2026-04-06T12:20:03-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:20:03.218208594 -0400 EDT m=+1018.259305921" connectionDb=codeprobe connectionID=4221 error="nothing to commit" queryTime="2026-04-06 12:20:03.221511966 -0400 EDT m=+1018.262609294"
+time="2026-04-06T12:21:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:21:00.769430627 -0400 EDT m=+1075.810527954" connectionDb=codeprobe connectionID=4773 error="nothing to commit" queryTime="2026-04-06 12:21:00.7738828 -0400 EDT m=+1075.814980128"
+time="2026-04-06T12:21:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:21:00.876027895 -0400 EDT m=+1075.917125222" connectionDb=codeprobe connectionID=4777 error="nothing to commit" queryTime="2026-04-06 12:21:00.879325637 -0400 EDT m=+1075.920422964"
+time="2026-04-06T12:21:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 12:21:00.951934374 -0400 EDT m=+1075.993031701" connectionDb=codeprobe connectionID=4781 error="nothing to commit" queryTime="2026-04-06 12:21:00.95486892 -0400 EDT m=+1075.995966247"
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+time="2026-04-06T13:37:08-04:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-04-06T13:37:08-04:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-04-06T13:37:08-04:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+time="2026-04-06T13:47:00-04:00" level=warning msg="error running query" connectTime="2026-04-06 13:47:00.902542902 -0400 EDT m=+591.987931179" connectionDb=codeprobe connectionID=143 error="nothing to commit" queryTime="2026-04-06 13:47:00.905759137 -0400 EDT m=+591.991147414"
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+database "dolt" is locked by another dolt process; either clone the database to run a second server, or stop the dolt process which currently holds an exclusive write lock on the database
+Starting server with Config HP="0.0.0.0:35690"|T="300000"|R="false"|L="warning"
+time="2026-04-06T20:38:08-04:00" level=warning msg="secure_file_priv is set to \"\", which is insecure."
+time="2026-04-06T20:38:08-04:00" level=warning msg="Any user with GRANT FILE privileges will be able to read any file which the sql-server process can read."
+time="2026-04-06T20:38:08-04:00" level=warning msg="Please consider restarting the server with secure_file_priv set to a safe (or non-existent) directory."
+
+time="2026-04-06T21:04:46-04:00" level=warning msg="error running query" connectTime="2026-04-06 21:04:46.213330063 -0400 EDT m=+1599.138502335" connectionDb=codeprobe connectionID=339 error="nothing to commit" queryTime="2026-04-06 21:04:46.320281979 -0400 EDT m=+1599.245454261"
+time="2026-04-06T21:07:09-04:00" level=warning msg="error running query" connectTime="2026-04-06 21:07:09.746244805 -0400 EDT m=+1742.671417077" connectionDb=codeprobe connectionID=391 error="nothing to commit" queryTime="2026-04-06 21:07:09.851470959 -0400 EDT m=+1742.776643231"
+time="2026-04-06T21:07:24-04:00" level=warning msg="error running query" connectTime="2026-04-06 21:07:24.762862271 -0400 EDT m=+1757.688034543" connectionDb=codeprobe connectionID=400 error="nothing to commit" queryTime="2026-04-06 21:07:24.86778485 -0400 EDT m=+1757.792957112"
+time="2026-04-06T21:07:26-04:00" level=warning msg="error running query" connectTime="2026-04-06 21:07:26.129448407 -0400 EDT m=+1759.054620679" connectionDb=codeprobe connectionID=406 error="nothing to commit" queryTime="2026-04-06 21:07:26.235025394 -0400 EDT m=+1759.160197656"
+

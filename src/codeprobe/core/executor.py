@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -15,6 +16,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.events import (
+    BudgetChecker,
+    EventDispatcher,
+    RunFinished,
+    RunStarted,
+    TaskScored,
+    TaskStarted,
+)
 from codeprobe.core.isolation import (
     IsolationStrategy,
     WorktreeIsolation,
@@ -463,6 +472,7 @@ def execute_config(
     isolation: IsolationStrategy | None = None,
     repeats: int = 1,
     clean_excludes: tuple[str, ...] = (),
+    event_dispatcher: EventDispatcher | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -479,6 +489,11 @@ def execute_config(
     Once cumulative cost exceeds the budget, execution halts and partial
     results are returned.  Tasks with ``unknown`` or ``subscription``
     cost models are skipped in accumulation.
+
+    When *event_dispatcher* is provided, lifecycle events (RunStarted,
+    TaskStarted, TaskScored, RunFinished) are emitted.  If *max_cost_usd*
+    is also set, a :class:`BudgetChecker` is registered to handle budget
+    warnings and halt checks via the event system.
     """
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
@@ -504,6 +519,27 @@ def execute_config(
 
     if not pending_work:
         return results
+
+    # --- Event system setup ---
+    budget_checker: BudgetChecker | None = None
+    if event_dispatcher is not None and max_cost_usd is not None:
+        budget_checker = BudgetChecker(
+            budget=max_cost_usd,
+            warning_threshold=_BUDGET_WARNING_THRESHOLD,
+        )
+        budget_checker.set_dispatcher(event_dispatcher)
+        event_dispatcher.register(budget_checker)
+
+    if event_dispatcher is not None:
+        event_dispatcher.emit(
+            RunStarted(
+                total_tasks=len(all_work),
+                config_label=experiment_config.label,
+                timestamp=time.time(),
+            )
+        )
+
+    run_start_time = time.time()
 
     cumulative_cost = 0.0
 
@@ -568,12 +604,32 @@ def execute_config(
         if on_task_complete is not None:
             on_task_complete(result)
 
+        # Emit TaskScored event when dispatcher is available
+        if event_dispatcher is not None:
+            event_dispatcher.emit(
+                TaskScored(
+                    task_id=result.task_id,
+                    config_label=experiment_config.label,
+                    automated_score=result.automated_score,
+                    duration_seconds=result.duration_seconds,
+                    cost_usd=result.cost_usd,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    cache_read_tokens=result.cache_read_tokens,
+                    cost_model=result.cost_model,
+                    cost_source=result.cost_source,
+                    error=result.metadata.get("error") if result.metadata else None,
+                    timestamp=time.time(),
+                )
+            )
+
         if result.cost_model in _BILLABLE_COST_MODELS and result.cost_usd is not None:
             cumulative_cost += result.cost_usd
 
-        # Emit 80% budget warning once
+        # Emit 80% budget warning once (legacy path — no dispatcher)
         if (
-            max_cost_usd is not None
+            event_dispatcher is None
+            and max_cost_usd is not None
             and not budget_warning_emitted
             and cumulative_cost >= max_cost_usd * _BUDGET_WARNING_THRESHOLD
             and cumulative_cost <= max_cost_usd
@@ -587,15 +643,30 @@ def execute_config(
 
     workers = min(parallel, len(pending_work))
 
+    def _budget_exceeded() -> bool:
+        """Check whether the cost budget has been exceeded."""
+        if budget_checker is not None:
+            return budget_checker.is_exceeded
+        return max_cost_usd is not None and cumulative_cost > max_cost_usd
+
     if workers <= 1:
         # Sequential — preserves original behavior and budget checks
         for idx, (task_dir, repeat_index) in enumerate(pending_work):
-            if max_cost_usd is not None and cumulative_cost > max_cost_usd:
+            if _budget_exceeded():
                 _budget_msg(
                     f"Cost budget exceeded: ${cumulative_cost:.2f} > "
                     f"${max_cost_usd:.2f} — halting"
                 )
                 break
+            # Emit TaskStarted event
+            if event_dispatcher is not None:
+                event_dispatcher.emit(
+                    TaskStarted(
+                        task_id=task_dir.name,
+                        config_label=experiment_config.label,
+                        timestamp=time.time(),
+                    )
+                )
             # Reset working directory between tasks so leftovers from
             # task N don't corrupt task N+1's results.
             if idx > 0:
@@ -618,6 +689,15 @@ def execute_config(
             owns_isolation = True
 
         def _run_isolated(task_dir: Path, repeat_index: int) -> TaskResult:
+            # Emit TaskStarted event
+            if event_dispatcher is not None:
+                event_dispatcher.emit(
+                    TaskStarted(
+                        task_id=task_dir.name,
+                        config_label=experiment_config.label,
+                        timestamp=time.time(),
+                    )
+                )
             wt = active_isolation.acquire()  # type: ignore[union-attr]
             try:
                 # Extract slot index from worktree path name (e.g. "slot-0" → 0)
@@ -666,7 +746,7 @@ def execute_config(
                         )
                     _handle_result(task_result)
 
-                    if max_cost_usd is not None and cumulative_cost > max_cost_usd:
+                    if _budget_exceeded():
                         _budget_msg(
                             f"Cost budget exceeded: ${cumulative_cost:.2f} > "
                             f"${max_cost_usd:.2f} — halting"
@@ -691,5 +771,27 @@ def execute_config(
                 system_errors,
                 len(results),
             )
+
+    # Emit RunFinished event with summary stats
+    if event_dispatcher is not None:
+        completed_count = len(results)
+        scores = [r.automated_score for r in results]
+        mean_score = sum(scores) / len(scores) if scores else 0.0
+        total_cost = sum(
+            r.cost_usd
+            for r in results
+            if r.cost_usd is not None and r.cost_model in _BILLABLE_COST_MODELS
+        )
+        total_duration = sum(r.duration_seconds for r in results)
+        event_dispatcher.emit(
+            RunFinished(
+                total_tasks=len(all_work),
+                completed_count=completed_count,
+                mean_score=mean_score,
+                total_cost=total_cost,
+                total_duration=total_duration,
+                timestamp=time.time(),
+            )
+        )
 
     return results
