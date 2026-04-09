@@ -562,11 +562,16 @@ def test_execute_config_no_reset_in_parallel_mode(tmp_path: Path):
     exp_config = ExperimentConfig(label="baseline")
     agent_config = AgentConfig()
 
-    with patch("codeprobe.core.executor._git_reset_workdir") as mock_reset:
+    fake_iso = MagicMock()
+    fake_iso.acquire.return_value = tmp_path
+    with (
+        patch("codeprobe.core.executor._git_reset_workdir") as mock_reset,
+        patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso),
+    ):
         execute_config(
             adapter=adapter,
             task_dirs=tasks,
-            repo_path=Path("/repo"),
+            repo_path=tmp_path,
             experiment_config=exp_config,
             agent_config=agent_config,
             parallel=3,
