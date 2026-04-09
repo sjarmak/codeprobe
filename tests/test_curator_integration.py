@@ -87,7 +87,7 @@ class TestGenerateWithCuration:
             curation_result=curation_result,
         )
         assert task is not None
-        assert task.verification.oracle_tiers == {
+        assert dict(task.verification.oracle_tiers) == {
             "src/a.py": "required",
             "src/b.py": "supplementary",
             "src/c.py": "required",
@@ -116,7 +116,7 @@ class TestGenerateWithCuration:
     ) -> None:
         task = generate_org_scale_task(scan_result, no_llm=True)
         assert task is not None
-        assert task.verification.oracle_tiers == {}
+        assert task.verification.oracle_tiers == ()
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ class TestShowOrgScaleResults:
             verification=TaskVerification(
                 oracle_type="file_list",
                 oracle_answer=tuple(tiers.keys()) if tiers else ("a.py",),
-                oracle_tiers=tiers or {},
+                oracle_tiers=tuple(tiers.items()) if tiers else (),
             ),
         )
 

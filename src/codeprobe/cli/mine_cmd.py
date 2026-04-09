@@ -1141,7 +1141,7 @@ def _show_org_scale_results(
             f"{len(t.verification.oracle_answer):>5}"
         )
         if curated and t.verification.oracle_tiers:
-            tiers = t.verification.oracle_tiers
+            tiers = dict(t.verification.oracle_tiers)
             req = sum(1 for v in tiers.values() if v == "required")
             sup = sum(1 for v in tiers.values() if v == "supplementary")
             ctx = sum(1 for v in tiers.values() if v == "context")
