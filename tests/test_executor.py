@@ -604,9 +604,10 @@ class TestWorktreeIsolation:
             # Force pool creation by acquiring
             iso._base_dir.mkdir(parents=True, exist_ok=True)
             iso._create_pool()
-            # Should call git worktree add twice
-            assert mock_run.call_count == 2
-            for c in mock_run.call_args_list:
+            # Should call git worktree prune once + git worktree add twice
+            assert mock_run.call_count == 3
+            assert mock_run.call_args_list[0][0][0] == ["git", "worktree", "prune"]
+            for c in mock_run.call_args_list[1:]:
                 assert c[0][0][0:3] == ["git", "worktree", "add"]
 
     def test_acquire_returns_path(self, tmp_path: Path) -> None:
@@ -656,9 +657,11 @@ class TestWorktreeIsolation:
             iso._create_pool()
         with patch("subprocess.run") as mock_run:
             iso.cleanup()
-            assert mock_run.call_count == 2
-            for c in mock_run.call_args_list:
+            # 2 worktree removes + 1 prune
+            assert mock_run.call_count == 3
+            for c in mock_run.call_args_list[:2]:
                 assert c[0][0][0:3] == ["git", "worktree", "remove"]
+            assert mock_run.call_args_list[2][0][0] == ["git", "worktree", "prune"]
 
     def test_pool_size_validation(self) -> None:
         """pool_size must be >= 1."""

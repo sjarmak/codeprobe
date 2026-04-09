@@ -107,19 +107,48 @@ class WorktreeIsolation:
         with self._lock:
             if self._created:
                 return
+            # Prune stale worktree records left by previous interrupted runs
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=self._repo_path,
+                capture_output=True,
+            )
             self._base_dir.mkdir(parents=True, exist_ok=True)
             for i in range(self._pool_size):
                 wt_path = self._base_dir / f"slot-{i}"
                 if not wt_path.exists():
-                    subprocess.run(
-                        ["git", "worktree", "add", "--detach", str(wt_path)],
-                        cwd=self._repo_path,
-                        check=True,
-                        capture_output=True,
-                    )
+                    self._add_worktree(wt_path)
                 self._all_paths.append(wt_path)
                 self._available.put(wt_path)
             self._created = True
+
+    def _add_worktree(self, wt_path: Path) -> None:
+        """Add a detached worktree, recovering from stale git state."""
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(wt_path)],
+                cwd=self._repo_path,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            # Stale record may remain even after prune — force-remove and retry
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(wt_path)],
+                cwd=self._repo_path,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "worktree", "prune"],
+                cwd=self._repo_path,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(wt_path)],
+                cwd=self._repo_path,
+                check=True,
+                capture_output=True,
+            )
 
     def acquire(self) -> Path:
         """Get a worktree from the pool (blocks until available)."""
@@ -159,6 +188,12 @@ class WorktreeIsolation:
             except (subprocess.CalledProcessError, OSError) as exc:
                 logger.warning("Failed to remove worktree %s: %s", wt_path, exc)
         self._all_paths.clear()
+        # Prune any stale records so future runs start clean
+        subprocess.run(
+            ["git", "worktree", "prune"],
+            cwd=self._repo_path,
+            capture_output=True,
+        )
         # Clean up base directory if empty
         try:
             if self._base_dir.exists() and not any(self._base_dir.iterdir()):
