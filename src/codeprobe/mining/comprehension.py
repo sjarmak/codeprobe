@@ -729,12 +729,12 @@ class ComprehensionGenerator:
         )
         verification = TaskVerification(
             type="artifact_eval",
-            command="bash tests/test.sh",
+            command="python3 -m codeprobe.core.scoring --artifact .",
             verification_mode="artifact_eval",
             eval_command="",
             ground_truth_path="tests/ground_truth.json",
             answer_schema=spec.answer_type,
-            reward_type="binary",
+            reward_type="artifact",
             ground_truth_schema_version="comprehension-v1",
         )
         return Task(
@@ -845,7 +845,7 @@ def _build_instruction(task: Task, spec: ComprehensionTaskSpec) -> str:
         f"{spec.question}\n\n"
         "## Answer Format\n\n"
         f"{answer_format}\n\n"
-        "Write your answer to `answer.json` in the repository root as "
-        '`{"answer": "<your answer>"}`. '
-        "For file lists, separate paths with newlines in the answer string.\n"
+        "Write your answer to `answer.json` in the repository root.\n"
+        'For file lists: `{"answer": ["path/a.py", "path/b.py"]}`\n'
+        'For other types: `{"answer": "your answer"}`\n'
     )
