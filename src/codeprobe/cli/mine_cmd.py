@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 import click
@@ -69,19 +70,55 @@ def _clone_repo(url: str) -> Path:
 # Interactive workflow (mirrors mine-tasks skill phases 0–6)
 # ---------------------------------------------------------------------------
 
-_EVAL_GOALS = {
-    "1": ("Code quality comparison", 2, "mixed", "sdlc_code_change"),
-    "2": ("Codebase navigation", 0, "mixed", "architecture_comprehension"),
-    "3": ("MCP / tool benefit", 6, "hard", "mcp_tool_usage"),
-    "4": ("General benchmarking", 0, "balanced", "mixed"),
+# Eval goals are keyed directly by the --goal flag value. Each entry carries
+# the display name, defaults for min_files/bias/task_type, and an *extras* dict
+# of flag overrides that are applied in resolve_effective_config() only when
+# the corresponding flag is still at its Click default (i.e. neither a profile
+# nor an explicit CLI flag has touched it).
+#
+# Known limitation: because flags like --enrich / --org-scale / --mcp-families
+# are positive-only (no --no-enrich), a goal that turns one of these on cannot
+# be overridden back to False from the CLI. Users who need that should choose
+# a different goal or save a custom profile.
+_EVAL_GOALS: dict[str, dict] = {
+    "quality": {
+        "name": "Code quality comparison",
+        "bias": "mixed",
+        "task_type": "sdlc_code_change",
+        "extras": {"enrich": True, "min_files": 2},
+    },
+    "navigation": {
+        "name": "Codebase navigation",
+        "bias": "mixed",
+        "task_type": "architecture_comprehension",
+        "extras": {},
+    },
+    "mcp": {
+        "name": "MCP / tool benefit",
+        "bias": "hard",
+        "task_type": "mcp_tool_usage",
+        "extras": {
+            "enrich": True,
+            "org_scale": True,
+            "mcp_families": True,
+            "count": 8,
+            "min_files": 6,
+        },
+    },
+    "general": {
+        "name": "General benchmarking",
+        "bias": "balanced",
+        "task_type": "mixed",
+        "extras": {},
+    },
 }
 
-# Map --goal flag values to _EVAL_GOALS keys
-_GOAL_FLAG_MAP: dict[str, str] = {
-    "quality": "1",
-    "navigation": "2",
-    "mcp": "3",
-    "general": "4",
+# Map the interactive prompt's numeric choices back to goal names.
+_NUMERIC_GOAL_KEYS: dict[str, str] = {
+    "1": "quality",
+    "2": "navigation",
+    "3": "mcp",
+    "4": "general",
 }
 
 _COUNT_PRESETS = {
@@ -126,9 +163,15 @@ def _ask_eval_goal() -> tuple[str, int, str, str]:
     click.echo()
 
     choice = click.prompt("Select goal", default="4", show_default=True)
-    goal_name, min_files, bias, task_type = _EVAL_GOALS.get(choice, _EVAL_GOALS["4"])
-    click.echo(f"  → {goal_name}")
-    return goal_name, min_files, bias, task_type
+    goal_key = _NUMERIC_GOAL_KEYS.get(choice, "general")
+    goal = _EVAL_GOALS[goal_key]
+    click.echo(f"  → {goal['name']}")
+    return (
+        goal["name"],
+        goal["extras"].get("min_files", 0),
+        goal["bias"],
+        goal["task_type"],
+    )
 
 
 def _ask_task_count() -> int:
@@ -605,15 +648,14 @@ _CLI_DEFAULTS = {
     "mcp_families": False,
 }
 
-# Named presets — values are merged as defaults; explicit CLI flags override.
-PRESETS: dict[str, dict] = {
-    "quick": {"count": 3},
-    "mcp": {
-        "count": 8,
-        "org_scale": True,
-        "mcp_families": True,
-        "enrich": True,
-    },
+# Deprecated legacy preset aliases. The --preset flag is kept as a backwards
+# compatible alias that translates to a goal (with optional count override)
+# and emits a deprecation warning. New code should use --goal directly.
+#
+# Shape: preset_name -> (goal_name, extra_overrides)
+_PRESET_ALIASES: dict[str, tuple[str, dict]] = {
+    "quick": ("general", {"count": 3}),
+    "mcp": ("mcp", {}),
 }
 
 # ---------------------------------------------------------------------------
@@ -713,20 +755,43 @@ def list_profiles(repo_path: Path | None = None) -> list[tuple[str, str, dict]]:
     return sorted((name, source, prof) for name, (prof, source) in all_profiles.items())
 
 
-def _apply_preset(
-    preset: str | None,
+def resolve_effective_config(
     *,
+    goal: str | None,
+    preset: str | None,
     count: int,
     source: str,
     min_files: int,
     enrich: bool,
     org_scale: bool,
     mcp_families: bool,
+    explicit_set: frozenset[str] = frozenset(),
+    profile_set: frozenset[str] = frozenset(),
+    warn: Callable[[str], None] | None = None,
 ) -> dict:
-    """Return a dict of effective parameter values after applying *preset*.
+    """Resolve the effective config from goal, deprecated preset, and flags.
 
-    Explicit CLI flags (values that differ from their Click defaults) take
-    precedence over preset values.
+    Precedence (highest wins):
+      1. Explicit CLI flags (``explicit_set``)
+      2. Profile-loaded values (``profile_set``)
+      3. Goal extras (applied only to keys in neither set AND still at
+         their Click default)
+      4. Click defaults
+
+    Note on min_files=0: ``0`` is both the Click default and a valid user
+    intent. CLI callers pass ``explicit_set`` to disambiguate; profile-loaded
+    callers pass ``profile_set`` to mark intentional values. A programmatic
+    caller that *means* ``min_files=0`` should include ``"min_files"`` in
+    one of those sets.
+
+    ``preset`` is a deprecated alias. If set, it is translated to a goal plus
+    an optional override dict and a deprecation warning is emitted via
+    *warn*. Passing both ``--preset`` and ``--goal`` with *different* values
+    raises ``click.UsageError``.
+
+    Returns a dict containing the final flag values plus the resolved goal
+    name under ``"goal"``. ``warn`` is only called when the deprecated
+    ``--preset`` flag is used.
     """
     effective: dict = {
         "count": count,
@@ -735,15 +800,54 @@ def _apply_preset(
         "enrich": enrich,
         "org_scale": org_scale,
         "mcp_families": mcp_families,
+        "goal": goal,
     }
-    if preset is None:
-        return effective
+    protected = explicit_set | profile_set
 
-    preset_values = PRESETS.get(preset, {})
-    for key, preset_val in preset_values.items():
-        # Only apply preset value when the CLI value is still the default
-        if effective[key] == _CLI_DEFAULTS.get(key):
-            effective[key] = preset_val
+    def _apply_overrides(overrides: dict) -> None:
+        """Apply overrides to flags neither explicit nor profile-set, still
+        at their Click default."""
+        for key, value in overrides.items():
+            if key in protected:
+                continue
+            if effective.get(key) == _CLI_DEFAULTS.get(key):
+                effective[key] = value
+
+    # Step 1: translate deprecated preset → goal.
+    if preset is not None:
+        if preset not in _PRESET_ALIASES:
+            raise click.UsageError(
+                f"Unknown preset '{preset}'. "
+                f"Choose from: {', '.join(sorted(_PRESET_ALIASES))}"
+            )
+        preset_goal, preset_overrides = _PRESET_ALIASES[preset]
+
+        if warn is not None:
+            warn(
+                "--preset is deprecated; use --goal "
+                f"{preset_goal} instead (alias: --preset {preset})."
+            )
+
+        if goal is not None and goal != preset_goal:
+            raise click.UsageError(
+                f"Cannot use both --preset {preset} and --goal {goal}; "
+                "--preset is deprecated, use --goal only."
+            )
+
+        if goal is None:
+            effective["goal"] = preset_goal
+            goal = preset_goal
+
+        _apply_overrides(preset_overrides)
+
+    # Step 2: apply goal extras.
+    if goal is not None:
+        if goal not in _EVAL_GOALS:
+            raise click.UsageError(
+                f"Unknown goal '{goal}'. "
+                f"Choose from: {', '.join(sorted(_EVAL_GOALS))}"
+            )
+        _apply_overrides(_EVAL_GOALS[goal]["extras"])
 
     return effective
 
@@ -1056,19 +1160,27 @@ def run_mine(
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
     sg_repo: str = "",
+    explicit_set: frozenset[str] = frozenset(),
+    profile_set: frozenset[str] = frozenset(),
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.mining import mine_tasks, write_task_dir
 
-    # Apply preset defaults — explicit CLI flags override
-    resolved = _apply_preset(
-        preset,
+    # Resolve goal, deprecated preset alias, and flag extras in one pass.
+    # Any extras from a goal (e.g. --goal mcp → org_scale=True, min_files=6)
+    # take effect *before* the org-scale dispatch branch below.
+    resolved = resolve_effective_config(
+        goal=goal,
+        preset=preset,
         count=count,
         source=source,
         min_files=min_files,
         enrich=enrich,
         org_scale=org_scale,
         mcp_families=mcp_families,
+        explicit_set=explicit_set,
+        profile_set=profile_set,
+        warn=lambda msg: click.echo(f"Warning: {msg}", err=True),
     )
     count = resolved["count"]
     source = resolved["source"]
@@ -1076,6 +1188,20 @@ def run_mine(
     enrich = resolved["enrich"]
     org_scale = resolved["org_scale"]
     mcp_families = resolved["mcp_families"]
+    goal = resolved["goal"]
+
+    # Derive display name, bias, and task_type from the resolved goal, if any.
+    # min_files is already resolved via goal extras inside
+    # resolve_effective_config, so we only pull the descriptive fields here.
+    if goal is not None:
+        goal_entry = _EVAL_GOALS[goal]
+        goal_name = goal_entry["name"]
+        bias = goal_entry["bias"]
+        task_type = goal_entry["task_type"]
+    else:
+        goal_name = "General benchmarking"
+        bias = "balanced"
+        task_type = "mixed"
 
     # CLI validation: --backends agent --no-llm is incompatible
     if no_llm and "agent" in backends:
@@ -1116,22 +1242,7 @@ def run_mine(
     if interactive is None:
         interactive = _is_interactive()
 
-    goal_name = "General benchmarking"
-    bias = "balanced"
-    task_type = "mixed"
-
-    # --goal flag: resolve goal without interactive prompt
-    if goal is not None:
-        goal_key = _GOAL_FLAG_MAP.get(goal)
-        if goal_key is None:
-            raise click.UsageError(
-                f"Unknown goal '{goal}'. "
-                f"Choose from: {', '.join(sorted(_GOAL_FLAG_MAP))}"
-            )
-        goal_name, goal_min_files, bias, task_type = _EVAL_GOALS[goal_key]
-        if min_files == 0:
-            min_files = goal_min_files
-    elif interactive:
+    if interactive and goal is None:
         (
             goal_name,
             count,

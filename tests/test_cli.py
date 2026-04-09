@@ -199,3 +199,104 @@ def test_log_format_option_appears_in_help():
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0
     assert "--log-format" in result.output
+
+
+# ---------------------------------------------------------------------------
+# `codeprobe mine` simple vs advanced help surface
+# ---------------------------------------------------------------------------
+
+# Advanced flags that must be hidden from default `mine --help` output.
+_ADVANCED_MINE_FLAGS = (
+    "--source",
+    "--min-files",
+    "--subsystem",
+    "--discover-subsystems",
+    "--enrich",
+    "--no-llm",
+    "--org-scale",
+    "--family",
+    "--repos",
+    "--scan-timeout",
+    "--validate",
+    "--curate",
+    "--backends",
+    "--verify-curation",
+    "--mcp-families",
+    "--sg-repo",
+)
+
+# Flags that should always appear in the short help.
+_SIMPLE_MINE_FLAGS = ("--goal", "--count", "--interactive", "--advanced")
+
+
+def test_mine_help_hides_advanced_flags_by_default():
+    runner = CliRunner()
+    result = runner.invoke(main, ["mine", "--help"])
+    assert result.exit_code == 0
+    for flag in _ADVANCED_MINE_FLAGS:
+        assert (
+            flag not in result.output
+        ), f"Advanced flag {flag} should be hidden in default `mine --help` output"
+
+
+def test_mine_help_shows_simple_flags_by_default():
+    runner = CliRunner()
+    result = runner.invoke(main, ["mine", "--help"])
+    assert result.exit_code == 0
+    for flag in _SIMPLE_MINE_FLAGS:
+        assert flag in result.output, f"Simple flag {flag} missing from `mine --help`"
+
+
+def test_mine_help_advanced_reveals_hidden_flags():
+    runner = CliRunner()
+    result = runner.invoke(main, ["mine", "--help", "--advanced"])
+    assert result.exit_code == 0
+    for flag in _ADVANCED_MINE_FLAGS:
+        assert (
+            flag in result.output
+        ), f"Advanced flag {flag} should be visible when --advanced is passed"
+
+
+def test_mine_help_advanced_ordering_irrelevant():
+    """`mine --advanced --help` and `mine --help --advanced` must produce
+    the same set of visible flags."""
+    runner = CliRunner()
+    r1 = runner.invoke(main, ["mine", "--advanced", "--help"])
+    r2 = runner.invoke(main, ["mine", "--help", "--advanced"])
+    assert r1.exit_code == 0
+    assert r2.exit_code == 0
+    for flag in _ADVANCED_MINE_FLAGS:
+        assert flag in r1.output
+        assert flag in r2.output
+
+
+def test_mine_help_visibility_does_not_leak_across_invocations():
+    """Regression: the --advanced reveal must be stateless.
+    Invoking with --advanced must not affect a subsequent plain --help call."""
+    runner = CliRunner()
+    runner.invoke(main, ["mine", "--help", "--advanced"])
+    plain = runner.invoke(main, ["mine", "--help"])
+    assert plain.exit_code == 0
+    for flag in _ADVANCED_MINE_FLAGS:
+        assert (
+            flag not in plain.output
+        ), f"Advanced flag {flag} leaked into plain --help after a prior --advanced call"
+
+
+def test_mine_hidden_flag_still_functional(tmp_path):
+    """Hiding a flag from help must not disable it — `mine --org-scale .` still works."""
+    from unittest.mock import patch
+
+    runner = CliRunner()
+    with (
+        patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+        patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+        patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+    ):
+        result = runner.invoke(
+            main,
+            ["mine", "--org-scale", "--no-interactive", str(tmp_path)],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0, result.output
+    mock_org.assert_called_once()

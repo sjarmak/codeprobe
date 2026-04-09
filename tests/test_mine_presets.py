@@ -1,118 +1,38 @@
-"""Tests for mine command presets and MCP discovery extraction."""
+"""Tests for deprecated --preset alias and legacy preset translation."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
-from codeprobe.cli.mine_cmd import PRESETS, _apply_preset, _CLI_DEFAULTS
+from codeprobe.cli.mine_cmd import _PRESET_ALIASES
 
 # ---------------------------------------------------------------------------
-# _apply_preset unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestApplyPreset:
-    """Verify preset merging and CLI-override semantics."""
-
-    def test_no_preset_returns_inputs(self) -> None:
-        result = _apply_preset(
-            None,
-            count=5,
-            source="auto",
-            min_files=0,
-            enrich=False,
-            org_scale=False,
-            mcp_families=False,
-        )
-        assert result == {
-            "count": 5,
-            "source": "auto",
-            "min_files": 0,
-            "enrich": False,
-            "org_scale": False,
-            "mcp_families": False,
-        }
-
-    def test_quick_preset_sets_count_3(self) -> None:
-        result = _apply_preset(
-            "quick",
-            count=5,  # default
-            source="auto",
-            min_files=0,
-            enrich=False,
-            org_scale=False,
-            mcp_families=False,
-        )
-        assert result["count"] == 3
-
-    def test_mcp_preset_enables_org_scale_flags(self) -> None:
-        result = _apply_preset(
-            "mcp",
-            count=5,
-            source="auto",
-            min_files=0,
-            enrich=False,
-            org_scale=False,
-            mcp_families=False,
-        )
-        assert result["count"] == 8
-        assert result["org_scale"] is True
-        assert result["mcp_families"] is True
-        assert result["enrich"] is True
-
-    def test_explicit_count_overrides_preset(self) -> None:
-        """When the user passes --count 10, the preset count is ignored."""
-        result = _apply_preset(
-            "quick",
-            count=10,  # non-default → explicit
-            source="auto",
-            min_files=0,
-            enrich=False,
-            org_scale=False,
-            mcp_families=False,
-        )
-        assert result["count"] == 10
-
-    def test_explicit_org_scale_overrides_mcp_preset(self) -> None:
-        """When user explicitly passes --org-scale (True != default False), keep it."""
-        # If user explicitly sets org_scale=True, it matches the mcp preset anyway.
-        # Test the inverse: user somehow has org_scale as False but default is also False
-        # → preset wins. This is the expected behavior.
-        result = _apply_preset(
-            "mcp",
-            count=5,
-            source="auto",
-            min_files=0,
-            enrich=False,
-            org_scale=False,  # same as default → preset wins
-            mcp_families=False,
-        )
-        assert result["org_scale"] is True
-
-
-# ---------------------------------------------------------------------------
-# PRESETS dict structure
+# _PRESET_ALIASES structure
 # ---------------------------------------------------------------------------
 
 
-class TestPresetsDict:
-    """Verify PRESETS contains expected keys and shapes."""
+class TestPresetAliases:
+    """The legacy --preset flag is a deprecated alias mapping to a goal."""
 
-    def test_quick_preset_exists(self) -> None:
-        assert "quick" in PRESETS
-        assert "count" in PRESETS["quick"]
+    def test_quick_aliases_to_general_with_count_3(self) -> None:
+        goal, overrides = _PRESET_ALIASES["quick"]
+        assert goal == "general"
+        assert overrides == {"count": 3}
 
-    def test_mcp_preset_exists(self) -> None:
-        assert "mcp" in PRESETS
-        assert PRESETS["mcp"]["org_scale"] is True
-        assert PRESETS["mcp"]["mcp_families"] is True
+    def test_mcp_aliases_to_goal_mcp(self) -> None:
+        goal, overrides = _PRESET_ALIASES["mcp"]
+        assert goal == "mcp"
+        assert overrides == {}
+
+    def test_only_two_aliases_exist(self) -> None:
+        assert set(_PRESET_ALIASES.keys()) == {"quick", "mcp"}
 
 
 # ---------------------------------------------------------------------------
-# MCP discovery importable from core
+# MCP discovery importable from core (preserved from old file)
 # ---------------------------------------------------------------------------
 
 
@@ -132,27 +52,147 @@ class TestMcpDiscoveryImport:
 
 
 # ---------------------------------------------------------------------------
-# CLI integration via CliRunner
+# --preset CLI flag: still accepted, emits deprecation warning, translates
 # ---------------------------------------------------------------------------
 
 
-class TestMinePresetCLI:
-    """Test --preset flag via Click CliRunner (dry-run — mock run_mine)."""
+def _make_mine_runner_mocks():
+    """Return a stack of context-manager patches that make mine() safely callable."""
+    return [
+        patch("codeprobe.cli.mine_cmd._resolve_repo_path"),
+        patch("codeprobe.cli.mine_cmd._run_org_scale_mine"),
+        patch("codeprobe.cli.mine_cmd._dispatch_by_task_type"),
+        patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+    ]
 
-    def test_preset_quick_passes_to_run_mine(self) -> None:
+
+class TestPresetCLIDeprecation:
+    """The --preset CLI flag still works but is deprecated."""
+
+    def test_preset_quick_translates_to_general_count_3(self, tmp_path) -> None:
         from codeprobe.cli import main
 
         runner = CliRunner()
-
-        with patch("codeprobe.cli.mine_cmd.run_mine") as mock_run:
+        with (
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
             result = runner.invoke(
-                main, ["mine", "--preset", "quick", "--no-interactive", "."]
+                main,
+                ["mine", "--preset", "quick", "--no-interactive", str(tmp_path)],
+                catch_exceptions=False,
             )
-            # run_mine should have been called (may fail due to missing repo, but
-            # we patched it so it won't)
-            if mock_run.called:
-                _, kwargs = mock_run.call_args
-                assert kwargs.get("preset") == "quick"
+
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output.lower()
+        mock_dispatch.assert_called_once()
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs["count"] == 3
+
+    def test_preset_mcp_translates_to_goal_mcp(self, tmp_path) -> None:
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            result = runner.invoke(
+                main,
+                ["mine", "--preset", "mcp", "--no-interactive", str(tmp_path)],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output.lower()
+        # mcp goal expands to org_scale=True → should dispatch to _run_org_scale_mine,
+        # not _dispatch_by_task_type
+        mock_org.assert_called_once()
+        mock_dispatch.assert_not_called()
+
+    def test_preset_quick_with_explicit_count_keeps_explicit(self, tmp_path) -> None:
+        """--preset quick --count 7 keeps count=7, not 3."""
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "mine",
+                    "--preset",
+                    "quick",
+                    "--count",
+                    "7",
+                    "--no-interactive",
+                    str(tmp_path),
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.kwargs["count"] == 7
+
+    def test_preset_and_goal_conflict_raises(self, tmp_path) -> None:
+        """--preset mcp --goal quality raises UsageError."""
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "mine",
+                    "--preset",
+                    "mcp",
+                    "--goal",
+                    "quality",
+                    "--no-interactive",
+                    str(tmp_path),
+                ],
+            )
+
+        assert result.exit_code != 0
+        assert "preset" in result.output.lower() and "goal" in result.output.lower()
+
+    def test_preset_and_goal_same_value_is_ok(self, tmp_path) -> None:
+        """--preset mcp --goal mcp is fine (redundant but not conflicting)."""
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type"),
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "mine",
+                    "--preset",
+                    "mcp",
+                    "--goal",
+                    "mcp",
+                    "--no-interactive",
+                    str(tmp_path),
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_org.assert_called_once()
 
     def test_preset_invalid_rejected(self) -> None:
         from codeprobe.cli import main
@@ -161,3 +201,109 @@ class TestMinePresetCLI:
         result = runner.invoke(main, ["mine", "--preset", "invalid", "."])
         assert result.exit_code != 0
         assert "Invalid value" in result.output or "invalid" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# Profile × CLI goal/preset interaction
+# ---------------------------------------------------------------------------
+
+
+class TestProfileGoalPresetInteraction:
+    """Profile-loaded goal/preset must not conflict with CLI-explicit ones.
+
+    Rule: if the user explicitly passed --goal OR --preset on the CLI, any
+    goal/preset value from a profile is ignored. Explicit CLI > profile.
+    """
+
+    def test_cli_goal_overrides_profile_preset(self, tmp_path) -> None:
+        """profile{preset:mcp} + CLI --goal quality → CLI wins, no error."""
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd.load_profile",
+                return_value={"preset": "mcp"},
+            ),
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_task_type",
+                return_value="sdlc_code_change",
+            ),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "mine",
+                    "--profile",
+                    "p",
+                    "--goal",
+                    "quality",
+                    "--no-interactive",
+                    str(tmp_path),
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_dispatch.assert_called_once()
+        mock_org.assert_not_called()
+
+    def test_cli_preset_overrides_profile_goal(self, tmp_path) -> None:
+        """profile{goal:quality} + CLI --preset mcp → CLI wins, warns."""
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd.load_profile",
+                return_value={"goal": "quality"},
+            ),
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "mine",
+                    "--profile",
+                    "p",
+                    "--preset",
+                    "mcp",
+                    "--no-interactive",
+                    str(tmp_path),
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "deprecated" in result.output.lower()
+        mock_org.assert_called_once()
+        mock_dispatch.assert_not_called()
+
+    def test_profile_goal_applied_when_no_cli_goal_or_preset(self, tmp_path) -> None:
+        """profile{goal:mcp} with nothing on CLI → profile goal wins."""
+        from codeprobe.cli import main
+
+        runner = CliRunner()
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd.load_profile",
+                return_value={"goal": "mcp"},
+            ),
+            patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            result = runner.invoke(
+                main,
+                ["mine", "--profile", "p", "--no-interactive", str(tmp_path)],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_org.assert_called_once()

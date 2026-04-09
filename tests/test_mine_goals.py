@@ -9,78 +9,88 @@ import pytest
 
 from codeprobe.cli.mine_cmd import (
     _EVAL_GOALS,
-    _GOAL_FLAG_MAP,
+    _NUMERIC_GOAL_KEYS,
     _resolve_task_type,
 )
 
 # ---------------------------------------------------------------------------
-# _EVAL_GOALS structure
+# _EVAL_GOALS structure (dict-of-dicts keyed by flag name)
 # ---------------------------------------------------------------------------
 
 
 class TestEvalGoals:
-    """Verify _EVAL_GOALS includes task_type as the 4th element."""
+    """Verify _EVAL_GOALS is keyed by flag name and carries name/bias/task_type/extras."""
 
-    def test_all_entries_have_four_elements(self) -> None:
-        for key, entry in _EVAL_GOALS.items():
-            assert (
-                len(entry) == 4
-            ), f"Goal {key} should have 4 elements, got {len(entry)}"
+    _REQUIRED_KEYS = {"name", "bias", "task_type", "extras"}
+
+    def test_keys_are_flag_names(self) -> None:
+        assert set(_EVAL_GOALS.keys()) == {"quality", "navigation", "mcp", "general"}
+
+    def test_each_entry_has_required_keys(self) -> None:
+        for name, entry in _EVAL_GOALS.items():
+            missing = self._REQUIRED_KEYS - set(entry.keys())
+            assert not missing, f"Goal {name!r} missing keys: {missing}"
+            assert isinstance(entry["extras"], dict)
 
     def test_quality_goal(self) -> None:
-        name, min_files, bias, task_type = _EVAL_GOALS["1"]
-        assert name == "Code quality comparison"
-        assert min_files == 2
-        assert bias == "mixed"
-        assert task_type == "sdlc_code_change"
+        g = _EVAL_GOALS["quality"]
+        assert g["name"] == "Code quality comparison"
+        assert g["bias"] == "mixed"
+        assert g["task_type"] == "sdlc_code_change"
+        # Quality goal enables enrichment and bumps min_files to 2 via extras
+        assert g["extras"].get("enrich") is True
+        assert g["extras"].get("min_files") == 2
 
     def test_navigation_goal(self) -> None:
-        name, min_files, bias, task_type = _EVAL_GOALS["2"]
-        assert name == "Codebase navigation"
-        assert min_files == 0
-        assert bias == "mixed"
-        assert task_type == "architecture_comprehension"
+        g = _EVAL_GOALS["navigation"]
+        assert g["name"] == "Codebase navigation"
+        assert g["bias"] == "mixed"
+        assert g["task_type"] == "architecture_comprehension"
+        assert g["extras"] == {}
 
-    def test_mcp_goal(self) -> None:
-        name, min_files, bias, task_type = _EVAL_GOALS["3"]
-        assert name == "MCP / tool benefit"
-        assert min_files == 6
-        assert bias == "hard"
-        assert task_type == "mcp_tool_usage"
+    def test_mcp_goal_expands_to_full_config(self) -> None:
+        """The mcp goal must set org_scale, mcp_families, enrich, count=8,
+        and min_files=6 via extras.
+
+        This is the bug fix: previously the mcp 'goal' and mcp 'preset' had
+        different behaviors. The goal now owns the full configuration.
+        """
+        g = _EVAL_GOALS["mcp"]
+        assert g["name"] == "MCP / tool benefit"
+        assert g["bias"] == "hard"
+        assert g["task_type"] == "mcp_tool_usage"
+        assert g["extras"]["org_scale"] is True
+        assert g["extras"]["mcp_families"] is True
+        assert g["extras"]["enrich"] is True
+        assert g["extras"]["count"] == 8
+        assert g["extras"]["min_files"] == 6
 
     def test_general_goal(self) -> None:
-        name, min_files, bias, task_type = _EVAL_GOALS["4"]
-        assert name == "General benchmarking"
-        assert min_files == 0
-        assert bias == "balanced"
-        assert task_type == "mixed"
+        g = _EVAL_GOALS["general"]
+        assert g["name"] == "General benchmarking"
+        assert g["bias"] == "balanced"
+        assert g["task_type"] == "mixed"
+        assert g["extras"] == {}
 
 
 # ---------------------------------------------------------------------------
-# _GOAL_FLAG_MAP
+# _NUMERIC_GOAL_KEYS — interactive prompt mapping
 # ---------------------------------------------------------------------------
 
 
-class TestGoalFlagMap:
-    """Verify --goal flag values map to correct _EVAL_GOALS keys."""
+class TestNumericGoalKeys:
+    """The interactive _ask_eval_goal prompt uses numeric keys (1-4) that
+    must map back to the dict-keyed goal names."""
 
-    def test_quality_maps_to_key_1(self) -> None:
-        assert _GOAL_FLAG_MAP["quality"] == "1"
+    def test_maps_to_all_goals(self) -> None:
+        assert _NUMERIC_GOAL_KEYS["1"] == "quality"
+        assert _NUMERIC_GOAL_KEYS["2"] == "navigation"
+        assert _NUMERIC_GOAL_KEYS["3"] == "mcp"
+        assert _NUMERIC_GOAL_KEYS["4"] == "general"
 
-    def test_navigation_maps_to_key_2(self) -> None:
-        assert _GOAL_FLAG_MAP["navigation"] == "2"
-
-    def test_mcp_maps_to_key_3(self) -> None:
-        assert _GOAL_FLAG_MAP["mcp"] == "3"
-
-    def test_general_maps_to_key_4(self) -> None:
-        assert _GOAL_FLAG_MAP["general"] == "4"
-
-    def test_all_flag_values_resolve_to_valid_goals(self) -> None:
-        for flag_val, goal_key in _GOAL_FLAG_MAP.items():
-            assert (
-                goal_key in _EVAL_GOALS
-            ), f"Flag '{flag_val}' maps to key '{goal_key}' not in _EVAL_GOALS"
+    def test_all_numeric_keys_resolve(self) -> None:
+        for num, goal_name in _NUMERIC_GOAL_KEYS.items():
+            assert goal_name in _EVAL_GOALS
 
 
 # ---------------------------------------------------------------------------
@@ -516,3 +526,327 @@ class TestDispatchPipelineIntegration:
                 bias="mixed",
             )
             instance.generate.assert_called_once_with(count=5)
+
+
+# ---------------------------------------------------------------------------
+# Goal extras expansion — the core behavior fix
+# ---------------------------------------------------------------------------
+
+
+class TestGoalExtrasExpansion:
+    """Goals expand to a set of defaults that override Click defaults
+    (but never explicit CLI values)."""
+
+    def test_goal_mcp_dispatches_to_org_scale_branch(self, tmp_path) -> None:
+        """The critical fix: --goal mcp now triggers org-scale mining
+        because its extras set org_scale=True, mcp_families=True, enrich=True."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            run_mine(str(tmp_path), goal="mcp", interactive=False)
+
+        mock_org.assert_called_once()
+        mock_dispatch.assert_not_called()
+        # org-scale count comes from mcp goal extras (count=8)
+        assert mock_org.call_args.kwargs["count"] == 8
+        assert mock_org.call_args.kwargs["mcp_families"] is True
+
+    def test_goal_mcp_explicit_count_override(self, tmp_path) -> None:
+        """--goal mcp --count 2 must keep count=2, not use the goal's count=8."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            run_mine(
+                str(tmp_path),
+                goal="mcp",
+                count=2,
+                interactive=False,
+                explicit_set=frozenset({"count"}),
+            )
+
+        mock_org.assert_called_once()
+        assert mock_org.call_args.kwargs["count"] == 2
+
+    def test_goal_quality_enables_enrich(self, tmp_path) -> None:
+        """The quality goal sets enrich=True via extras."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_task_type",
+                return_value="sdlc_code_change",
+            ),
+        ):
+            run_mine(str(tmp_path), goal="quality", interactive=False)
+
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.kwargs["enrich"] is True
+
+    def test_goal_general_no_extras(self, tmp_path) -> None:
+        """The general goal has no extras; explicit defaults remain unchanged."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            run_mine(str(tmp_path), goal="general", interactive=False)
+
+        mock_dispatch.assert_called_once()
+        # enrich and others stay at their defaults
+        assert mock_dispatch.call_args.kwargs["enrich"] is False
+
+    def test_non_default_value_not_in_explicit_set_still_blocks_extras(
+        self, tmp_path
+    ) -> None:
+        """If a caller passes count=10 directly (simulating a profile override),
+        goal extras must not overwrite it even though explicit_set is empty."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
+        ):
+            # count=10 is non-default and came from a profile (explicit_set empty).
+            # The mcp goal's count=8 must NOT override a profile-set value.
+            run_mine(str(tmp_path), goal="mcp", count=10, interactive=False)
+
+        mock_org.assert_called_once()
+        assert mock_org.call_args.kwargs["count"] == 10
+
+    def test_explicit_min_files_zero_is_respected(self, tmp_path) -> None:
+        """--goal quality --min-files 0 must keep min_files=0, not 2.
+
+        Regression for the bug where `if min_files == 0: min_files = goal_default`
+        silently overrode an explicit 0.
+        """
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_task_type",
+                return_value="sdlc_code_change",
+            ),
+        ):
+            run_mine(
+                str(tmp_path),
+                goal="quality",
+                min_files=0,
+                interactive=False,
+                explicit_set=frozenset({"min_files"}),
+            )
+
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.kwargs["min_files"] == 0
+
+    def test_profile_min_files_zero_is_respected(self, tmp_path) -> None:
+        """Profile-set min_files=0 must survive goal extras."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_task_type",
+                return_value="sdlc_code_change",
+            ),
+        ):
+            run_mine(
+                str(tmp_path),
+                goal="quality",
+                min_files=0,
+                interactive=False,
+                profile_set=frozenset({"min_files"}),
+            )
+
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.kwargs["min_files"] == 0
+
+    def test_goal_quality_default_min_files_from_extras(self, tmp_path) -> None:
+        """Without an explicit min_files, --goal quality sets min_files=2
+        via its extras."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        with (
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_repo_path",
+                return_value=tmp_path,
+            ),
+            patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
+            patch(
+                "codeprobe.cli.mine_cmd._resolve_task_type",
+                return_value="sdlc_code_change",
+            ),
+        ):
+            run_mine(str(tmp_path), goal="quality", interactive=False)
+
+        mock_dispatch.assert_called_once()
+        assert mock_dispatch.call_args.kwargs["min_files"] == 2
+
+
+# ---------------------------------------------------------------------------
+# resolve_effective_config — pure helper covering precedence rules
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEffectiveConfig:
+    """Direct tests of the resolve_effective_config helper."""
+
+    def _resolve(self, **overrides):
+        from codeprobe.cli.mine_cmd import resolve_effective_config
+
+        base = dict(
+            goal=None,
+            preset=None,
+            count=5,
+            source="auto",
+            min_files=0,
+            enrich=False,
+            org_scale=False,
+            mcp_families=False,
+            explicit_set=frozenset(),
+            profile_set=frozenset(),
+            warn=None,
+        )
+        base.update(overrides)
+        return resolve_effective_config(**base)
+
+    def test_no_goal_no_preset_returns_inputs(self) -> None:
+        result = self._resolve()
+        assert result["goal"] is None
+        assert result["count"] == 5
+        assert result["org_scale"] is False
+
+    def test_goal_mcp_expands_extras(self) -> None:
+        result = self._resolve(goal="mcp")
+        assert result["goal"] == "mcp"
+        assert result["count"] == 8
+        assert result["org_scale"] is True
+        assert result["mcp_families"] is True
+        assert result["enrich"] is True
+
+    def test_explicit_count_blocks_goal_override(self) -> None:
+        result = self._resolve(goal="mcp", count=2, explicit_set=frozenset({"count"}))
+        assert result["count"] == 2
+        # other extras still apply
+        assert result["org_scale"] is True
+
+    def test_non_default_count_blocks_goal_override(self) -> None:
+        """Profile-set value (non-default, not in explicit_set) still blocks extras."""
+        result = self._resolve(goal="mcp", count=10)
+        assert result["count"] == 10
+        assert result["org_scale"] is True  # still applied
+
+    def test_preset_quick_translates_to_general(self) -> None:
+        result = self._resolve(preset="quick")
+        assert result["goal"] == "general"
+        assert result["count"] == 3
+
+    def test_preset_mcp_translates_to_goal_mcp(self) -> None:
+        result = self._resolve(preset="mcp")
+        assert result["goal"] == "mcp"
+        assert result["count"] == 8
+        assert result["org_scale"] is True
+
+    def test_preset_and_different_goal_raises(self) -> None:
+        import click
+
+        with pytest.raises(click.UsageError, match="preset"):
+            self._resolve(preset="mcp", goal="quality")
+
+    def test_preset_and_matching_goal_ok(self) -> None:
+        """--preset mcp --goal mcp is redundant but not an error."""
+        result = self._resolve(preset="mcp", goal="mcp")
+        assert result["goal"] == "mcp"
+        assert result["org_scale"] is True
+
+    def test_invalid_goal_raises(self) -> None:
+        import click
+
+        with pytest.raises(click.UsageError, match="Unknown goal"):
+            self._resolve(goal="bogus")
+
+    def test_invalid_preset_raises(self) -> None:
+        import click
+
+        with pytest.raises(click.UsageError, match="preset"):
+            self._resolve(preset="bogus")
+
+    def test_preset_emits_deprecation_warning(self) -> None:
+        messages: list[str] = []
+        self._resolve(preset="mcp", warn=lambda msg: messages.append(msg))
+        assert len(messages) == 1
+        assert "deprecated" in messages[0].lower()
+
+    def test_goal_mcp_without_preset_no_warning(self) -> None:
+        messages: list[str] = []
+        self._resolve(goal="mcp", warn=lambda msg: messages.append(msg))
+        assert messages == []
+
+    def test_profile_set_blocks_goal_extras(self) -> None:
+        """profile_set behaves like explicit_set for goal-extra overrides."""
+        result = self._resolve(goal="mcp", count=10, profile_set=frozenset({"count"}))
+        assert result["count"] == 10
+        # Non-profile-set keys still get the goal extras.
+        assert result["org_scale"] is True
+
+    def test_explicit_set_beats_profile_set_symmetrically(self) -> None:
+        """Both sets equally protect against goal extras; CLI and profile
+        are distinct layers but collapse to 'protected' for extras blocking."""
+        result = self._resolve(
+            goal="mcp",
+            count=2,
+            explicit_set=frozenset({"count"}),
+            profile_set=frozenset({"count"}),
+        )
+        assert result["count"] == 2
+
+    def test_profile_min_files_zero_blocks_goal_extras(self) -> None:
+        """min_files=0 via profile_set must not be overridden by goal extras."""
+        result = self._resolve(
+            goal="quality", min_files=0, profile_set=frozenset({"min_files"})
+        )
+        assert result["min_files"] == 0
+
+    def test_explicit_min_files_zero_blocks_goal_extras(self) -> None:
+        """min_files=0 via explicit_set must not be overridden by goal extras."""
+        result = self._resolve(
+            goal="quality", min_files=0, explicit_set=frozenset({"min_files"})
+        )
+        assert result["min_files"] == 0

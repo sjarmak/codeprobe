@@ -9,6 +9,51 @@ import click
 from codeprobe import __version__
 
 
+class MineCommand(click.Command):
+    """Custom Click command supporting a two-tier help surface.
+
+    By default ``codeprobe mine --help`` only displays options without the
+    ``hidden=True`` marker. Passing ``--advanced`` on the same command line
+    reveals every option. Detection is done in ``parse_args`` before Click
+    touches the args list, then recorded in ``ctx.meta`` — a per-invocation
+    dict — so no state leaks between sequential invocations in the same
+    process.
+
+    Note: ``format_options`` temporarily mutates ``Option.hidden`` on the
+    shared command instance with a ``try/finally`` guard. This is safe for
+    sequential CLI invocations (the common case) but is *not* thread-safe:
+    concurrent ``--help`` renders could race. No concurrent use is expected.
+    """
+
+    _META_KEY = "codeprobe.show_advanced"
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        ctx.meta[self._META_KEY] = "--advanced" in args
+        return super().parse_args(ctx, args)
+
+    def format_options(
+        self, ctx: click.Context, formatter: click.HelpFormatter
+    ) -> None:
+        if not ctx.meta.get(self._META_KEY, False):
+            super().format_options(ctx, formatter)
+            return
+
+        # Temporarily unhide hidden options for this single help rendering
+        # pass. The try/finally guarantees restoration even if formatting
+        # raises; combined with the ctx.meta gate above, no state leaks
+        # across invocations.
+        originally_hidden = [
+            p for p in self.get_params(ctx) if isinstance(p, click.Option) and p.hidden
+        ]
+        for p in originally_hidden:
+            p.hidden = False
+        try:
+            super().format_options(ctx, formatter)
+        finally:
+            for p in originally_hidden:
+                p.hidden = True
+
+
 class _JsonFormatter(logging.Formatter):
     """Emit one JSON object per log line."""
 
@@ -103,21 +148,22 @@ def init(path: str) -> None:
     run_init(path)
 
 
-@main.command()
+@main.command(cls=MineCommand)
 @click.argument("path", default=".")
-@click.option(
-    "--preset",
-    type=click.Choice(["quick", "mcp"], case_sensitive=False),
-    default=None,
-    help="Apply a named preset: 'quick' (count=3) or 'mcp' (org-scale + MCP families).",
-)
 @click.option(
     "--goal",
     type=click.Choice(
         ["quality", "navigation", "mcp", "general"], case_sensitive=False
     ),
     default=None,
-    help="Eval goal: quality, navigation, mcp, general. Skips interactive goal prompt.",
+    help="Eval goal: quality, navigation, mcp, general. "
+    "Drives task type, defaults, and extras. Skips the interactive prompt.",
+)
+@click.option("--count", default=5, help="Number of tasks to mine (3-20).")
+@click.option(
+    "--interactive/--no-interactive",
+    default=None,
+    help="Force interactive or non-interactive mode (default: auto-detect TTY).",
 )
 @click.option(
     "--profile",
@@ -139,69 +185,90 @@ def init(path: str) -> None:
     default=False,
     help="Show available profiles from user and project levels.",
 )
-@click.option("--count", default=5, help="Number of tasks to mine (3-20).")
+@click.option(
+    "--advanced",
+    is_flag=True,
+    default=False,
+    expose_value=False,
+    help="Show all advanced options in --help output.",
+)
+# --- Deprecated ---
+@click.option(
+    "--preset",
+    type=click.Choice(["quick", "mcp"], case_sensitive=False),
+    default=None,
+    hidden=True,
+    help="[DEPRECATED] Use --goal instead. "
+    "'quick' → --goal general --count 3; 'mcp' → --goal mcp.",
+)
+# --- Advanced (hidden by default; reveal with --advanced --help) ---
 @click.option(
     "--source",
     default="auto",
+    hidden=True,
     help="Git host: github, gitlab, bitbucket, azure, gitea, local, auto.",
 )
 @click.option(
     "--min-files",
     default=0,
     type=int,
+    hidden=True,
     help="Minimum changed files per task. Use 4+ to bias toward harder tasks.",
 )
 @click.option(
     "--subsystem",
     multiple=True,
     default=(),
+    hidden=True,
     help="Filter to subsystem prefixes. Repeatable: --subsystem pkg/ --subsystem cmd/",
 )
 @click.option(
     "--discover-subsystems",
     is_flag=True,
     default=False,
+    hidden=True,
     help="List subsystems from merge history and pick interactively.",
 )
 @click.option(
     "--enrich",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Enrich low-quality tasks via LLM (adds problem statement + acceptance criteria).",
-)
-@click.option(
-    "--interactive/--no-interactive",
-    default=None,
-    help="Force interactive or non-interactive mode (default: auto-detect TTY).",
 )
 @click.option(
     "--no-llm",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Skip LLM instruction generation; use regex fallback (for offline/CI).",
 )
 @click.option(
     "--org-scale",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Mine org-scale comprehension tasks (oracle-verified) instead of SDLC tasks.",
 )
 @click.option(
     "--family",
     multiple=True,
     default=(),
+    hidden=True,
     help="Limit org-scale mining to specific families. Repeatable.",
 )
 @click.option(
     "--repos",
     multiple=True,
     default=(),
+    hidden=True,
     help="Repo paths or URLs for multi-repo org-scale mining. Repeatable.",
 )
 @click.option(
     "--scan-timeout",
     default=60,
     type=int,
+    hidden=True,
     help="Per-family scan timeout in seconds (default: 60).",
 )
 @click.option(
@@ -209,18 +276,21 @@ def init(path: str) -> None:
     "validate_flag",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Run MCP delta validation on mined families.",
 )
 @click.option(
     "--curate",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Enable curation pipeline (multi-backend ground truth with tiers).",
 )
 @click.option(
     "--backends",
     multiple=True,
     default=(),
+    hidden=True,
     help="Curation backends to use: grep, sourcegraph, pr_diff, agent. Repeatable.",
 )
 @click.option(
@@ -228,18 +298,21 @@ def init(path: str) -> None:
     "verify_curation_flag",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Run LLM verification on curated ground truth.",
 )
 @click.option(
     "--mcp-families",
     is_flag=True,
     default=False,
+    hidden=True,
     help="Include MCP-advantaged task families (symbol-reference-trace, "
     "type-hierarchy-consumers, change-scope-audit). Only with --org-scale.",
 )
 @click.option(
     "--sg-repo",
     default="",
+    hidden=True,
     help="Sourcegraph repo identifier for ground truth enrichment "
     "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
     "when --mcp-families is used. Requires SOURCEGRAPH_TOKEN env var.",
@@ -275,32 +348,31 @@ def mine(
     """Mine eval tasks from a repository's history.
 
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
-    test scripts, and scoring rubrics.
+    test scripts, and scoring rubrics. Use --goal to pick a use case:
 
     \b
-    Presets (--preset):
-      quick  — Fast scan: count=3, default SDLC mode
-      mcp    — MCP eval: count=8, org-scale + MCP families + enrich
+    Goals (--goal):
+      quality     — SDLC tasks to compare code-change quality
+      navigation  — Comprehension tasks for architecture understanding
+      mcp         — Cross-file, org-scale MCP / tool-benefit tasks
+      general     — Balanced mix (default)
 
     \b
     Profiles (--profile / --save-profile / --list-profiles):
-      Save:  codeprobe mine --save-profile my-setup --count 10 --org-scale .
+      Save:  codeprobe mine --save-profile my-setup --count 10 .
       Load:  codeprobe mine --profile my-setup /path/to/repo
       List:  codeprobe mine --list-profiles
 
     \b
-    Precedence: built-in defaults < profile < --preset < explicit CLI flags.
+    Precedence (highest wins):
+      explicit CLI > profile > goal extras > Click defaults
 
-    \b
-    Use --org-scale to mine comprehension/IR tasks with oracle verification
-    instead of SDLC code-change tasks.
-
-    By default, generates high-quality instructions via LLM (Haiku).
-    Use --no-llm to skip LLM and fall back to regex/template extraction.
+    Run `codeprobe mine --help --advanced` to see the full advanced option
+    surface for power-user workflows.
 
     When run interactively (default in a terminal), walks you through
-    choosing an eval goal, task count, and git host before mining.
-    Use --no-interactive to skip the prompts and use defaults/flags directly.
+    choosing an eval goal and task count before mining. Use --no-interactive
+    to skip the prompts and use defaults/flags directly.
     """
     from pathlib import Path as _Path
 
@@ -348,18 +420,25 @@ def mine(
         click.echo(f"Profile '{save_profile_name}' saved to {saved_path}")
         return
 
-    # --profile: load profile values as defaults, then apply preset and CLI overrides
+    # Determine which params were explicitly set on the CLI — used both by
+    # the profile loader (to decide which profile keys to honor) and by
+    # run_mine's resolve_effective_config (to decide which goal extras to
+    # apply).
+    explicitly_set = frozenset(
+        p.name
+        for p in ctx.command.params
+        if ctx.get_parameter_source(p.name) is not None
+        and ctx.get_parameter_source(p.name).name == "COMMANDLINE"
+    )
+
+    # --profile: load profile values as defaults for params not set on the CLI.
+    # Goal/preset extras and explicit CLI flags are still applied downstream by
+    # run_mine → resolve_effective_config using `explicitly_set` and
+    # `profile_set`.
+    profile_set: frozenset[str] = frozenset()
     if profile_name is not None:
         repo_path = _Path(path).resolve() if path != "." else _Path.cwd()
         prof = load_profile(profile_name, repo_path)
-
-        # Determine which params were explicitly set on the CLI
-        explicitly_set = {
-            p.name
-            for p in ctx.command.params
-            if ctx.get_parameter_source(p.name) is not None
-            and ctx.get_parameter_source(p.name).name == "COMMANDLINE"
-        }
 
         # Apply profile values for params NOT explicitly set on CLI.
         # Tuple-typed params (click multiple=True) need list→tuple coercion.
@@ -370,6 +449,11 @@ def mine(
                 return current
             v = prof[key]
             return tuple(v) if key in _TUPLE_PARAMS else v
+
+        # Track which keys were actually pulled from the profile. Goal extras
+        # treat profile-set keys as "user-intended" and refuse to override
+        # them, mirroring the explicit-CLI rule.
+        profile_set = frozenset(k for k in prof.keys() if k not in explicitly_set)
 
         count = _prof_val("count", count)  # type: ignore[assignment]
         source = _prof_val("source", source)  # type: ignore[assignment]
@@ -389,8 +473,13 @@ def mine(
         repos = _prof_val("repos", repos)  # type: ignore[assignment]
         backends = _prof_val("backends", backends)  # type: ignore[assignment]
         interactive = _prof_val("interactive", interactive)  # type: ignore[assignment]
-        preset = _prof_val("preset", preset)  # type: ignore[assignment]
-        goal = _prof_val("goal", goal)  # type: ignore[assignment]
+
+        # Profile preset/goal are ignored when either --goal or --preset was
+        # passed on the CLI. This keeps "explicit CLI > profile" and prevents
+        # false conflicts (profile preset=mcp vs CLI --goal quality).
+        if "goal" not in explicitly_set and "preset" not in explicitly_set:
+            preset = _prof_val("preset", preset)  # type: ignore[assignment]
+            goal = _prof_val("goal", goal)  # type: ignore[assignment]
 
     run_mine(
         path,
@@ -414,6 +503,8 @@ def mine(
         verify_curation_flag=verify_curation_flag,
         mcp_families=mcp_families,
         sg_repo=sg_repo,
+        explicit_set=explicitly_set,
+        profile_set=profile_set,
     )
 
 

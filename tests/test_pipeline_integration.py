@@ -127,22 +127,22 @@ class TestMultiRepoMining:
 
 class TestCLIFlags:
     def test_help_shows_repos_flag(self) -> None:
-        """AC10: --repos appears in help."""
+        """AC10: --repos appears in advanced help."""
         runner = CliRunner()
-        result = runner.invoke(main, ["mine", "--help"])
+        result = runner.invoke(main, ["mine", "--help", "--advanced"])
         assert result.exit_code == 0
         assert "--repos" in result.output
 
     def test_help_shows_scan_timeout_flag(self) -> None:
-        """AC10: --scan-timeout appears in help."""
+        """AC10: --scan-timeout appears in advanced help."""
         runner = CliRunner()
-        result = runner.invoke(main, ["mine", "--help"])
+        result = runner.invoke(main, ["mine", "--help", "--advanced"])
         assert "--scan-timeout" in result.output
 
     def test_help_shows_validate_flag(self) -> None:
-        """AC10: --validate appears in help."""
+        """AC10: --validate appears in advanced help."""
         runner = CliRunner()
-        result = runner.invoke(main, ["mine", "--help"])
+        result = runner.invoke(main, ["mine", "--help", "--advanced"])
         assert "--validate" in result.output
 
     @patch("codeprobe.mining.org_scale.mine_org_scale_tasks")
