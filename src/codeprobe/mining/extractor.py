@@ -156,26 +156,40 @@ _ISSUE_REF_PATTERN = re.compile(
 )
 
 
-def _build_test_command(language: str, test_files: list[str]) -> str:
+def _build_test_command(
+    language: str, test_files: list[str], repo_path: Path | None = None
+) -> str:
     """Build a targeted test command from language and test file paths.
 
     Supports Python (pytest), Go (go test), and JS/TS (npm test with jest pattern).
     Falls back to the generic test.sh for unsupported languages or empty file lists.
+
+    When *repo_path* is provided and exists on disk, validates that referenced
+    paths exist in the target repo and drops any that don't.  This prevents
+    generating unrunnable test commands against stripped or partial repos.
     """
+    validate = repo_path is not None and repo_path.is_dir()
+
     if not test_files:
         return _DEFAULT_TEST_COMMAND
 
     if language == "python":
+        if validate:
+            test_files = [f for f in test_files if (repo_path / f).exists()]
+        if not test_files:
+            return _DEFAULT_TEST_COMMAND
         return f"pytest {' '.join(test_files)}"
 
     if language == "go":
-        # Extract unique package directories from test file paths
         packages = sorted({str(Path(f).parent) for f in test_files})
+        if validate:
+            packages = [p for p in packages if (repo_path / p).is_dir()]
+        if not packages:
+            return _DEFAULT_TEST_COMMAND
         go_paths = " ".join(f"./{pkg}/..." for pkg in packages)
         return f"go test {go_paths}"
 
     if language in ("javascript", "typescript"):
-        # Use the first test file's basename as the pattern
         pattern = Path(test_files[0]).name
         return f"npm test -- --testPathPattern={pattern}"
 
@@ -471,8 +485,9 @@ def extract_task_from_merge(
         )
         return None
 
-    # Build a verification command targeted to the detected test files and language
-    test_command = _build_test_command(language, test_files)
+    # Build a verification command targeted to the detected test files and language.
+    # Pass repo_path so missing packages (e.g. stripped vendor dirs) are filtered out.
+    test_command = _build_test_command(language, test_files, repo_path)
 
     # Hard gate: stub test command means verification is meaningless — skip
     if test_command == _DEFAULT_TEST_COMMAND:

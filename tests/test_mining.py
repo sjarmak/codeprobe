@@ -617,6 +617,46 @@ class TestBuildTestCommand:
         result = _build_test_command("python", [])
         assert result == "bash tests/test.sh"
 
+    def test_go_filters_missing_packages(self, tmp_path: Path) -> None:
+        """Go packages that don't exist in repo_path are dropped."""
+        (tmp_path / "pkg" / "real").mkdir(parents=True)
+        result = _build_test_command(
+            "go",
+            ["pkg/real/foo_test.go", "pkg/missing/bar_test.go"],
+            repo_path=tmp_path,
+        )
+        assert "./pkg/real/..." in result
+        assert "missing" not in result
+
+    def test_go_all_missing_falls_back(self, tmp_path: Path) -> None:
+        """When all Go packages are missing, falls back to default."""
+        result = _build_test_command(
+            "go",
+            ["vendor/gone/x_test.go"],
+            repo_path=tmp_path,
+        )
+        assert result == "bash tests/test.sh"
+
+    def test_python_filters_missing_files(self, tmp_path: Path) -> None:
+        """Python test files that don't exist in repo_path are dropped."""
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_real.py").touch()
+        result = _build_test_command(
+            "python",
+            ["tests/test_real.py", "tests/test_gone.py"],
+            repo_path=tmp_path,
+        )
+        assert "test_real.py" in result
+        assert "test_gone.py" not in result
+
+    def test_no_repo_path_skips_validation(self) -> None:
+        """Without repo_path, all paths are kept (backward compat)."""
+        result = _build_test_command(
+            "go",
+            ["pkg/might/not/exist/x_test.go"],
+        )
+        assert "./pkg/might/not/exist/..." in result
+
 
 # ---------------------------------------------------------------------------
 # score_pr_quality tests
@@ -1112,6 +1152,10 @@ class TestRunMineClearsStale:
         stale_dir = tmp_path / ".codeprobe" / "tasks" / "old-stale-task"
         stale_dir.mkdir(parents=True)
         (stale_dir / "instruction.md").write_text("stale")
+
+        # Create test file paths so path validation passes
+        (tmp_path / "tests").mkdir(exist_ok=True)
+        (tmp_path / "tests" / "test_auth.py").touch()
 
         merge_log = "aaaa1111bbbb2222 Merge pull request #1 from fix/auth\n"
         diff_files = "src/auth.py\ntests/test_auth.py\n"
