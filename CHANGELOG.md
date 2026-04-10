@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.2 (2026-04-09)
+## 0.3.6 (2026-04-09)
 
 ### Features
 
@@ -12,6 +12,7 @@
 - **Timeout telemetry recovery** — timed-out agent sessions now extract partial token/cost data from stdout instead of discarding all telemetry
 - **MCP instruction template** — `mine --goal mcp` now embeds the actual symbol name and definition file into `instruction.md` instead of generic phrasing
 - **Test detection heuristic** — broadened to recursive `**/test*/` glob patterns, fixing false negatives for repos with nested test layouts (e.g. numpy)
+- **Partial score display** — scores between 0 and 1 now show their numeric value instead of misleading FAIL; summary shows mean + perfect/partial breakdown
 
 ### Refactoring
 
