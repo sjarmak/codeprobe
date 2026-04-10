@@ -220,51 +220,64 @@ def _extract_sourcegraph_mcp(
     return None
 
 
+def _load_discovered_config(path: Path) -> dict | None:
+    """Load a discovered MCP config file and return its mcpServers dict."""
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    servers = data.get("mcpServers", {})
+    if servers:
+        return {"mcpServers": servers}
+    return None
+
+
 def _goal_mcp(agents: list[str], name: str) -> _Result:
     """Goal 1: MCP comparison prompts."""
     agent = _prompt_agent(agents)
     model = _prompt_model()
 
-    # Check if Sourcegraph is available in discovered MCP configs
     discovered = discover_mcp_configs()
 
-    if _detect_sourcegraph_in_mcp(discovered):
+    # Auto-detect: if any MCP configs are discovered, let the user pick one
+    if discovered:
         click.echo()
-        click.echo("Detected Sourcegraph MCP server in your configuration.")
-        if click.confirm("Use this Sourcegraph config?", default=True):
-            sg_config = _extract_sourcegraph_mcp(discovered)
-            if sg_config:
+        click.echo("Discovered MCP configurations:")
+        for i, (p, servers) in enumerate(discovered, 1):
+            server_list = ", ".join(servers)
+            click.echo(f"  {i}. {p}  ({server_list})")
+        manual_idx = len(discovered) + 1
+        click.echo(f"  {manual_idx}. Enter a Sourcegraph token manually")
+        click.echo()
+
+        choice = click.prompt(
+            "Select MCP config",
+            type=click.IntRange(1, manual_idx),
+            default=1,
+        )
+        if choice <= len(discovered):
+            path = discovered[choice - 1][0]
+            mcp_config = _load_discovered_config(path)
+            if mcp_config:
+                click.echo(f"  Using {path}")
                 return ask_mcp_comparison(
                     experiment_name=name,
                     agent=agent,
                     model=model,
-                    mcp_config=sg_config,
+                    mcp_config=mcp_config,
                 )
 
-    click.echo()
-    click.echo("MCP server options:")
-    click.echo("  1. Use a Sourcegraph access token (PAT)")
-    click.echo("  2. Use an existing MCP config file")
-    choice = click.prompt("Choose", type=click.IntRange(1, 2), default=1)
-
-    if choice == 1:
-        token = _prompt_sourcegraph_token()
-        sg_url = _prompt_sourcegraph_url()
-        return ask_mcp_comparison(
-            experiment_name=name,
-            agent=agent,
-            model=model,
-            sourcegraph_token=token,
-            sourcegraph_url=sg_url,
-        )
-
-    # Fall back to generic MCP config path
-    mcp_path = _prompt_mcp_config()
+    # No discovered configs or user chose manual entry
+    token = _prompt_sourcegraph_token()
+    sg_url = _prompt_sourcegraph_url()
     return ask_mcp_comparison(
         experiment_name=name,
         agent=agent,
         model=model,
-        mcp_config_path=mcp_path,
+        sourcegraph_token=token,
+        sourcegraph_url=sg_url,
     )
 
 

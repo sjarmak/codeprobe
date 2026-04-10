@@ -465,16 +465,22 @@ class TestInitCliIntegration:
     def test_goal1_mcp_flow(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """When a discovered config exists, selecting it skips token prompt."""
         mcp_file = tmp_path / "mcp.json"
-        mcp_file.write_text(json.dumps({"mcpServers": {}}))
+        mcp_file.write_text(
+            json.dumps({"mcpServers": {"my-server": {"type": "stdio", "cmd": "echo"}}})
+        )
 
-        # Patch discovery so the prompt falls through to manual path entry
-        monkeypatch.setattr("codeprobe.cli.init_cmd.discover_mcp_configs", lambda: [])
+        # Patch discovery to return the test config file
+        monkeypatch.setattr(
+            "codeprobe.cli.init_cmd.discover_mcp_configs",
+            lambda: [(mcp_file, ["my-server"])],
+        )
 
         runner = CliRunner()
-        # Inputs: goal=1, experiment name (enter=default), agent (enter=default),
-        # model (enter=skip), choose=2 (MCP config file), mcp config path
-        input_text = f"1\n\nclaude\n\n2\n{mcp_file}\n"
+        # Inputs: goal=1, name=default, agent=claude, model=skip,
+        # select=1 (the discovered config)
+        input_text = "1\n\nclaude\n\n1\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
