@@ -1,3 +1,5 @@
 """codeprobe — Benchmark AI coding agents against your own codebase."""
 
-__version__ = "0.3.11"
+from importlib.metadata import version
+
+__version__ = version("codeprobe")
