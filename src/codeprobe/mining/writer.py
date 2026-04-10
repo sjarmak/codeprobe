@@ -259,6 +259,7 @@ def _extract_first_paragraph(description: str) -> str:
 
 _ALLOWED_COMMAND_PREFIXES = (
     "bash tests/test.sh",
+    "bash -c ",
     "pytest ",
     "go test ",
     "npm test ",
