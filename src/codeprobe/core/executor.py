@@ -919,6 +919,7 @@ def execute_config(
                 mean_score=mean_score,
                 total_cost=total_cost,
                 total_duration=total_duration,
+                config_label=experiment_config.label,
                 timestamp=time.time(),
             )
         )

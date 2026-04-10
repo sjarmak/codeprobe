@@ -78,6 +78,7 @@ class RunFinished:
     mean_score: float
     total_cost: float
     total_duration: float
+    config_label: str
     timestamp: float
 
 

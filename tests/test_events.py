@@ -92,6 +92,7 @@ class TestEventCreation:
             mean_score=0.75,
             total_cost=4.5,
             total_duration=120.0,
+            config_label="test",
             timestamp=4.0,
         )
         assert ev.completed_count == 9
@@ -110,6 +111,7 @@ class TestEventCreation:
                 mean_score=1.0,
                 total_cost=0.0,
                 total_duration=0.0,
+                config_label="x",
                 timestamp=0.0,
             ),
         ],

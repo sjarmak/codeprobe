@@ -3,14 +3,19 @@
 Provides a :class:`RichLiveListener` that renders a live-updating table
 to stderr while an experiment run is in progress.  Thread-safe — designed
 to be called from the :class:`EventDispatcher` daemon thread.
+
+When multiple configs run in parallel, a single :class:`RichLiveListener`
+instance should be shared across all dispatchers so that one ``Live``
+context manages the terminal.
 """
 
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
@@ -27,30 +32,42 @@ if TYPE_CHECKING:
     from codeprobe.core.events import RunEvent
 
 
+@dataclass
+class _ConfigState:
+    """Per-config mutable state, guarded by the listener's lock."""
+
+    label: str
+    total_tasks: int = 0
+    tasks_completed: int = 0
+    passed: int = 0
+    total_cost: float = 0.0
+    durations: list[float] = field(default_factory=list)
+    current_task: str = ""
+    task_rows: list[tuple[str, str, str, str]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    finished: bool = False
+
+
 class RichLiveListener:
     """RunEventListener that renders a Rich Live dashboard to stderr.
 
-    All mutable state is guarded by a lock so updates from the dispatcher
-    daemon thread are safe even if ``on_event`` is called concurrently
-    (e.g. multiple dispatchers, though the normal case is a single one).
+    Supports multiple configs rendered in a single Live display.
+    All mutable state is guarded by a lock so updates from dispatcher
+    daemon threads are safe.
     """
 
     def __init__(self) -> None:
         self._console = Console(stderr=True)
         self._lock = threading.Lock()
 
-        # Run-level state
-        self._total_tasks: int = 0
-        self._config_label: str = ""
-        self._tasks_completed: int = 0
-        self._passed: int = 0
-        self._total_cost: float = 0.0
-        self._durations: list[float] = []
-        self._current_task: str = ""
-        self._task_rows: list[tuple[str, str, str, str]] = []
-        self._warnings: list[str] = []
+        # Keyed by config_label
+        self._configs: dict[str, _ConfigState] = {}
+        self._config_order: list[str] = []
 
-        # Rich Live context — created on RunStarted
+        # Track how many configs are expected vs finished
+        self._active_count = 0
+
+        # Rich Live context — created on first RunStarted
         self._live: Live | None = None
 
     # -- public interface (RunEventListener protocol) ----------------------
@@ -70,28 +87,37 @@ class RichLiveListener:
 
     # -- handlers ----------------------------------------------------------
 
-    def _handle_run_started(self, event: RunStarted) -> None:
-        with self._lock:
-            self._total_tasks = event.total_tasks
-            self._config_label = event.config_label
-            self._tasks_completed = 0
-            self._passed = 0
-            self._total_cost = 0.0
-            self._durations = []
-            self._current_task = ""
-            self._task_rows = []
-            self._warnings = []
+    def _get_or_create_config(self, label: str) -> _ConfigState:
+        """Return existing config state or create a new one (caller holds lock)."""
+        if label not in self._configs:
+            state = _ConfigState(label=label)
+            self._configs[label] = state
+            self._config_order.append(label)
+        return self._configs[label]
 
-        self._live = Live(
-            self._build_table(),
-            console=self._console,
-            refresh_per_second=4,
-        )
-        self._live.start()
+    def _handle_run_started(self, event: RunStarted) -> None:
+        start_live = False
+        with self._lock:
+            state = self._get_or_create_config(event.config_label)
+            state.total_tasks = event.total_tasks
+            self._active_count += 1
+            if self._live is None:
+                start_live = True
+
+        if start_live:
+            self._live = Live(
+                self._build_display(),
+                console=self._console,
+                refresh_per_second=4,
+            )
+            self._live.start()
+        else:
+            self._refresh()
 
     def _handle_task_started(self, event: TaskStarted) -> None:
         with self._lock:
-            self._current_task = event.task_id
+            state = self._get_or_create_config(event.config_label)
+            state.current_task = event.task_id
         self._refresh()
 
     @staticmethod
@@ -108,14 +134,15 @@ class RichLiveListener:
         duration_str = f"{event.duration_seconds:.1f}s"
 
         with self._lock:
-            self._tasks_completed += 1
+            state = self._get_or_create_config(event.config_label)
+            state.tasks_completed += 1
             if event.automated_score > 0.0:
-                self._passed += 1
-            self._durations.append(event.duration_seconds)
+                state.passed += 1
+            state.durations.append(event.duration_seconds)
             if event.cost_usd is not None:
-                self._total_cost += event.cost_usd
-            self._current_task = ""
-            self._task_rows.append((event.task_id, status, duration_str, cost_str))
+                state.total_cost += event.cost_usd
+            state.current_task = ""
+            state.task_rows.append((event.task_id, status, duration_str, cost_str))
         self._refresh()
 
     def _handle_budget_warning(self, event: BudgetWarning) -> None:
@@ -125,45 +152,75 @@ class RichLiveListener:
             f"of ${event.budget:.2f} used"
         )
         with self._lock:
-            self._warnings.append(msg)
+            # Budget warnings are global — add to all active configs
+            for state in self._configs.values():
+                if not state.finished:
+                    state.warnings.append(msg)
         self._refresh()
 
     def _handle_run_finished(self, event: RunFinished) -> None:
-        if self._live is not None:
+        all_done = False
+        with self._lock:
+            self._active_count -= 1
+            if event.config_label in self._configs:
+                self._configs[event.config_label].finished = True
+            all_done = self._active_count <= 0
+
+        if all_done and self._live is not None:
             # Final update before stopping
-            self._live.update(self._build_table())
+            self._live.update(self._build_display())
             self._live.stop()
             self._live = None
 
-        # Print a summary line after the live display is gone
-        self._console.print(
-            f"[bold]Finished:[/bold] "
-            f"{event.completed_count}/{event.total_tasks} tasks, "
-            f"mean score {event.mean_score:.2f}, "
-            f"total cost ${event.total_cost:.2f}, "
-            f"duration {event.total_duration:.1f}s"
-        )
+            # Print summary lines for each config
+            with self._lock:
+                for label in self._config_order:
+                    state = self._configs[label]
+                    total_dur = sum(state.durations)
+                    mean_score = (
+                        (state.passed / state.tasks_completed)
+                        if state.tasks_completed > 0
+                        else 0.0
+                    )
+                    self._console.print(
+                        f"[bold]Finished {state.label}:[/bold] "
+                        f"{state.tasks_completed}/{state.total_tasks} tasks, "
+                        f"mean score {mean_score:.2f}, "
+                        f"total cost ${state.total_cost:.2f}, "
+                        f"duration {total_dur:.1f}s"
+                    )
+        else:
+            self._refresh()
 
-    # -- table construction ------------------------------------------------
+    # -- display construction ----------------------------------------------
 
-    def _build_table(self) -> Table:
-        """Build a snapshot of the dashboard table.
-
-        Called from ``_refresh()`` which may run on the dispatcher thread.
-        All reads of mutable state are under ``self._lock``.
-        """
+    def _build_display(self) -> Group:
+        """Build a snapshot of all config tables as a single renderable."""
         with self._lock:
-            completed = self._tasks_completed
-            total = self._total_tasks
-            passed = self._passed
-            cost = self._total_cost
-            durations = list(self._durations)
-            current = self._current_task
-            label = self._config_label
-            rows = list(self._task_rows)
-            warnings = list(self._warnings)
+            configs = [(label, self._configs[label]) for label in self._config_order]
 
-        # Header table with progress stats
+        renderables = []
+        for _label, state in configs:
+            renderables.append(self._build_config_table(state))
+
+        return Group(*renderables)
+
+    def _build_config_table(self, state: _ConfigState) -> Table:
+        """Build a table for a single config's state.
+
+        Caller must NOT hold ``self._lock`` — this method reads only from
+        the passed *state* snapshot fields.
+        """
+        completed = state.tasks_completed
+        total = state.total_tasks
+        passed = state.passed
+        cost = state.total_cost
+        durations = list(state.durations)
+        current = state.current_task
+        label = state.label
+        rows = list(state.task_rows)
+        warnings = list(state.warnings)
+
         table = Table(
             title=f"codeprobe run: {label}",
             show_header=True,
@@ -187,9 +244,6 @@ class RichLiveListener:
             )
         else:
             table.add_row("Pass rate", "-")
-
-        # Cumulative cost
-        table.add_row("Cost", f"${cost:.2f}")
 
         # ETA
         if durations and total > completed:
@@ -218,13 +272,12 @@ class RichLiveListener:
         # Spacer before results
         if rows:
             table.add_section()
-            # Show last 10 results to keep the display compact
             visible_rows = rows[-10:]
-            for task_id, status, duration, task_cost in visible_rows:
+            for task_id, status, duration, _task_cost in visible_rows:
                 status_style = "green" if status == "PASS" else "red"
                 table.add_row(
                     Text(status, style=status_style),
-                    f"{task_id}  {duration}  {task_cost}",
+                    f"{task_id}  {duration}",
                 )
             if len(rows) > 10:
                 hidden = len(rows) - 10
@@ -237,6 +290,6 @@ class RichLiveListener:
     # -- helpers -----------------------------------------------------------
 
     def _refresh(self) -> None:
-        """Push an updated table to the Live display if active."""
+        """Push an updated display to the Live context if active."""
         if self._live is not None:
-            self._live.update(self._build_table())
+            self._live.update(self._build_display())

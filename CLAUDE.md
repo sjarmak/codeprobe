@@ -68,6 +68,14 @@ This project is AI-orchestration code — ZFC applies at two levels:
 
 Update ZFC compliance notes when: new heuristic code is introduced, a known violation is refactored to use model calls, or a new justified exception is added. Not per-commit — only when the heuristic landscape changes.
 
+## Release Process
+
+1. Bump `version` in `pyproject.toml`
+2. Commit: `chore: bump version to X.Y.Z`
+3. Tag: `git tag vX.Y.Z`
+4. Push commit and tag: `git push && git push --tags`
+5. GitHub Actions (`.github/workflows/publish.yml`) runs tests on 3.11/3.12/3.13, then publishes to PyPI via twine using the `CODEPROBE` secret
+
 ## Key Constraints
 
 - ALL adapters must extract token/cost data — never just document a shortcoming

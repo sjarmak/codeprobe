@@ -64,6 +64,7 @@ def _make_run_finished() -> RunFinished:
         mean_score=0.85,
         total_cost=0.10,
         total_duration=45.0,
+        config_label="test",
         timestamp=1004.0,
     )
 

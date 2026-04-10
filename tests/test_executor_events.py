@@ -414,6 +414,7 @@ class TestPlainTextListener:
                 mean_score=0.80,
                 total_cost=0.50,
                 total_duration=15.0,
+                config_label="test",
                 timestamp=time.time(),
             )
         )

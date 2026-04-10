@@ -419,6 +419,16 @@ def run_eval(
         _print_dry_run(estimate)
         return
 
+    # Pre-create a shared Rich listener when running multiple configs in
+    # parallel so a single Live context owns the terminal.
+    shared_rich_listener: "RichLiveListener | None" = None
+    if parallel > 1 and len(configs_to_run) > 1 and not quiet and log_format != "json":
+        use_rich = force_rich or (_should_use_rich() and not force_plain)
+        if use_rich:
+            from codeprobe.cli.rich_display import RichLiveListener
+
+            shared_rich_listener = RichLiveListener()
+
     def _run_config(exp_config: ExperimentConfig) -> tuple[str, list[CompletedTask]]:
         """Run a single config (called from thread pool or sequentially)."""
         perm = exp_config.permission_mode
@@ -494,7 +504,9 @@ def run_eval(
             pass  # experiment dir is outside the repo
 
         dispatcher = EventDispatcher()
-        if log_format == "json":
+        if shared_rich_listener is not None:
+            dispatcher.register(shared_rich_listener)
+        elif log_format == "json":
             dispatcher.register(JsonLineListener())
         elif not quiet:
             use_rich = force_rich or (_should_use_rich() and not force_plain)
