@@ -489,8 +489,8 @@ class TestInitCliIntegration:
 
         runner = CliRunner()
         # Inputs: goal=1, name=default, agent=claude, model=skip,
-        # use Sourcegraph=Y, token, url=default (enter)
-        input_text = "1\n\nclaude\n\nY\ntok_test123\n\n"
+        # use Sourcegraph=Y, choose=1 (paste token), token, url=default (enter)
+        input_text = "1\n\nclaude\n\nY\n1\ntok_test123\n\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()

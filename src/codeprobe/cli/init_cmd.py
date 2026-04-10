@@ -153,17 +153,35 @@ def _detect_sourcegraph_in_mcp(
 
 
 def _prompt_sourcegraph_token() -> str:
-    """Prompt for Sourcegraph access token, checking env var first."""
-    import os
+    """Resolve Sourcegraph token: cached auth > env var > interactive prompt."""
+    from codeprobe.mining.sg_auth import AuthError, get_valid_token
 
-    env_token = os.environ.get("SOURCEGRAPH_TOKEN", "")
-    if env_token:
-        masked = env_token[:4] + "..." + env_token[-4:] if len(env_token) > 8 else "***"
-        click.echo(f"  Found SOURCEGRAPH_TOKEN in environment ({masked})")
-        if click.confirm("  Use this token?", default=True):
-            return env_token
+    # 1. Check cached auth and env var via the standard auth resolver
+    try:
+        cached = get_valid_token()
+        masked = cached.access_token[:4] + "..." + cached.access_token[-4:]
+        source = "cached" if not cached.refresh_token else "cached (refreshable)"
+        click.echo(f"  Found Sourcegraph credentials ({masked}, {source})")
+        if click.confirm("  Use these credentials?", default=True):
+            return cached.access_token
+    except AuthError:
+        pass
 
-    return click.prompt("Sourcegraph access token")
+    # 2. Offer OAuth-style flow via `codeprobe auth sourcegraph`
+    click.echo()
+    click.echo("  No cached Sourcegraph credentials found.")
+    click.echo("  Options:")
+    click.echo("    1. Paste a Personal Access Token now")
+    click.echo("    2. Run `codeprobe auth sourcegraph` first (recommended)")
+    choice = click.prompt("  Choose", type=click.IntRange(1, 2), default=1)
+
+    if choice == 2:
+        click.echo()
+        click.echo("  Run this command, then re-run `codeprobe init`:")
+        click.echo("    codeprobe auth sourcegraph")
+        raise SystemExit(0)
+
+    return click.prompt("  Sourcegraph access token", hide_input=True)
 
 
 def _prompt_sourcegraph_url() -> str | None:
