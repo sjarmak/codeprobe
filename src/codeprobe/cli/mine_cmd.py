@@ -352,24 +352,31 @@ def _show_results_table(tasks: list["Task"]) -> None:
     click.echo()
 
 
-def _show_next_steps(repo_path: Path, min_files: int) -> None:
+def _show_next_steps(
+    repo_path: Path, min_files: int, *, llm_enriched: bool = False
+) -> None:
     """Phase 6: Show next steps."""
     click.echo("Next steps:")
     click.echo()
-    click.echo("  1. Review and enrich task instructions (recommended):")
-    click.echo("     codeprobe mine {path} --enrich".format(path=repo_path))
-    click.echo()
-    click.echo("  2. Run the eval:")
+    step = 1
+    if not llm_enriched:
+        click.echo(f"  {step}. Review and enrich task instructions (recommended):")
+        click.echo("     codeprobe mine {path} --enrich".format(path=repo_path))
+        click.echo()
+        step += 1
+    click.echo(f"  {step}. Run the eval:")
     click.echo("     codeprobe run {path} --agent claude".format(path=repo_path))
     click.echo()
-    click.echo("  3. Try a different model:")
+    step += 1
+    click.echo(f"  {step}. Try a different model:")
     click.echo(
         "     codeprobe run {path} --agent claude --model claude-sonnet-4-6".format(
             path=repo_path,
         )
     )
     click.echo()
-    click.echo("  4. Set a cost budget:")
+    step += 1
+    click.echo(f"  {step}. Set a cost budget:")
     click.echo(
         "     codeprobe run {path} --agent claude --max-cost-usd 5.00".format(
             path=repo_path,
@@ -556,6 +563,15 @@ def _interactive_config(
         subsystems,
         discover_subsystems,
     )
+
+
+def _was_llm_used(no_llm: bool) -> bool:
+    """Check if LLM was available and used for instruction generation."""
+    if no_llm:
+        return False
+    from codeprobe.core.llm import llm_available
+
+    return llm_available()
 
 
 def _enrich_sdlc_tasks(
@@ -1063,6 +1079,7 @@ def _dispatch_sdlc(
         return
 
     tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
+    llm_used = _was_llm_used(no_llm)
 
     tasks_dir = _clear_tasks_dir(repo_path)
     for task in tasks:
@@ -1078,6 +1095,7 @@ def _dispatch_sdlc(
         subsystems,
         repo_path,
         task_types=("sdlc_code_change",),
+        llm_enriched=llm_used,
     )
 
 
@@ -1255,7 +1273,7 @@ def _dispatch_mixed(
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
     click.echo()
-    _show_next_steps(repo_path, min_files)
+    _show_next_steps(repo_path, min_files, llm_enriched=_was_llm_used(no_llm))
 
 
 def _finish_mine_output(
@@ -1266,6 +1284,8 @@ def _finish_mine_output(
     subsystems: tuple[str, ...],
     repo_path: Path,
     task_types: tuple[str, ...] = (),
+    *,
+    llm_enriched: bool = False,
 ) -> None:
     """Shared output: quality warnings, path, subsystems, next steps."""
     from codeprobe.mining.writer import write_suite_manifest
@@ -1291,7 +1311,7 @@ def _finish_mine_output(
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
     click.echo()
-    _show_next_steps(repo_path, 0)
+    _show_next_steps(repo_path, 0, llm_enriched=llm_enriched)
 
 
 def run_mine(
