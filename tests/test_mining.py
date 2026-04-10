@@ -173,6 +173,66 @@ class TestListMergedPRs:
         prs = list_merged_prs(source, Path("/fake"), limit=5)
         assert prs == []
 
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_gh_pr_list_for_github_repos(self, mock_run: object) -> None:
+        """GitHub repos use gh pr list which captures squash merges."""
+        gh_json = json.dumps(
+            [
+                {"mergeCommit": {"oid": "aaa111"}, "title": "feat: add search"},
+                {"mergeCommit": {"oid": "bbb222"}, "title": "fix: login redirect"},
+            ]
+        )
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout=gh_json, stderr=""
+        )
+        source = RepoSource(host="github", owner="org", repo="app", remote_url="")
+
+        prs = list_merged_prs(source, Path("/fake"), limit=10)
+
+        assert len(prs) == 2
+        assert prs[0].sha == "aaa111"
+        assert prs[0].title == "feat: add search"
+        assert prs[1].sha == "bbb222"
+        # Verify gh was called, not git log
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "gh"
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_gh_fallback_to_git_log(self, mock_run: object) -> None:
+        """Falls back to git log --merges when gh fails."""
+        log_output = "ccc333 Merge pull request #5 from fix/typo\n"
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=1, stdout="", stderr="not logged in"
+                )
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout=log_output, stderr=""
+            )
+
+        mock_run.side_effect = _side_effect
+        source = RepoSource(host="github", owner="org", repo="app", remote_url="")
+
+        prs = list_merged_prs(source, Path("/fake"), limit=10)
+
+        assert len(prs) == 1
+        assert prs[0].sha == "ccc333"
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_non_github_skips_gh(self, mock_run: object) -> None:
+        """Non-GitHub hosts go straight to git log without trying gh."""
+        log_output = "ddd444 Merge branch 'feature' into 'main'\n"
+        mock_run.side_effect = _mock_git_log(log_output)
+        source = RepoSource(host="gitlab", owner="org", repo="app", remote_url="")
+
+        prs = list_merged_prs(source, Path("/fake"), limit=10)
+
+        assert len(prs) == 1
+        # Verify git was called, not gh
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "git"
+
 
 # ---------------------------------------------------------------------------
 # extract_task_from_merge tests

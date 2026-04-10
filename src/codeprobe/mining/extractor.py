@@ -51,10 +51,59 @@ class PRMetadata:
     issue_body: str = ""
 
 
-def list_merged_prs(source: RepoSource, path: Path, limit: int = 20) -> list[MergedPR]:
-    """List recently merged PRs/MRs from git log.
+def _list_merged_prs_gh(path: Path, limit: int) -> list[MergedPR] | None:
+    """List merged PRs via GitHub CLI (``gh pr list``).
 
-    For local repos without a remote API, parse git log for merge commits.
+    Returns None if ``gh`` is unavailable or the command fails, so the caller
+    can fall back to git-log.  Handles squash merges, rebase merges, and
+    regular merge commits — anything GitHub marks as "merged".
+    """
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--state",
+                "merged",
+                "--limit",
+                str(limit),
+                "--json",
+                "mergeCommit,title",
+            ],
+            cwd=str(path),
+            capture_output=True,
+            text=True,
+            timeout=_GH_TIMEOUT,
+        )
+        if result.returncode != 0:
+            logger.debug("gh pr list failed: %s", result.stderr.strip())
+            return None
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        logger.debug("gh not available: %s", exc)
+        return None
+
+    try:
+        items = _json.loads(result.stdout)
+    except _json.JSONDecodeError:
+        logger.debug("gh pr list returned invalid JSON")
+        return None
+
+    prs: list[MergedPR] = []
+    for item in items:
+        commit = item.get("mergeCommit") or {}
+        sha = commit.get("oid", "")
+        title = item.get("title", "")
+        if sha:
+            prs.append(MergedPR(sha=sha, title=title, merge_commit=sha))
+    return prs if prs else None
+
+
+def _list_merged_prs_git(path: Path, limit: int) -> list[MergedPR]:
+    """List merged PRs from ``git log --merges`` (fallback).
+
+    Only finds true merge commits — squash merges and rebase merges are
+    invisible to this method.
     """
     try:
         result = subprocess.run(
@@ -81,6 +130,26 @@ def list_merged_prs(source: RepoSource, path: Path, limit: int = 20) -> list[Mer
         sha, title = parts
         prs.append(MergedPR(sha=sha, title=title, merge_commit=sha))
     return prs
+
+
+def list_merged_prs(source: RepoSource, path: Path, limit: int = 20) -> list[MergedPR]:
+    """List recently merged PRs.
+
+    For GitHub repos, uses ``gh pr list`` which captures squash merges,
+    rebase merges, and regular merge commits.  Falls back to
+    ``git log --merges`` when ``gh`` is unavailable or for non-GitHub hosts.
+    """
+    if source.host == "github":
+        gh_result = _list_merged_prs_gh(path, limit)
+        if gh_result is not None:
+            logger.info(
+                "Listed %d merged PRs via GitHub API (includes squash merges)",
+                len(gh_result),
+            )
+            return gh_result
+        logger.info("GitHub API unavailable, falling back to git log --merges")
+
+    return _list_merged_prs_git(path, limit)
 
 
 def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
