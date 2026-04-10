@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -104,6 +105,39 @@ def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
     return [f for f in result.stdout.strip().splitlines() if f.strip()]
 
 
+def _get_deleted_dirs(merge_sha: str, repo_path: Path) -> set[str]:
+    """Return directories that were entirely deleted in a merge commit.
+
+    Uses ``git diff --diff-filter=D --name-status`` to find deleted files,
+    then returns the set of parent directories where ALL files were deleted.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "diff",
+                f"{merge_sha}^..{merge_sha}",
+                "--diff-filter=D",
+                "--name-only",
+            ],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_DIFF_STAT_TIMEOUT,
+        )
+        if result.returncode != 0:
+            return set()
+    except (subprocess.TimeoutExpired, OSError):
+        return set()
+
+    deleted_files = [f for f in result.stdout.strip().splitlines() if f.strip()]
+    if not deleted_files:
+        return set()
+
+    # Collect parent directories of deleted files
+    return {str(Path(f).parent) for f in deleted_files}
+
+
 def extract_subsystems(
     prs: list[MergedPR],
     repo_path: Path,
@@ -157,7 +191,10 @@ _ISSUE_REF_PATTERN = re.compile(
 
 
 def _build_test_command(
-    language: str, test_files: list[str], repo_path: Path | None = None
+    language: str,
+    test_files: list[str],
+    repo_path: Path | None = None,
+    deleted_dirs: set[str] | None = None,
 ) -> str:
     """Build a targeted test command from language and test file paths.
 
@@ -165,8 +202,11 @@ def _build_test_command(
     Falls back to the generic test.sh for unsupported languages or empty file lists.
 
     When *repo_path* is provided and exists on disk, validates that referenced
-    paths exist in the target repo and drops any that don't.  This prevents
-    generating unrunnable test commands against stripped or partial repos.
+    paths exist in the target repo and drops any that don't.
+
+    When *deleted_dirs* is provided and ALL test packages fall within deleted
+    directories, generates a removal-verification command (checks dirs no longer
+    exist) instead of a test command.
     """
     validate = repo_path is not None and repo_path.is_dir()
 
@@ -182,6 +222,17 @@ def _build_test_command(
 
     if language == "go":
         packages = sorted({str(Path(f).parent) for f in test_files})
+
+        # Removal task: all test packages were deleted in this merge
+        if deleted_dirs and all(
+            any(pkg == d or pkg.startswith(d + "/") for d in deleted_dirs)
+            for pkg in packages
+        ):
+            checks = " && ".join(
+                f"test ! -d {shlex.quote('./' + pkg)}" for pkg in packages
+            )
+            return f"bash -c {shlex.quote(checks)}"
+
         if validate:
             packages = [p for p in packages if (repo_path / p).is_dir()]
         if not packages:
@@ -485,9 +536,13 @@ def extract_task_from_merge(
         )
         return None
 
+    # Detect deleted directories for removal-task verification
+    deleted_dirs = _get_deleted_dirs(merge_sha, repo_path)
+
     # Build a verification command targeted to the detected test files and language.
     # Pass repo_path so missing packages (e.g. stripped vendor dirs) are filtered out.
-    test_command = _build_test_command(language, test_files, repo_path)
+    # Pass deleted_dirs so removal tasks verify non-existence instead of compilation.
+    test_command = _build_test_command(language, test_files, repo_path, deleted_dirs)
 
     # Hard gate: stub test command means verification is meaningless — skip
     if test_command == _DEFAULT_TEST_COMMAND:

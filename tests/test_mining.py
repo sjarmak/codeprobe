@@ -659,6 +659,71 @@ class TestBuildTestCommand:
 
 
 # ---------------------------------------------------------------------------
+# _build_test_command removal verification tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTestCommandRemoval:
+    def test_go_removal_when_all_packages_deleted(self) -> None:
+        """When all test packages are in deleted dirs, generate removal check."""
+        result = _build_test_command(
+            "go",
+            ["cluster/images/etcd/migrate/migrate_test.go"],
+            deleted_dirs={"cluster/images/etcd/migrate"},
+        )
+        assert "test ! -d" in result
+        assert "go test" not in result
+        assert "cluster/images/etcd/migrate" in result
+
+    def test_go_removal_nested_deleted_dir(self) -> None:
+        """Packages under a deleted parent are detected as removal."""
+        result = _build_test_command(
+            "go",
+            [
+                "legacy/pkg/a/a_test.go",
+                "legacy/pkg/b/b_test.go",
+            ],
+            deleted_dirs={"legacy"},
+        )
+        assert "test ! -d" in result
+        assert "legacy/pkg/a" in result
+        assert "legacy/pkg/b" in result
+
+    def test_go_mixed_deleted_and_existing(self, tmp_path: Path) -> None:
+        """When some packages are deleted but others exist, use go test for survivors."""
+        (tmp_path / "pkg" / "alive").mkdir(parents=True)
+        result = _build_test_command(
+            "go",
+            ["pkg/alive/x_test.go", "pkg/dead/y_test.go"],
+            repo_path=tmp_path,
+            deleted_dirs={"pkg/dead"},
+        )
+        # Not all packages are deleted, so no removal check
+        assert "go test" in result
+        assert "pkg/alive" in result
+        # Dead package filtered by path validation
+        assert "pkg/dead" not in result
+
+    def test_go_no_deleted_dirs_normal_flow(self) -> None:
+        """Without deleted_dirs, normal go test command."""
+        result = _build_test_command(
+            "go",
+            ["pkg/auth/auth_test.go"],
+            deleted_dirs=None,
+        )
+        assert result == "go test ./pkg/auth/..."
+
+    def test_go_empty_deleted_dirs_normal_flow(self) -> None:
+        """Empty deleted_dirs set treated same as None."""
+        result = _build_test_command(
+            "go",
+            ["pkg/auth/auth_test.go"],
+            deleted_dirs=set(),
+        )
+        assert result == "go test ./pkg/auth/..."
+
+
+# ---------------------------------------------------------------------------
 # score_pr_quality tests
 # ---------------------------------------------------------------------------
 
