@@ -655,13 +655,21 @@ def _collect_candidates(
     pr_bodies: dict[str, str] = {}
     changed_files_map: dict[str, list[str]] = {}
 
+    # Rejection counters for diagnostics
+    rejected_min_files = 0
+    rejected_subsystem = 0
+    rejected_extraction = 0
+    rejected_quality = 0
+
     for pr in prs:
         changed_files = _get_changed_files(pr.merge_commit, path)
         if len(changed_files) < min_files:
+            rejected_min_files += 1
             continue
         if subsystems and not any(
             f.startswith(prefix) for f in changed_files for prefix in subsystems
         ):
+            rejected_subsystem += 1
             continue
         test_files = _find_test_files(changed_files)
         result = extract_task_from_merge(
@@ -671,28 +679,45 @@ def _collect_candidates(
             source=source,
             merge_title=pr.title,
         )
-        if result is not None:
-            task, pr_meta = result
-            quality = score_pr_quality(
-                title=pr_meta.title,
-                body=pr_meta.body,
-                changed_files=changed_files,
-                test_files=test_files,
-                has_linked_issue=bool(pr_meta.issue_title),
+        if result is None:
+            rejected_extraction += 1
+            continue
+        task, pr_meta = result
+        quality = score_pr_quality(
+            title=pr_meta.title,
+            body=pr_meta.body,
+            changed_files=changed_files,
+            test_files=test_files,
+            has_linked_issue=bool(pr_meta.issue_title),
+        )
+        if quality < min_quality:
+            logger.debug(
+                "Skipping %s: quality %.2f < %.2f threshold",
+                pr.merge_commit[:8],
+                quality,
+                min_quality,
             )
-            if quality < min_quality:
-                logger.debug(
-                    "Skipping %s: quality %.2f < %.2f threshold",
-                    pr.merge_commit[:8],
-                    quality,
-                    min_quality,
-                )
-                continue
-            enriched_metadata = replace(task.metadata, quality_score=quality)
-            task = replace(task, metadata=enriched_metadata)
-            candidates.append((quality, len(changed_files), task))
-            pr_bodies[task.id] = pr_meta.body
-            changed_files_map[task.id] = changed_files
+            rejected_quality += 1
+            continue
+        enriched_metadata = replace(task.metadata, quality_score=quality)
+        task = replace(task, metadata=enriched_metadata)
+        candidates.append((quality, len(changed_files), task))
+        pr_bodies[task.id] = pr_meta.body
+        changed_files_map[task.id] = changed_files
+
+    total_rejected = (
+        rejected_min_files + rejected_subsystem + rejected_extraction + rejected_quality
+    )
+    if total_rejected and not candidates:
+        logger.info(
+            "Rejection breakdown (%d PRs): min_files=%d, subsystem=%d, "
+            "extraction=%d (no tests/bare metadata/stub cmd), quality=%d",
+            len(prs),
+            rejected_min_files,
+            rejected_subsystem,
+            rejected_extraction,
+            rejected_quality,
+        )
 
     return candidates, pr_bodies, changed_files_map
 
