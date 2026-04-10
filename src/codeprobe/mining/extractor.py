@@ -184,6 +184,39 @@ def _find_test_files(changed_files: list[str]) -> list[str]:
     return [f for f in changed_files if "test" in f.lower() or "spec" in f.lower()]
 
 
+def _discover_colocated_test_files(
+    changed_files: list[str], repo_path: Path
+) -> list[str]:
+    """Find existing test files in the same packages as changed source files.
+
+    Useful for Go repos where *_test.go files are rarely in the PR diff but
+    exist in the same directory.  Also checks for Python test_*.py / *_test.py
+    and JS/TS *.test.* / *.spec.* files.
+    """
+    if not repo_path.is_dir():
+        return []
+
+    # Collect unique directories of changed source files
+    dirs: set[str] = set()
+    for f in changed_files:
+        parent = str(Path(f).parent)
+        if parent != ".":
+            dirs.add(parent)
+
+    test_files: list[str] = []
+    for d in sorted(dirs):
+        abs_dir = repo_path / d
+        if not abs_dir.is_dir():
+            continue
+        for child in abs_dir.iterdir():
+            if not child.is_file():
+                continue
+            name = child.name.lower()
+            if "test" in name or "spec" in name:
+                test_files.append(str(child.relative_to(repo_path)))
+    return test_files
+
+
 _DEFAULT_TEST_COMMAND = "bash tests/test.sh"
 _ISSUE_REF_PATTERN = re.compile(
     r"(?:#(\d+)|[A-Z][A-Z0-9]+-\d+)"  # GitHub #N or JIRA-style PROJ-123
@@ -509,11 +542,16 @@ def extract_task_from_merge(
     if not changed_files:
         return None
 
+    short_sha = merge_sha[:8]
+
     test_files = _find_test_files(changed_files)
     if not test_files:
+        # For Go repos, test files often aren't in the PR diff — discover
+        # existing *_test.go files in the same packages as changed .go files.
+        test_files = _discover_colocated_test_files(changed_files, repo_path)
+    if not test_files:
+        logger.debug("Skipping %s: no test files in diff or repo packages", short_sha)
         return None
-
-    short_sha = merge_sha[:8]
     difficulty = _estimate_difficulty(changed_files)
 
     # Detect primary language from file extensions

@@ -13,6 +13,7 @@ from codeprobe.mining.extractor import (
     MergedPR,
     PRMetadata,
     _build_test_command,
+    _discover_colocated_test_files,
     _extract_issue_numbers,
     _format_task_description,
     enrich_task,
@@ -721,6 +722,53 @@ class TestBuildTestCommandRemoval:
             deleted_dirs=set(),
         )
         assert result == "go test ./pkg/auth/..."
+
+
+# ---------------------------------------------------------------------------
+# _discover_colocated_test_files tests
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverColocatedTestFiles:
+    def test_finds_go_test_files(self, tmp_path: Path) -> None:
+        """Discovers *_test.go files in the same package as changed .go files."""
+        pkg = tmp_path / "internal" / "auth"
+        pkg.mkdir(parents=True)
+        (pkg / "auth.go").touch()
+        (pkg / "auth_test.go").touch()
+        (pkg / "middleware.go").touch()
+
+        result = _discover_colocated_test_files(["internal/auth/auth.go"], tmp_path)
+        assert "internal/auth/auth_test.go" in result
+
+    def test_finds_python_test_files(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "src" / "utils"
+        pkg.mkdir(parents=True)
+        (pkg / "helpers.py").touch()
+        (pkg / "test_helpers.py").touch()
+
+        result = _discover_colocated_test_files(["src/utils/helpers.py"], tmp_path)
+        assert "src/utils/test_helpers.py" in result
+
+    def test_no_test_files_returns_empty(self, tmp_path: Path) -> None:
+        pkg = tmp_path / "src"
+        pkg.mkdir()
+        (pkg / "main.go").touch()
+
+        result = _discover_colocated_test_files(["src/main.go"], tmp_path)
+        assert result == []
+
+    def test_nonexistent_repo_returns_empty(self) -> None:
+        result = _discover_colocated_test_files(["pkg/foo.go"], Path("/nonexistent"))
+        assert result == []
+
+    def test_root_level_files_skipped(self, tmp_path: Path) -> None:
+        """Files at repo root (parent='.') are skipped."""
+        (tmp_path / "main.go").touch()
+        (tmp_path / "main_test.go").touch()
+
+        result = _discover_colocated_test_files(["main.go"], tmp_path)
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
