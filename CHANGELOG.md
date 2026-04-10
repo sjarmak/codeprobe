@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.7 (2026-04-09)
+
+### Features
+
+- **Partial score display** — scores between 0 and 1 show numeric values instead of misleading FAIL; summary shows mean + perfect/partial breakdown
+- **Init wizard cached auth** — checks `~/.codeprobe/auth.json` and `SRC_ACCESS_TOKEN` before prompting for Sourcegraph token; offers `codeprobe auth sourcegraph` as recommended path
+
+### Fixes
+
+- **Test path validation** — mined task verification commands now validate that Go package dirs and Python test files exist in the target repo; missing paths are dropped to prevent 0-score failures against stripped repos
+- **Removal task verification** — code-deletion PRs (e.g., "remove legacy etcd build") generate `test ! -d` checks instead of trying to `go test` deleted code
+- **Skip redundant enrich** — `Next steps` output no longer recommends `--enrich` when LLM already generated instructions
+
 ## 0.3.6 (2026-04-09)
 
 ### Features
