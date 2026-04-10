@@ -45,26 +45,35 @@ def ask_mcp_comparison(
     agent: str,
     model: str | None,
     mcp_config_path: str | None = None,
+    mcp_config: dict | None = None,
     sourcegraph_token: str | None = None,
     sourcegraph_url: str | None = None,
 ) -> tuple[EvalrcConfig, list[ExperimentConfig]]:
     """Goal 1: Compare baseline agent vs MCP-augmented agent.
 
-    When *sourcegraph_token* is provided, generates an HTTP-based Sourcegraph
-    MCP config with an ``Authorization`` header and adds the ``sourcegraph``
-    preamble.  Otherwise falls back to loading the MCP config from
-    *mcp_config_path*.
+    Resolution order for MCP config:
+    1. *mcp_config* — pre-built dict (e.g. from discovered Claude Code config)
+    2. *sourcegraph_token* — build HTTP config with Authorization header
+    3. *mcp_config_path* — load from a JSON file on disk
     """
-    if sourcegraph_token is not None:
+    if mcp_config is not None:
+        mcp_data = mcp_config
+        # Detect if this is a Sourcegraph config for preamble
+        servers = mcp_data.get("mcpServers", {})
+        sg_names = {"sourcegraph", "sg", "sourcegraph-mcp"}
+        preambles: tuple[str, ...] = (
+            ("sourcegraph",) if any(k.lower() in sg_names for k in servers) else ()
+        )
+    elif sourcegraph_token is not None:
         mcp_data = build_sourcegraph_mcp_config(
             token=sourcegraph_token,
             url=sourcegraph_url or _DEFAULT_SOURCEGRAPH_URL,
         )
-        preambles: tuple[str, ...] = ("sourcegraph",)
+        preambles = ("sourcegraph",)
     else:
         if mcp_config_path is None:
             raise click.BadParameter(
-                "Either sourcegraph_token or mcp_config_path must be provided."
+                "Provide mcp_config, sourcegraph_token, or mcp_config_path."
             )
         mcp_data = _load_json(mcp_config_path)
         preambles = ()

@@ -194,6 +194,32 @@ def _prompt_sourcegraph_url() -> str | None:
     return url if url else None
 
 
+def _extract_sourcegraph_mcp(
+    discovered: list[tuple[Path, list[str]]],
+) -> dict | None:
+    """Load the Sourcegraph MCP config from a discovered config file.
+
+    Returns the full MCP config dict with only the Sourcegraph server,
+    or None if no Sourcegraph server is found.
+    """
+    import json
+
+    sg_names = {"sourcegraph", "sg", "sourcegraph-mcp"}
+    for path, server_names in discovered:
+        matching = [n for n in server_names if n.lower() in sg_names]
+        if not matching:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        servers = data.get("mcpServers", {})
+        for name in matching:
+            if name in servers:
+                return {"mcpServers": {name: servers[name]}}
+    return None
+
+
 def _goal_mcp(agents: list[str], name: str) -> _Result:
     """Goal 1: MCP comparison prompts."""
     agent = _prompt_agent(agents)
@@ -201,19 +227,27 @@ def _goal_mcp(agents: list[str], name: str) -> _Result:
 
     # Check if Sourcegraph is available in discovered MCP configs
     discovered = discover_mcp_configs()
-    use_sourcegraph = False
 
     if _detect_sourcegraph_in_mcp(discovered):
         click.echo()
         click.echo("Detected Sourcegraph MCP server in your configuration.")
-        click.echo("codeprobe can use the HTTP endpoint for better performance.")
-        use_sourcegraph = click.confirm("Use Sourcegraph HTTP MCP?", default=True)
-    else:
-        click.echo()
-        click.echo("Would you like to use Sourcegraph as the MCP server?")
-        use_sourcegraph = click.confirm("Use Sourcegraph?", default=False)
+        if click.confirm("Use this Sourcegraph config?", default=True):
+            sg_config = _extract_sourcegraph_mcp(discovered)
+            if sg_config:
+                return ask_mcp_comparison(
+                    experiment_name=name,
+                    agent=agent,
+                    model=model,
+                    mcp_config=sg_config,
+                )
 
-    if use_sourcegraph:
+    click.echo()
+    click.echo("MCP server options:")
+    click.echo("  1. Use a Sourcegraph access token (PAT)")
+    click.echo("  2. Use an existing MCP config file")
+    choice = click.prompt("Choose", type=click.IntRange(1, 2), default=1)
+
+    if choice == 1:
         token = _prompt_sourcegraph_token()
         sg_url = _prompt_sourcegraph_url()
         return ask_mcp_comparison(

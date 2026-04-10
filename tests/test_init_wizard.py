@@ -473,8 +473,8 @@ class TestInitCliIntegration:
 
         runner = CliRunner()
         # Inputs: goal=1, experiment name (enter=default), agent (enter=default),
-        # model (enter=skip), decline Sourcegraph, mcp config path
-        input_text = f"1\n\nclaude\n\nN\n{mcp_file}\n"
+        # model (enter=skip), choose=2 (MCP config file), mcp config path
+        input_text = f"1\n\nclaude\n\n2\n{mcp_file}\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
@@ -489,8 +489,8 @@ class TestInitCliIntegration:
 
         runner = CliRunner()
         # Inputs: goal=1, name=default, agent=claude, model=skip,
-        # use Sourcegraph=Y, choose=1 (paste token), token, url=default (enter)
-        input_text = "1\n\nclaude\n\nY\n1\ntok_test123\n\n"
+        # choose=1 (PAT), choose=1 (paste now), token, url=default (enter)
+        input_text = "1\n\nclaude\n\n1\n1\ntok_test123\n\n"
         result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
