@@ -185,8 +185,17 @@ def run_experiment(
 
         save_config_results(experiment_dir, exp_config.label, results)
 
-        passed = sum(1 for r in results if r.automated_score >= 1.0)
-        logger.info("[%s] %d/%d passed", exp_config.label, passed, len(results))
+        scoring = sum(1 for r in results if r.automated_score > 0.0)
+        mean = (
+            sum(r.automated_score for r in results) / len(results) if results else 0.0
+        )
+        logger.info(
+            "[%s] %d/%d scored (mean=%.2f)",
+            exp_config.label,
+            scoring,
+            len(results),
+            mean,
+        )
 
         all_config_results.append(
             ConfigResults(config=exp_config.label, completed=results)

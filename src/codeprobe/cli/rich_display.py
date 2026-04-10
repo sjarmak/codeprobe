@@ -94,14 +94,22 @@ class RichLiveListener:
             self._current_task = event.task_id
         self._refresh()
 
+    @staticmethod
+    def _format_score(score: float) -> str:
+        if score >= 1.0:
+            return "PASS"
+        if score <= 0.0:
+            return "FAIL"
+        return f"{score:.2f}"
+
     def _handle_task_scored(self, event: TaskScored) -> None:
-        status = "PASS" if event.automated_score >= 1.0 else "FAIL"
+        status = self._format_score(event.automated_score)
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
         duration_str = f"{event.duration_seconds:.1f}s"
 
         with self._lock:
             self._tasks_completed += 1
-            if event.automated_score >= 1.0:
+            if event.automated_score > 0.0:
                 self._passed += 1
             self._durations.append(event.duration_seconds)
             if event.cost_usd is not None:

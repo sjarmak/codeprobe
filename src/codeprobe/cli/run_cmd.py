@@ -46,9 +46,18 @@ def _should_use_rich() -> bool:
     return True
 
 
+def _format_task_status(score: float) -> str:
+    """Format score as PASS/FAIL for binary or as a numeric score for partial."""
+    if score >= 1.0:
+        return "PASS"
+    if score <= 0.0:
+        return "FAIL"
+    return f"{score:.2f}"
+
+
 def _on_task_complete(result: CompletedTask) -> None:
     """Print task result to stdout (legacy callback, kept for backward compat)."""
-    status = "PASS" if result.automated_score >= 1.0 else "FAIL"
+    status = _format_task_status(result.automated_score)
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
 
 
@@ -62,7 +71,7 @@ class PlainTextListener:
 
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
-            status = "PASS" if event.automated_score >= 1.0 else "FAIL"
+            status = _format_task_status(event.automated_score)
             click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s)")
         elif isinstance(event, BudgetWarning):
             pct = int(event.threshold_pct * 100)
@@ -534,8 +543,19 @@ def run_eval(
 
         save_config_results(exp_dir, exp_config.label, results)
 
-        passed = sum(1 for r in results if r.automated_score >= 1.0)
-        click.echo(f"  {exp_config.label}: {passed}/{len(results)} passed")
+        scores = [r.automated_score for r in results]
+        mean = sum(scores) / len(scores) if scores else 0.0
+        perfect = sum(1 for s in scores if s >= 1.0)
+        scoring = sum(1 for s in scores if s > 0.0)
+        if perfect == scoring:
+            # Binary results — show pass count
+            click.echo(f"  {exp_config.label}: {perfect}/{len(results)} passed")
+        else:
+            # Partial scoring — show mean and breakdown
+            click.echo(
+                f"  {exp_config.label}: mean={mean:.2f}, "
+                f"{perfect} perfect + {scoring - perfect} partial / {len(results)}"
+            )
         return exp_config.label, results
 
     # Run configs in parallel (each config gets its own adapter + checkpoint)
