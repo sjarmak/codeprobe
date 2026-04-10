@@ -436,7 +436,10 @@ class TestDispatchPipelineIntegration:
         mock_task.metadata.description = "A test task with enough description"
         mock_task.verification.command = "bash tests/test.sh"
         mock_mine.return_value = MagicMock(
-            tasks=[mock_task], pr_bodies={}, changed_files_map={}
+            tasks=[mock_task],
+            pr_bodies={},
+            changed_files_map={},
+            min_files_used=0,
         )
         mock_enrich.return_value = [mock_task]
         mock_clear.return_value = tmp_path / "tasks"

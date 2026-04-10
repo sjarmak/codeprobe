@@ -1078,6 +1078,15 @@ def _dispatch_sdlc(
         )
         return
 
+    if (
+        mine_result.min_files_used is not None
+        and mine_result.min_files_used < min_files
+    ):
+        click.echo(
+            f"  ⚠ Relaxed min_files from {min_files} to "
+            f"{mine_result.min_files_used} (no candidates at original threshold)"
+        )
+
     tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
     llm_used = _was_llm_used(no_llm)
 

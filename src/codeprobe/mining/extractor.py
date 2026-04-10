@@ -598,39 +598,21 @@ class MineResult:
     tasks: list[Task]
     pr_bodies: dict[str, str]  # task.id → raw PR body
     changed_files_map: dict[str, list[str]]  # task.id → changed file paths
+    min_files_used: int | None = None  # effective min_files after relaxation
 
 
-def mine_tasks(
+def _collect_candidates(
+    prs: list,
     path: Path,
-    count: int = 5,
-    source_hint: str = "auto",
-    min_files: int = 0,
-    min_quality: float = _MIN_QUALITY_SCORE,
-    subsystems: tuple[str, ...] = (),
-) -> MineResult:
-    """Mine eval tasks from a repository.
+    source: RepoSource,
+    min_files: int,
+    min_quality: float,
+    subsystems: tuple[str, ...],
+) -> tuple[list[tuple[float, int, Task]], dict[str, str], dict[str, list[str]]]:
+    """Score and filter PRs into ranked candidates.
 
-    1. Detect or use provided source
-    2. List merged PRs
-    3. Filter by subsystem prefixes (if provided)
-    4. Extract tasks from each merge (respecting min_files threshold)
-    5. Filter out tasks below *min_quality* score
-    6. Sort by quality descending, then file count descending
-    7. Return MineResult with tasks and raw context for LLM instruction generation
+    Returns (candidates, pr_bodies, changed_files_map).
     """
-    if source_hint != "auto":
-        source = RepoSource(host=source_hint, owner="", repo=path.name, remote_url="")
-    else:
-        source = detect_source(path)
-    logger.info("Detected source: %s (%s/%s)", source.host, source.owner, source.repo)
-
-    # Fetch more merges than needed to account for filtering
-    search_limit = count * 4 if min_files == 0 else count * 8
-    prs = list_merged_prs(source, path, limit=search_limit)
-    if not prs:
-        logger.info("No merge commits found in %s", path)
-        return MineResult(tasks=[], pr_bodies={}, changed_files_map={})
-
     candidates: list[tuple[float, int, Task]] = []
     pr_bodies: dict[str, str] = {}
     changed_files_map: dict[str, list[str]] = {}
@@ -668,13 +650,82 @@ def mine_tasks(
                     min_quality,
                 )
                 continue
-            # Persist quality_score in task metadata
             enriched_metadata = replace(task.metadata, quality_score=quality)
             task = replace(task, metadata=enriched_metadata)
             candidates.append((quality, len(changed_files), task))
-            # Stash raw context for LLM instruction generation
             pr_bodies[task.id] = pr_meta.body
             changed_files_map[task.id] = changed_files
+
+    return candidates, pr_bodies, changed_files_map
+
+
+# Thresholds to try when min_files filters out all candidates.
+# Each step halves the previous value (rounded down), bottoming out at 1.
+_MIN_FILES_RELAXATION = (3, 1)
+
+
+def mine_tasks(
+    path: Path,
+    count: int = 5,
+    source_hint: str = "auto",
+    min_files: int = 0,
+    min_quality: float = _MIN_QUALITY_SCORE,
+    subsystems: tuple[str, ...] = (),
+) -> MineResult:
+    """Mine eval tasks from a repository.
+
+    1. Detect or use provided source
+    2. List merged PRs
+    3. Filter by subsystem prefixes (if provided)
+    4. Extract tasks from each merge (respecting min_files threshold)
+    5. Filter out tasks below *min_quality* score
+    6. Sort by quality descending, then file count descending
+    7. If no candidates survive and min_files > 1, retry with relaxed thresholds
+    8. Return MineResult with tasks and raw context for LLM instruction generation
+    """
+    if source_hint != "auto":
+        source = RepoSource(host=source_hint, owner="", repo=path.name, remote_url="")
+    else:
+        source = detect_source(path)
+    logger.info("Detected source: %s (%s/%s)", source.host, source.owner, source.repo)
+
+    # Fetch more merges than needed to account for filtering
+    search_limit = count * 4 if min_files == 0 else count * 8
+    prs = list_merged_prs(source, path, limit=search_limit)
+    if not prs:
+        logger.info("No merge commits found in %s", path)
+        return MineResult(tasks=[], pr_bodies={}, changed_files_map={})
+
+    candidates, pr_bodies, changed_files_map = _collect_candidates(
+        prs,
+        path,
+        source,
+        min_files,
+        min_quality,
+        subsystems,
+    )
+
+    # Relax min_files if the threshold filtered out everything
+    if not candidates and min_files > 1:
+        for relaxed in _MIN_FILES_RELAXATION:
+            if relaxed >= min_files:
+                continue
+            logger.warning(
+                "No candidates with min_files=%d; relaxing to min_files=%d",
+                min_files,
+                relaxed,
+            )
+            candidates, pr_bodies, changed_files_map = _collect_candidates(
+                prs,
+                path,
+                source,
+                relaxed,
+                min_quality,
+                subsystems,
+            )
+            if candidates:
+                min_files = relaxed
+                break
 
     # Sort by quality score descending, then file count descending
     candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
@@ -697,6 +748,7 @@ def mine_tasks(
         tasks=tasks,
         pr_bodies=pr_bodies,
         changed_files_map=changed_files_map,
+        min_files_used=min_files,
     )
 
 
