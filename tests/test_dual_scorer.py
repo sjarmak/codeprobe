@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -25,33 +24,25 @@ from codeprobe.core.scoring import (
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _FakeVerification:
-    reward_type: str = "binary"
-    scoring_policy: str = ""
-    weight_direct: float = 0.5
-    weight_artifact: float = 0.5
-
-
-@dataclass(frozen=True)
-class _FakeTask:
-    verification: _FakeVerification
-
-
-def _make_task(
+def _write_metadata(
+    task_dir: Path,
+    *,
     reward_type: str = "binary",
     scoring_policy: str = "",
     weight_direct: float = 0.5,
     weight_artifact: float = 0.5,
-) -> _FakeTask:
-    return _FakeTask(
-        verification=_FakeVerification(
-            reward_type=reward_type,
-            scoring_policy=scoring_policy,
-            weight_direct=weight_direct,
-            weight_artifact=weight_artifact,
-        )
-    )
+) -> None:
+    """Write a minimal ``metadata.json`` so DualScorer can read verification."""
+    metadata = {
+        "verification": {
+            "verification_mode": "dual",
+            "reward_type": reward_type,
+            "scoring_policy": scoring_policy,
+            "weight_direct": weight_direct,
+            "weight_artifact": weight_artifact,
+        }
+    }
+    (task_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
 
 
 def _write_test_sh(task_dir: Path, exit_code: int) -> None:
@@ -92,6 +83,7 @@ def _write_answer(
 def passing_task_dir(tmp_path: Path) -> Path:
     task_dir = tmp_path / "task"
     task_dir.mkdir()
+    _write_metadata(task_dir)  # default: binary, policy=""
     _write_test_sh(task_dir, exit_code=0)
     _write_ground_truth(task_dir, answer_type="boolean", answer=True)
     _write_answer(task_dir, answer=True)
@@ -102,6 +94,7 @@ def passing_task_dir(tmp_path: Path) -> Path:
 def failing_direct_passing_artifact(tmp_path: Path) -> Path:
     task_dir = tmp_path / "task"
     task_dir.mkdir()
+    _write_metadata(task_dir)  # default: binary, policy=""
     _write_test_sh(task_dir, exit_code=1)  # direct fails
     _write_ground_truth(task_dir, answer_type="boolean", answer=True)
     _write_answer(task_dir, answer=True)  # artifact passes
@@ -134,8 +127,8 @@ def test_dual_scorer_no_arg_constructor():
 
 
 def test_default_policy_returns_score_direct(passing_task_dir: Path):
-    task = _make_task()  # policy=""
-    result = DualScorer().score(task, "", passing_task_dir)
+    # default fixture metadata: policy=""
+    result = DualScorer().score("", passing_task_dir)
     assert result.score == 1.0  # == score_direct
     assert result.details["score_direct"] == 1.0
     assert result.details["score_artifact"] == 1.0
@@ -145,8 +138,7 @@ def test_default_policy_returns_score_direct(passing_task_dir: Path):
 
 
 def test_details_dict_contains_required_keys(passing_task_dir: Path):
-    task = _make_task()
-    result = DualScorer().score(task, "", passing_task_dir)
+    result = DualScorer().score("", passing_task_dir)
     for key in (
         "score_direct",
         "score_artifact",
@@ -160,8 +152,8 @@ def test_details_dict_contains_required_keys(passing_task_dir: Path):
 def test_default_policy_score_equals_direct_when_artifact_differs(
     failing_direct_passing_artifact: Path,
 ):
-    task = _make_task()  # policy=""
-    result = DualScorer().score(task, "", failing_direct_passing_artifact)
+    # default fixture metadata: policy=""
+    result = DualScorer().score("", failing_direct_passing_artifact)
     # direct = 0.0 (test.sh exit 1), artifact = 1.0 (match)
     assert result.details["score_direct"] == 0.0
     assert result.details["score_artifact"] == 1.0
@@ -174,8 +166,8 @@ def test_default_policy_score_equals_direct_when_artifact_differs(
 
 
 def test_policy_min(failing_direct_passing_artifact: Path):
-    task = _make_task(scoring_policy="min")
-    result = DualScorer().score(task, "", failing_direct_passing_artifact)
+    _write_metadata(failing_direct_passing_artifact, scoring_policy="min")
+    result = DualScorer().score("", failing_direct_passing_artifact)
     assert result.details["score_direct"] == 0.0
     assert result.details["score_artifact"] == 1.0
     assert result.score == 0.0  # min(0.0, 1.0)
@@ -183,31 +175,33 @@ def test_policy_min(failing_direct_passing_artifact: Path):
 
 
 def test_policy_mean(failing_direct_passing_artifact: Path):
-    task = _make_task(scoring_policy="mean")
-    result = DualScorer().score(task, "", failing_direct_passing_artifact)
+    _write_metadata(failing_direct_passing_artifact, scoring_policy="mean")
+    result = DualScorer().score("", failing_direct_passing_artifact)
     assert result.score == pytest.approx(0.5)  # (0.0 + 1.0) / 2
     assert result.details["scoring_policy"] == "mean"
 
 
 def test_policy_weighted(failing_direct_passing_artifact: Path):
-    task = _make_task(
+    _write_metadata(
+        failing_direct_passing_artifact,
         scoring_policy="weighted",
         weight_direct=0.3,
         weight_artifact=0.7,
     )
-    result = DualScorer().score(task, "", failing_direct_passing_artifact)
+    result = DualScorer().score("", failing_direct_passing_artifact)
     # 0.3 * 0.0 + 0.7 * 1.0 == 0.7
     assert result.score == pytest.approx(0.7)
     assert result.details["scoring_policy"] == "weighted"
 
 
 def test_policy_weighted_balanced(passing_task_dir: Path):
-    task = _make_task(
+    _write_metadata(
+        passing_task_dir,
         scoring_policy="weighted",
         weight_direct=0.4,
         weight_artifact=0.6,
     )
-    result = DualScorer().score(task, "", passing_task_dir)
+    result = DualScorer().score("", passing_task_dir)
     # Both 1.0: 0.4 + 0.6 = 1.0
     assert result.score == pytest.approx(1.0)
 
@@ -220,12 +214,12 @@ def test_policy_weighted_balanced(passing_task_dir: Path):
 def test_missing_answer_json_artifact_leg_fails_direct_runs(tmp_path: Path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
+    _write_metadata(task_dir)
     _write_test_sh(task_dir, exit_code=0)  # direct passes
     _write_ground_truth(task_dir, answer_type="boolean", answer=True)
     # No answer.json written
 
-    task = _make_task()
-    result = DualScorer().score(task, "", task_dir)
+    result = DualScorer().score("", task_dir)
 
     assert result.details["score_direct"] == 1.0
     assert result.details["passed_direct"] is True
@@ -238,12 +232,12 @@ def test_missing_answer_json_artifact_leg_fails_direct_runs(tmp_path: Path):
 def test_missing_test_sh_direct_leg_fails_artifact_runs(tmp_path: Path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
+    _write_metadata(task_dir)
     # No test.sh written
     _write_ground_truth(task_dir, answer_type="boolean", answer=True)
     _write_answer(task_dir, answer=True)
 
-    task = _make_task()
-    result = DualScorer().score(task, "", task_dir)
+    result = DualScorer().score("", task_dir)
 
     assert result.details["score_direct"] == 0.0
     assert result.details["passed_direct"] is False
@@ -257,10 +251,10 @@ def test_missing_test_sh_direct_leg_fails_artifact_runs(tmp_path: Path):
 def test_both_legs_fail_gracefully(tmp_path: Path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
-    # Nothing written — no test.sh, no ground_truth.json, no answer.json
+    _write_metadata(task_dir, scoring_policy="mean")
+    # Nothing else written — no test.sh, no ground_truth.json, no answer.json
 
-    task = _make_task(scoring_policy="mean")
-    result = DualScorer().score(task, "", task_dir)
+    result = DualScorer().score("", task_dir)
 
     assert result.details["score_direct"] == 0.0
     assert result.details["score_artifact"] == 0.0
@@ -287,8 +281,7 @@ def test_both_legs_run_when_direct_raises(
 
     monkeypatch.setattr(BinaryScorer, "score", _boom)
 
-    task = _make_task()
-    result = DualScorer().score(task, "", passing_task_dir)
+    result = DualScorer().score("", passing_task_dir)
 
     # Direct leg captured the exception
     assert result.details["score_direct"] == 0.0
@@ -310,8 +303,7 @@ def test_both_legs_run_when_artifact_raises(
 
     monkeypatch.setattr(ArtifactScorer, "score", _boom)
 
-    task = _make_task()
-    result = DualScorer().score(task, "", passing_task_dir)
+    result = DualScorer().score("", passing_task_dir)
 
     assert result.details["score_artifact"] == 0.0
     assert result.details["passed_artifact"] is False
@@ -336,8 +328,8 @@ def test_both_legs_run_when_both_raise(
     monkeypatch.setattr(BinaryScorer, "score", _boom_direct)
     monkeypatch.setattr(ArtifactScorer, "score", _boom_artifact)
 
-    task = _make_task(scoring_policy="mean")
-    result = DualScorer().score(task, "", passing_task_dir)
+    _write_metadata(passing_task_dir, scoring_policy="mean")
+    result = DualScorer().score("", passing_task_dir)
 
     assert result.details["score_direct"] == 0.0
     assert result.details["score_artifact"] == 0.0
@@ -371,8 +363,8 @@ def test_reward_type_continuous_uses_continuous_scorer(
     monkeypatch.setattr(BinaryScorer, "score", _wrap_binary)
     monkeypatch.setattr(ContinuousScorer, "score", _wrap_continuous)
 
-    task = _make_task(reward_type="continuous")
-    DualScorer().score(task, "", passing_task_dir)
+    _write_metadata(passing_task_dir, reward_type="continuous")
+    DualScorer().score("", passing_task_dir)
 
     assert called["continuous"] == 1
     assert called["binary"] == 0
@@ -398,8 +390,8 @@ def test_reward_type_binary_uses_binary_scorer(
     monkeypatch.setattr(BinaryScorer, "score", _wrap_binary)
     monkeypatch.setattr(ContinuousScorer, "score", _wrap_continuous)
 
-    task = _make_task(reward_type="binary")
-    DualScorer().score(task, "", passing_task_dir)
+    _write_metadata(passing_task_dir, reward_type="binary")
+    DualScorer().score("", passing_task_dir)
 
     assert called["binary"] == 1
     assert called["continuous"] == 0
@@ -411,6 +403,5 @@ def test_reward_type_binary_uses_binary_scorer(
 
 
 def test_result_is_score_result(passing_task_dir: Path):
-    task = _make_task()
-    result = DualScorer().score(task, "", passing_task_dir)
+    result = DualScorer().score("", passing_task_dir)
     assert isinstance(result, ScoreResult)

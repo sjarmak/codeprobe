@@ -643,8 +643,10 @@ class DualScorer:
     """Composes a direct scorer (binary/continuous) with an artifact scorer.
 
     Runs BOTH legs unconditionally — no early return on failure. Reads
-    configuration from ``task.verification`` at score() time so the
-    registry can instantiate this class with no arguments.
+    configuration from ``task_dir/metadata.json`` at score() time so the
+    registry can instantiate this class with no arguments and the executor
+    can invoke it through the standard Scorer Protocol signature
+    ``score(agent_output, task_dir)``.
 
     Scoring policies:
       - ``""`` (default): ``score = score_direct``
@@ -658,23 +660,49 @@ class DualScorer:
         artifact leg runs normally.
       - Missing ``answer.json``: artifact leg returns 0.0 with an error;
         direct leg runs normally.
+      - Missing or unparseable ``metadata.json``: defaults from
+        ``TaskVerification`` are used (binary reward, default policy).
     """
 
     def __init__(self) -> None:
-        # No config — everything is read from task.verification at score() time.
+        # No config — everything is read from task_dir/metadata.json at score() time.
         pass
+
+    @staticmethod
+    def _read_verification(task_dir: Path) -> dict:
+        """Parse the ``verification`` block from ``task_dir/metadata.json``.
+
+        Returns an empty dict on any failure (missing file, invalid JSON,
+        unreadable). Defaults are applied by the caller.
+        """
+        meta_path = task_dir / "metadata.json"
+        if not meta_path.is_file():
+            return {}
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+        verification = data.get("verification") or {}
+        if not isinstance(verification, dict):
+            return {}
+        return verification
 
     def score(
         self,
-        task: object,
         agent_output: str,
         task_dir: Path,
     ) -> ScoreResult:
-        verification = getattr(task, "verification", None)
-        reward_type = getattr(verification, "reward_type", "binary")
-        scoring_policy = getattr(verification, "scoring_policy", "") or ""
-        weight_direct = float(getattr(verification, "weight_direct", 0.5))
-        weight_artifact = float(getattr(verification, "weight_artifact", 0.5))
+        verification = self._read_verification(task_dir)
+        reward_type = verification.get("reward_type", "binary") or "binary"
+        scoring_policy = verification.get("scoring_policy", "") or ""
+        try:
+            weight_direct = float(verification.get("weight_direct", 0.5))
+        except (TypeError, ValueError):
+            weight_direct = 0.5
+        try:
+            weight_artifact = float(verification.get("weight_artifact", 0.5))
+        except (TypeError, ValueError):
+            weight_artifact = 0.5
 
         direct_scorer: BinaryScorer | ContinuousScorer
         if reward_type == "continuous":
