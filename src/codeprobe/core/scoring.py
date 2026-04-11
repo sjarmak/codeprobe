@@ -43,6 +43,46 @@ _TOKEN_PATTERN = re.compile(
 
 SCORE_TIMEOUT_SECONDS = 300
 
+# Patterns excluded from sandbox copytree to keep per-task IO bounded.
+# Any future task format that legitimately needs one of these paths
+# should override this at the writer level, not suppress it here.
+_COPYTREE_IGNORE = (
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "target",
+    "build",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+)
+
+
+def read_task_metadata(task_dir: Path) -> dict:
+    """Parse ``task_dir/metadata.json`` into a dict.
+
+    Returns an empty dict on any failure (missing file, invalid JSON,
+    unreadable). Callers apply their own defaults on missing keys.
+    Single source of truth for metadata parsing — used by both the
+    executor and DualScorer so the error handling stays consistent.
+    """
+    meta_path = task_dir / "metadata.json"
+    if not meta_path.is_file():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_task_verification(task_dir: Path) -> dict:
+    """Return the ``verification`` block from ``task_dir/metadata.json``."""
+    verification = read_task_metadata(task_dir).get("verification") or {}
+    return verification if isinstance(verification, dict) else {}
+
 
 @dataclass(frozen=True)
 class ScoreResult:
@@ -154,7 +194,12 @@ def _run_in_sandbox(
     try:
         sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
         sandbox_task = sandbox_dir / "task"
-        shutil.copytree(task_dir, sandbox_task, symlinks=False)
+        shutil.copytree(
+            task_dir,
+            sandbox_task,
+            symlinks=False,
+            ignore=shutil.ignore_patterns(*_COPYTREE_IGNORE),
+        )
 
         rel = script_path.relative_to(task_dir)
         sandbox_script = sandbox_task / rel
@@ -668,31 +713,12 @@ class DualScorer:
         # No config — everything is read from task_dir/metadata.json at score() time.
         pass
 
-    @staticmethod
-    def _read_verification(task_dir: Path) -> dict:
-        """Parse the ``verification`` block from ``task_dir/metadata.json``.
-
-        Returns an empty dict on any failure (missing file, invalid JSON,
-        unreadable). Defaults are applied by the caller.
-        """
-        meta_path = task_dir / "metadata.json"
-        if not meta_path.is_file():
-            return {}
-        try:
-            data = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            return {}
-        verification = data.get("verification") or {}
-        if not isinstance(verification, dict):
-            return {}
-        return verification
-
     def score(
         self,
         agent_output: str,
         task_dir: Path,
     ) -> ScoreResult:
-        verification = self._read_verification(task_dir)
+        verification = read_task_verification(task_dir)
         reward_type = verification.get("reward_type", "binary") or "binary"
         scoring_policy = verification.get("scoring_policy", "") or ""
         try:

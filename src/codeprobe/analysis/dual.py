@@ -6,13 +6,14 @@ of ``score_direct`` / ``score_artifact`` / ``passed_direct`` / ``passed_artifact
 supported strategies so downstream stats/reporting code can treat dual tasks
 uniformly with single-leg tasks.
 
-When a task has no dual scoring details, ``dual_composite`` transparently
-falls back to ``task.automated_score`` so callers can use it unconditionally.
+This module is the canonical home for the dual-scoring predicates and format
+helpers shared across ``analysis.stats``, ``analysis.report``, and the CLI
+listeners. The ``stats`` import is deferred to function bodies to avoid a
+module-level circular import (``stats`` imports ``has_dual_scoring`` from here).
 """
 
 from __future__ import annotations
 
-from codeprobe.analysis.stats import PASS_THRESHOLD
 from codeprobe.models.experiment import CompletedTask, DualScoringDetails
 
 _DUAL_KEYS = (
@@ -27,6 +28,51 @@ def has_dual_scoring(task: CompletedTask) -> bool:
     """Return True if *task* carries dual scoring details."""
     details = task.scoring_details or {}
     return any(key in details for key in _DUAL_KEYS)
+
+
+def resolve_leg_pass(task: CompletedTask) -> tuple[bool, bool]:
+    """Return ``(direct_pass, artifact_pass)`` booleans for a dual task.
+
+    Prefers explicit ``passed_direct`` / ``passed_artifact`` bools from the
+    scoring_details dict; otherwise thresholds the raw score on
+    :data:`codeprobe.analysis.stats.PASS_THRESHOLD`.
+    """
+    from codeprobe.analysis.stats import PASS_THRESHOLD
+
+    details = task.scoring_details or {}
+    try:
+        direct_score = float(details.get("score_direct", 0.0))
+    except (TypeError, ValueError):
+        direct_score = 0.0
+    try:
+        artifact_score = float(details.get("score_artifact", 0.0))
+    except (TypeError, ValueError):
+        artifact_score = 0.0
+    direct_pass = bool(details.get("passed_direct", direct_score >= PASS_THRESHOLD))
+    artifact_pass = bool(
+        details.get("passed_artifact", artifact_score >= PASS_THRESHOLD)
+    )
+    return direct_pass, artifact_pass
+
+
+def format_dual_suffix(scoring_details: dict | None) -> str:
+    """Return a ``" (code:… artifact:…)"`` suffix when dual scoring is present.
+
+    Returns an empty string when *scoring_details* is None or does not contain
+    both ``score_direct`` and ``score_artifact`` fields. Shared by the plain
+    text and rich CLI listeners so both render identical per-task output.
+    """
+    if not scoring_details:
+        return ""
+    if "score_direct" not in scoring_details or "score_artifact" not in scoring_details:
+        return ""
+    code_str = "PASS" if scoring_details.get("passed_direct") else "FAIL"
+    artifact_score = scoring_details["score_artifact"]
+    try:
+        artifact_str = f"{float(artifact_score):.2f}"
+    except (TypeError, ValueError):
+        artifact_str = str(artifact_score)
+    return f" (code:{code_str} artifact:{artifact_str})"
 
 
 def dual_composite(task: CompletedTask, strategy: str = "min") -> float:
@@ -54,17 +100,7 @@ def dual_composite(task: CompletedTask, strategy: str = "min") -> float:
     if strategy == "mean":
         return (details.score_direct + details.score_artifact) / 2.0
     if strategy == "gate":
-        # Prefer explicit passed_* flags when they were supplied in the raw
-        # scoring_details dict; otherwise threshold the raw scores.
-        raw = task.scoring_details or {}
-        if "passed_direct" in raw:
-            direct_pass = bool(raw["passed_direct"])
-        else:
-            direct_pass = details.score_direct >= PASS_THRESHOLD
-        if "passed_artifact" in raw:
-            artifact_pass = bool(raw["passed_artifact"])
-        else:
-            artifact_pass = details.score_artifact >= PASS_THRESHOLD
+        direct_pass, artifact_pass = resolve_leg_pass(task)
         return 1.0 if (direct_pass and artifact_pass) else 0.0
 
     raise ValueError(

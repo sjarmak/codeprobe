@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -66,14 +66,7 @@ class DualScoringDetails:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a plain dict round-trippable through :meth:`from_dict`."""
-        return {
-            "score_direct": self.score_direct,
-            "score_artifact": self.score_artifact,
-            "passed_direct": self.passed_direct,
-            "passed_artifact": self.passed_artifact,
-            "scoring_policy": self.scoring_policy,
-            "extra": dict(self.extra),
-        }
+        return asdict(self)
 
 
 @dataclass(frozen=True)

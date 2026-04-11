@@ -8,6 +8,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
+from codeprobe.analysis.dual import has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
     ConfigSummary,
@@ -231,19 +232,6 @@ def format_text_report(report: Report) -> str:
     return "\n".join(lines)
 
 
-_DUAL_ROW_KEYS = (
-    "score_direct",
-    "score_artifact",
-    "passed_direct",
-    "passed_artifact",
-)
-
-
-def _task_has_dual(task: CompletedTask) -> bool:
-    details = task.scoring_details or {}
-    return any(key in details for key in _DUAL_ROW_KEYS)
-
-
 def _build_task_rows(report: Report) -> list[dict]:
     """Build per-task row dicts from report config_results and summaries."""
     summary_map = {s.label: s for s in report.summaries}
@@ -254,7 +242,7 @@ def _build_task_rows(report: Report) -> list[dict]:
         ci_upper = summary.ci_upper if summary else None
         for task in cr.completed:
             details = task.scoring_details or {}
-            has_dual = _task_has_dual(task)
+            has_dual = has_dual_scoring(task)
             rows.append(
                 {
                     "config": cr.config,
@@ -496,7 +484,7 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
         for cr in report.config_results:
             # Expand the table with an Artifact column when any task in this
             # config has dual scoring details.
-            config_has_dual = any(_task_has_dual(task) for task in cr.completed)
+            config_has_dual = any(has_dual_scoring(task) for task in cr.completed)
             parts.append(f"<details>\n<summary>{_esc(cr.config)}</summary>\n")
             parts.append("<table>\n<thead><tr>")
             if config_has_dual:

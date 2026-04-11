@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
+from codeprobe.analysis.dual import format_dual_suffix
 
 logger = logging.getLogger(__name__)
 from codeprobe.core.checkpoint import CheckpointStore
@@ -55,25 +56,6 @@ def _format_task_status(score: float) -> str:
     return f"{score:.2f}"
 
 
-def _format_dual_suffix(scoring_details: dict | None) -> str:
-    """Return a ' (code:... artifact:...)' suffix when dual scoring is present.
-
-    Returns an empty string when *scoring_details* is None or does not contain
-    both ``score_direct`` and ``score_artifact`` fields.
-    """
-    if not scoring_details:
-        return ""
-    if "score_direct" not in scoring_details or "score_artifact" not in scoring_details:
-        return ""
-    code_str = "PASS" if scoring_details.get("passed_direct") else "FAIL"
-    artifact_score = scoring_details["score_artifact"]
-    try:
-        artifact_str = f"{float(artifact_score):.2f}"
-    except (TypeError, ValueError):
-        artifact_str = str(artifact_score)
-    return f" (code:{code_str} artifact:{artifact_str})"
-
-
 def _on_task_complete(result: CompletedTask) -> None:
     """Print task result to stdout (legacy callback, kept for backward compat)."""
     status = _format_task_status(result.automated_score)
@@ -91,7 +73,7 @@ class PlainTextListener:
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
             status = _format_task_status(event.automated_score)
-            dual_suffix = _format_dual_suffix(event.scoring_details)
+            dual_suffix = format_dual_suffix(event.scoring_details)
             click.echo(
                 f"  {event.task_id}: {status} "
                 f"({event.duration_seconds:.1f}s){dual_suffix}"

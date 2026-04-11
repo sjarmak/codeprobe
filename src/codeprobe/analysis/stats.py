@@ -20,6 +20,9 @@ PASS_THRESHOLD = 0.5
 
 _SMALL_SAMPLE_THRESHOLD = 10
 
+# Import AFTER PASS_THRESHOLD is defined: dual.py defers its own stats
+# import to function bodies, so this direction is the only safe one.
+from codeprobe.analysis.dual import has_dual_scoring, resolve_leg_pass  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Statistical helper functions
@@ -135,52 +138,22 @@ def _dominant_billing_model(tasks: Sequence[CompletedTask]) -> str:
     return counter.most_common(1)[0][0]
 
 
-_DUAL_SCORING_KEYS = (
-    "score_direct",
-    "score_artifact",
-    "passed_direct",
-    "passed_artifact",
-)
-
-
-def _task_has_dual_details(task: CompletedTask) -> bool:
-    """Return True if *task* carries dual scoring details."""
-    details = task.scoring_details or {}
-    return any(key in details for key in _DUAL_SCORING_KEYS)
-
-
-def _dual_leg_pass(task: CompletedTask) -> tuple[bool, bool]:
-    """Return (direct_pass, artifact_pass) booleans for a dual task.
-
-    Prefers explicit ``passed_direct`` / ``passed_artifact`` bools from the
-    scoring_details dict; otherwise thresholds the raw score on
-    :data:`PASS_THRESHOLD`.
-    """
-    details = task.scoring_details or {}
-    direct_score = float(details.get("score_direct", 0.0))
-    artifact_score = float(details.get("score_artifact", 0.0))
-    direct_pass = bool(details.get("passed_direct", direct_score >= PASS_THRESHOLD))
-    artifact_pass = bool(
-        details.get("passed_artifact", artifact_score >= PASS_THRESHOLD)
-    )
-    return direct_pass, artifact_pass
-
-
 def _dual_leg_stats(
     tasks: Sequence[CompletedTask],
 ) -> tuple[int, float | None, float | None]:
-    """Compute (dual_task_count, direct_pass_rate, artifact_pass_rate).
+    """Compute ``(dual_task_count, direct_pass_rate, artifact_pass_rate)``.
 
-    Returns (0, None, None) when no tasks carry dual scoring details.
+    Returns ``(0, None, None)`` when no tasks carry dual scoring details.
+    Delegates per-task predicates to :mod:`codeprobe.analysis.dual`.
     """
     dual_count = 0
     direct_passes = 0
     artifact_passes = 0
     for task in tasks:
-        if not _task_has_dual_details(task):
+        if not has_dual_scoring(task):
             continue
         dual_count += 1
-        direct_pass, artifact_pass = _dual_leg_pass(task)
+        direct_pass, artifact_pass = resolve_leg_pass(task)
         if direct_pass:
             direct_passes += 1
         if artifact_pass:
@@ -384,9 +357,9 @@ def summarize_completed_tasks(
         if task.cost_model != "unknown":
             billing_models.append(task.cost_model)
 
-        if _task_has_dual_details(task):
+        if has_dual_scoring(task):
             dual_count += 1
-            direct_pass, artifact_pass = _dual_leg_pass(task)
+            direct_pass, artifact_pass = resolve_leg_pass(task)
             if direct_pass:
                 direct_passes += 1
             if artifact_pass:

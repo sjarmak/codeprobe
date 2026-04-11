@@ -35,11 +35,26 @@ from codeprobe.core.isolation import (
     setup_multi_repo_workspace,
 )
 from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
-from codeprobe.core.scoring import get_scorer, sanitize_secrets
+from codeprobe.core.scoring import (
+    _COPYTREE_IGNORE,
+    get_scorer,
+    read_task_metadata,
+    sanitize_secrets,
+)
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
+
+
+# Per-run agent artifacts that must not leak across task runs.
+_STALE_ANSWER_FILES = ("answer.txt", "answer.json", "reward.txt")
+
+
+def _drop_stale_answers(base: Path) -> None:
+    """Remove any leftover agent artifacts under *base*."""
+    for name in _STALE_ANSWER_FILES:
+        (base / name).unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -194,22 +209,14 @@ def execute_task(
 
     # Load task metadata once — used for reward_type auto-detection and
     # preamble context (e.g. sg_repo for Sourcegraph preamble).
-    _task_meta: dict = {}
-    meta_path = task_dir / "metadata.json"
-    if meta_path.is_file():
-        try:
-            import json as _json
-
-            _task_meta = _json.loads(meta_path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            pass
-
-    # (R5) Verification-mode override — TOP LEVEL and unconditional.
-    # A task whose metadata declares ``verification_mode == 'dual'`` forces
-    # the dual scorer regardless of the reward_type configured on the
-    # experiment. This is NOT nested inside the "binary" auto-detect block
-    # because a continuous-reward experiment can still carry a dual task.
+    _task_meta = read_task_metadata(task_dir)
     _verification = _task_meta.get("verification") or {}
+
+    # Verification-mode override — top level and unconditional. A task whose
+    # metadata declares ``verification_mode == 'dual'`` forces the dual
+    # scorer regardless of the reward_type configured on the experiment;
+    # this is NOT nested inside the "binary" auto-detect block because a
+    # continuous-reward experiment can still carry a dual task.
     if _verification.get("verification_mode") == "dual":
         reward_type = "dual"
 
@@ -221,12 +228,9 @@ def execute_task(
         if task_rt and task_rt != "binary":
             reward_type = task_rt
 
-    # Remove stale answer.txt / reward.txt / answer.json from prior runs so
-    # they don't leak into this task's scoring sandbox.
-    for stale in ("answer.txt", "reward.txt", "answer.json"):
-        stale_path = task_dir / stale
-        if stale_path.is_file():
-            stale_path.unlink(missing_ok=True)
+    # Remove stale agent artifacts from prior runs so they don't leak into
+    # this task's scoring sandbox.
+    _drop_stale_answers(task_dir)
 
     def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
@@ -239,11 +243,11 @@ def execute_task(
             ),
         )
 
-    # (R9-PM) Per-run worktree for dual-mode tasks.
-    # Mined test.sh scripts hardcode ``cd {repo_path}`` to the original
-    # repo, so two parallel runs of the same dual task would trample each
-    # other's workspace state. Bind a dedicated worktree slot from the
-    # isolation pool when the caller didn't already supply one.
+    # Per-run worktree for dual-mode tasks. Mined test.sh scripts hardcode
+    # ``cd {repo_path}`` to the original repo, so two parallel runs of the
+    # same dual task would trample each other's workspace state. Bind a
+    # dedicated worktree slot from the isolation pool when the caller
+    # didn't already supply one.
     _owned_dual_iso: IsolationStrategy | None = None
     _owned_dual_wt: Path | None = None
     if reward_type == "dual" and worktree_path is None:
@@ -430,14 +434,19 @@ def execute_task(
                 agent_stderr=output.stderr or "",
             )
 
-        # (R9-PM) Per-run scoring sandbox: snapshot the task files (and any
+        # Per-run scoring sandbox: snapshot the task files (and any
         # agent-produced answer artifacts) into a fresh temp directory so
         # concurrent runs never share mutable scoring state. The original
         # task_dir on disk is never mutated by scoring.
         with tempfile.TemporaryDirectory(prefix=f"codeprobe-score-{task_id}-") as _tmp:
             scoring_dir = Path(_tmp) / task_id
             try:
-                shutil.copytree(task_dir, scoring_dir, symlinks=True)
+                shutil.copytree(
+                    task_dir,
+                    scoring_dir,
+                    symlinks=True,
+                    ignore=shutil.ignore_patterns(*_COPYTREE_IGNORE),
+                )
             except OSError as exc:
                 return TaskResult(
                     completed=CompletedTask(
@@ -453,10 +462,7 @@ def execute_task(
 
             # Drop any stale answer files copied from the source task dir
             # — we only want the current run's artifacts in the sandbox.
-            for stale_name in ("answer.txt", "answer.json", "reward.txt"):
-                stale_in_scoring = scoring_dir / stale_name
-                if stale_in_scoring.is_file():
-                    stale_in_scoring.unlink(missing_ok=True)
+            _drop_stale_answers(scoring_dir)
 
             if found_answer is not None:
                 try:
@@ -475,10 +481,9 @@ def execute_task(
         if resolved_preambles:
             metadata["resolved_preambles"] = resolved_preambles
 
-        # Propagate ScoreResult.details into CompletedTask.scoring_details as
-        # a plain dict (u4 TaskScored event also carries it). Keep the
-        # backward-compatible passed/error fields so existing consumers
-        # continue to work.
+        # Propagate ScoreResult.details into CompletedTask.scoring_details
+        # as a plain dict, keeping the backward-compatible passed/error
+        # fields so existing consumers continue to work.
         scoring_details: dict = {
             "passed": score_result.passed,
             "error": score_result.error,
