@@ -1,0 +1,19 @@
+[task]
+id = "dual-task-001"
+repo = "org/repo"
+time_limit_sec = 600
+
+[metadata]
+name = "dual-task-001"
+difficulty = "medium"
+description = "Dual-verification task fixture"
+language = "python"
+
+[verification]
+type = "test_script"
+command = "bash tests/test.sh"
+verification_mode = "dual"
+reward_type = "binary"
+scoring_policy = "weighted"
+weight_direct = 0.3
+weight_artifact = 0.7

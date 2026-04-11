@@ -57,6 +57,7 @@ class TaskScored:
     cost_source: str
     error: str | None
     timestamp: float
+    scoring_details: dict | None = None
 
 
 @dataclass(frozen=True)

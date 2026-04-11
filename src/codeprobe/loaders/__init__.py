@@ -96,7 +96,11 @@ def _build_task(
         verification=TaskVerification(
             type=verif.get("type", "test_script"),
             command=verif.get("command", "bash tests/test.sh"),
+            verification_mode=verif.get("verification_mode", "test_script"),
             reward_type=reward_type,
+            scoring_policy=verif.get("scoring_policy", ""),
+            weight_direct=float(verif.get("weight_direct", 0.5)),
+            weight_artifact=float(verif.get("weight_artifact", 0.5)),
             checkpoints=parsed_checkpoints,
         ),
         time_limit_sec=time_limit_sec,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,47 @@ class ExperimentConfig:
             f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
             f"extra={self.extra!r})"
         )
+
+
+@dataclass(frozen=True)
+class DualScoringDetails:
+    """Dual scoring details capturing direct and artifact-based scores.
+
+    Note: This dataclass is a typed view over the plain dict stored in
+    ``CompletedTask.scoring_details``. The on-the-wire representation remains
+    a ``dict`` to preserve checkpoint serialization compatibility; use
+    :meth:`from_dict` / :meth:`to_dict` to convert between the two.
+    """
+
+    score_direct: float = 0.0
+    score_artifact: float = 0.0
+    passed_direct: bool = False
+    passed_artifact: bool = False
+    scoring_policy: str = ""
+    extra: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> DualScoringDetails:
+        """Build an instance from a plain dict, tolerating missing keys."""
+        return cls(
+            score_direct=float(d.get("score_direct", 0.0)),
+            score_artifact=float(d.get("score_artifact", 0.0)),
+            passed_direct=bool(d.get("passed_direct", False)),
+            passed_artifact=bool(d.get("passed_artifact", False)),
+            scoring_policy=str(d.get("scoring_policy", "")),
+            extra=dict(d.get("extra", {})),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a plain dict round-trippable through :meth:`from_dict`."""
+        return {
+            "score_direct": self.score_direct,
+            "score_artifact": self.score_artifact,
+            "passed_direct": self.passed_direct,
+            "passed_artifact": self.passed_artifact,
+            "scoring_policy": self.scoring_policy,
+            "extra": dict(self.extra),
+        }
 
 
 @dataclass(frozen=True)

@@ -43,7 +43,7 @@ class _ConfigState:
     total_cost: float = 0.0
     durations: list[float] = field(default_factory=list)
     current_task: str = ""
-    task_rows: list[tuple[str, str, str, str]] = field(default_factory=list)
+    task_rows: list[tuple[str, str, str, str, str]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     finished: bool = False
 
@@ -128,10 +128,32 @@ class RichLiveListener:
             return "FAIL"
         return f"{score:.2f}"
 
+    @staticmethod
+    def _format_dual_suffix(scoring_details: dict | None) -> str:
+        """Return a ' (code:... artifact:...)' suffix for dual scoring.
+
+        Empty string when *scoring_details* is None or incomplete.
+        """
+        if not scoring_details:
+            return ""
+        if (
+            "score_direct" not in scoring_details
+            or "score_artifact" not in scoring_details
+        ):
+            return ""
+        code_str = "PASS" if scoring_details.get("passed_direct") else "FAIL"
+        artifact_score = scoring_details["score_artifact"]
+        try:
+            artifact_str = f"{float(artifact_score):.2f}"
+        except (TypeError, ValueError):
+            artifact_str = str(artifact_score)
+        return f" (code:{code_str} artifact:{artifact_str})"
+
     def _handle_task_scored(self, event: TaskScored) -> None:
         status = self._format_score(event.automated_score)
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
         duration_str = f"{event.duration_seconds:.1f}s"
+        dual_suffix = self._format_dual_suffix(event.scoring_details)
 
         with self._lock:
             state = self._get_or_create_config(event.config_label)
@@ -142,7 +164,9 @@ class RichLiveListener:
             if event.cost_usd is not None:
                 state.total_cost += event.cost_usd
             state.current_task = ""
-            state.task_rows.append((event.task_id, status, duration_str, cost_str))
+            state.task_rows.append(
+                (event.task_id, status, duration_str, cost_str, dual_suffix)
+            )
         self._refresh()
 
     def _handle_budget_warning(self, event: BudgetWarning) -> None:
@@ -273,11 +297,11 @@ class RichLiveListener:
         if rows:
             table.add_section()
             visible_rows = rows[-10:]
-            for task_id, status, duration, _task_cost in visible_rows:
+            for task_id, status, duration, _task_cost, dual_suffix in visible_rows:
                 status_style = "green" if status == "PASS" else "red"
                 table.add_row(
                     Text(status, style=status_style),
-                    f"{task_id}  {duration}",
+                    f"{task_id}  {duration}{dual_suffix}",
                 )
             if len(rows) > 10:
                 hidden = len(rows) - 10

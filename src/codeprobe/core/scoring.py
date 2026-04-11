@@ -19,9 +19,11 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+
+from codeprobe.analysis.stats import PASS_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,7 @@ class ScoreResult:
     score: float
     passed: bool
     error: str | None = None
+    details: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +540,7 @@ class ArtifactScorer:
 
         if answer_type == "file_list":
             f1 = self._compute_f1(expected, actual)
-            return ScoreResult(score=f1, passed=f1 > 0.0)
+            return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
         if answer_type == "count":
             return self._score_count(expected, actual)
         if answer_type == "boolean":

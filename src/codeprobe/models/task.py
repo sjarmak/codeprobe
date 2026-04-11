@@ -127,6 +127,9 @@ class TaskVerification:
     ground_truth_path: str = "tests/ground_truth.json"
     answer_schema: str = ""
     reward_type: str = "binary"
+    scoring_policy: str = ""
+    weight_direct: float = 0.5
+    weight_artifact: float = 0.5
     oracle_type: str = ""  # "file_list", "count", "boolean" — empty for SDLC
     oracle_answer: tuple[str, ...] = ()  # expected answer set for oracle tasks
     oracle_tiers: dict[str, str] = field(
