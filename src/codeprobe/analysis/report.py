@@ -145,6 +145,11 @@ def format_text_report(report: Report) -> str:
         lines.append(f"**PARTIAL** {tasks_done}/{report.tasks_expected} tasks ({pct}%)")
         lines.append("")
 
+    # Are any dual-scored tasks present anywhere in the report? Used to
+    # decide whether to expand the per-task table with an Artifact column
+    # and to annotate the rankings line with per-leg pass rates.
+    any_dual_tasks = any((s.dual_task_count or 0) > 0 for s in report.summaries)
+
     # Rankings
     lines.append("### Rankings")
     for rc in report.rankings:
@@ -154,8 +159,14 @@ def format_text_report(report: Report) -> str:
             if s.total_cost_usd is not None
             else "no cost data"
         )
+        dual_suffix = ""
+        if s.direct_pass_rate is not None and s.artifact_pass_rate is not None:
+            dual_suffix = (
+                f" (code {s.direct_pass_rate:.0%} / "
+                f"artifact {s.artifact_pass_rate:.0%})"
+            )
         lines.append(
-            f"{rc.rank}. {rc.label} — {s.pass_rate:.0%} pass rate, "
+            f"{rc.rank}. {rc.label} — {s.pass_rate:.0%} pass rate{dual_suffix}, "
             f"{cost_str} — {rc.recommendation}"
         )
     lines.append("")
@@ -171,16 +182,36 @@ def format_text_report(report: Report) -> str:
     if report.config_results:
         lines.append("### Per-Task Results")
         lines.append("")
-        lines.append("| Config | Task | Score | Pass | Duration (s) | Cost ($) |")
-        lines.append("|--------|------|-------|------|--------------|----------|")
+        if any_dual_tasks:
+            lines.append(
+                "| Config | Task | Score | Artifact | Pass | Duration (s) | Cost ($) |"
+            )
+            lines.append(
+                "|--------|------|-------|----------|------|--------------|----------|"
+            )
+        else:
+            lines.append("| Config | Task | Score | Pass | Duration (s) | Cost ($) |")
+            lines.append("|--------|------|-------|------|--------------|----------|")
         for cr in report.config_results:
             for task in cr.completed:
                 passed = "Y" if task.automated_score > 0 else "N"
                 cost_cell = f"{task.cost_usd:.4f}" if task.cost_usd is not None else ""
-                lines.append(
-                    f"| {cr.config} | {task.task_id} | {task.automated_score:.2f} "
-                    f"| {passed} | {task.duration_seconds:.1f} | {cost_cell} |"
-                )
+                if any_dual_tasks:
+                    details = task.scoring_details or {}
+                    if "score_artifact" in details:
+                        artifact_cell = f"{float(details['score_artifact']):.2f}"
+                    else:
+                        artifact_cell = "—"
+                    lines.append(
+                        f"| {cr.config} | {task.task_id} "
+                        f"| {task.automated_score:.2f} | {artifact_cell} "
+                        f"| {passed} | {task.duration_seconds:.1f} | {cost_cell} |"
+                    )
+                else:
+                    lines.append(
+                        f"| {cr.config} | {task.task_id} | {task.automated_score:.2f} "
+                        f"| {passed} | {task.duration_seconds:.1f} | {cost_cell} |"
+                    )
         lines.append("")
 
     # Recommendation
@@ -200,6 +231,19 @@ def format_text_report(report: Report) -> str:
     return "\n".join(lines)
 
 
+_DUAL_ROW_KEYS = (
+    "score_direct",
+    "score_artifact",
+    "passed_direct",
+    "passed_artifact",
+)
+
+
+def _task_has_dual(task: CompletedTask) -> bool:
+    details = task.scoring_details or {}
+    return any(key in details for key in _DUAL_ROW_KEYS)
+
+
 def _build_task_rows(report: Report) -> list[dict]:
     """Build per-task row dicts from report config_results and summaries."""
     summary_map = {s.label: s for s in report.summaries}
@@ -209,6 +253,8 @@ def _build_task_rows(report: Report) -> list[dict]:
         ci_lower = summary.ci_lower if summary else None
         ci_upper = summary.ci_upper if summary else None
         for task in cr.completed:
+            details = task.scoring_details or {}
+            has_dual = _task_has_dual(task)
             rows.append(
                 {
                     "config": cr.config,
@@ -225,6 +271,25 @@ def _build_task_rows(report: Report) -> list[dict]:
                     "cost_model": task.cost_model,
                     "ci_lower": ci_lower,
                     "ci_upper": ci_upper,
+                    # Dual scoring leg columns — populated when the task has
+                    # dual scoring_details, otherwise None/empty so CSV
+                    # still emits a uniform schema.
+                    "score_direct": (details.get("score_direct") if has_dual else None),
+                    "score_artifact": (
+                        details.get("score_artifact") if has_dual else None
+                    ),
+                    "passed_direct": (
+                        details.get("passed_direct") if has_dual else None
+                    ),
+                    "passed_artifact": (
+                        details.get("passed_artifact") if has_dual else None
+                    ),
+                    "scoring_policy": (
+                        details.get("scoring_policy", "") if has_dual else ""
+                    ),
+                    # Full scoring_details dict — JSON export preserves this
+                    # verbatim; CSV writer ignores it via extrasaction='ignore'.
+                    "scoring_details": dict(details),
                 }
             )
     return rows
@@ -268,6 +333,13 @@ _CSV_COLUMNS = [
     "cost_model",
     "ci_lower",
     "ci_upper",
+    # Dual scoring legs — always present in the CSV schema so consumers can
+    # rely on a stable column set. Empty strings for non-dual tasks.
+    "score_direct",
+    "score_artifact",
+    "passed_direct",
+    "passed_artifact",
+    "scoring_policy",
 ]
 
 
@@ -422,23 +494,47 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     if report.config_results:
         parts.append('<h2 id="per-task-drilldown">Per-Task Drill-Down</h2>\n')
         for cr in report.config_results:
+            # Expand the table with an Artifact column when any task in this
+            # config has dual scoring details.
+            config_has_dual = any(_task_has_dual(task) for task in cr.completed)
             parts.append(f"<details>\n<summary>{_esc(cr.config)}</summary>\n")
             parts.append("<table>\n<thead><tr>")
-            parts.append(
-                "<th>Task</th><th>Score</th><th>Pass</th>"
-                "<th>Duration (s)</th><th>Cost</th>"
-            )
+            if config_has_dual:
+                parts.append(
+                    "<th>Task</th><th>Score</th><th>Artifact</th><th>Pass</th>"
+                    "<th>Duration (s)</th><th>Cost</th>"
+                )
+            else:
+                parts.append(
+                    "<th>Task</th><th>Score</th><th>Pass</th>"
+                    "<th>Duration (s)</th><th>Cost</th>"
+                )
             parts.append("</tr></thead>\n<tbody>\n")
             for task in cr.completed:
                 passed = task.automated_score > 0
                 cls = "pass" if passed else "fail"
-                parts.append(
-                    f"<tr><td>{_esc(task.task_id)}</td>"
-                    f"<td>{_fmt_score(task.automated_score)}</td>"
-                    f'<td class="{cls}">{"Y" if passed else "N"}</td>'
-                    f"<td>{task.duration_seconds:.1f}</td>"
-                    f"<td>{_fmt_cost(task.cost_usd)}</td></tr>\n"
-                )
+                if config_has_dual:
+                    details = task.scoring_details or {}
+                    if "score_artifact" in details:
+                        artifact_cell = _fmt_score(float(details["score_artifact"]))
+                    else:
+                        artifact_cell = "—"
+                    parts.append(
+                        f"<tr><td>{_esc(task.task_id)}</td>"
+                        f"<td>{_fmt_score(task.automated_score)}</td>"
+                        f"<td>{artifact_cell}</td>"
+                        f'<td class="{cls}">{"Y" if passed else "N"}</td>'
+                        f"<td>{task.duration_seconds:.1f}</td>"
+                        f"<td>{_fmt_cost(task.cost_usd)}</td></tr>\n"
+                    )
+                else:
+                    parts.append(
+                        f"<tr><td>{_esc(task.task_id)}</td>"
+                        f"<td>{_fmt_score(task.automated_score)}</td>"
+                        f'<td class="{cls}">{"Y" if passed else "N"}</td>'
+                        f"<td>{task.duration_seconds:.1f}</td>"
+                        f"<td>{_fmt_cost(task.cost_usd)}</td></tr>\n"
+                    )
             parts.append("</tbody>\n</table>\n</details>\n")
 
     # --- Pairwise Comparison Cards ---
@@ -550,9 +646,12 @@ def format_csv_report(report: Report) -> str:
     if has_warning:
         buf.write("# SINGLE RUN — no statistical confidence\n")
 
-    writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS)
+    writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for row in _build_task_rows(report):
-        writer.writerow(row)
+        # Replace None with empty string for optional dual columns so the CSV
+        # shows a blank cell rather than the string "None".
+        csv_row = {k: ("" if row.get(k) is None else row.get(k)) for k in _CSV_COLUMNS}
+        writer.writerow(csv_row)
 
     return buf.getvalue()

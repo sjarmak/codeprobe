@@ -1132,6 +1132,13 @@ class TestFormatCsvReport:
             "cost_model",
             "ci_lower",
             "ci_upper",
+            # Dual scoring leg columns (always present in schema; blank
+            # for single-scored tasks).
+            "score_direct",
+            "score_artifact",
+            "passed_direct",
+            "passed_artifact",
+            "scoring_policy",
         }
         assert reader.fieldnames is not None
         assert set(reader.fieldnames) == expected_cols

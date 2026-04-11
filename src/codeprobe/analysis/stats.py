@@ -135,6 +135,66 @@ def _dominant_billing_model(tasks: Sequence[CompletedTask]) -> str:
     return counter.most_common(1)[0][0]
 
 
+_DUAL_SCORING_KEYS = (
+    "score_direct",
+    "score_artifact",
+    "passed_direct",
+    "passed_artifact",
+)
+
+
+def _task_has_dual_details(task: CompletedTask) -> bool:
+    """Return True if *task* carries dual scoring details."""
+    details = task.scoring_details or {}
+    return any(key in details for key in _DUAL_SCORING_KEYS)
+
+
+def _dual_leg_pass(task: CompletedTask) -> tuple[bool, bool]:
+    """Return (direct_pass, artifact_pass) booleans for a dual task.
+
+    Prefers explicit ``passed_direct`` / ``passed_artifact`` bools from the
+    scoring_details dict; otherwise thresholds the raw score on
+    :data:`PASS_THRESHOLD`.
+    """
+    details = task.scoring_details or {}
+    direct_score = float(details.get("score_direct", 0.0))
+    artifact_score = float(details.get("score_artifact", 0.0))
+    direct_pass = bool(details.get("passed_direct", direct_score >= PASS_THRESHOLD))
+    artifact_pass = bool(
+        details.get("passed_artifact", artifact_score >= PASS_THRESHOLD)
+    )
+    return direct_pass, artifact_pass
+
+
+def _dual_leg_stats(
+    tasks: Sequence[CompletedTask],
+) -> tuple[int, float | None, float | None]:
+    """Compute (dual_task_count, direct_pass_rate, artifact_pass_rate).
+
+    Returns (0, None, None) when no tasks carry dual scoring details.
+    """
+    dual_count = 0
+    direct_passes = 0
+    artifact_passes = 0
+    for task in tasks:
+        if not _task_has_dual_details(task):
+            continue
+        dual_count += 1
+        direct_pass, artifact_pass = _dual_leg_pass(task)
+        if direct_pass:
+            direct_passes += 1
+        if artifact_pass:
+            artifact_passes += 1
+
+    if dual_count == 0:
+        return 0, None, None
+    return (
+        dual_count,
+        direct_passes / dual_count,
+        artifact_passes / dual_count,
+    )
+
+
 @dataclass(frozen=True)
 class ConfigSummary:
     """Aggregated stats for one configuration."""
@@ -156,6 +216,14 @@ class ConfigSummary:
     ci_upper: float = 0.0
     billing_model: str = "unknown"
     sample_size_warning: str | None = None
+    # Dual scoring leg stats — populated only when tasks carry dual
+    # scoring_details. ``dual_task_count`` is the number of dual-scored tasks
+    # seen; ``direct_pass_rate`` / ``artifact_pass_rate`` are pass rates
+    # computed over that subset. They are ``None`` when no dual data is
+    # present so renderers can skip dual-specific columns/rows.
+    dual_task_count: int = 0
+    direct_pass_rate: float | None = None
+    artifact_pass_rate: float | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +303,7 @@ def summarize_config(
         f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
     )
     billing = _dominant_billing_model(tasks)
+    dual_count, direct_rate, artifact_rate = _dual_leg_stats(tasks)
 
     return ConfigSummary(
         label=results.config,
@@ -254,6 +323,9 @@ def summarize_config(
         ci_upper=ci_hi,
         billing_model=billing,
         sample_size_warning=warning,
+        dual_task_count=dual_count,
+        direct_pass_rate=direct_rate,
+        artifact_pass_rate=artifact_rate,
     )
 
 
@@ -285,6 +357,10 @@ def summarize_completed_tasks(
     costs: list[float] = []
     billing_models: list[str] = []
 
+    dual_count = 0
+    direct_passes = 0
+    artifact_passes = 0
+
     for task in tasks:
         total += 1
         if task.status == "completed":
@@ -307,6 +383,14 @@ def summarize_completed_tasks(
 
         if task.cost_model != "unknown":
             billing_models.append(task.cost_model)
+
+        if _task_has_dual_details(task):
+            dual_count += 1
+            direct_pass, artifact_pass = _dual_leg_pass(task)
+            if direct_pass:
+                direct_passes += 1
+            if artifact_pass:
+                artifact_passes += 1
 
     is_partial = total_tasks is not None and total < total_tasks
 
@@ -338,6 +422,13 @@ def summarize_completed_tasks(
         Counter(billing_models).most_common(1)[0][0] if billing_models else "unknown"
     )
 
+    if dual_count > 0:
+        direct_rate: float | None = direct_passes / dual_count
+        artifact_rate: float | None = artifact_passes / dual_count
+    else:
+        direct_rate = None
+        artifact_rate = None
+
     return ConfigSummary(
         label=label,
         total_tasks=total,
@@ -356,6 +447,9 @@ def summarize_completed_tasks(
         ci_upper=ci_hi,
         billing_model=billing,
         sample_size_warning=warning,
+        dual_task_count=dual_count,
+        direct_pass_rate=direct_rate,
+        artifact_pass_rate=artifact_rate,
     )
 
 
