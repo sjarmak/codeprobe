@@ -1,0 +1,20 @@
+[task]
+id = "add-docstring"
+repo = "synthetic/example"
+time_limit_sec = 300
+
+[metadata]
+name = "add-docstring"
+difficulty = "easy"
+description = "Add a module-level docstring"
+language = "python"
+task_type = "sdlc_code_change"
+
+[verification]
+type = "test_script"
+command = "bash tests/test.sh"
+verification_mode = "dual"
+reward_type = "binary"
+scoring_policy = "min"
+weight_direct = 0.5
+weight_artifact = 0.5

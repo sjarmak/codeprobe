@@ -1,0 +1,20 @@
+[task]
+id = "fix-off-by-one"
+repo = "synthetic/example"
+time_limit_sec = 300
+
+[metadata]
+name = "fix-off-by-one"
+difficulty = "easy"
+description = "Fix an off-by-one error in a loop bound"
+language = "python"
+task_type = "sdlc_code_change"
+
+[verification]
+type = "test_script"
+command = "bash tests/test.sh"
+verification_mode = "dual"
+reward_type = "binary"
+scoring_policy = "min"
+weight_direct = 0.5
+weight_artifact = 0.5

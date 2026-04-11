@@ -1,0 +1,20 @@
+[task]
+id = "add-null-check"
+repo = "synthetic/example"
+time_limit_sec = 300
+
+[metadata]
+name = "add-null-check"
+difficulty = "easy"
+description = "Add a null/None guard"
+language = "python"
+task_type = "sdlc_code_change"
+
+[verification]
+type = "test_script"
+command = "bash tests/test.sh"
+verification_mode = "dual"
+reward_type = "binary"
+scoring_policy = "weighted"
+weight_direct = 0.6
+weight_artifact = 0.4

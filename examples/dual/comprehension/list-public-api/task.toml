@@ -1,0 +1,20 @@
+[task]
+id = "list-public-api"
+repo = "synthetic/example"
+time_limit_sec = 300
+
+[metadata]
+name = "list-public-api"
+difficulty = "easy"
+description = "List public symbols exported from package"
+language = "python"
+task_type = "architecture_comprehension"
+
+[verification]
+type = "test_script"
+command = "bash tests/test.sh"
+verification_mode = "dual"
+reward_type = "binary"
+scoring_policy = "weighted"
+weight_direct = 0.3
+weight_artifact = 0.7

@@ -1,0 +1,20 @@
+[task]
+id = "find-config-format"
+repo = "synthetic/example"
+time_limit_sec = 300
+
+[metadata]
+name = "find-config-format"
+difficulty = "easy"
+description = "Determine the project's config format"
+language = "python"
+task_type = "architecture_comprehension"
+
+[verification]
+type = "test_script"
+command = "bash tests/test.sh"
+verification_mode = "dual"
+reward_type = "binary"
+scoring_policy = "weighted"
+weight_direct = 0.5
+weight_artifact = 0.5
