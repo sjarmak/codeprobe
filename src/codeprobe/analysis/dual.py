@@ -14,7 +14,38 @@ module-level circular import (``stats`` imports ``has_dual_scoring`` from here).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 from codeprobe.models.experiment import CompletedTask, DualScoringDetails
+
+
+@dataclass(frozen=True)
+class DualMatrix:
+    """2x2 breakdown of dual-verified task outcomes."""
+
+    both_pass: int
+    code_only_pass: int  # direct pass, artifact fail
+    artifact_only_pass: int  # direct fail, artifact pass
+    neither_pass: int
+    total: int
+
+    @property
+    def both_pass_pct(self) -> float:
+        return (self.both_pass / self.total * 100.0) if self.total > 0 else 0.0
+
+    @property
+    def code_only_pass_pct(self) -> float:
+        return (self.code_only_pass / self.total * 100.0) if self.total > 0 else 0.0
+
+    @property
+    def artifact_only_pass_pct(self) -> float:
+        return (self.artifact_only_pass / self.total * 100.0) if self.total > 0 else 0.0
+
+    @property
+    def neither_pass_pct(self) -> float:
+        return (self.neither_pass / self.total * 100.0) if self.total > 0 else 0.0
+
 
 _DUAL_KEYS = (
     "score_direct",
@@ -129,4 +160,42 @@ def dual_composite(task: CompletedTask, strategy: str = "min") -> float:
     raise ValueError(
         f"unknown dual_composite strategy: {strategy!r} "
         "(expected 'min', 'mean', or 'gate')"
+    )
+
+
+def dual_matrix(tasks: Sequence[CompletedTask]) -> DualMatrix | None:
+    """Compute a 2x2 matrix of dual-verification outcomes.
+
+    Filters to tasks where ``has_dual_scoring()`` is True, classifies each
+    into one of four quadrants using ``resolve_leg_pass()``, and returns a
+    ``DualMatrix``. Returns ``None`` if no dual tasks are found.
+    """
+    both = 0
+    code_only = 0
+    artifact_only = 0
+    neither = 0
+
+    for task in tasks:
+        if not has_dual_scoring(task):
+            continue
+        direct_pass, artifact_pass = resolve_leg_pass(task)
+        if direct_pass and artifact_pass:
+            both += 1
+        elif direct_pass:
+            code_only += 1
+        elif artifact_pass:
+            artifact_only += 1
+        else:
+            neither += 1
+
+    total = both + code_only + artifact_only + neither
+    if total == 0:
+        return None
+
+    return DualMatrix(
+        both_pass=both,
+        code_only_pass=code_only,
+        artifact_only_pass=artifact_only,
+        neither_pass=neither,
+        total=total,
     )

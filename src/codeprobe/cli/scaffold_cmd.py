@@ -76,6 +76,32 @@ def task(
     click.echo(f"Created task: {result_dir}")
 
 
+@scaffold.command("upgrade-to-dual")
+@click.argument("path", type=click.Path(exists=True))
+@click.option(
+    "--repo-path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to the git repository.",
+)
+def upgrade_to_dual(path: str, repo_path: str) -> None:
+    """Upgrade a test_script task to dual verification mode.
+
+    Reads metadata.json, extracts changed files from the ground_truth_commit,
+    writes tests/ground_truth.json, and updates verification_mode to 'dual'.
+    Skips if already dual.
+    """
+    from codeprobe.scaffold.writer import upgrade_to_dual as _upgrade
+
+    try:
+        result_dir = _upgrade(Path(path), Path(repo_path))
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"Upgraded: {result_dir}")
+
+
 @scaffold.command()
 @click.argument("path", type=click.Path(exists=True))
 def validate(path: str) -> None:

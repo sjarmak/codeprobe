@@ -11,8 +11,11 @@ Generates the standard task directory layout::
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import stat
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,3 +181,98 @@ def _generate_test_sh(task_id: str) -> str:
         'echo "PASS: placeholder"\n'
         "exit 0\n"
     )
+
+
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _is_test_file(path: str) -> bool:
+    """Return True if the path looks like a test or spec file."""
+    lower = path.lower()
+    return "test" in lower or "spec" in lower
+
+
+def upgrade_to_dual(task_dir: Path, repo_path: Path) -> Path:
+    """Upgrade a test_script task to dual verification mode.
+
+    Reads metadata.json, extracts changed files from the ground_truth_commit,
+    writes tests/ground_truth.json, and updates verification_mode to 'dual'.
+
+    Returns the task_dir path on success.
+
+    Raises:
+        ValueError: On missing metadata, missing commit, invalid SHA, or
+            no non-test files in the diff.
+    """
+    import copy
+
+    from codeprobe.core.scoring import read_task_metadata
+
+    meta = read_task_metadata(task_dir)
+    if not meta:
+        raise ValueError(f"metadata.json not found or invalid in {task_dir}")
+
+    verification = meta.get("verification", {})
+    if verification.get("verification_mode") == "dual":
+        logger.info("Task %s is already dual — skipping", task_dir.name)
+        return task_dir
+
+    commit = verification.get("ground_truth_commit")
+    if not commit:
+        raise ValueError(
+            f"No ground_truth_commit in verification block of {task_dir / 'metadata.json'}"
+        )
+
+    if not _SHA_RE.fullmatch(commit):
+        raise ValueError(
+            f"Invalid SHA format: {commit!r} — expected 7-40 hex characters"
+        )
+
+    result = subprocess.run(
+        ["git", "diff", "--name-only", f"{commit}^..{commit}"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(
+            f"git diff failed (rc={result.returncode}): {result.stderr.strip()}"
+        )
+
+    all_files = [f for f in result.stdout.strip().splitlines() if f]
+    source_files = sorted(f for f in all_files if not _is_test_file(f))
+
+    if not source_files:
+        raise ValueError(
+            f"No non-test files changed in commit {commit}. "
+            "Cannot create ground_truth.json with an empty file list."
+        )
+
+    ground_truth = {
+        "answer_type": "file_list",
+        "answer": source_files,
+        "oracle_metadata": {
+            "source": "upgrade-to-dual",
+            "ground_truth_commit": commit,
+        },
+    }
+
+    from codeprobe.core.scoring import validate_ground_truth
+
+    validation_error = validate_ground_truth(ground_truth)
+    if validation_error:
+        raise ValueError(f"Generated ground_truth is invalid: {validation_error}")
+
+    gt_path = task_dir / "tests" / "ground_truth.json"
+    gt_path.parent.mkdir(parents=True, exist_ok=True)
+    gt_path.write_text(json.dumps(ground_truth, indent=2) + "\n", encoding="utf-8")
+
+    # Update metadata verification_mode to dual (immutable — deepcopy first)
+    updated_meta = copy.deepcopy(meta)
+    updated_meta["verification"]["verification_mode"] = "dual"
+    meta_path = task_dir / "metadata.json"
+    meta_path.write_text(json.dumps(updated_meta, indent=2) + "\n", encoding="utf-8")
+
+    logger.info("Upgraded %s to dual verification", task_dir.name)
+    return task_dir

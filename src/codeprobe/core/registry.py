@@ -113,3 +113,62 @@ def resolve_scorer(name: str) -> Any:
 def available_scorers() -> list[str]:
     """Return sorted list of all registered scorer names."""
     return _available(_SCORER_BUILTINS, "codeprobe.scorers")
+
+
+# -- Oracle answer_type scorer registry ----------------------------------------
+
+_ORACLE_BUILTINS: dict[str, str] = {
+    "file_list": "codeprobe.core.scoring:score_file_list",
+    "count": "codeprobe.core.scoring:score_count",
+    "boolean": "codeprobe.core.scoring:score_exact_match",
+    "text": "codeprobe.core.scoring:score_exact_match",
+    "symbol_list": "codeprobe.core.scoring:score_symbol_list",
+    "dependency_chain": "codeprobe.core.scoring:score_dependency_chain",
+}
+
+
+def _resolve_oracle(
+    name: str,
+    builtins: dict[str, str],
+    ep_group: str,
+    kind: str,
+) -> Any:
+    """Resolve oracle scorer: check builtins then entry_points.
+
+    Unlike _resolve(), oracle scorers return the callable directly (not an
+    instance), since they are plain functions, not classes.
+    """
+    if name in builtins:
+        try:
+            return _import_class(builtins[name])
+        except ImportError as exc:
+            raise KeyError(
+                f"{kind} {name!r} could not be loaded — a required dependency "
+                f"is missing: {exc}. Check that the tool is installed."
+            ) from exc
+
+    eps = importlib.metadata.entry_points(group=ep_group)
+    for ep in eps:
+        if ep.name == name:
+            try:
+                return ep.load()
+            except ImportError as exc:
+                raise KeyError(
+                    f"{kind} {name!r} could not be loaded — a required dependency "
+                    f"is missing: {exc}. Check that the tool is installed."
+                ) from exc
+
+    all_names = _available(builtins, ep_group)
+    raise KeyError(f"Unknown {kind}: {name!r}. Available: {', '.join(all_names)}")
+
+
+def resolve_oracle_scorer(name: str) -> Any:
+    """Resolve an oracle answer_type scorer by name. Raises KeyError if not found."""
+    return _resolve_oracle(
+        name, _ORACLE_BUILTINS, "codeprobe.oracle_scorers", "oracle scorer"
+    )
+
+
+def available_oracle_scorers() -> list[str]:
+    """Return sorted list of all registered oracle scorer names."""
+    return _available(_ORACLE_BUILTINS, "codeprobe.oracle_scorers")

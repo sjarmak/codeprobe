@@ -20,7 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -549,10 +549,185 @@ def _find_answer_file(task_dir: Path) -> Path | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Oracle answer_type scoring functions (module-level for registry use)
+# ---------------------------------------------------------------------------
+
+
+def _compute_f1(expected: list[str], actual: list[str]) -> float:
+    """Compute F1 score from two lists of file paths."""
+    expected_set = frozenset(_normalize_path(p) for p in expected if p)
+    actual_set = frozenset(_normalize_path(p) for p in actual if p)
+    if not expected_set:
+        return 0.0
+    if not actual_set:
+        return 0.0
+    intersection = len(expected_set & actual_set)
+    precision = intersection / len(actual_set)
+    recall = intersection / len(expected_set)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def score_file_list(expected: object, actual: object) -> ScoreResult:
+    """Score a file_list answer_type using F1."""
+    exp = expected if isinstance(expected, list) else []
+    act = actual if isinstance(actual, list) else []
+    f1 = _compute_f1(exp, act)
+    return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
+
+
+def score_count(expected: object, actual: object) -> ScoreResult:
+    """Exact integer match."""
+    try:
+        passed = int(expected) == int(actual)  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            error="count values must be convertible to int",
+        )
+    return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
+
+
+def score_exact_match(expected: object, actual: object) -> ScoreResult:
+    """Normalised exact match (strip + lowercase). Used for boolean and text."""
+    passed = str(expected).strip().lower() == str(actual).strip().lower()
+    return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
+
+
+def _normalize_symbol(s: str) -> str:
+    """Normalize a symbol name for comparison.
+
+    Strips module prefixes (split on '.' and '::'), lowercases, and strips
+    whitespace.  E.g. ``"foo.bar.MyClass"`` -> ``"myclass"``.
+    """
+    # Split on '::' first, take last segment, then split on '.', take last
+    s = s.split("::")[-1].split(".")[-1]
+    return s.strip().lower()
+
+
+def score_symbol_list(expected: object, actual: object) -> ScoreResult:
+    """Score a symbol_list answer_type using F1 over normalized symbol names."""
+    exp = expected if isinstance(expected, list) else []
+    act = actual if isinstance(actual, list) else []
+    exp_set = frozenset(_normalize_symbol(str(s)) for s in exp if s)
+    act_set = frozenset(_normalize_symbol(str(s)) for s in act if s)
+    if not exp_set or not act_set:
+        return ScoreResult(score=0.0, passed=False)
+    intersection = len(exp_set & act_set)
+    precision = intersection / len(act_set)
+    recall = intersection / len(exp_set)
+    if precision + recall == 0:
+        return ScoreResult(score=0.0, passed=False)
+    f1 = 2 * precision * recall / (precision + recall)
+    return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
+
+
+def _lcs_length(a: list[str], b: list[str]) -> int:
+    """Compute the length of the longest common subsequence (DP)."""
+    m, n = len(a), len(b)
+    if m == 0 or n == 0:
+        return 0
+    # Use 1D DP array for space efficiency
+    prev = [0] * (n + 1)
+    for i in range(1, m + 1):
+        curr = [0] * (n + 1)
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+            else:
+                curr[j] = max(prev[j], curr[j - 1])
+        prev = curr
+    return prev[n]
+
+
+def score_dependency_chain(expected: object, actual: object) -> ScoreResult:
+    """Score a dependency_chain answer_type using LCS / max(len(expected), len(actual))."""
+    exp = (
+        [str(s).strip().lower() for s in expected] if isinstance(expected, list) else []
+    )
+    act = [str(s).strip().lower() for s in actual] if isinstance(actual, list) else []
+    max_len = max(len(exp), len(act))
+    if max_len == 0:
+        return ScoreResult(score=0.0, passed=False)
+    lcs = _lcs_length(exp, act)
+    score = lcs / max_len
+    return ScoreResult(score=score, passed=score >= PASS_THRESHOLD)
+
+
+_ORACLE_TYPE_SCORERS: dict[str, Callable[[object, object], ScoreResult]] = {
+    "file_list": score_file_list,
+    "count": score_count,
+    "boolean": score_exact_match,
+    "text": score_exact_match,
+    "symbol_list": score_symbol_list,
+    "dependency_chain": score_dependency_chain,
+}
+
+
+_WEIGHT_TOLERANCE = 1e-6
+
+
+def validate_ground_truth(gt: dict) -> str | None:
+    """Validate a ground_truth.json dict. Returns None if valid, error string if not.
+
+    Supports three formats:
+    - V2: ``checks`` array with weighted multi-check scoring
+    - V1: ``answer_type`` + ``answer`` single-answer scoring
+    - Legacy: ``expected`` as a list
+    """
+    if "checks" in gt:
+        checks = gt["checks"]
+        if not isinstance(checks, list) or len(checks) == 0:
+            return "v2 ground_truth 'checks' must be a non-empty list"
+        for i, check in enumerate(checks):
+            if not isinstance(check, dict):
+                return f"check[{i}] must be a dict"
+            if "answer_type" not in check:
+                return f"check[{i}] missing 'answer_type'"
+            if "answer" not in check:
+                return f"check[{i}] missing 'answer'"
+            if "weight" not in check:
+                return f"check[{i}] missing 'weight'"
+            weight = check["weight"]
+            try:
+                w = float(weight)
+            except (TypeError, ValueError):
+                return f"check[{i}] weight is not numeric: {weight!r}"
+            if not math.isfinite(w):
+                return f"check[{i}] weight must be finite, got: {w}"
+            if w < 0.0 or w > 1.0:
+                return f"check[{i}] weight out of range [0, 1]: {w}"
+        total = sum(float(c["weight"]) for c in checks)
+        if abs(total - 1.0) > _WEIGHT_TOLERANCE:
+            return f"check weights must sum to 1.0, got {total:.6f}"
+        return None
+
+    if "answer_type" in gt:
+        if "answer" not in gt:
+            return "v1 ground_truth has 'answer_type' but missing 'answer'"
+        return None
+
+    if "expected" in gt:
+        if not isinstance(gt["expected"], list):
+            return "legacy ground_truth 'expected' must be a list"
+        return None
+
+    return (
+        "ground_truth.json must have 'checks' (v2), "
+        "'answer_type' (v1), or 'expected' (legacy)"
+    )
+
+
 class ArtifactScorer:
     """Scores agent output by comparing answer.json against ground_truth.json.
 
-    Supports four answer_type variants (new format) and a legacy oracle format.
+    Supports three formats:
+    - V2: ``checks`` array with weighted multi-check scoring
+    - V1: single ``answer_type`` + ``answer``
+    - Legacy: ``expected`` file list
     """
 
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
@@ -595,9 +770,87 @@ class ArtifactScorer:
             )
 
         # Detect format and dispatch
+        if "checks" in gt:
+            return self._score_v2_checks(gt, answer_data)
         if "answer_type" in gt:
             return self._score_new_format(gt, answer_data)
         return self._score_legacy_format(gt, answer_data)
+
+    def _score_v2_checks(self, gt: dict, answer_data: dict) -> ScoreResult:
+        """Score using v2 multi-check format with weighted composite."""
+        checks: list[dict] = gt.get("checks", [])
+
+        # Validate structure
+        validation_error = validate_ground_truth(gt)
+        if validation_error is not None:
+            return ScoreResult(score=0.0, passed=False, error=validation_error)
+
+        # Build answer lookup: {answer_type: answer_value} from agent answers.
+        # Use the first occurrence of each answer_type (spec: "first match").
+        answer_lookup: dict[str, object] = {}
+        raw_answers = answer_data.get("answers")
+        if isinstance(raw_answers, list):
+            for entry in raw_answers:
+                if isinstance(entry, dict):
+                    atype = entry.get("answer_type", "")
+                    if atype and atype not in answer_lookup:
+                        answer_lookup[atype] = entry.get("answer")
+        elif "answer" in answer_data and "answer_type" in answer_data:
+            # V1-style answer.json fallback: single answer mapped by its type
+            answer_lookup[answer_data["answer_type"]] = answer_data["answer"]
+
+        composite = 0.0
+        check_scores: list[dict] = []
+
+        for check in checks:
+            answer_type = check["answer_type"]
+            expected = check["answer"]
+            weight = float(check["weight"])
+
+            # Look up scorer function
+            scorer_fn = _ORACLE_TYPE_SCORERS.get(answer_type)
+            if scorer_fn is None:
+                # Try entry_point registry
+                try:
+                    from codeprobe.core.registry import resolve_oracle_scorer
+
+                    scorer_fn = resolve_oracle_scorer(answer_type)
+                except KeyError:
+                    pass
+
+            # Look up agent's answer for this type
+            actual = answer_lookup.get(answer_type)
+
+            if scorer_fn is None:
+                # Unknown answer_type — scores 0.0 for this check
+                check_result = ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"Unknown answer_type: {answer_type!r}",
+                )
+            elif actual is None:
+                # Agent didn't provide an answer for this type
+                check_result = ScoreResult(score=0.0, passed=False)
+            else:
+                check_result = scorer_fn(expected, actual)
+
+            composite += check_result.score * weight
+            check_scores.append(
+                {
+                    "answer_type": answer_type,
+                    "weight": weight,
+                    "score": check_result.score,
+                    "passed": check_result.passed,
+                    **({"error": check_result.error} if check_result.error else {}),
+                }
+            )
+
+        composite = max(0.0, min(1.0, composite))
+        return ScoreResult(
+            score=composite,
+            passed=composite >= PASS_THRESHOLD,
+            details={"check_scores": check_scores},
+        )
 
     def _score_new_format(self, gt: dict, answer_data: dict) -> ScoreResult:
         answer_type = gt.get("answer_type", "")
@@ -618,15 +871,19 @@ class ArtifactScorer:
                 error="answer.json missing 'answer' field",
             )
 
-        if answer_type == "file_list":
-            f1 = self._compute_f1(expected, actual)
-            return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
-        if answer_type == "count":
-            return self._score_count(expected, actual)
-        if answer_type == "boolean":
-            return self._score_boolean(expected, actual)
-        if answer_type == "text":
-            return self._score_text(expected, actual)
+        # Look up in builtin registry first
+        scorer_fn = _ORACLE_TYPE_SCORERS.get(answer_type)
+        if scorer_fn is not None:
+            return scorer_fn(expected, actual)
+
+        # Fall back to entry_point registry for extensibility
+        try:
+            from codeprobe.core.registry import resolve_oracle_scorer
+
+            scorer_fn = resolve_oracle_scorer(answer_type)
+            return scorer_fn(expected, actual)
+        except KeyError:
+            pass
 
         return ScoreResult(
             score=0.0,
@@ -650,43 +907,13 @@ class ArtifactScorer:
                 passed=False,
                 error="answer.json 'answer' is not a list",
             )
-        f1 = self._compute_f1(expected, actual)
+        f1 = _compute_f1(expected, actual)
         return ScoreResult(score=f1, passed=f1 > 0.0)
 
-    @staticmethod
-    def _compute_f1(expected: list[str], actual: list[str]) -> float:
-        """Compute F1 score from two lists of file paths."""
-        expected_set = frozenset(_normalize_path(p) for p in expected if p)
-        actual_set = frozenset(_normalize_path(p) for p in actual if p)
-        if not expected_set:
-            return 0.0
-        if not actual_set:
-            return 0.0
-        intersection = len(expected_set & actual_set)
-        precision = intersection / len(actual_set)
-        recall = intersection / len(expected_set)
-        if precision + recall == 0:
-            return 0.0
-        return 2 * precision * recall / (precision + recall)
-
-    @staticmethod
-    def _score_count(expected: object, actual: object) -> ScoreResult:
-        """Exact integer match."""
-        try:
-            passed = int(expected) == int(actual)  # type: ignore[arg-type]
-        except (ValueError, TypeError):
-            return ScoreResult(
-                score=0.0,
-                passed=False,
-                error="count values must be convertible to int",
-            )
-        return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
-
-    @staticmethod
-    def _score_exact_match(expected: object, actual: object) -> ScoreResult:
-        """Normalised exact match (strip + lowercase). Used for boolean and text."""
-        passed = str(expected).strip().lower() == str(actual).strip().lower()
-        return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
+    # Delegate to module-level functions (kept for backward compat)
+    _compute_f1 = staticmethod(_compute_f1)
+    _score_count = staticmethod(score_count)
+    _score_exact_match = staticmethod(score_exact_match)
 
     # Aliases for dispatch table readability
     _score_boolean = _score_exact_match

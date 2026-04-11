@@ -8,7 +8,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
-from codeprobe.analysis.dual import has_dual_scoring
+from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
     ConfigSummary,
@@ -172,6 +172,26 @@ def format_text_report(report: Report) -> str:
         )
     lines.append("")
 
+    # Dual Verification Matrix
+    if any_dual_tasks and report.config_results:
+        all_tasks = [t for cr in report.config_results for t in cr.completed]
+        matrix = dual_matrix(all_tasks)
+        if matrix is not None:
+            lines.append("### Dual Verification Matrix")
+            lines.append("|                | Artifact Pass | Artifact Fail |")
+            lines.append("|----------------|---------------|---------------|")
+            lines.append(
+                f"| **Code Pass**  | {matrix.both_pass} ({matrix.both_pass_pct:.1f}%)"
+                f"        | {matrix.code_only_pass} ({matrix.code_only_pass_pct:.1f}%)"
+                f"        |"
+            )
+            lines.append(
+                f"| **Code Fail**  | {matrix.artifact_only_pass} ({matrix.artifact_only_pass_pct:.1f}%)"
+                f"        | {matrix.neither_pass} ({matrix.neither_pass_pct:.1f}%)"
+                f"        |"
+            )
+            lines.append("")
+
     # Detailed Comparison
     if report.comparisons:
         lines.append("### Detailed Comparison")
@@ -303,6 +323,33 @@ def format_json_report(report: Report) -> str:
         "comparisons": [asdict(c) for c in report.comparisons],
         "tasks": _build_task_rows(report),
     }
+
+    # Add dual matrix when dual tasks are present
+    any_dual = any((s.dual_task_count or 0) > 0 for s in report.summaries)
+    if any_dual and report.config_results:
+        all_tasks = [t for cr in report.config_results for t in cr.completed]
+        matrix = dual_matrix(all_tasks)
+        if matrix is not None:
+            data["dual_matrix"] = {
+                "both_pass": {
+                    "count": matrix.both_pass,
+                    "pct": matrix.both_pass_pct,
+                },
+                "code_only_pass": {
+                    "count": matrix.code_only_pass,
+                    "pct": matrix.code_only_pass_pct,
+                },
+                "artifact_only_pass": {
+                    "count": matrix.artifact_only_pass,
+                    "pct": matrix.artifact_only_pass_pct,
+                },
+                "neither_pass": {
+                    "count": matrix.neither_pass,
+                    "pct": matrix.neither_pass_pct,
+                },
+                "total": matrix.total,
+            }
+
     return json.dumps(data, indent=2)
 
 
@@ -477,6 +524,32 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
             f"<td>{_ci_bar_html(s)}</td></tr>\n"
         )
     parts.append("</tbody>\n</table>\n")
+
+    # --- Dual Verification Matrix ---
+    any_dual_tasks_flag = any((s.dual_task_count or 0) > 0 for s in report.summaries)
+    if any_dual_tasks_flag and report.config_results:
+        all_tasks_html = [t for cr in report.config_results for t in cr.completed]
+        matrix_html = dual_matrix(all_tasks_html)
+        if matrix_html is not None:
+            parts.append(
+                '<h2 id="dual-verification-matrix">Dual Verification Matrix</h2>\n'
+            )
+            parts.append('<div class="card">\n')
+            parts.append("<table>\n<thead><tr>")
+            parts.append("<th></th><th>Artifact Pass</th><th>Artifact Fail</th>")
+            parts.append("</tr></thead>\n<tbody>\n")
+            parts.append(
+                f"<tr><td><strong>Code Pass</strong></td>"
+                f"<td>{matrix_html.both_pass} ({matrix_html.both_pass_pct:.1f}%)</td>"
+                f"<td>{matrix_html.code_only_pass} ({matrix_html.code_only_pass_pct:.1f}%)</td></tr>\n"
+            )
+            parts.append(
+                f"<tr><td><strong>Code Fail</strong></td>"
+                f"<td>{matrix_html.artifact_only_pass} ({matrix_html.artifact_only_pass_pct:.1f}%)</td>"
+                f"<td>{matrix_html.neither_pass} ({matrix_html.neither_pass_pct:.1f}%)</td></tr>\n"
+            )
+            parts.append("</tbody>\n</table>\n")
+            parts.append("</div>\n")
 
     # --- Per-Task Drill-Down ---
     if report.config_results:
