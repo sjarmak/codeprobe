@@ -740,8 +740,8 @@ class DualScorer:
         artifact leg runs normally.
       - Missing ``answer.json``: artifact leg returns 0.0 with an error;
         direct leg runs normally.
-      - Missing or unparseable ``metadata.json``: defaults from
-        ``TaskVerification`` are used (binary reward, default policy).
+      - Missing or unparseable ``metadata.json``: returns score 0.0 with
+        an error — dual tasks require valid verification metadata.
     """
 
     def __init__(self) -> None:
@@ -775,6 +775,16 @@ class DualScorer:
         task_dir: Path,
     ) -> ScoreResult:
         verification = read_task_verification(task_dir)
+        if not verification:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=(
+                    "dual task verification block missing — metadata.json "
+                    "absent, unparseable, or has no verification key"
+                ),
+                details={"error_metadata": "verification_block_empty"},
+            )
         reward_type = verification.get("reward_type", "binary") or "binary"
         scoring_policy = verification.get("scoring_policy", "") or ""
         weight_direct, weight_direct_error = self._parse_weight(

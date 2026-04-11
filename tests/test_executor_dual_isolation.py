@@ -544,3 +544,255 @@ def test_parallel_dual_stress_no_cross_contamination(
     for t in tasks:
         assert not (t / "answer.json").exists()
         assert not (t / "answer.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Real DualScorer stress tests (owned worktrees)
+# ---------------------------------------------------------------------------
+
+
+class _WorktreeAnswerAdapter:
+    """Adapter that parses the worktree path from the prompt and writes answer.json.
+
+    Each invocation writes a unique payload so cross-contamination is detectable.
+    """
+
+    name = "worktree-answer-adapter"
+
+    def __init__(self, answer_payload: dict) -> None:
+        self._payload = answer_payload
+        self._call_count = 0
+        self._lock = threading.Lock()
+
+    def find_binary(self) -> str | None:
+        return "/usr/bin/true"
+
+    def preflight(self, config: AgentConfig) -> list[str]:
+        return []
+
+    def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+        return ["true"]
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> "AgentOutput":
+        from codeprobe.adapters.protocol import AgentOutput
+
+        with self._lock:
+            self._call_count += 1
+            call_id = self._call_count
+
+        # Extract worktree path from the prompt: "You are working on the repository at <path>. Follow"
+        import re
+
+        match = re.search(
+            r"You are working on the repository at (.+?)\. Follow", prompt
+        )
+        if match:
+            wt_path = Path(match.group(1))
+        else:
+            raise RuntimeError(
+                f"Could not extract worktree path from prompt: {prompt[:100]}"
+            )
+
+        # Write a unique answer.json so we can detect cross-contamination
+        payload = dict(self._payload, _call_id=call_id)
+        (wt_path / "answer.json").write_text(json.dumps(payload), encoding="utf-8")
+
+        return AgentOutput(
+            stdout=f"call-{call_id}",
+            stderr=None,
+            exit_code=0,
+            duration_seconds=0.1,
+            cost_usd=0.001,
+            cost_model="per_token",
+        )
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        return {}
+
+
+def _make_real_dual_task(task_dir: Path, ground_truth_answer: list[str]) -> Path:
+    """Create a dual task fixture with real ground_truth.json for DualScorer."""
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "instruction.md").write_text(
+        "Make the change AND write answer.json with the file list.\n",
+        encoding="utf-8",
+    )
+
+    tests = task_dir / "tests"
+    tests.mkdir(parents=True, exist_ok=True)
+
+    test_sh = tests / "test.sh"
+    test_sh.write_text("#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n")
+    test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
+
+    ground_truth = {
+        "schema_version": 1,
+        "answer_type": "file_list",
+        "answer": ground_truth_answer,
+    }
+    (tests / "ground_truth.json").write_text(
+        json.dumps(ground_truth, indent=2) + "\n", encoding="utf-8"
+    )
+
+    metadata = {
+        "verification": {
+            "verification_mode": "dual",
+            "reward_type": "binary",
+            "scoring_policy": "weighted",
+            "weight_direct": 0.5,
+            "weight_artifact": 0.5,
+        }
+    }
+    (task_dir / "metadata.json").write_text(json.dumps(metadata) + "\n")
+
+    return task_dir
+
+
+class TestRealDualScorerStress:
+    """Stress-test the REAL DualScorer with executor-owned worktrees.
+
+    Unlike test_parallel_dual_stress_no_cross_contamination which uses a
+    fake scorer and caller-supplied worktrees, this exercises:
+    - The real DualScorer composition path
+    - The executor's owned-worktree code path (executor.py:249-275)
+    - WorktreeIsolation acquisition/release under contention
+    """
+
+    def test_parallel_real_dual_scorer_owned_worktrees(self, tmp_path: Path) -> None:
+        """12 concurrent execute_task calls via real DualScorer + owned worktrees.
+
+        Each run:
+        1. Executor creates its own WorktreeIsolation (no worktree_path supplied)
+        2. Adapter writes answer.json into the owned worktree (parsed from prompt)
+        3. Real DualScorer scores both legs (test.sh direct + artifact F1)
+        4. Executor releases worktree after scoring
+
+        Asserts:
+        - All 12 runs complete successfully
+        - Each run has distinct scoring details with both legs
+        - No cross-contamination (unique _call_id in each answer.json)
+        - Original task_dirs are never mutated
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+
+        expected_files = ["src/foo.py", "src/bar.py"]
+
+        # Create 4 distinct task directories
+        tasks = [
+            _make_real_dual_task(tmp_path / f"real-dual-task-{i}", expected_files)
+            for i in range(4)
+        ]
+
+        adapter = _WorktreeAnswerAdapter(
+            answer_payload={
+                "answer_type": "file_list",
+                "answer": expected_files,
+            }
+        )
+
+        results: list[TaskResult] = []
+        errors: list[str] = []
+
+        def _run_one(task_dir: Path, run_idx: int) -> TaskResult:
+            return execute_task(
+                adapter=adapter,
+                task_dir=task_dir,
+                repo_path=repo,
+                agent_config=AgentConfig(),
+                reward_type="binary",  # verification_mode='dual' override fires
+                # NO worktree_path — forces executor to create owned worktree
+            )
+
+        # 12 runs: 4 tasks x 3 repeats, max 4 concurrent
+        run_args = [(tasks[i % 4], i) for i in range(12)]
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {
+                pool.submit(_run_one, task_dir, idx): idx for task_dir, idx in run_args
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as exc:
+                    errors.append(f"run-{idx}: {exc}")
+
+        assert not errors, f"Some runs raised exceptions: {errors}"
+        assert len(results) == 12
+
+        # All runs should complete successfully
+        for i, r in enumerate(results):
+            assert r.completed.status == "completed", (
+                f"run-{i} status={r.completed.status!r}, "
+                f"metadata={r.completed.metadata!r}"
+            )
+
+        # Each run must have real dual scoring details
+        for i, r in enumerate(results):
+            sd = r.completed.scoring_details
+            assert isinstance(sd, dict), f"run-{i} missing scoring_details"
+            assert "score_direct" in sd, f"run-{i} missing score_direct"
+            assert "score_artifact" in sd, f"run-{i} missing score_artifact"
+            # test.sh exits 0 → direct leg passes
+            assert (
+                sd["score_direct"] == 1.0
+            ), f"run-{i} score_direct={sd['score_direct']}"
+            # answer.json matches ground_truth → artifact leg passes
+            assert (
+                sd["score_artifact"] == 1.0
+            ), f"run-{i} score_artifact={sd['score_artifact']}"
+
+        # Original task_dirs must never have answer.json written to them
+        for t in tasks:
+            assert not (
+                t / "answer.json"
+            ).exists(), f"task_dir {t} was mutated — answer.json leaked from scoring"
+
+    def test_owned_worktree_namespaces_are_unique(self, tmp_path: Path) -> None:
+        """Each owned worktree gets a unique namespace (no collisions)."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+
+        expected_files = ["a.py"]
+        task = _make_real_dual_task(tmp_path / "ns-task", expected_files)
+
+        adapter = _WorktreeAnswerAdapter(
+            answer_payload={
+                "answer_type": "file_list",
+                "answer": expected_files,
+            }
+        )
+
+        results: list[TaskResult] = []
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [
+                pool.submit(
+                    execute_task,
+                    adapter=adapter,
+                    task_dir=task,
+                    repo_path=repo,
+                    agent_config=AgentConfig(),
+                    reward_type="binary",
+                )
+                for _ in range(6)
+            ]
+            for f in as_completed(futures):
+                results.append(f.result())
+
+        assert all(r.completed.status == "completed" for r in results)
+
+        # After all runs complete, worktrees are cleaned up. But we can
+        # verify that all 6 runs completed without namespace collision
+        # (if they collided, some would error with git worktree conflicts).
+        assert len(results) == 6

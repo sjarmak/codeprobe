@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
+import math
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -249,21 +249,32 @@ def _get_scoring_policy(meta: dict | None) -> str | None:
     return sp
 
 
-def _get_weight(meta: dict | None, key: str, default: float) -> float:
-    """Extract a weight_* float from parsed metadata (top-level or [verification])."""
+def _parse_weight(
+    meta: dict | None, key: str, default: float
+) -> tuple[float, str | None]:
+    """Extract and validate a weight_* float from parsed metadata.
+
+    Returns ``(value, error_or_None)``. Invalid weights produce an error
+    string instead of silently falling back to defaults.
+    """
     if meta is None:
-        return default
+        return default, None
     val = meta.get(key)
     if val is None:
         verification = meta.get("verification", {})
         if isinstance(verification, dict):
             val = verification.get(key)
     if val is None:
-        return default
+        return default, None
     try:
-        return float(val)
+        result = float(val)
     except (TypeError, ValueError):
-        return default
+        return default, f"invalid {key} value: {val!r}"
+    if not math.isfinite(result):
+        return default, f"non-finite {key}: {val!r}"
+    if result < 0.0 or result > 1.0:
+        return default, f"{key} out of range [0,1]: {result}"
+    return result, None
 
 
 def _check_scoring_policy(meta: dict | None) -> list[CheckResult]:
@@ -302,28 +313,45 @@ def _check_scoring_policy(meta: dict | None) -> list[CheckResult]:
     )
 
     if sp == "weighted":
-        wd = _get_weight(meta, "weight_direct", 0.5)
-        wa = _get_weight(meta, "weight_artifact", 0.5)
-        total = wd + wa
-        if abs(total - 1.0) > 1e-6:
+        wd, wd_err = _parse_weight(meta, "weight_direct", 0.5)
+        wa, wa_err = _parse_weight(meta, "weight_artifact", 0.5)
+        if wd_err:
             results.append(
                 CheckResult(
-                    name="weight sum",
+                    name="weight_direct valid",
                     passed=False,
-                    detail=(
-                        f"weight_direct ({wd}) + weight_artifact ({wa}) = "
-                        f"{total}, expected 1.0 (+/- 1e-6)"
-                    ),
+                    detail=wd_err,
                 )
             )
-        else:
+        if wa_err:
             results.append(
                 CheckResult(
-                    name="weight sum",
-                    passed=True,
-                    detail=f"weight_direct + weight_artifact = {total}",
+                    name="weight_artifact valid",
+                    passed=False,
+                    detail=wa_err,
                 )
             )
+        if not wd_err and not wa_err:
+            total = wd + wa
+            if abs(total - 1.0) > 1e-6:
+                results.append(
+                    CheckResult(
+                        name="weight sum",
+                        passed=False,
+                        detail=(
+                            f"weight_direct ({wd}) + weight_artifact ({wa}) = "
+                            f"{total}, expected 1.0 (+/- 1e-6)"
+                        ),
+                    )
+                )
+            else:
+                results.append(
+                    CheckResult(
+                        name="weight sum",
+                        passed=True,
+                        detail=f"weight_direct + weight_artifact = {total}",
+                    )
+                )
 
     return results
 

@@ -195,3 +195,61 @@ class TestRichLiveListenerDual:
 
         assert "code:FAIL" in rendered
         assert "artifact:0.85" in rendered
+
+
+# ---------------------------------------------------------------------------
+# TaskScored scoring_details default alignment
+# ---------------------------------------------------------------------------
+
+
+class TestTaskScoredScoringDetailsDefault:
+    """TaskScored.scoring_details should default to {} (dict) not None,
+    matching CompletedTask.scoring_details default."""
+
+    def test_default_is_empty_dict(self) -> None:
+        event = TaskScored(
+            task_id="t1",
+            config_label="cfg",
+            automated_score=1.0,
+            duration_seconds=1.0,
+            cost_usd=0.01,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cost_model="per_token",
+            cost_source="api",
+            error=None,
+            timestamp=time.time(),
+            # scoring_details not passed — should default to {}
+        )
+        assert event.scoring_details == {}
+        assert event.scoring_details is not None
+
+    def test_plain_text_listener_handles_empty_dict_scoring_details(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """PlainTextListener should handle scoring_details={} the same as None
+        (legacy format, no dual suffix)."""
+        listener = PlainTextListener()
+        event = TaskScored(
+            task_id="task-empty",
+            config_label="cfg",
+            automated_score=1.0,
+            duration_seconds=1.0,
+            cost_usd=0.01,
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cost_model="per_token",
+            cost_source="api",
+            error=None,
+            timestamp=time.time(),
+            scoring_details={},
+        )
+        listener.on_event(event)
+        out = capsys.readouterr().out
+        assert "task-empty" in out
+        assert "PASS" in out
+        # Empty dict should NOT trigger dual format
+        assert "code:" not in out
+        assert "artifact:" not in out

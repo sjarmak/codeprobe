@@ -324,6 +324,14 @@ def init(path: str) -> None:
     "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
     "when --mcp-families is used. Requires SOURCEGRAPH_TOKEN env var.",
 )
+@click.option(
+    "--dual-verify",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help="Produce dual-verification tasks with oracle ground truth from PR diffs. "
+    "Only for comprehension, org-scale, and cross-repo task types.",
+)
 @click.pass_context
 def mine(
     ctx: click.Context,
@@ -352,6 +360,7 @@ def mine(
     verify_curation_flag: bool,
     mcp_families: bool,
     sg_repo: str,
+    dual_verify: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -515,6 +524,7 @@ def mine(
         verify_curation_flag=verify_curation_flag,
         mcp_families=mcp_families,
         sg_repo=sg_repo,
+        dual_verify=dual_verify,
         explicit_set=explicitly_set,
         profile_set=profile_set,
     )

@@ -252,3 +252,100 @@ class TestJsonReportDual:
         assert single_tasks
         for t in single_tasks:
             assert t["scoring_details"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Mixed-config column unification (text + HTML must have same column schema)
+# ---------------------------------------------------------------------------
+
+
+class TestMixedConfigColumnUnification:
+    """When an experiment has one dual-config and one non-dual-config, both
+    text and HTML reports should use the same global decision: if ANY config
+    has dual tasks, all configs render with the Artifact column."""
+
+    def test_text_and_html_agree_on_artifact_column(self) -> None:
+        """Both text and HTML must show Artifact column for mixed experiments."""
+        report = _make_report()  # has dual-config + single-config
+        text = format_text_report(report)
+        html = format_html_report(report)
+
+        # Text uses global any_dual_tasks — should have Artifact column
+        assert "Artifact" in text
+
+        # HTML should ALSO show Artifact column for ALL configs (global flag)
+        # Previously HTML used per-config detection so single-config section
+        # would NOT have the Artifact column, causing schema mismatch.
+        assert (
+            html.count("<th>Artifact</th>") >= 2
+        ), "Expected Artifact column header in BOTH config drill-down sections"
+
+    def test_html_single_config_gets_artifact_column_in_mixed_experiment(self) -> None:
+        """The single-config drill-down in a mixed experiment must also have
+        an Artifact column (with dash values) for consistency."""
+        report = _make_report()
+        html = format_html_report(report)
+
+        # Find the single-config section — it should have Artifact header
+        # The config name appears in a <summary> tag
+        single_section_start = html.index("single-config")
+        single_section = html[single_section_start:]
+        # Next table header should include Artifact
+        assert "<th>Artifact</th>" in single_section
+
+
+# ---------------------------------------------------------------------------
+# Pre-dual checkpoint: tasks with scoring_details={} render without crash
+# ---------------------------------------------------------------------------
+
+
+class TestPreDualCheckpointRendering:
+    """Ensure CompletedTasks with scoring_details={} (the default for pre-dual
+    checkpoints) render cleanly through all 4 formats without crashing."""
+
+    @staticmethod
+    def _make_pre_dual_report():
+        tasks = [
+            CompletedTask(
+                task_id=f"task-{i}",
+                automated_score=1.0 if i % 2 == 0 else 0.0,
+                status="completed",
+                duration_seconds=5.0,
+                cost_usd=0.02,
+                scoring_details={},  # pre-dual: empty dict
+            )
+            for i in range(10)
+        ]
+        cr = ConfigResults(config="pre-dual-config", completed=tasks)
+        return generate_report("pre-dual-exp", [cr])
+
+    def test_text_format_no_crash(self) -> None:
+        report = self._make_pre_dual_report()
+        text = format_text_report(report)
+        assert "pre-dual-config" in text
+        # No Artifact column since no dual tasks
+        assert "Artifact" not in text
+
+    def test_html_format_no_crash(self) -> None:
+        report = self._make_pre_dual_report()
+        html = format_html_report(report)
+        assert "pre-dual-config" in html
+        assert "<th>Artifact</th>" not in html
+
+    def test_csv_format_no_crash(self) -> None:
+        report = self._make_pre_dual_report()
+        text = format_csv_report(report)
+        reader = _csv_reader_skipping_comments(text)
+        rows = list(reader)
+        assert len(rows) == 10
+        # Dual columns should be blank
+        for r in rows:
+            assert r["score_direct"] == ""
+            assert r["score_artifact"] == ""
+
+    def test_json_format_no_crash(self) -> None:
+        report = self._make_pre_dual_report()
+        data = json.loads(format_json_report(report))
+        assert len(data["tasks"]) == 10
+        for t in data["tasks"]:
+            assert t["scoring_details"] == {}

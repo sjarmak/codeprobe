@@ -409,3 +409,117 @@ def test_dual_pipeline_end_to_end_preserves_artifact_dimension(
     assert json_sd.get("score_artifact") == pytest.approx(
         1.0
     ), f"JSON task scoring_details dropped 'score_artifact': {json_sd!r}"
+
+
+# ---------------------------------------------------------------------------
+# Owned-worktree E2E: executor creates its own worktree (no caller supply)
+# ---------------------------------------------------------------------------
+
+
+class _WorktreeDiscoveringAdapter:
+    """Adapter that discovers the owned worktree from the prompt and writes answer.json."""
+
+    name = "worktree-discovering-adapter"
+
+    def __init__(self, answer_payload: dict) -> None:
+        self._payload = answer_payload
+        self.worktree_paths: list[Path] = []
+
+    def find_binary(self) -> str | None:
+        return "/usr/bin/true"
+
+    def preflight(self, config: AgentConfig) -> list[str]:
+        return []
+
+    def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+        return ["true"]
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
+        import re
+
+        match = re.search(
+            r"You are working on the repository at (.+?)\. Follow", prompt
+        )
+        if not match:
+            raise RuntimeError(f"Cannot extract worktree from prompt: {prompt[:100]}")
+        wt_path = Path(match.group(1))
+        self.worktree_paths.append(wt_path)
+
+        (wt_path / "answer.json").write_text(
+            json.dumps(self._payload), encoding="utf-8"
+        )
+        return AgentOutput(
+            stdout="ok",
+            stderr=None,
+            exit_code=0,
+            duration_seconds=0.1,
+            cost_usd=0.001,
+            cost_model="per_token",
+        )
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        return {}
+
+
+def test_owned_worktree_e2e_real_dual_scorer(tmp_path: Path) -> None:
+    """E2E: executor creates owned worktree, real DualScorer scores both legs.
+
+    This test does NOT supply worktree_path, forcing the executor to use
+    its internal owned-worktree code path (executor.py:249-275). The adapter
+    discovers the worktree from the prompt and writes answer.json there.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+
+    expected_files = ["lib/utils.py", "lib/core.py"]
+    task = _make_dual_task(tmp_path / "owned-wt-task", expected_files)
+
+    adapter = _WorktreeDiscoveringAdapter(
+        answer_payload={
+            "answer_type": "file_list",
+            "answer": expected_files,
+        }
+    )
+
+    result = execute_task(
+        adapter=adapter,
+        task_dir=task,
+        repo_path=repo,
+        agent_config=AgentConfig(),
+        reward_type="binary",
+        # NO worktree_path — forces owned worktree creation
+    )
+
+    assert (
+        result.completed.status == "completed"
+    ), f"status={result.completed.status!r}, metadata={result.completed.metadata!r}"
+
+    # The adapter must have received a worktree path different from repo
+    assert len(adapter.worktree_paths) == 1
+    wt_used = adapter.worktree_paths[0]
+    assert wt_used != repo, "Adapter should have received owned worktree, not repo"
+    assert ".codeprobe-worktrees" in str(
+        wt_used
+    ), f"Worktree path doesn't look like an owned worktree: {wt_used}"
+
+    # Real DualScorer must have scored both legs
+    sd = result.completed.scoring_details
+    assert isinstance(sd, dict)
+    assert sd.get("score_direct") == 1.0, f"score_direct={sd.get('score_direct')}"
+    assert sd.get("score_artifact") == pytest.approx(
+        1.0
+    ), f"score_artifact={sd.get('score_artifact')}"
+    assert sd.get("passed_direct") is True
+    assert sd.get("passed_artifact") is True
+    assert sd.get("scoring_policy") == "weighted"
+
+    # Worktree should be cleaned up after execution
+    # (the owned isolation pool calls cleanup())
+    assert (
+        not wt_used.exists() or not (wt_used / "answer.json").exists()
+    ), "Owned worktree was not cleaned up after execution"

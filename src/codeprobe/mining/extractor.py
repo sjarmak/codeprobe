@@ -7,6 +7,7 @@ import logging
 import re
 import shlex
 import subprocess
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -17,6 +18,7 @@ from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 logger = logging.getLogger(__name__)
 
 _DIFF_STAT_TIMEOUT = 15
+_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _GIT_LOG_TIMEOUT = 15
 _GH_TIMEOUT = 15
 _MAX_BODY_LENGTH = 2000
@@ -152,8 +154,28 @@ def list_merged_prs(source: RepoSource, path: Path, limit: int = 20) -> list[Mer
     return _list_merged_prs_git(path, limit)
 
 
+def _validate_sha(sha: str) -> str:
+    """Validate that *sha* looks like a hex commit hash.
+
+    Prevents crafted revision strings from being interpreted as git flags.
+    """
+    if not _SHA_RE.match(sha):
+        raise ValueError(f"Invalid merge SHA: {sha!r}")
+    return sha
+
+
+def _is_safe_relative_path(p: str) -> bool:
+    """Return True if *p* is a safe repo-relative path (no traversal)."""
+    try:
+        parts = Path(p).parts
+        return not Path(p).is_absolute() and ".." not in parts
+    except (TypeError, ValueError):
+        return False
+
+
 def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
     """Get the list of changed files for a merge commit."""
+    _validate_sha(merge_sha)
     try:
         result = subprocess.run(
             ["git", "diff", f"{merge_sha}^..{merge_sha}", "--name-only"],
@@ -171,7 +193,11 @@ def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
         logger.warning("git diff error for %s: %s", merge_sha, exc)
         return []
 
-    return [f for f in result.stdout.strip().splitlines() if f.strip()]
+    return [
+        f
+        for f in result.stdout.strip().splitlines()
+        if f.strip() and _is_safe_relative_path(f.strip())
+    ]
 
 
 def _get_deleted_dirs(merge_sha: str, repo_path: Path) -> set[str]:
@@ -180,6 +206,7 @@ def _get_deleted_dirs(merge_sha: str, repo_path: Path) -> set[str]:
     Uses ``git diff --diff-filter=D --name-status`` to find deleted files,
     then returns the set of parent directories where ALL files were deleted.
     """
+    _validate_sha(merge_sha)
     try:
         result = subprocess.run(
             [
@@ -248,9 +275,139 @@ def _estimate_difficulty(changed_files: list[str]) -> str:
     return "hard"
 
 
+def _is_test_file(path: str) -> bool:
+    """Return True if the path looks like a test or spec file."""
+    lower = path.lower()
+    return "test" in lower or "spec" in lower
+
+
 def _find_test_files(changed_files: list[str]) -> list[str]:
     """Return files that look like tests from the changed file list."""
-    return [f for f in changed_files if "test" in f.lower() or "spec" in f.lower()]
+    return [f for f in changed_files if _is_test_file(f)]
+
+
+def _extract_modified_symbols_from_diff(
+    merge_sha: str,
+    repo_path: Path,
+    source_files: list[str],
+) -> list[str]:
+    """Extract public symbol names modified in a merge commit's diff.
+
+    Runs ``git diff <sha>^..<sha> -- <file>`` for each source file and
+    regex-matches definition lines (Python def/class, Go func, JS function).
+    Purely structural — no semantic judgment.
+    """
+    _validate_sha(merge_sha)
+    # Import shared symbol extractors from multi_repo
+    from codeprobe.mining.multi_repo import _SYMBOL_EXTRACTORS
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+
+    for path in source_files:
+        try:
+            result = subprocess.run(
+                ["git", "diff", f"{merge_sha}^..{merge_sha}", "--", path],
+                cwd=str(repo_path),
+                capture_output=True,
+                text=True,
+                timeout=_DIFF_STAT_TIMEOUT,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+        if result.returncode != 0:
+            continue
+
+        for line in result.stdout.splitlines():
+            if not (line.startswith("+") or line.startswith("-")):
+                continue
+            for regex in _SYMBOL_EXTRACTORS:
+                match = regex.match(line)
+                if match:
+                    name = match.group(1)
+                    if name.startswith("_"):
+                        continue  # skip private symbols
+                    if name not in seen:
+                        seen.add(name)
+                        symbols.append(name)
+                    break
+
+    return symbols
+
+
+# ---------------------------------------------------------------------------
+# Oracle ground truth generation (R16) + discrimination gate (R18)
+# ---------------------------------------------------------------------------
+
+
+def _build_oracle_ground_truth(
+    merge_sha: str,
+    repo_path: Path,
+    changed_files: list[str],
+) -> dict | None:
+    """Build oracle ground truth from a PR's changed files.
+
+    Filters out test files to produce the ``answer`` (source files only).
+    Extracts modified symbols from the diff hunks for ``oracle_metadata``.
+
+    Returns ``None`` when all changed files are test files (empty oracle).
+    Uses ``answer`` field (not ``expected``) — required by
+    ``ArtifactScorer._score_new_format()`` (scoring.py).
+    """
+    source_files = [
+        f for f in changed_files if not _is_test_file(f) and _is_safe_relative_path(f)
+    ]
+
+    if not source_files:
+        return None
+
+    symbols = _extract_modified_symbols_from_diff(merge_sha, repo_path, source_files)
+
+    return {
+        "schema_version": 1,
+        "answer_type": "file_list",
+        "answer": source_files,
+        "oracle_metadata": {
+            "populated_by": "mining-phase-2",
+            "merge_sha": merge_sha,
+            "modified_symbols": symbols,
+        },
+    }
+
+
+def _oracle_discrimination_passed(
+    oracle: dict,
+) -> tuple[bool, str]:
+    """Check whether an auto-generated oracle is non-trivial (R18).
+
+    Returns ``(passed, confidence)`` where *confidence* is ``"high"`` or
+    ``"low"``.
+
+    Discrimination criteria:
+    - Empty answer → fails (``passed=False``, ``confidence="low"``)
+    - Single file → passes with ``"low"`` confidence (trivially discoverable)
+    - >80% of files in a single directory → ``"low"`` confidence
+    - Otherwise → ``"high"`` confidence
+
+    Low-confidence oracles still ship but are flagged so downstream consumers
+    can filter or weight them.
+    """
+    answer = oracle.get("answer", [])
+    if not answer:
+        return False, "low"
+
+    if len(answer) == 1:
+        return True, "low"
+
+    # Count files per parent directory
+    dir_counts = Counter(str(Path(f).parent) for f in answer)
+    max_count = dir_counts.most_common(1)[0][1]
+    total = len(answer)
+
+    if max_count / total >= 0.8:
+        return True, "low"
+
+    return True, "high"
 
 
 def _discover_colocated_test_files(
@@ -474,6 +631,7 @@ def _fetch_pr_metadata_from_commit(
     repo_path: Path,
 ) -> PRMetadata | None:
     """Extract metadata from the full commit message body."""
+    _validate_sha(merge_sha)
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%B", merge_sha],

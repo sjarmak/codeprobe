@@ -480,14 +480,16 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
 
     # --- Per-Task Drill-Down ---
     if report.config_results:
+        # Use report-level flag (same as text report) so all configs in a
+        # mixed experiment share a uniform column schema.
+        any_dual_tasks_html = any(
+            (s.dual_task_count or 0) > 0 for s in report.summaries
+        )
         parts.append('<h2 id="per-task-drilldown">Per-Task Drill-Down</h2>\n')
         for cr in report.config_results:
-            # Expand the table with an Artifact column when any task in this
-            # config has dual scoring details.
-            config_has_dual = any(has_dual_scoring(task) for task in cr.completed)
             parts.append(f"<details>\n<summary>{_esc(cr.config)}</summary>\n")
             parts.append("<table>\n<thead><tr>")
-            if config_has_dual:
+            if any_dual_tasks_html:
                 parts.append(
                     "<th>Task</th><th>Score</th><th>Artifact</th><th>Pass</th>"
                     "<th>Duration (s)</th><th>Cost</th>"
@@ -501,12 +503,12 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
             for task in cr.completed:
                 passed = task.automated_score > 0
                 cls = "pass" if passed else "fail"
-                if config_has_dual:
+                if any_dual_tasks_html:
                     details = task.scoring_details or {}
                     if "score_artifact" in details:
                         artifact_cell = _fmt_score(float(details["score_artifact"]))
                     else:
-                        artifact_cell = "—"
+                        artifact_cell = "\u2014"
                     parts.append(
                         f"<tr><td>{_esc(task.task_id)}</td>"
                         f"<td>{_fmt_score(task.automated_score)}</td>"

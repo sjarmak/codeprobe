@@ -325,3 +325,102 @@ class TestCLIExitCodes:
         result = runner.invoke(main, ["validate", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "FAIL" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Strict weight validation — invalid weight values must cause failure
+# ---------------------------------------------------------------------------
+
+
+class TestStrictWeightValidation:
+    """validate_cmd must reject invalid weight values instead of silently coercing."""
+
+    def test_weight_direct_non_numeric_exits_one(self, tmp_path: Path) -> None:
+        """weight_direct = 'abc' must be rejected."""
+        _write_instruction(tmp_path)
+        _write_task_toml(
+            tmp_path,
+            verification_mode="dual",
+            scoring_policy="weighted",
+            weight_direct=0.5,  # will be overwritten below
+            weight_artifact=0.5,
+        )
+        # Overwrite task.toml with raw string weight
+        lines = [
+            "[metadata]",
+            'name = "dual-task"',
+            'task_type = "sdlc_code_change"',
+            "",
+            "[verification]",
+            'verification_mode = "dual"',
+            'scoring_policy = "weighted"',
+            'weight_direct = "abc"',
+            "weight_artifact = 0.5",
+        ]
+        (tmp_path / "task.toml").write_text("\n".join(lines) + "\n")
+        _write_test_sh(tmp_path, executable=True)
+        _write_ground_truth(tmp_path, {"answer": True})
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "weight" in result.output.lower()
+
+    def test_weight_negative_exits_one(self, tmp_path: Path) -> None:
+        """weight_direct = -0.1 must be rejected."""
+        _write_instruction(tmp_path)
+        lines = [
+            "[metadata]",
+            'name = "dual-task"',
+            'task_type = "sdlc_code_change"',
+            "",
+            "[verification]",
+            'verification_mode = "dual"',
+            'scoring_policy = "weighted"',
+            "weight_direct = -0.1",
+            "weight_artifact = 1.1",
+        ]
+        (tmp_path / "task.toml").write_text("\n".join(lines) + "\n")
+        _write_test_sh(tmp_path, executable=True)
+        _write_ground_truth(tmp_path, {"answer": True})
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "weight" in result.output.lower()
+
+    def test_weight_infinity_exits_one(self, tmp_path: Path) -> None:
+        """weight_direct = inf must be rejected."""
+        _write_instruction(tmp_path)
+        lines = [
+            "[metadata]",
+            'name = "dual-task"',
+            'task_type = "sdlc_code_change"',
+            "",
+            "[verification]",
+            'verification_mode = "dual"',
+            'scoring_policy = "weighted"',
+            "weight_direct = inf",
+            "weight_artifact = 0.5",
+        ]
+        (tmp_path / "task.toml").write_text("\n".join(lines) + "\n")
+        _write_test_sh(tmp_path, executable=True)
+        _write_ground_truth(tmp_path, {"answer": True})
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "weight" in result.output.lower()
+
+    def test_valid_weights_exits_zero(self, tmp_path: Path) -> None:
+        """Valid weight_direct=0.3, weight_artifact=0.7 passes."""
+        _write_instruction(tmp_path)
+        _write_task_toml(
+            tmp_path,
+            verification_mode="dual",
+            scoring_policy="weighted",
+            weight_direct=0.3,
+            weight_artifact=0.7,
+        )
+        _write_test_sh(tmp_path, executable=True)
+        _write_ground_truth(tmp_path, {"answer": True})
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 0, result.output

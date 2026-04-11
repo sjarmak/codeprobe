@@ -564,14 +564,15 @@ def _write_dual_task(
     test_sh_path.write_text(test_script, encoding="utf-8")
     test_sh_path.chmod(0o755)
 
-    # tests/ground_truth.json — stub for artifact oracle.
-    # Phase 2 mining will populate this with real oracle answers.
+    # tests/ground_truth.json — use oracle data from verification if populated,
+    # otherwise write a stub for manual curation.
+    has_oracle = bool(task.verification.oracle_answer)
     ground_truth: dict[str, object] = {
         "schema_version": 1,
-        "answer_type": "file_list",
-        "answer": [],
+        "answer_type": task.verification.oracle_type or "file_list",
+        "answer": list(task.verification.oracle_answer) if has_oracle else [],
         "oracle_metadata": {
-            "populated_by": "mining-phase-2",
+            "populated_by": "mining-phase-2" if has_oracle else "stub",
             "task_id": task.id,
         },
     }

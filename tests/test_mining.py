@@ -1021,7 +1021,7 @@ class TestResolvePRMetadata:
         source = RepoSource(host="github", owner="o", repo="r", remote_url="")
 
         meta = resolve_pr_metadata(
-            "abc123", Path("/fake"), source, "Merge pull request #42 from fix/auth"
+            "abc1234", Path("/fake"), source, "Merge pull request #42 from fix/auth"
         )
 
         assert meta.source_tier == "api"
@@ -1045,7 +1045,7 @@ class TestResolvePRMetadata:
         source = RepoSource(host="github", owner="o", repo="r", remote_url="")
 
         meta = resolve_pr_metadata(
-            "abc123", Path("/fake"), source, "Merge pull request #42 from fix/auth"
+            "abc1234", Path("/fake"), source, "Merge pull request #42 from fix/auth"
         )
 
         assert meta.source_tier == "commit_message"
@@ -1059,7 +1059,7 @@ class TestResolvePRMetadata:
         mock_run.return_value = subprocess.CompletedProcess(["git"], 0, commit_body, "")
         source = RepoSource(host="local", owner="", repo="r", remote_url="")
 
-        meta = resolve_pr_metadata("abc123", Path("/fake"), source, "Add caching")
+        meta = resolve_pr_metadata("abc1234", Path("/fake"), source, "Add caching")
 
         assert meta.source_tier == "commit_message"
         assert "DB queries" in meta.body
@@ -1089,7 +1089,7 @@ class TestResolvePRMetadata:
         source = RepoSource(host="github", owner="o", repo="r", remote_url="")
 
         meta = resolve_pr_metadata(
-            "abc123", Path("/fake"), source, "Merge pull request #10"
+            "abc1234", Path("/fake"), source, "Merge pull request #10"
         )
 
         assert meta.source_tier == "commit_message"
@@ -1110,7 +1110,7 @@ class TestResolvePRMetadata:
         source = RepoSource(host="github", owner="o", repo="r", remote_url="")
 
         meta = resolve_pr_metadata(
-            "abc123", Path("/fake"), source, "Squash merge of feature branch"
+            "abc1234", Path("/fake"), source, "Squash merge of feature branch"
         )
 
         assert meta.source_tier == "commit_message"
@@ -1175,8 +1175,8 @@ class TestExtractSubsystems:
     def test_basic_subsystem_extraction(self, mock_run: object) -> None:
         """Two merges touching different dirs yield correct prefix counts."""
         prs = [
-            MergedPR(sha="aaa", title="PR1", merge_commit="aaa"),
-            MergedPR(sha="bbb", title="PR2", merge_commit="bbb"),
+            MergedPR(sha="aaa1111", title="PR1", merge_commit="aaa1111"),
+            MergedPR(sha="bbb2222", title="PR2", merge_commit="bbb2222"),
         ]
         files_a = "pkg/scheduler/algo.go\npkg/scheduler/algo_test.go\n"
         files_b = "cmd/server/main.go\npkg/scheduler/queue.go\n"
@@ -1199,7 +1199,7 @@ class TestExtractSubsystems:
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_depth_1(self, mock_run: object) -> None:
         """Depth=1 gives coarser prefixes."""
-        prs = [MergedPR(sha="aaa", title="PR1", merge_commit="aaa")]
+        prs = [MergedPR(sha="aaa1111", title="PR1", merge_commit="aaa1111")]
         files = "pkg/scheduler/algo.go\npkg/api/types.go\ncmd/server/main.go\n"
         mock_run.side_effect = _mock_subprocess(stdout=files)
 
@@ -1212,7 +1212,7 @@ class TestExtractSubsystems:
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_root_level_files_skipped(self, mock_run: object) -> None:
         """Files at repo root (no directory) are excluded."""
-        prs = [MergedPR(sha="aaa", title="PR1", merge_commit="aaa")]
+        prs = [MergedPR(sha="aaa1111", title="PR1", merge_commit="aaa1111")]
         files = "README.md\nMakefile\npkg/auth/auth.go\n"
         mock_run.side_effect = _mock_subprocess(stdout=files)
 
@@ -1224,7 +1224,7 @@ class TestExtractSubsystems:
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_empty_merge(self, mock_run: object) -> None:
         """Merge with no changed files contributes nothing."""
-        prs = [MergedPR(sha="aaa", title="PR1", merge_commit="aaa")]
+        prs = [MergedPR(sha="aaa1111", title="PR1", merge_commit="aaa1111")]
         mock_run.side_effect = _mock_subprocess(stdout="")
 
         result = extract_subsystems(prs, Path("/fake"))

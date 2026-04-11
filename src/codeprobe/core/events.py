@@ -11,7 +11,7 @@ import logging
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, Union, runtime_checkable
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class TaskScored:
     cost_source: str
     error: str | None
     timestamp: float
-    scoring_details: dict | None = None
+    scoring_details: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

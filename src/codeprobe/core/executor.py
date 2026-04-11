@@ -799,8 +799,6 @@ def execute_config(
             )
         )
 
-    run_start_time = time.time()
-
     cumulative_cost = 0.0
 
     def _run_one(
@@ -880,9 +878,7 @@ def execute_config(
                     cost_source=result.cost_source,
                     error=result.metadata.get("error") if result.metadata else None,
                     timestamp=time.time(),
-                    scoring_details=(
-                        dict(result.scoring_details) if result.scoring_details else None
-                    ),
+                    scoring_details=dict(result.scoring_details),
                 )
             )
 

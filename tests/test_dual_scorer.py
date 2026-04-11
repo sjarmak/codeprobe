@@ -405,3 +405,61 @@ def test_reward_type_binary_uses_binary_scorer(
 def test_result_is_score_result(passing_task_dir: Path):
     result = DualScorer().score("", passing_task_dir)
     assert isinstance(result, ScoreResult)
+
+
+# ---------------------------------------------------------------------------
+# Strict metadata validation — missing/unparseable metadata fails explicitly
+# ---------------------------------------------------------------------------
+
+
+def test_missing_metadata_json_fails_with_error(tmp_path: Path):
+    """A dual task with no metadata.json must fail explicitly, not silently default."""
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    # No metadata.json at all — DualScorer must not silently proceed
+    _write_test_sh(task_dir, exit_code=0)
+    _write_ground_truth(task_dir, answer_type="boolean", answer=True)
+    _write_answer(task_dir, answer=True)
+
+    result = DualScorer().score("", task_dir)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.error is not None
+    assert "metadata" in result.error.lower()
+
+
+def test_unparseable_metadata_json_fails_with_error(tmp_path: Path):
+    """A dual task with malformed metadata.json must fail explicitly."""
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "metadata.json").write_text("{not valid json", encoding="utf-8")
+    _write_test_sh(task_dir, exit_code=0)
+    _write_ground_truth(task_dir, answer_type="boolean", answer=True)
+    _write_answer(task_dir, answer=True)
+
+    result = DualScorer().score("", task_dir)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.error is not None
+    assert "metadata" in result.error.lower()
+
+
+def test_metadata_missing_verification_block_fails(tmp_path: Path):
+    """metadata.json exists but has no 'verification' key — must fail."""
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "metadata.json").write_text(
+        json.dumps({"name": "test-task"}), encoding="utf-8"
+    )
+    _write_test_sh(task_dir, exit_code=0)
+    _write_ground_truth(task_dir, answer_type="boolean", answer=True)
+    _write_answer(task_dir, answer=True)
+
+    result = DualScorer().score("", task_dir)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.error is not None
+    assert "metadata" in result.error.lower()

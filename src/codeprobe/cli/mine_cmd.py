@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -903,6 +904,7 @@ def _dispatch_by_task_type(
     enrich: bool,
     goal_name: str,
     bias: str,
+    dual_verify: bool = False,
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
@@ -924,6 +926,7 @@ def _dispatch_by_task_type(
             enrich=enrich,
             goal_name=goal_name,
             bias=bias,
+            dual_verify=dual_verify,
         )
     elif task_type == "micro_probe":
         _dispatch_probes(
@@ -950,6 +953,7 @@ def _dispatch_by_task_type(
             enrich=enrich,
             goal_name=goal_name,
             bias=bias,
+            dual_verify=dual_verify,
         )
     else:
         _log.warning("Unknown task_type '%s'; falling back to SDLC mining", task_type)
@@ -963,6 +967,7 @@ def _dispatch_by_task_type(
             enrich=enrich,
             goal_name=goal_name,
             bias=bias,
+            dual_verify=dual_verify,
         )
 
 
@@ -973,6 +978,7 @@ def _dispatch_cross_repo(
     count: int,
     goal_name: str,
     bias: str,
+    dual_verify: bool = False,
 ) -> None:
     """Dispatch cross-repo task mining.
 
@@ -1031,14 +1037,18 @@ def _dispatch_cross_repo(
         )
         return
 
+    tasks = list(result.tasks)
+    if dual_verify:
+        tasks = _apply_dual_verification(tasks, result, primary)
+
     tasks_dir = _clear_tasks_dir(primary)
-    for task in result.tasks:
+    for task in tasks:
         write_task_dir(task, tasks_dir, primary)
 
-    _record_task_ids_in_experiment(primary, [t.id for t in result.tasks])
-    _show_results_table(result.tasks)
+    _record_task_ids_in_experiment(primary, [t.id for t in tasks])
+    _show_results_table(tasks)
     _finish_mine_output(
-        result.tasks,
+        tasks,
         tasks_dir,
         goal_name,
         bias,
@@ -1046,6 +1056,94 @@ def _dispatch_cross_repo(
         primary,
         task_types=("sdlc_code_change",),
     )
+
+
+def _apply_dual_verification(
+    tasks: list["Task"],
+    mine_result: "MineResult",
+    repo_path: Path,
+) -> list["Task"]:
+    """Apply dual verification to tasks: build oracle ground truth from PR diffs.
+
+    For each task, generates oracle ground truth from changed files.
+    Tasks with non-trivial oracles get ``verification_mode="dual"`` and
+    oracle data populated. Tasks with empty oracles (all test files)
+    fall back to ``verification_mode="test_script"`` only.
+
+    Only applies to eligible task types (comprehension, org-scale, cross-repo).
+    SDLC tasks are passed through unchanged per R16 constraint.
+    """
+    from codeprobe.mining.extractor import (
+        _build_oracle_ground_truth,
+        _oracle_discrimination_passed,
+    )
+
+    _DUAL_ELIGIBLE_CATEGORIES = frozenset(
+        {
+            "comprehension",
+            "org_scale",
+            "cross_repo",
+        }
+    )
+
+    result: list["Task"] = []
+    dual_count = 0
+
+    for task in tasks:
+        # R16: only apply to task types with orthogonal artifact signal
+        if task.metadata.category not in _DUAL_ELIGIBLE_CATEGORIES:
+            result.append(task)
+            continue
+
+        if not task.metadata.ground_truth_commit:
+            result.append(task)
+            continue
+
+        changed_files = mine_result.changed_files_map.get(task.id, [])
+        if not changed_files:
+            result.append(task)
+            continue
+
+        oracle = _build_oracle_ground_truth(
+            merge_sha=task.metadata.ground_truth_commit,
+            repo_path=repo_path,
+            changed_files=changed_files,
+        )
+
+        if oracle is None:
+            # All test files — fall back to test_script only
+            result.append(task)
+            continue
+
+        passed, confidence = _oracle_discrimination_passed(oracle)
+        if not passed:
+            result.append(task)
+            continue
+
+        # Build dual task with oracle data
+        new_verification = replace(
+            task.verification,
+            verification_mode="dual",
+            oracle_type=oracle["answer_type"],
+            oracle_answer=tuple(oracle["answer"]),
+        )
+        new_task = replace(
+            task,
+            verification=new_verification,
+        )
+        result.append(new_task)
+        dual_count += 1
+
+        if confidence == "low":
+            click.echo(
+                f"  ! {task.id}: low-confidence oracle "
+                f"({len(oracle['answer'])} files, mostly one directory)"
+            )
+
+    if dual_count:
+        click.echo(f"Applied dual verification to {dual_count}/{len(tasks)} tasks")
+
+    return result
 
 
 def _dispatch_sdlc(
@@ -1059,6 +1157,7 @@ def _dispatch_sdlc(
     enrich: bool,
     goal_name: str,
     bias: str,
+    dual_verify: bool = False,
 ) -> None:
     """Run PR-based SDLC mining pipeline."""
     from codeprobe.mining import mine_tasks, write_task_dir
@@ -1088,6 +1187,11 @@ def _dispatch_sdlc(
         )
 
     tasks = _enrich_sdlc_tasks(tasks, mine_result, no_llm, enrich)
+
+    # Apply dual verification when --dual-verify is set
+    if dual_verify:
+        tasks = _apply_dual_verification(tasks, mine_result, repo_path)
+
     llm_used = _was_llm_used(no_llm)
 
     tasks_dir = _clear_tasks_dir(repo_path)
@@ -1205,6 +1309,7 @@ def _dispatch_mixed(
     enrich: bool,
     goal_name: str,
     bias: str,
+    dual_verify: bool = False,
 ) -> None:
     """Run SDLC mining + probe generation, combining results."""
     from codeprobe.mining import mine_tasks, write_task_dir as write_mining_task
@@ -1230,6 +1335,8 @@ def _dispatch_mixed(
     sdlc_tasks = mine_result.tasks
     if sdlc_tasks:
         sdlc_tasks = _enrich_sdlc_tasks(sdlc_tasks, mine_result, no_llm, enrich)
+        if dual_verify:
+            sdlc_tasks = _apply_dual_verification(sdlc_tasks, mine_result, repo_path)
         for task in sdlc_tasks:
             write_mining_task(task, tasks_dir, repo_path)
         all_task_ids.extend(t.id for t in sdlc_tasks)
@@ -1346,6 +1453,7 @@ def run_mine(
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
     sg_repo: str = "",
+    dual_verify: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
 ) -> None:
@@ -1419,6 +1527,7 @@ def run_mine(
             count=count,
             goal_name=goal_name,
             bias=bias,
+            dual_verify=dual_verify,
         )
         return
 
@@ -1446,6 +1555,7 @@ def run_mine(
             verify_curation_flag=verify_curation_flag,
             mcp_families=mcp_families,
             sg_repo=sg_repo,
+            dual_verify=dual_verify,
         )
         return
 
@@ -1497,6 +1607,7 @@ def run_mine(
         enrich=enrich,
         goal_name=goal_name,
         bias=bias,
+        dual_verify=dual_verify,
     )
 
 
@@ -1518,8 +1629,15 @@ def _run_org_scale_mine(
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
     sg_repo: str = "",
+    dual_verify: bool = False,
 ) -> None:
-    """Mine org-scale comprehension tasks with oracle verification."""
+    """Mine org-scale comprehension tasks with oracle verification.
+
+    Note: ``dual_verify`` is accepted but not yet wired — org-scale tasks
+    build oracles via a different pipeline (family-based pattern matching)
+    that doesn't use the SDLC-style ``changed_files_map``. Phase 3 will
+    add native dual oracle support for org-scale families.
+    """
     from codeprobe.mining.org_scale import mine_org_scale_tasks
     from codeprobe.mining.org_scale_families import FAMILIES, FAMILY_BY_NAME, TaskFamily
     from codeprobe.mining.writer import write_task_dir
