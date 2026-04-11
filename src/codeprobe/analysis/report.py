@@ -440,8 +440,10 @@ h3{font-size:1.1rem;margin:1.5rem 0 .5rem}
 .subtitle{color:var(--muted);margin-bottom:1.5rem}
 .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.2rem;margin-bottom:1rem}
 .executive{border-left:4px solid var(--accent)}
-.single-run-banner{background:var(--warning);color:#000;padding:.5rem 1rem;border-radius:4px;margin-bottom:1rem;font-weight:600}
-.single-run-badge{background:var(--warning);color:#000;padding:2px 8px;border-radius:4px;font-size:.8rem;font-weight:600}
+.single-run-banner{background:var(--warning);color:#000;padding:.5rem 1rem;
+border-radius:4px;margin-bottom:1rem;font-weight:600}
+.single-run-badge{background:var(--warning);color:#000;padding:2px 8px;
+border-radius:4px;font-size:.8rem;font-weight:600}
 table{width:100%;border-collapse:collapse;margin:.5rem 0}
 th,td{padding:.5rem .75rem;text-align:left;border-bottom:1px solid var(--border)}
 th{background:#e9ecef;font-weight:600;font-size:.85rem;text-transform:uppercase;letter-spacing:.03em}

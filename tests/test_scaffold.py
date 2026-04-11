@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
 import stat
 import tomllib
 from pathlib import Path
@@ -14,7 +12,6 @@ from click.testing import CliRunner
 from codeprobe.cli import main
 from codeprobe.scaffold.writer import (
     TaskSpec,
-    ValidationError,
     validate_task_dir,
     write_task_dir,
 )

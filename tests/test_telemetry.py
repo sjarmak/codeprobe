@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from unittest.mock import MagicMock, patch
-
 from codeprobe.adapters.telemetry import (
+    _PRICING_LAST_VERIFIED,
     COPILOT_PRICING,
     ApiResponseCollector,
     JsonStdoutCollector,
     NdjsonStreamCollector,
     TelemetryCollector,
     UsageData,
-    _PRICING_LAST_VERIFIED,
     _count_tokens_tiktoken,
 )
 
@@ -404,10 +403,7 @@ class TestCountTokensTiktoken:
             create=True,
         ):
             # Simulate ImportError by patching the import mechanism
-            import importlib
-            import codeprobe.adapters.telemetry as tel_mod
 
-            original = tel_mod._count_tokens_tiktoken
 
             # The function tries `import tiktoken` internally, so we need to
             # make that import fail.

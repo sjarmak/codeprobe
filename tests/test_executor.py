@@ -6,7 +6,7 @@ import stat
 import subprocess
 import threading
 from pathlib import Path
-from unittest.mock import patch, call, MagicMock
+from unittest.mock import MagicMock, patch
 
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core.executor import (
@@ -26,8 +26,7 @@ from codeprobe.core.isolation import (
     WorktreeIsolation,
     git_pin_commit,
 )
-from codeprobe.core.preamble import _base_prompt
-from codeprobe.core.preamble import DefaultPreambleResolver
+from codeprobe.core.preamble import DefaultPreambleResolver, _base_prompt
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
@@ -268,7 +267,7 @@ def test_execute_config_skips_checkpointed(tmp_path: Path):
 
     # Write a checkpoint with task-000 already done
     from codeprobe.core.checkpoint import CheckpointStore
-    from codeprobe.models.experiment import CompletedTask as CT
+    from codeprobe.models.experiment import CompletedTask as CT  # noqa: N817
 
     checkpoint_db = tmp_path / "checkpoint.db"
     store = CheckpointStore(checkpoint_db, config_name="baseline")
@@ -437,7 +436,7 @@ def test_execute_config_budget_with_checkpoint(tmp_path: Path):
 
     # Checkpoint task-000
     from codeprobe.core.checkpoint import CheckpointStore
-    from codeprobe.models.experiment import CompletedTask as CT
+    from codeprobe.models.experiment import CompletedTask as CT  # noqa: N817
 
     checkpoint_db = tmp_path / "checkpoint.db"
     store = CheckpointStore(checkpoint_db, config_name="baseline")
@@ -489,7 +488,7 @@ def test_execute_config_retries_error_checkpointed(tmp_path: Path):
     agent_config = AgentConfig()
 
     from codeprobe.core.checkpoint import CheckpointStore
-    from codeprobe.models.experiment import CompletedTask as CT
+    from codeprobe.models.experiment import CompletedTask as CT  # noqa: N817
 
     checkpoint_db = tmp_path / "checkpoint.db"
     store = CheckpointStore(checkpoint_db, config_name="baseline")
@@ -1530,7 +1529,7 @@ class TestCommitPinning:
         config = AgentConfig()
 
         with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
-            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            execute_task(adapter, task_dir, Path("/repo"), config)
             mock_pin.assert_not_called()
 
     def test_pin_failure_returns_error(self, tmp_path: Path) -> None:
@@ -1703,7 +1702,6 @@ class TestGitResetWorkdirMultiRepo:
     """_git_reset_workdir also cleans workspace/repos/ between tasks."""
 
     def test_removes_repos_dir(self, tmp_path: Path) -> None:
-        from codeprobe.core.executor import _git_reset_workdir
 
         # Fake git repo
         subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)

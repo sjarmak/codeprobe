@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from codeprobe.core.scoring import ArtifactScorer, ScoreResult
+from codeprobe.core.scoring import ArtifactScorer
 
 
 @pytest.fixture()

@@ -5,13 +5,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from unittest.mock import MagicMock, patch
-
-import codeprobe.core.llm
 
 import pytest
 
+import codeprobe.core.llm
 from codeprobe.core.llm import (
     AnthropicSDKBackend,
     ClaudeCLIBackend,

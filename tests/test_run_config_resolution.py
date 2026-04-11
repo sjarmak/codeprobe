@@ -5,11 +5,9 @@ from __future__ import annotations
 import logging
 import stat
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.models.experiment import ExperimentConfig
 
 

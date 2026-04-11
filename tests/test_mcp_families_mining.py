@@ -10,15 +10,12 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from codeprobe.mining.org_scale import (
+    _mine_change_scope_tasks,
     _mine_symbol_reference_tasks,
     _mine_type_hierarchy_tasks,
-    _mine_change_scope_tasks,
     mine_org_scale_tasks,
 )
-from codeprobe.mining.org_scale_families import MCP_FAMILIES
 from codeprobe.mining.org_scale_scanner import get_head_sha, get_tracked_files
 
 # ---------------------------------------------------------------------------

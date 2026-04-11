@@ -15,7 +15,7 @@ from typing import IO
 
 logger = logging.getLogger(__name__)
 
-from codeprobe.core.events import RunEvent
+from codeprobe.core.events import RunEvent  # noqa: E402
 
 
 class JsonLineListener:

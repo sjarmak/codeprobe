@@ -217,7 +217,6 @@ class TestRetryOn401:
 
     def test_401_triggers_refresh_and_retry(self) -> None:
         repo = "github.com/sg-evals/repo"
-        call_count = 0
 
         refreshed_token = CachedToken(
             access_token="refreshed-token",

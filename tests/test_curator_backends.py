@@ -10,13 +10,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codeprobe.core.llm import LLMError, LLMResponse
-from codeprobe.mining.curator import CuratedFile, CurationBackend
+from codeprobe.mining.curator import CurationBackend
 from codeprobe.mining.curator_backends import (
+    _MAX_FILE_LISTING,
     AgentSearchBackend,
     GrepBackend,
     PRDiffBackend,
     SourcegraphBackend,
-    _MAX_FILE_LISTING,
 )
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.mining.org_scale_scanner import FamilyScanResult, PatternHit

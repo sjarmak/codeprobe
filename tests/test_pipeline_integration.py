@@ -18,9 +18,8 @@ from codeprobe.mining.org_scale import mine_org_scale_tasks
 from codeprobe.mining.org_scale_families import (
     FAMILIES,
     MIGRATION_INVENTORY,
-    TaskFamily,
 )
-from codeprobe.mining.org_scale_scanner import FamilyScanResult, PatternHit
+from codeprobe.mining.org_scale_scanner import FamilyScanResult
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 # ---------------------------------------------------------------------------
@@ -160,7 +159,7 @@ class TestCLIFlags:
         )
 
         runner = CliRunner()
-        result = runner.invoke(
+        runner.invoke(
             main,
             [
                 "mine",
@@ -602,7 +601,6 @@ class TestBudgetWarningVisibility:
         """Budget exceeded prints to stderr in parallel mode (parallel>1)."""
         from codeprobe.adapters.protocol import AgentConfig
         from codeprobe.core.executor import execute_config
-        from codeprobe.core.isolation import IsolationStrategy
         from codeprobe.models.experiment import ExperimentConfig
         from tests.conftest import FakeAdapter
 
@@ -675,13 +673,11 @@ class TestSandboxThreadSafety:
 
     def test_acquire_release_sandbox_refcount(self) -> None:
         """Ref-counting prevents early removal when multiple threads hold sandbox."""
+        import codeprobe.cli.run_cmd as run_cmd
         from codeprobe.cli.run_cmd import (
             _acquire_sandbox,
             _release_sandbox,
-            _sandbox_lock,
-            _sandbox_refcount,
         )
-        import codeprobe.cli.run_cmd as run_cmd
 
         # Clean state
         os.environ.pop("CODEPROBE_SANDBOX", None)
@@ -707,8 +703,8 @@ class TestSandboxThreadSafety:
 
     def test_concurrent_acquire_release_no_race(self) -> None:
         """Concurrent acquire/release does not corrupt refcount."""
-        from codeprobe.cli.run_cmd import _acquire_sandbox, _release_sandbox
         import codeprobe.cli.run_cmd as run_cmd
+        from codeprobe.cli.run_cmd import _acquire_sandbox, _release_sandbox
 
         os.environ.pop("CODEPROBE_SANDBOX", None)
         run_cmd._sandbox_refcount = 0

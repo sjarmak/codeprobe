@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from codeprobe.assess.heuristics import (
+    RUBRIC_V1,
     AssessmentScore,
     DimensionScore,
     RepoHeuristics,
-    RUBRIC_V1,
     assess_repo,
     gather_heuristics,
     score_repo,

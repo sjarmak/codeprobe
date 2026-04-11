@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from codeprobe.core.scoring import ArtifactScorer, ScoreResult
+from codeprobe.core.scoring import ArtifactScorer
 
 
 def _write_json(path: Path, data: dict | list) -> None:

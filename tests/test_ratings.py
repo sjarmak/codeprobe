@@ -102,8 +102,8 @@ class TestJsonlIO:
         path = tmp_path / "ratings.jsonl"
         config = ConfigSnapshot(model="sonnet")
 
-        rec1 = record_rating(3, config_snapshot=config, path=path)
-        rec2 = record_rating(5, config_snapshot=config, path=path)
+        record_rating(3, config_snapshot=config, path=path)
+        record_rating(5, config_snapshot=config, path=path)
 
         loaded = load_ratings(path)
         assert len(loaded) == 2

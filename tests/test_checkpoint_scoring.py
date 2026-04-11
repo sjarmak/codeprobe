@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from codeprobe.core.scoring import CheckpointScorer, ScoreResult
+from codeprobe.core.scoring import CheckpointScorer
 from codeprobe.models.task import Checkpoint, TaskVerification
 
 # ---------------------------------------------------------------------------

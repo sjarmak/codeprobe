@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import time
 
 import pytest
 
@@ -213,7 +212,6 @@ class TestQuietDoesNotSuppressJson:
         # Replicate run_cmd logic: json mode registers JsonLineListener;
         # quiet suppresses PlainTextListener — but JSON is unaffected.
         log_format = "json"
-        quiet = True
         if log_format == "json":
             dispatcher.register(json_listener)
         # PlainTextListener only when not quiet AND not json

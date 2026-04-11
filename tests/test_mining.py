@@ -593,7 +593,10 @@ class TestWriteTaskDir:
             metadata=TaskMetadata(
                 name="merge-enrich01",
                 difficulty="easy",
-                description="Fix auth token refresh\n\nTokens were not refreshed on 401.\nThis caused silent logout.\n\nLabels: bug, auth",
+                description=(
+                    "Fix auth token refresh\n\nTokens were not refreshed on 401."
+                    "\nThis caused silent logout.\n\nLabels: bug, auth"
+                ),
                 language="python",
             ),
             verification=TaskVerification(
@@ -615,9 +618,6 @@ class TestWriteTaskDir:
 # ---------------------------------------------------------------------------
 # _build_test_command tests
 # ---------------------------------------------------------------------------
-
-
-import pytest
 
 
 class TestBuildTestCommand:

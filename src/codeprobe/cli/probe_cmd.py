@@ -8,9 +8,9 @@ from pathlib import Path
 
 import click
 
-logger = logging.getLogger(__name__)
-
 from codeprobe.probe.generator import DEFAULT_COUNT, MAX_PROBES, MIN_PROBES
+
+logger = logging.getLogger(__name__)
 
 
 @click.command()

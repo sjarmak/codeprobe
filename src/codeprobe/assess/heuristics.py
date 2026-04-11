@@ -436,7 +436,7 @@ def score_repo_heuristic(heuristics: RepoHeuristics) -> AssessmentScore:
     # Weighted average — ci_maturity is a weak signal because CI configs are
     # often absent in shallow clones / Sourcegraph views, and codeprobe
     # validates via mined test.sh scripts, not CI pipelines.
-    _WEIGHTS: dict[str, float] = {
+    _WEIGHTS: dict[str, float] = {  # noqa: N806
         "task_richness": 0.25,
         "test_coverage": 0.25,
         "complexity": 0.20,

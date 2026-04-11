@@ -11,7 +11,7 @@ import logging
 import sqlite3
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from codeprobe.models.experiment import CompletedTask
@@ -61,7 +61,7 @@ class CheckpointStore:
 
     def append(self, task: CompletedTask) -> None:
         """Insert or update a checkpoint entry for the given task."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         metadata_json = json.dumps(task.metadata) if task.metadata else "{}"
         result_json = json.dumps(asdict(task))
         self._conn.execute(

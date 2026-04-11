@@ -40,8 +40,7 @@ def to_experiment(config: EvalrcConfig) -> Experiment:
         configs = _configs_from_matrix(config.agents, config.models)
     else:
         configs = [
-            ExperimentConfig(label=agent, agent=agent)
-            for agent in config.agents
+            ExperimentConfig(label=agent, agent=agent) for agent in config.agents
         ]
 
     return Experiment(
@@ -82,7 +81,9 @@ def _parse_yaml(raw: str, path: Path) -> dict:
         raise ValueError(f"Invalid .evalrc.yaml at {path}: {exc}") from exc
 
     if not isinstance(data, dict):
-        raise ValueError(f"Invalid .evalrc.yaml at {path}: expected a mapping, got {type(data).__name__}")
+        raise ValueError(
+            f"Invalid .evalrc.yaml at {path}: expected a mapping, got {type(data).__name__}"
+        )
     return data
 
 
@@ -99,7 +100,9 @@ def _manual_parse(raw: str) -> dict:
         key = key.strip()
         value = value.strip()
         if value.startswith("[") and value.endswith("]"):
-            items = [v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()]
+            items = [
+                v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()
+            ]
             data[key] = items
         elif value:
             data[key] = value
@@ -152,16 +155,28 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             instruction_variant=cfg.get("instruction_variant"),
             preambles=tuple(cfg.get("preambles", ())),
             reward_type=cfg.get("reward_type", "binary"),
-            extra={k: v for k, v in cfg.items() if k not in {
-                "agent", "model", "permission_mode", "mcp_config", "instruction_variant",
-                "preambles", "reward_type",
-            }},
+            extra={
+                k: v
+                for k, v in cfg.items()
+                if k
+                not in {
+                    "agent",
+                    "model",
+                    "permission_mode",
+                    "mcp_config",
+                    "instruction_variant",
+                    "preambles",
+                    "reward_type",
+                }
+            },
         )
         for label, cfg in configs_dict.items()
     ]
 
 
-def _configs_from_matrix(agents: list[str], models: list[str]) -> list[ExperimentConfig]:
+def _configs_from_matrix(
+    agents: list[str], models: list[str]
+) -> list[ExperimentConfig]:
     """Build ExperimentConfig list from agents x models cross product."""
     return [
         ExperimentConfig(label=f"{agent}-{model}", agent=agent, model=model)
@@ -173,7 +188,9 @@ def _configs_from_matrix(agents: list[str], models: list[str]) -> list[Experimen
 _DIMENSION_AXES = frozenset({"models", "tools", "prompts"})
 
 
-def _configs_from_dimensions(dimensions: dict, agent: str = "claude") -> list[ExperimentConfig]:
+def _configs_from_dimensions(
+    dimensions: dict, agent: str = "claude"
+) -> list[ExperimentConfig]:
     """Build ExperimentConfig list from cross-product of dimension axes.
 
     Supported axes:
@@ -190,14 +207,18 @@ def _configs_from_dimensions(dimensions: dict, agent: str = "claude") -> list[Ex
     """
     unknown = set(dimensions) - _DIMENSION_AXES
     if unknown:
-        raise ValueError(f"Unknown dimension axes: {unknown}. Allowed: {sorted(_DIMENSION_AXES)}")
+        raise ValueError(
+            f"Unknown dimension axes: {unknown}. Allowed: {sorted(_DIMENSION_AXES)}"
+        )
 
     axis_names = ("models", "tools", "prompts")
     axes: dict[str, dict] = {}
     for name in axis_names:
         axis = dimensions.get(name, {"default": None})
         if not isinstance(axis, dict):
-            raise ValueError(f"dimensions.{name} must be a mapping, got {type(axis).__name__}")
+            raise ValueError(
+                f"dimensions.{name} must be a mapping, got {type(axis).__name__}"
+            )
         axes[name] = axis
 
     # Only multi-valued axes contribute to the label
@@ -215,20 +236,25 @@ def _configs_from_dimensions(dimensions: dict, agent: str = "claude") -> list[Ex
         instruction_variant = prompt_value if isinstance(prompt_value, str) else None
         preambles = tuple(prompt_value) if isinstance(prompt_value, list) else ()
 
-        configs.append(ExperimentConfig(
-            label=label,
-            agent=agent,
-            model=values["models"],
-            mcp_config=values["tools"] if isinstance(values["tools"], dict) else None,
-            instruction_variant=instruction_variant,
-            preambles=preambles,
-        ))
+        configs.append(
+            ExperimentConfig(
+                label=label,
+                agent=agent,
+                model=values["models"],
+                mcp_config=(
+                    values["tools"] if isinstance(values["tools"], dict) else None
+                ),
+                instruction_variant=instruction_variant,
+                preambles=preambles,
+            )
+        )
 
     # Validate-or-die: labels must be unique
     seen_labels = [c.label for c in configs]
     if len(seen_labels) != len(set(seen_labels)):
         from collections import Counter
-        dupes = [l for l, n in Counter(seen_labels).items() if n > 1]
+
+        dupes = [lbl for lbl, n in Counter(seen_labels).items() if n > 1]
         raise ValueError(f"dimensions produced duplicate config labels: {dupes}")
 
     return configs

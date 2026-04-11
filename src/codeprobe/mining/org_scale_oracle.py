@@ -24,7 +24,7 @@ def normalize_path(path: str) -> str:
     Loops until stable to handle combined prefixes like ``/tmp/./pkg/foo.go``.
     """
     p = path.replace("\\", "/").strip()
-    _PREFIXES = ("./", "/workspace/", "/tmp/", "/app/")
+    _PREFIXES = ("./", "/workspace/", "/tmp/", "/app/")  # noqa: N806
     changed = True
     while changed:
         changed = False

@@ -7,14 +7,13 @@ for the codeprobe package structure.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
-import logging
+from codeprobe.probe.generator import Probe
 
 logger = logging.getLogger(__name__)
-
-from codeprobe.probe.generator import Probe
 
 
 def write_probe_tasks(

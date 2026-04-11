@@ -1461,7 +1461,7 @@ class TestCopilotNdjsonFallback:
 # -- Sandbox detection ---------------------------------------------------------
 
 
-from codeprobe.core.sandbox import is_sandboxed
+from codeprobe.core.sandbox import is_sandboxed  # noqa: E402
 
 
 class TestSandboxDetection:

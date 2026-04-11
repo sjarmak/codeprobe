@@ -37,11 +37,11 @@ from pathlib import Path
 from typing import Any
 
 from codeprobe.mining._graph import (
-    _RepoIndex,
     _answer_files_beat_grep,
     _build_index,
     _call_regex,
     _reachable_modules,
+    _RepoIndex,
     _shortest_path_length,
     _single_grep_importers,
     _transitive_importers,
@@ -458,16 +458,21 @@ class ComprehensionGenerator:
 # ---------------------------------------------------------------------------
 # Tests and other modules import graph/writer functions directly from this
 # module. Re-export them so existing imports continue to work.
+# All _graph symbols are imported at the top of this file; listing them in
+# __all__ ensures they remain part of the public API.
 
-from codeprobe.mining._graph import (  # noqa: E402, F811
-    _RepoIndex as _RepoIndex,
-    _answer_files_beat_grep as _answer_files_beat_grep,
-    _build_index as _build_index,
-    _reachable_modules as _reachable_modules,
-    _shortest_path_length as _shortest_path_length,
-    _single_grep_importers as _single_grep_importers,
-    _transitive_importers as _transitive_importers,
-)
 from codeprobe.mining.comprehension_writer import (  # noqa: E402, F811
     write_comprehension_tasks as write_comprehension_tasks,
 )
+
+__all__ = [
+    "_answer_files_beat_grep",
+    "_build_index",
+    "_reachable_modules",
+    "_RepoIndex",
+    "_shortest_path_length",
+    "_single_grep_importers",
+    "_transitive_importers",
+    "ComprehensionGenerator",
+    "write_comprehension_tasks",
+]

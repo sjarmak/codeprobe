@@ -48,7 +48,7 @@ def test_preamble_block_render_unknown_variable_left_intact():
 
 # -- DefaultPreambleResolver tests -------------------------------------------
 
-from codeprobe.core.preamble import DefaultPreambleResolver
+from codeprobe.core.preamble import DefaultPreambleResolver  # noqa: E402
 
 
 def test_resolver_finds_task_local_preamble(tmp_path: Path):
@@ -169,7 +169,7 @@ def test_resolver_rejects_path_traversal(tmp_path: Path):
 
 # -- compose_instruction tests -----------------------------------------------
 
-from codeprobe.core.preamble import compose_instruction
+from codeprobe.core.preamble import compose_instruction  # noqa: E402
 
 
 def test_compose_instruction_empty_preambles(tmp_path: Path):
@@ -253,7 +253,7 @@ def test_compose_instruction_returns_resolved_content(tmp_path: Path):
 
 # -- Built-in preamble tests --------------------------------------------------
 
-from codeprobe.preambles import get_builtin, list_builtins
+from codeprobe.preambles import get_builtin, list_builtins  # noqa: E402
 
 
 def test_builtin_sourcegraph_preamble_exists():

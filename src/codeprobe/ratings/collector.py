@@ -15,7 +15,7 @@ import os
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -157,7 +157,7 @@ def record_rating(
 
     meta = session_metadata or {}
     record = RatingRecord(
-        ts=datetime.now(timezone.utc).isoformat(),
+        ts=datetime.now(UTC).isoformat(),
         rating=rating,
         config=config_snapshot,
         task_type=str(meta.get("task_type", "")),

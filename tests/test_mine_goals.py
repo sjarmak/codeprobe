@@ -518,7 +518,9 @@ class TestDispatchPipelineIntegration:
 
         mock_clear.return_value = tmp_path / "tasks"
 
-        with patch("codeprobe.mining.comprehension.ComprehensionGenerator") as MockGen:
+        with patch(
+            "codeprobe.mining.comprehension.ComprehensionGenerator"
+        ) as MockGen:  # noqa: N806
             instance = MockGen.return_value
             instance.generate.return_value = [mock_task]
 

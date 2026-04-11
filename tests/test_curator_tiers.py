@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from codeprobe.core.llm import LLMError, LLMResponse
 from codeprobe.mining.curator import CuratedFile
 from codeprobe.mining.curator_tiers import classify_tiers, verify_curation

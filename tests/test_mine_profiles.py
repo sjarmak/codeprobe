@@ -10,7 +10,6 @@ from click.testing import CliRunner
 
 from codeprobe.cli.mine_cmd import (
     _load_profiles_from,
-    _user_profiles_path,
     list_profiles,
     load_all_profiles,
     load_profile,

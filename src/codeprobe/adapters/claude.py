@@ -83,7 +83,7 @@ class ClaudeAdapter(BaseAdapter):
         isolation and lets the agent use the real config dir.
         """
         real_config = Path.home() / ".claude"
-        _CRED_NAMES = ("credentials.json", ".credentials.json")
+        _CRED_NAMES = ("credentials.json", ".credentials.json")  # noqa: N806
 
         # Check whether any copyable credential files exist.
         has_creds = real_config.is_dir() and any(

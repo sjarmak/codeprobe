@@ -5,8 +5,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.mining.org_scale_validate import (
     DeltaResult,

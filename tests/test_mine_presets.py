@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli.mine_cmd import _PRESET_ALIASES
@@ -75,7 +74,7 @@ class TestPresetCLIDeprecation:
         runner = CliRunner()
         with (
             patch("codeprobe.cli.mine_cmd._resolve_repo_path", return_value=tmp_path),
-            patch("codeprobe.cli.mine_cmd._run_org_scale_mine") as mock_org,
+            patch("codeprobe.cli.mine_cmd._run_org_scale_mine"),
             patch("codeprobe.cli.mine_cmd._dispatch_by_task_type") as mock_dispatch,
             patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed"),
         ):

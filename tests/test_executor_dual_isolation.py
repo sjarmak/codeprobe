@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.core.events import EventDispatcher, TaskScored
 from codeprobe.core.executor import (
     TaskResult,
@@ -578,9 +578,7 @@ class _WorktreeAnswerAdapter:
         prompt: str,
         config: AgentConfig,
         session_env: dict[str, str] | None = None,
-    ) -> "AgentOutput":
-        from codeprobe.adapters.protocol import AgentOutput
-
+    ) -> AgentOutput:
         with self._lock:
             self._call_count += 1
             call_id = self._call_count

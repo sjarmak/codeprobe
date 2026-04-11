@@ -117,7 +117,7 @@ class TestCrossRepoDispatch:
         mock_resolve.return_value = repo
 
         runner = CliRunner()
-        result = runner.invoke(
+        runner.invoke(
             main,
             [
                 "mine",

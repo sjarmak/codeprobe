@@ -381,11 +381,15 @@ class TestShared:
     def test_modules_import_from_shared(self) -> None:
         """All modules with _PASS_THRESHOLD should import from _shared."""
         from codeprobe.contrib._shared import PASS_THRESHOLD
-        from codeprobe.contrib.counterfactual import _PASS_THRESHOLD as cf_pt
-        from codeprobe.contrib.debate import _PASS_THRESHOLD as deb_pt
-        from codeprobe.contrib.decision_tree import _PASS_THRESHOLD as dt_pt
-        from codeprobe.contrib.mutation import _PASS_THRESHOLD as mut_pt
-        from codeprobe.contrib.pareto import _PASS_THRESHOLD as par_pt
+        from codeprobe.contrib.counterfactual import (  # noqa: N811
+            _PASS_THRESHOLD as cf_pt,
+        )
+        from codeprobe.contrib.debate import _PASS_THRESHOLD as deb_pt  # noqa: N811
+        from codeprobe.contrib.decision_tree import (  # noqa: N811
+            _PASS_THRESHOLD as dt_pt,
+        )
+        from codeprobe.contrib.mutation import _PASS_THRESHOLD as mut_pt  # noqa: N811
+        from codeprobe.contrib.pareto import _PASS_THRESHOLD as par_pt  # noqa: N811
 
         for val in (cf_pt, deb_pt, dt_pt, mut_pt, par_pt):
             assert val == PASS_THRESHOLD

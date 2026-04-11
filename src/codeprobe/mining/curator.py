@@ -160,7 +160,7 @@ def merge_results(
             per_path.setdefault(cf.path, []).append((backend_name, cf))
 
     # Directories excluded from ground truth (same as scanner)
-    _EXCLUDED_DIRS = ("vendor/", "node_modules/", "testdata/")
+    _EXCLUDED_DIRS = ("vendor/", "node_modules/", "testdata/")  # noqa: N806
 
     merged: list[CuratedFile] = []
     for path, entries in sorted(per_path.items()):

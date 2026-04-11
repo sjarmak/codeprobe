@@ -255,7 +255,6 @@ def test_execute_multi_repo_task_pins_both_repos(
     """execute_task with additional_repos metadata lays out repos/secondary/
     pinned to the ground_truth_commit^ (pre-merge state)."""
     from codeprobe.adapters.protocol import AgentConfig
-
     from tests.conftest import FakeAdapter
 
     primary = multi_repo_fixture["primary"]
@@ -307,7 +306,7 @@ def test_execute_multi_repo_task_pins_both_repos(
 
     from codeprobe.core.executor import execute_task
 
-    task_result = execute_task(
+    execute_task(
         adapter=adapter,
         task_dir=task_dir,
         repo_path=primary,

@@ -218,7 +218,6 @@ class RichLiveListener:
         completed = state.tasks_completed
         total = state.total_tasks
         passed = state.passed
-        cost = state.total_cost
         durations = list(state.durations)
         current = state.current_task
         label = state.label

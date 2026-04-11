@@ -26,9 +26,8 @@ import pytest
 
 from codeprobe.analysis.dual import resolve_leg_pass
 from codeprobe.core.scoring import DualScorer, scorer_env_override
+from codeprobe.mining.writer import _build_test_script
 from codeprobe.models.experiment import CompletedTask, DualScoringDetails
-from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-from codeprobe.mining.writer import _build_test_script, write_task_dir
 
 
 class TestWriterCommandHardening:

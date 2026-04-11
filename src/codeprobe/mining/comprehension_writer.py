@@ -10,7 +10,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
-from codeprobe.mining.comprehension import ComprehensionTaskSpec, _TASK_SPECS
+from codeprobe.mining.comprehension import _TASK_SPECS, ComprehensionTaskSpec
 from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)

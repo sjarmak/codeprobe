@@ -8,10 +8,10 @@ from unittest.mock import patch
 import pytest
 
 from codeprobe.assess.heuristics import (
+    RUBRIC_V1,
     AssessmentScore,
     DimensionScore,
     RepoHeuristics,
-    RUBRIC_V1,
     assess_repo,
     gather_heuristics,
     score_repo_heuristic,
@@ -274,8 +274,8 @@ class TestModelPathReturnsAllRubricDimensions:
         assert result.model_used == "haiku"
 
     def test_model_missing_dimension_raises(self) -> None:
-        from codeprobe.core.llm import LLMParseError
         from codeprobe.assess.heuristics import _parse_model_assessment
+        from codeprobe.core.llm import LLMParseError
 
         model_response = {
             "overall": 0.5,
@@ -288,16 +288,16 @@ class TestModelPathReturnsAllRubricDimensions:
             _parse_model_assessment(model_response, model_used="haiku", details={})
 
     def test_model_missing_dimensions_key_raises(self) -> None:
-        from codeprobe.core.llm import LLMParseError
         from codeprobe.assess.heuristics import _parse_model_assessment
+        from codeprobe.core.llm import LLMParseError
 
         model_response = {"overall": 0.5, "recommendation": "No dims"}
         with pytest.raises(LLMParseError, match="dimensions"):
             _parse_model_assessment(model_response, model_used="haiku", details={})
 
     def test_model_duplicate_dimension_raises(self) -> None:
-        from codeprobe.core.llm import LLMParseError
         from codeprobe.assess.heuristics import _parse_model_assessment
+        from codeprobe.core.llm import LLMParseError
 
         model_response = {
             "overall": 0.5,

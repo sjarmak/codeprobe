@@ -6,13 +6,12 @@ import re
 
 from codeprobe.mining.org_scale_families import (
     ALL_FAMILIES,
+    CROSS_REPO_CONFIG_TRACE,
     FAMILIES,
     FAMILY_BY_NAME,
-    MCP_FAMILIES,
-    CROSS_REPO_CONFIG_TRACE,
     INCIDENT_DEBUG,
+    MCP_FAMILIES,
     PLATFORM_KNOWLEDGE,
-    TaskFamily,
 )
 
 

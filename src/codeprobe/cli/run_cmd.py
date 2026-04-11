@@ -14,10 +14,8 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.analysis.dual import format_dual_suffix
-
-logger = logging.getLogger(__name__)
-from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.cli.json_display import JsonLineListener
+from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
     BudgetWarning,
     EventDispatcher,
@@ -29,6 +27,8 @@ from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_co
 from codeprobe.core.experiment import load_experiment, save_config_results
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+
+logger = logging.getLogger(__name__)
 
 
 def _should_use_rich() -> bool:
@@ -116,7 +116,7 @@ def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
 
 def _filter_tasks_by_suite(
     task_dirs: list[Path],
-    suite: "Suite",  # noqa: F821
+    suite: Suite,  # noqa: F821
 ) -> list[Path]:
     """Filter task directories according to suite criteria.
 
@@ -125,7 +125,6 @@ def _filter_tasks_by_suite(
     loadable metadata file are excluded when any filter is active.
     """
     from codeprobe.loaders import load_task
-    from codeprobe.models.suite import Suite  # noqa: F811
 
     has_filters = bool(
         suite.task_types or suite.difficulties or suite.tags or suite.task_ids
@@ -358,7 +357,7 @@ def run_eval(
             raise SystemExit(1)
 
     try:
-        adapter = resolve(agent)
+        resolve(agent)
     except KeyError as exc:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
@@ -426,7 +425,7 @@ def run_eval(
 
     # Pre-create a shared Rich listener when running multiple configs in
     # parallel so a single Live context owns the terminal.
-    shared_rich_listener: "RichLiveListener | None" = None
+    shared_rich_listener: RichLiveListener | None = None
     if parallel > 1 and len(configs_to_run) > 1 and not quiet and log_format != "json":
         use_rich = force_rich or (_should_use_rich() and not force_plain)
         if use_rich:

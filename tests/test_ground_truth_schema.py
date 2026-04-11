@@ -15,10 +15,8 @@ import pytest
 
 from codeprobe.core.scoring import (
     ArtifactScorer,
-    ScoreResult,
     _load_json_file,
     score_count,
-    score_exact_match,
     score_file_list,
     validate_ground_truth,
 )
@@ -128,7 +126,7 @@ class TestAnswerTypeCrossCheck:
         task_dir = _make_task(tmp_path, gt, answer)
 
         with caplog.at_level("WARNING", logger="codeprobe.core.scoring"):
-            result = ArtifactScorer().score("", task_dir)
+            ArtifactScorer().score("", task_dir)
 
         # Should still score (non-fatal), but log a warning
         assert any("mismatch" in r.message.lower() for r in caplog.records)

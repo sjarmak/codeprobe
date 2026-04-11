@@ -180,7 +180,7 @@ def test_log_format_text_default_unchanged():
     """Default text format still works identically to bead 1."""
     import logging
 
-    from codeprobe.cli import _JsonFormatter, _configure_logging
+    from codeprobe.cli import _configure_logging, _JsonFormatter
 
     try:
         _configure_logging(verbose=0, quiet=False, log_format="text")

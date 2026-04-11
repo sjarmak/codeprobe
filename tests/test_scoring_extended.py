@@ -8,9 +8,8 @@ from pathlib import Path
 import pytest
 
 from codeprobe.core.scoring import (
-    ArtifactScorer,
-    ScoreResult,
     _ORACLE_TYPE_SCORERS,
+    ArtifactScorer,
     score_dependency_chain,
     score_symbol_list,
 )

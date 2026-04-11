@@ -14,6 +14,11 @@ from pathlib import Path
 
 import click
 
+from codeprobe.mining.extractor import MineResult
+from codeprobe.mining.org_scale import OrgScaleMineResult
+from codeprobe.mining.org_scale_families import TaskFamily
+from codeprobe.models.task import Task
+
 # ---------------------------------------------------------------------------
 # URL → local clone
 # ---------------------------------------------------------------------------
@@ -253,7 +258,7 @@ def _show_preflight(
 
 
 def _quality_review(
-    tasks: list["Task"],
+    tasks: list[Task],
     goal_name: str,
     bias: str,
 ) -> list[str]:
@@ -331,7 +336,7 @@ def _quality_review(
     return warnings
 
 
-def _show_results_table(tasks: list["Task"]) -> None:
+def _show_results_table(tasks: list[Task]) -> None:
     """Phase 5: Display mined tasks in a table."""
     click.echo()
     click.echo(f"Mined {len(tasks)} tasks:")
@@ -362,35 +367,26 @@ def _show_next_steps(
     step = 1
     if not llm_enriched:
         click.echo(f"  {step}. Review and enrich task instructions (recommended):")
-        click.echo("     codeprobe mine {path} --enrich".format(path=repo_path))
+        click.echo(f"     codeprobe mine {repo_path} --enrich")
         click.echo()
         step += 1
     click.echo(f"  {step}. Run the eval:")
-    click.echo("     codeprobe run {path} --agent claude".format(path=repo_path))
+    click.echo(f"     codeprobe run {repo_path} --agent claude")
     click.echo()
     step += 1
     click.echo(f"  {step}. Try a different model:")
     click.echo(
-        "     codeprobe run {path} --agent claude --model claude-sonnet-4-6".format(
-            path=repo_path,
-        )
+        f"     codeprobe run {repo_path} --agent claude --model claude-sonnet-4-6"
     )
     click.echo()
     step += 1
     click.echo(f"  {step}. Set a cost budget:")
-    click.echo(
-        "     codeprobe run {path} --agent claude --max-cost-usd 5.00".format(
-            path=repo_path,
-        )
-    )
+    click.echo(f"     codeprobe run {repo_path} --agent claude --max-cost-usd 5.00")
     click.echo()
     if min_files > 0:
         click.echo("  5. Mine more tasks for better confidence:")
         click.echo(
-            "     codeprobe mine {path} --count 15 --min-files {mf}".format(
-                path=repo_path,
-                mf=min_files,
-            )
+            f"     codeprobe mine {repo_path} --count 15 --min-files {min_files}"
         )
         click.echo()
 
@@ -576,11 +572,11 @@ def _was_llm_used(no_llm: bool) -> bool:
 
 
 def _enrich_sdlc_tasks(
-    tasks: list["Task"],
-    mine_result: "MineResult",
+    tasks: list[Task],
+    mine_result: MineResult,
     no_llm: bool,
     enrich: bool,
-) -> list["Task"]:
+) -> list[Task]:
     """Apply LLM instruction generation or legacy enrichment to SDLC tasks."""
     if not no_llm:
         from codeprobe.core.llm import llm_available
@@ -606,7 +602,7 @@ def _enrich_sdlc_tasks(
     return tasks
 
 
-import logging as _logging
+import logging as _logging  # noqa: E402
 
 _log = _logging.getLogger(__name__)
 
@@ -913,7 +909,6 @@ def _dispatch_by_task_type(
     - ``architecture_comprehension`` → comprehension generator
     - ``mixed`` → SDLC mining + probe generation
     """
-    from codeprobe.mining import mine_tasks, write_task_dir
 
     if task_type in ("sdlc_code_change", "mcp_tool_usage"):
         _dispatch_sdlc(
@@ -1059,10 +1054,10 @@ def _dispatch_cross_repo(
 
 
 def _apply_dual_verification(
-    tasks: list["Task"],
-    mine_result: "MineResult",
+    tasks: list[Task],
+    mine_result: MineResult,
     repo_path: Path,
-) -> list["Task"]:
+) -> list[Task]:
     """Apply dual verification to tasks: build oracle ground truth from PR diffs.
 
     For each task, generates oracle ground truth from changed files.
@@ -1078,7 +1073,7 @@ def _apply_dual_verification(
         _oracle_discrimination_passed,
     )
 
-    _DUAL_ELIGIBLE_CATEGORIES = frozenset(
+    _DUAL_ELIGIBLE_CATEGORIES = frozenset(  # noqa: N806
         {
             "comprehension",
             "org_scale",
@@ -1086,7 +1081,7 @@ def _apply_dual_verification(
         }
     )
 
-    result: list["Task"] = []
+    result: list[Task] = []
     dual_count = 0
 
     for task in tasks:
@@ -1312,7 +1307,8 @@ def _dispatch_mixed(
     dual_verify: bool = False,
 ) -> None:
     """Run SDLC mining + probe generation, combining results."""
-    from codeprobe.mining import mine_tasks, write_task_dir as write_mining_task
+    from codeprobe.mining import mine_tasks
+    from codeprobe.mining import write_task_dir as write_mining_task
     from codeprobe.probe.adapter import ProbeTaskAdapter
     from codeprobe.probe.generator import generate_probes
 
@@ -1458,7 +1454,6 @@ def run_mine(
     profile_set: frozenset[str] = frozenset(),
 ) -> None:
     """Mine eval tasks from a repository."""
-    from codeprobe.mining import mine_tasks, write_task_dir
 
     # CLI validation: --cross-repo and --org-scale are mutually exclusive
     if cross_repo and org_scale:
@@ -1639,7 +1634,7 @@ def _run_org_scale_mine(
     add native dual oracle support for org-scale families.
     """
     from codeprobe.mining.org_scale import mine_org_scale_tasks
-    from codeprobe.mining.org_scale_families import FAMILIES, FAMILY_BY_NAME, TaskFamily
+    from codeprobe.mining.org_scale_families import FAMILY_BY_NAME
     from codeprobe.mining.writer import write_task_dir
 
     primary_repo = repo_paths[0]
@@ -1745,7 +1740,7 @@ def _build_curation_backends(
         SourcegraphBackend,
     )
 
-    _BACKEND_MAP = {
+    _BACKEND_MAP = {  # noqa: N806
         "grep": GrepBackend,
         "sourcegraph": SourcegraphBackend,
         "pr_diff": PRDiffBackend,
@@ -1763,13 +1758,13 @@ def _build_curation_backends(
 
 
 def _run_curation(
-    result: "OrgScaleMineResult",
+    result: OrgScaleMineResult,
     repo_paths: list[Path],
     *,
     backends: tuple[str, ...] = (),
     no_llm: bool = False,
     verify_curation_flag: bool = False,
-) -> tuple[list["Task"], tuple[str, ...]]:
+) -> tuple[list[Task], tuple[str, ...]]:
     """Run curation pipeline on mined tasks, returning updated tasks and backends used."""
     from codeprobe.mining.curator import CurationPipeline
     from codeprobe.mining.curator_tiers import classify_tiers, verify_curation
@@ -1778,7 +1773,7 @@ def _run_curation(
     backend_instances = _build_curation_backends(backends, no_llm)
     pipeline = CurationPipeline(backends=backend_instances)
 
-    curated_tasks: list["Task"] = []
+    curated_tasks: list[Task] = []
     all_backends_used: set[str] = set()
 
     for sr in result.scan_results:
@@ -1837,7 +1832,7 @@ def _run_curation(
 
 def _interactive_family_selection(
     repo_paths: list[Path],
-) -> tuple["TaskFamily", ...] | None:
+) -> tuple[TaskFamily, ...] | None:
     """Show detected families with hit counts and prompt for selection.
 
     Returns None to use all families (default), or a tuple of selected families.
@@ -1892,7 +1887,7 @@ def _interactive_family_selection(
 
 
 def _run_validation(
-    result: "OrgScaleMineResult",
+    result: OrgScaleMineResult,
     repo_paths: list[Path],
 ) -> None:
     """Run MCP delta validation and display results."""
@@ -1930,7 +1925,7 @@ def _run_validation(
 
 
 def _show_org_scale_results(
-    tasks: list["Task"],
+    tasks: list[Task],
     tasks_dir: Path,
     repo_path: Path,
     curation_backends: tuple[str, ...] = (),

@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -937,7 +937,7 @@ def validate_ground_truth_sample(
         f"Question: {task.metadata.issue_body}\n\n"
         f"Files claimed to MATCH (should be in answer):\n"
         + "\n".join(f"  {f}" for f in match_sample)
-        + f"\n\nFiles claimed to NOT MATCH (should not be in answer):\n"
+        + "\n\nFiles claimed to NOT MATCH (should not be in answer):\n"
         + "\n".join(f"  {f}" for f in non_match_sample)
         + "\n\nFor each file, respond with JSON: "
         '{"disagreements": ["file1.py", "file2.py"]} '

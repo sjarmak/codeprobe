@@ -5,8 +5,6 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-import pytest
-
 
 def test_write_suite_manifest_creates_file(tmp_path: Path) -> None:
     """suite.toml is written to tasks_dir.parent."""

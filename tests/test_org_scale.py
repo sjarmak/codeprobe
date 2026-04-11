@@ -10,11 +10,14 @@ from unittest.mock import patch
 import pytest
 
 from codeprobe.mining.org_scale import (
-    OrgScaleMineResult,
-    _DIFFICULTY_RANK,
     _mine_pattern_families,
     generate_org_scale_task,
     mine_org_scale_tasks,
+)
+from codeprobe.mining.org_scale_families import (
+    COMPLIANCE_AUDIT,
+    MIGRATION_INVENTORY,
+    TaskFamily,
 )
 from codeprobe.mining.org_scale_oracle import (
     extract_answer,
@@ -26,16 +29,8 @@ from codeprobe.mining.org_scale_scanner import (
     PatternHit,
     scan_repo_for_family,
 )
-from codeprobe.mining.org_scale_families import (
-    COMPLIANCE_AUDIT,
-    CROSS_REPO_DEP_TRACE,
-    FAMILIES,
-    MIGRATION_INVENTORY,
-    TaskFamily,
-)
 from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.task import (
-    ORG_SCALE_CATEGORIES,
     Task,
     TaskMetadata,
     TaskVerification,
@@ -305,7 +300,10 @@ class TestScanner:
             {
                 "src/old.py": "@deprecated\ndef old_func(): pass",
                 "src/new.py": "def new_func(): pass",
-                "src/legacy.py": "import warnings\nwarnings.warn('Deprecated function', DeprecationWarning)\ndef legacy(): pass",
+                "src/legacy.py": (
+                    "import warnings\nwarnings.warn('Deprecated function',"
+                    " DeprecationWarning)\ndef legacy(): pass"
+                ),
                 "src/also_old.py": "@Deprecated\nclass OldClass: pass",
             },
         )

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from click.testing import CliRunner
 
 from codeprobe.cli import main

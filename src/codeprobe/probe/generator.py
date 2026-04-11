@@ -6,6 +6,7 @@ for the codeprobe package structure.
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import re
@@ -14,8 +15,6 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -346,7 +345,10 @@ def compute_caller_count(repo_root: Path, symbol_name: str) -> int:
     elapsed = time.perf_counter() - t0
     logger.debug(
         "caller count for '%s': %d (%.2fs, %d files scanned)",
-        symbol_name, result, elapsed, files_scanned,
+        symbol_name,
+        result,
+        elapsed,
+        files_scanned,
     )
     return result
 
@@ -422,7 +424,10 @@ BUILTIN_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "return_type": {
         "category": "probe_comprehend",
-        "prompt": "What type does the method `{class_name}.{method_name}` return? Reply with just the type annotation string, nothing else.",
+        "prompt": (
+            "What type does the method `{class_name}.{method_name}` return?"
+            " Reply with just the type annotation string, nothing else."
+        ),
         "answer_type": "text",
         "capability_tags": ["comprehension", "type_analysis"],
         "time_limit_sec": 30,
@@ -430,7 +435,10 @@ BUILTIN_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "module_dependency": {
         "category": "probe_comprehend",
-        "prompt": "Does module `{module_a}` depend on (import from) module `{module_b}`? Reply with just 'yes' or 'no', nothing else.",
+        "prompt": (
+            "Does module `{module_a}` depend on (import from) module `{module_b}`?"
+            " Reply with just 'yes' or 'no', nothing else."
+        ),
         "answer_type": "boolean",
         "capability_tags": ["comprehension", "dependency_analysis"],
         "time_limit_sec": 30,
@@ -625,12 +633,12 @@ def generate_probes(
     # Symbol summary (always logged, even when empty, to aid debugging)
     kind_counts = Counter(s.kind for s in symbols)
     file_count = len({s.file_path for s in symbols})
-    kind_parts = ", ".join(
-        "%d %ss" % (kind_counts[k], k) for k in sorted(kind_counts)
-    )
+    kind_parts = ", ".join(f"{kind_counts[k]} {k}s" for k in sorted(kind_counts))
     logger.info(
         "Collected %d symbols (%s) from %d files",
-        len(symbols), kind_parts or "none", file_count,
+        len(symbols),
+        kind_parts or "none",
+        file_count,
     )
 
     if not symbols:
@@ -661,7 +669,7 @@ def generate_probes(
     # Per-template summary
     template_counts = Counter(p.template_name for p in probes)
     template_parts = ", ".join(
-        "%d %s" % (template_counts[t], t) for t in sorted(template_counts)
+        f"{template_counts[t]} {t}" for t in sorted(template_counts)
     )
     logger.info("Generated %s probes", template_parts)
 

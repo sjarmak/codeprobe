@@ -12,7 +12,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Protocol, Union, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class RunFinished:
 # Union type and listener protocol
 # ---------------------------------------------------------------------------
 
-RunEvent = Union[RunStarted, TaskStarted, TaskScored, BudgetWarning, RunFinished]
+RunEvent = RunStarted | TaskStarted | TaskScored | BudgetWarning | RunFinished
 
 
 @runtime_checkable

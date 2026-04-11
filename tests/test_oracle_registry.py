@@ -9,10 +9,9 @@ from unittest.mock import patch
 import pytest
 
 from codeprobe.core.scoring import (
-    PASS_THRESHOLD,
+    _ORACLE_TYPE_SCORERS,
     ArtifactScorer,
     ScoreResult,
-    _ORACLE_TYPE_SCORERS,
     score_count,
     score_exact_match,
     score_file_list,

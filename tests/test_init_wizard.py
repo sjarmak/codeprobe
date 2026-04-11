@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,8 +18,6 @@ from codeprobe.cli.wizard import (
     ask_prompt_comparison,
     validate_experiment_name,
 )
-import warnings
-
 from codeprobe.cli.yaml_writer import write_evalrc
 from codeprobe.models.evalrc import EvalrcConfig
 

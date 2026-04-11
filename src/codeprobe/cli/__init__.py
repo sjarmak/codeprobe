@@ -420,7 +420,7 @@ def mine(
         # from Click defaults.
         param_defaults = {p.name: p.default for p in ctx.command.params}
         # Exclude meta-params that aren't mining flags
-        _EXCLUDE_FROM_PROFILE = frozenset(
+        _EXCLUDE_FROM_PROFILE = frozenset(  # noqa: N806
             {
                 "path",
                 "profile_name",
@@ -459,7 +459,7 @@ def mine(
 
         # Apply profile values for params NOT explicitly set on CLI.
         # Tuple-typed params (click multiple=True) need list→tuple coercion.
-        _TUPLE_PARAMS = frozenset(
+        _TUPLE_PARAMS = frozenset(  # noqa: N806
             {"subsystem", "family", "repos", "backends", "cross_repo"}
         )
 

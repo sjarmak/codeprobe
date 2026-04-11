@@ -14,7 +14,6 @@ from codeprobe.core.scoring import (
     CheckpointScorer,
     ContinuousScorer,
     DualScorer,
-    ScoreResult,
     Scorer,
     get_scorer,
     sanitize_secrets,
@@ -138,11 +137,10 @@ def test_score_does_not_follow_symlinks(tmp_path: Path):
         ),
     )
 
-    result = score_task_output("output", task_dir)
+    score_task_output("output", task_dir)
     # With symlinks=False, the symlink is not followed — it's copied as a
     # regular file (the content IS copied but it's a flat copy, not a link).
     # The key security property is that the sandbox copy is NOT a symlink.
-    sandbox_dir = None
     from codeprobe.core.scoring import _run_in_sandbox
 
     test_sh = task_dir / "tests" / "test.sh"
