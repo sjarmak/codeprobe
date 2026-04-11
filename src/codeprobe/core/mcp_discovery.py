@@ -11,6 +11,7 @@ from pathlib import Path
 
 # Known locations for MCP config files, searched in order.
 MCP_SEARCH_PATHS: list[Path] = [
+    Path.home() / ".claude.json",
     Path.home() / ".claude" / ".mcp.json",
     Path.home() / ".claude" / "mcp-configs" / "mcp-servers.json",
     Path.home() / ".claude" / "settings.json",
