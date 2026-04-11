@@ -181,6 +181,34 @@ def test_policy_mean(failing_direct_passing_artifact: Path):
     assert result.details["scoring_policy"] == "mean"
 
 
+def test_policy_gate_both_pass(passing_task_dir: Path):
+    _write_metadata(passing_task_dir, scoring_policy="gate")
+    result = DualScorer().score("", passing_task_dir)
+    assert result.score == 1.0
+    assert result.details["scoring_policy"] == "gate"
+
+
+def test_policy_gate_one_fails(failing_direct_passing_artifact: Path):
+    _write_metadata(failing_direct_passing_artifact, scoring_policy="gate")
+    result = DualScorer().score("", failing_direct_passing_artifact)
+    assert result.score == 0.0
+    assert result.details["scoring_policy"] == "gate"
+
+
+def test_policy_weighted_stores_weights_in_details(
+    failing_direct_passing_artifact: Path,
+):
+    _write_metadata(
+        failing_direct_passing_artifact,
+        scoring_policy="weighted",
+        weight_direct=0.3,
+        weight_artifact=0.7,
+    )
+    result = DualScorer().score("", failing_direct_passing_artifact)
+    assert result.details["weight_direct"] == 0.3
+    assert result.details["weight_artifact"] == 0.7
+
+
 def test_policy_weighted(failing_direct_passing_artifact: Path):
     _write_metadata(
         failing_direct_passing_artifact,

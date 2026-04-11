@@ -13,6 +13,7 @@ from codeprobe.core.scoring import (
     BinaryScorer,
     CheckpointScorer,
     ContinuousScorer,
+    DualScorer,
     ScoreResult,
     Scorer,
     get_scorer,
@@ -475,6 +476,11 @@ class TestGetScorer:
 
     def test_checkpoint(self) -> None:
         assert isinstance(get_scorer("checkpoint"), CheckpointScorer)
+
+    def test_dual(self) -> None:
+        scorer = get_scorer("dual")
+        assert isinstance(scorer, DualScorer)
+        assert isinstance(scorer, Scorer)
 
     def test_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown reward_type"):

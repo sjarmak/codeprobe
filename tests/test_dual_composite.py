@@ -138,6 +138,30 @@ def test_fallback_for_unrelated_scoring_details() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_weighted_strategy_reads_weights_from_details() -> None:
+    details: dict = {
+        "score_direct": 0.8,
+        "score_artifact": 0.6,
+        "weight_direct": 0.3,
+        "weight_artifact": 0.7,
+    }
+    task = CompletedTask(
+        task_id="t",
+        automated_score=0.0,
+        scoring_details=details,
+    )
+    assert dual_composite(task, strategy="weighted") == pytest.approx(
+        0.3 * 0.8 + 0.7 * 0.6
+    )
+
+
+def test_weighted_strategy_defaults_to_equal_weights() -> None:
+    task = _dual_task(direct=0.8, artifact=0.6)
+    assert dual_composite(task, strategy="weighted") == pytest.approx(
+        0.5 * 0.8 + 0.5 * 0.6
+    )
+
+
 def test_unknown_strategy_raises() -> None:
     task = _dual_task(direct=0.5, artifact=0.5)
     with pytest.raises(ValueError, match="unknown dual_composite strategy"):

@@ -137,6 +137,8 @@ def dual_composite(task: CompletedTask, strategy: str = "min") -> float:
       * ``'mean'`` — ``(score_direct + score_artifact) / 2``.
       * ``'gate'`` — ``1.0`` if both legs pass (using ``passed_*`` flags, or
         falling back to ``score_* >= PASS_THRESHOLD``), else ``0.0``.
+      * ``'weighted'`` — ``w_direct * score_direct + w_artifact * score_artifact``
+        where weights are read from ``scoring_details`` (default 0.5 each).
 
     If *task* has no dual scoring details, returns ``task.automated_score``
     as a passthrough so callers can apply this uniformly.
@@ -156,10 +158,15 @@ def dual_composite(task: CompletedTask, strategy: str = "min") -> float:
     if strategy == "gate":
         direct_pass, artifact_pass = resolve_leg_pass(task)
         return 1.0 if (direct_pass and artifact_pass) else 0.0
+    if strategy == "weighted":
+        sd = task.scoring_details or {}
+        w_direct = float(sd.get("weight_direct", 0.5))
+        w_artifact = float(sd.get("weight_artifact", 0.5))
+        return w_direct * details.score_direct + w_artifact * details.score_artifact
 
     raise ValueError(
         f"unknown dual_composite strategy: {strategy!r} "
-        "(expected 'min', 'mean', or 'gate')"
+        "(expected 'min', 'mean', 'gate', or 'weighted')"
     )
 
 

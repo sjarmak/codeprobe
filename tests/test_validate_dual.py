@@ -185,6 +185,17 @@ class TestScoringPolicy:
         # No weight_sum check expected for non-weighted policies
         assert not any("weight sum" in r.name for r in results)
 
+    def test_valid_gate_policy(self, tmp_path: Path) -> None:
+        _write_instruction(tmp_path)
+        _write_task_toml(tmp_path, verification_mode="dual", scoring_policy="gate")
+        _write_test_sh(tmp_path, executable=True)
+        _write_ground_truth(tmp_path, {"answer": True})
+        results = run_validate(tmp_path)
+        sp = next(r for r in results if "scoring_policy" in r.name)
+        assert sp.passed
+        # Gate should not trigger weight_sum checks
+        assert not any("weight sum" in r.name for r in results)
+
     def test_invalid_policy_garbage(self, tmp_path: Path) -> None:
         _write_instruction(tmp_path)
         _write_task_toml(tmp_path, verification_mode="dual", scoring_policy="garbage")

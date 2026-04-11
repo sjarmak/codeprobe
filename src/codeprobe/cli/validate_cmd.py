@@ -189,12 +189,18 @@ def _check_ground_truth(task_dir: Path) -> CheckResult:
     )
 
 
+_MAX_GROUND_TRUTH_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 def _check_ground_truth_dual(task_dir: Path) -> CheckResult:
     """Check dual-mode ground_truth.json: exists, parses, has 'answer' field.
 
     Dual verification uses the new ground-truth schema where the expected
-    answer value is stored under the top-level ``answer`` key.
+    answer value is stored under the top-level ``answer`` key.  Also
+    validates answer shape consistency and enforces a size limit.
     """
+    from codeprobe.core.scoring import validate_ground_truth
+
     path = task_dir / "tests" / "ground_truth.json"
     if not path.exists():
         return CheckResult(
@@ -202,6 +208,26 @@ def _check_ground_truth_dual(task_dir: Path) -> CheckResult:
             passed=False,
             detail="tests/ground_truth.json not found (required for dual mode)",
         )
+
+    # Size guard
+    try:
+        file_size = path.stat().st_size
+    except OSError as exc:
+        return CheckResult(
+            name="tests/ground_truth.json readable",
+            passed=False,
+            detail=f"cannot stat ground_truth.json: {exc}",
+        )
+    if file_size > _MAX_GROUND_TRUTH_BYTES:
+        return CheckResult(
+            name="tests/ground_truth.json size",
+            passed=False,
+            detail=(
+                f"tests/ground_truth.json too large "
+                f"({file_size} bytes, limit {_MAX_GROUND_TRUTH_BYTES})"
+            ),
+        )
+
     try:
         with open(path) as f:
             data = json.load(f)
@@ -224,6 +250,20 @@ def _check_ground_truth_dual(task_dir: Path) -> CheckResult:
             passed=False,
             detail="tests/ground_truth.json missing 'answer' field (required for dual mode)",
         )
+
+    # Reuse scoring module's shape validation when the ground truth uses
+    # a recognized format (v2 checks, v1 answer_type, or legacy expected).
+    # Bare {"answer": ...} is valid for dual mode's basic check but has no
+    # answer_type to validate against.
+    if "checks" in data or "answer_type" in data or "expected" in data:
+        validation_error = validate_ground_truth(data)
+        if validation_error is not None:
+            return CheckResult(
+                name="tests/ground_truth.json schema",
+                passed=False,
+                detail=f"ground_truth.json schema error: {validation_error}",
+            )
+
     return CheckResult(
         name="tests/ground_truth.json valid",
         passed=True,
@@ -231,7 +271,9 @@ def _check_ground_truth_dual(task_dir: Path) -> CheckResult:
     )
 
 
-_VALID_SCORING_POLICIES: frozenset[str] = frozenset({"", "min", "mean", "weighted"})
+_VALID_SCORING_POLICIES: frozenset[str] = frozenset(
+    {"", "min", "mean", "weighted", "gate"}
+)
 
 
 def _get_scoring_policy(meta: dict | None) -> str | None:

@@ -531,11 +531,27 @@ def _normalize_path(p: str) -> str:
     return p.lstrip("/")
 
 
+_MAX_GROUND_TRUTH_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 def _load_json_file(path: Path) -> dict | list | None:
-    """Safely load a JSON file, returning None on any failure."""
+    """Safely load a JSON file, returning None on any failure.
+
+    Rejects files larger than ``_MAX_GROUND_TRUTH_BYTES`` to prevent OOM
+    on malicious or accidentally oversized ground_truth.json files.
+    """
     if not path.is_file():
         return None
     try:
+        size = path.stat().st_size
+        if size > _MAX_GROUND_TRUTH_BYTES:
+            logger.warning(
+                "JSON file too large (%d bytes, limit %d): %s",
+                size,
+                _MAX_GROUND_TRUTH_BYTES,
+                path,
+            )
+            return None
         return json.loads(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
     except (json.JSONDecodeError, OSError):
         return None
@@ -572,9 +588,19 @@ def _compute_f1(expected: list[str], actual: list[str]) -> float:
 
 def score_file_list(expected: object, actual: object) -> ScoreResult:
     """Score a file_list answer_type using F1."""
-    exp = expected if isinstance(expected, list) else []
-    act = actual if isinstance(actual, list) else []
-    f1 = _compute_f1(exp, act)
+    if not isinstance(expected, list):
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            error=f"file_list expected answer must be a list, got {type(expected).__name__}",
+        )
+    if not isinstance(actual, list):
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            error=f"file_list actual answer must be a list, got {type(actual).__name__}",
+        )
+    f1 = _compute_f1(expected, actual)
     return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
 
 
@@ -708,6 +734,29 @@ def validate_ground_truth(gt: dict) -> str | None:
     if "answer_type" in gt:
         if "answer" not in gt:
             return "v1 ground_truth has 'answer_type' but missing 'answer'"
+        answer_type = gt["answer_type"]
+        answer = gt["answer"]
+        # Validate answer shape matches declared answer_type
+        if answer_type in ("file_list", "symbol_list", "dependency_chain"):
+            if not isinstance(answer, list):
+                return (
+                    f"v1 ground_truth answer_type {answer_type!r} requires a list, "
+                    f"got {type(answer).__name__}"
+                )
+        elif answer_type == "count":
+            try:
+                int(answer)  # type: ignore[arg-type]
+            except (ValueError, TypeError):
+                return (
+                    f"v1 ground_truth answer_type 'count' requires an int-convertible value, "
+                    f"got {type(answer).__name__}: {answer!r}"
+                )
+        elif answer_type in ("boolean", "text"):
+            if not isinstance(answer, (str, bool, int, float)):
+                return (
+                    f"v1 ground_truth answer_type {answer_type!r} requires a scalar value, "
+                    f"got {type(answer).__name__}"
+                )
         return None
 
     if "expected" in gt:
@@ -857,6 +906,15 @@ class ArtifactScorer:
         expected = gt.get("answer")
         actual = answer_data.get("answer")
 
+        # Warn on answer_type mismatch (non-fatal — agents may omit it)
+        agent_answer_type = answer_data.get("answer_type")
+        if agent_answer_type is not None and agent_answer_type != answer_type:
+            logger.warning(
+                "answer_type mismatch: ground_truth has %r but agent returned %r",
+                answer_type,
+                agent_answer_type,
+            )
+
         if expected is None:
             return ScoreResult(
                 score=0.0,
@@ -939,10 +997,16 @@ def _safe_leg_score(
     try:
         return scorer.score(agent_output, task_dir)  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001 — both legs must run
+        scorer_name = type(scorer).__name__
+        logger.exception(
+            "Scorer %s failed on task_dir=%s",
+            scorer_name,
+            task_dir,
+        )
         return ScoreResult(
             score=0.0,
             passed=False,
-            error=f"scorer raised: {exc}",
+            error=f"scorer raised: {type(exc).__name__}: {exc}",
         )
 
 
@@ -959,6 +1023,7 @@ class DualScorer:
       - ``""`` (default): ``score = score_direct``
       - ``"min"``: ``score = min(score_direct, score_artifact)``
       - ``"mean"``: ``score = (score_direct + score_artifact) / 2``
+      - ``"gate"``: ``1.0`` if both legs pass, else ``0.0``
       - ``"weighted"``: ``score = weight_direct * score_direct
                                  + weight_artifact * score_artifact``
 
@@ -1051,11 +1116,18 @@ class DualScorer:
                 weight_errors.append(f"weight_artifact: {weight_artifact_error}")
             if weight_errors:
                 details["error_weights"] = "; ".join(weight_errors)
+            else:
+                details["weight_direct"] = weight_direct
+                details["weight_artifact"] = weight_artifact
 
         if scoring_policy == "min":
             composite = min(direct_result.score, artifact_result.score)
         elif scoring_policy == "mean":
             composite = (direct_result.score + artifact_result.score) / 2.0
+        elif scoring_policy == "gate":
+            composite = (
+                1.0 if (direct_result.passed and artifact_result.passed) else 0.0
+            )
         elif scoring_policy == "weighted":
             if weight_errors:
                 # Invalid weights are a scoring error — fail closed rather
@@ -1098,7 +1170,7 @@ VALID_REWARD_TYPES: frozenset[str] = frozenset(available_scorers())
 
 def get_scorer(
     reward_type: str,
-) -> BinaryScorer | ContinuousScorer | CheckpointScorer | ArtifactScorer:
+) -> Scorer:
     """Return a Scorer instance for the given reward_type.
 
     Raises ValueError for unknown reward types (fail loudly — premortem rule).
