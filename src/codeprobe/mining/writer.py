@@ -316,6 +316,11 @@ def write_task_dir(
         )
         return task_dir
 
+    # Dual-verification tasks: direct test.sh + artifact answer.json
+    if task.verification.verification_mode == "dual":
+        _write_dual_task(task, task_dir, tests_dir, repo_path, safe_id)
+        return task_dir
+
     if task.metadata.issue_title:
         issue_body = task.metadata.issue_body
 
@@ -393,6 +398,164 @@ def write_task_dir(
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir
+
+
+# ---------------------------------------------------------------------------
+# Dual-verification task layout (direct test.sh + artifact answer.json)
+# ---------------------------------------------------------------------------
+
+_DUAL_ANSWER_SCHEMA_SECTION = """\
+## Expected answer.json
+
+In addition to making code changes, you must write an `answer.json` file in
+the repository root. This file captures the artifact the evaluator scores
+against the oracle in `tests/ground_truth.json`.
+
+`answer.json` must be valid JSON with the following required fields:
+
+- `answer_type` (string): one of `file_list`, `count`, `boolean`, or `text`.
+  This must match the `answer_type` in `tests/ground_truth.json`.
+- `answer`: the payload. A list of file paths for `file_list`, an integer
+  for `count`, a boolean for `boolean`, or a string for `text`.
+- `reasoning` (string, optional): a brief explanation of how you arrived at
+  the answer.
+
+Example (`file_list`):
+
+```json
+{
+  "answer_type": "file_list",
+  "answer": ["src/foo.py", "src/bar.py"],
+  "reasoning": "These files implement the auth refresh logic."
+}
+```
+
+## Dual Scoring
+
+This task uses **dual verification**. BOTH of the following will be
+evaluated and combined into your final score:
+
+1. **Direct verification** — `tests/test.sh` runs against your code
+   changes and must pass.
+2. **Artifact evaluation** — your `answer.json` will be compared against
+   `tests/ground_truth.json`.
+
+You must make the code changes AND write `answer.json`. Skipping either
+will lower your score.
+"""
+
+
+def _build_dual_instruction(
+    task: Task,
+    repo_name: str,
+    language: str,
+    repo_path: Path,
+) -> str:
+    """Build the combined dual-verification instruction.md content.
+
+    Uses a single combined prompt (not two separate sections) that
+    describes both the task and the answer.json schema + dual scoring
+    behavior.
+    """
+    if task.metadata.issue_title:
+        title = task.metadata.issue_title
+        body = task.metadata.issue_body
+
+        # Strip solution-leaking sections for non-LLM content
+        if task.metadata.enrichment_source != "llm":
+            pr_match = _WHAT_THIS_PR_PATTERN.search(body)
+            if pr_match:
+                body = body[: pr_match.start()].strip()
+            body = _HTML_COMMENT.sub("", body)
+            body = _DETAILS_BLOCK.sub("", body)
+            body = _NOISE_FENCED_BLOCKS.sub("", body)
+            body = re.sub(r"\n{3,}", "\n\n", body).strip()
+            if len(body) > _MAX_ISSUE_BODY_LEN:
+                body = body[:_MAX_ISSUE_BODY_LEN] + "\n\n[...truncated]"
+        problem_section = f"## Problem\n\n{body}\n\n"
+    else:
+        title = task.metadata.name
+        pr_hint = _extract_first_paragraph(task.metadata.description)
+        problem_section = f"## Problem\n\n{pr_hint}\n\n"
+
+    return (
+        f"# {title}\n\n"
+        f"**Repository:** {repo_name}\n"
+        f"**Language:** {language}\n"
+        f"**Verification Mode:** dual (direct + artifact)\n\n"
+        f"{problem_section}"
+        "## Task\n\n"
+        "Implement the fix or feature described above.\n\n"
+        f"{_DUAL_ANSWER_SCHEMA_SECTION}\n"
+        "## Task Contract\n\n"
+        f"- `TASK_REPO_ROOT={repo_path}`\n"
+    )
+
+
+def _write_dual_task(
+    task: Task,
+    task_dir: Path,
+    tests_dir: Path,
+    repo_path: Path,
+    safe_id: str,
+) -> None:
+    """Write a dual-verification task layout.
+
+    Produces::
+
+        task_dir/
+            instruction.md       (combined direct + artifact prompt)
+            tests/test.sh        (direct verification script)
+            tests/ground_truth.json  (artifact oracle — stub until mining populates)
+            metadata.json
+    """
+    repo_name = repo_path.name
+    language = task.metadata.language or "unknown"
+
+    # instruction.md — single combined prompt with answer.json schema section
+    instruction = _build_dual_instruction(task, repo_name, language, repo_path)
+    (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+
+    # tests/test.sh — direct verification, validated against allowlist
+    cmd = task.verification.command
+    if not any(
+        cmd == prefix or cmd.startswith(prefix) for prefix in _ALLOWED_COMMAND_PREFIXES
+    ):
+        raise ValueError(f"Verification command not in allowlist: {cmd!r}")
+    test_script = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        f"# Direct verification for dual task {safe_id}\n"
+        f"cd {shlex.quote(str(repo_path))}\n"
+        f"{cmd}\n"
+    )
+    test_sh_path = tests_dir / "test.sh"
+    test_sh_path.write_text(test_script, encoding="utf-8")
+    test_sh_path.chmod(0o755)
+
+    # tests/ground_truth.json — stub for artifact oracle.
+    # Phase 2 mining will populate this with real oracle answers.
+    ground_truth: dict[str, object] = {
+        "schema_version": 1,
+        "answer_type": "file_list",
+        "answer": [],
+        "oracle_metadata": {
+            "populated_by": "mining-phase-2",
+            "task_id": task.id,
+        },
+    }
+    (tests_dir / "ground_truth.json").write_text(
+        json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    # metadata.json — full task dump (verification_mode flows through asdict)
+    (task_dir / "metadata.json").write_text(
+        json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    logger.info("Wrote dual task %s → %s", task.id, task_dir)
 
 
 # ---------------------------------------------------------------------------
