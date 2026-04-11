@@ -100,6 +100,7 @@ _SCORER_BUILTINS: dict[str, str] = {
     "binary": "codeprobe.core.scoring:BinaryScorer",
     "continuous": "codeprobe.core.scoring:ContinuousScorer",
     "checkpoint": "codeprobe.core.scoring:CheckpointScorer",
+    "dual": "codeprobe.core.scoring:DualScorer",
     "test_ratio": "codeprobe.core.scoring:ContinuousScorer",
 }
 

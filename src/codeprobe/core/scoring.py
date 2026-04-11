@@ -614,6 +614,126 @@ class ArtifactScorer:
 
 
 # ---------------------------------------------------------------------------
+# DualScorer
+# ---------------------------------------------------------------------------
+
+
+def _safe_leg_score(
+    scorer: object,
+    agent_output: str,
+    task_dir: Path,
+) -> ScoreResult:
+    """Invoke a sub-scorer, catching exceptions so both legs always run.
+
+    DualScorer must never short-circuit because one leg raises. Any
+    exception is converted into a ScoreResult(score=0.0) with the
+    exception message exposed via ``error``.
+    """
+    try:
+        return scorer.score(agent_output, task_dir)  # type: ignore[attr-defined]
+    except Exception as exc:  # noqa: BLE001 — both legs must run
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            error=f"scorer raised: {exc}",
+        )
+
+
+class DualScorer:
+    """Composes a direct scorer (binary/continuous) with an artifact scorer.
+
+    Runs BOTH legs unconditionally — no early return on failure. Reads
+    configuration from ``task.verification`` at score() time so the
+    registry can instantiate this class with no arguments.
+
+    Scoring policies:
+      - ``""`` (default): ``score = score_direct``
+      - ``"min"``: ``score = min(score_direct, score_artifact)``
+      - ``"mean"``: ``score = (score_direct + score_artifact) / 2``
+      - ``"weighted"``: ``score = weight_direct * score_direct
+                                 + weight_artifact * score_artifact``
+
+    Graceful degradation:
+      - Missing ``tests/test.sh``: direct leg returns 0.0 with an error;
+        artifact leg runs normally.
+      - Missing ``answer.json``: artifact leg returns 0.0 with an error;
+        direct leg runs normally.
+    """
+
+    def __init__(self) -> None:
+        # No config — everything is read from task.verification at score() time.
+        pass
+
+    def score(
+        self,
+        task: object,
+        agent_output: str,
+        task_dir: Path,
+    ) -> ScoreResult:
+        verification = getattr(task, "verification", None)
+        reward_type = getattr(verification, "reward_type", "binary")
+        scoring_policy = getattr(verification, "scoring_policy", "") or ""
+        weight_direct = float(getattr(verification, "weight_direct", 0.5))
+        weight_artifact = float(getattr(verification, "weight_artifact", 0.5))
+
+        direct_scorer: BinaryScorer | ContinuousScorer
+        if reward_type == "continuous":
+            direct_scorer = ContinuousScorer()
+        else:
+            direct_scorer = BinaryScorer()
+        artifact_scorer = ArtifactScorer()
+
+        direct_result = _safe_leg_score(direct_scorer, agent_output, task_dir)
+        artifact_result = _safe_leg_score(artifact_scorer, agent_output, task_dir)
+
+        details: dict = {
+            "score_direct": direct_result.score,
+            "score_artifact": artifact_result.score,
+            "passed_direct": direct_result.passed,
+            "passed_artifact": artifact_result.passed,
+            "scoring_policy": scoring_policy,
+        }
+        if direct_result.error:
+            details["error_direct"] = direct_result.error
+        if artifact_result.error:
+            details["error_artifact"] = artifact_result.error
+
+        if scoring_policy == "min":
+            composite = min(direct_result.score, artifact_result.score)
+        elif scoring_policy == "mean":
+            composite = (direct_result.score + artifact_result.score) / 2.0
+        elif scoring_policy == "weighted":
+            composite = (
+                weight_direct * direct_result.score
+                + weight_artifact * artifact_result.score
+            )
+        else:
+            composite = direct_result.score
+
+        composite = max(0.0, min(1.0, composite))
+        passed = composite >= PASS_THRESHOLD
+
+        combined_error: str | None
+        if direct_result.error and artifact_result.error:
+            combined_error = (
+                f"direct: {direct_result.error}; " f"artifact: {artifact_result.error}"
+            )
+        elif direct_result.error:
+            combined_error = f"direct: {direct_result.error}"
+        elif artifact_result.error:
+            combined_error = f"artifact: {artifact_result.error}"
+        else:
+            combined_error = None
+
+        return ScoreResult(
+            score=composite,
+            passed=passed,
+            error=combined_error,
+            details=details,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Registry (delegates to core.registry entry-point resolution)
 # ---------------------------------------------------------------------------
 
