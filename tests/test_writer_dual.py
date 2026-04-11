@@ -40,10 +40,10 @@ def _make_dual_task(
         type="test_script",
         command="bash tests/test.sh",
         verification_mode="dual",
-        scoring_policy="weighted_sum",
+        scoring_policy="weighted",
         weight_direct=0.6,
         weight_artifact=0.4,
-        reward_type="composite",
+        reward_type="binary",
     )
     return Task(
         id=task_id,
@@ -159,7 +159,7 @@ class TestWriteTaskDirDualLayout:
 
         assert meta["id"] == "dual0001"
         assert meta["verification"]["verification_mode"] == "dual"
-        assert meta["verification"]["scoring_policy"] == "weighted_sum"
+        assert meta["verification"]["scoring_policy"] == "weighted"
         assert meta["verification"]["weight_direct"] == pytest.approx(0.6)
         assert meta["verification"]["weight_artifact"] == pytest.approx(0.4)
 

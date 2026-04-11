@@ -54,14 +54,42 @@ class DualScoringDetails:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> DualScoringDetails:
-        """Build an instance from a plain dict, tolerating missing keys."""
+        """Build an instance from a plain dict, tolerating missing keys.
+
+        Booleans are parsed strictly: ``bool("False")`` is ``True`` in
+        Python, so serialized string forms like ``"False"``/``"false"``
+        are recognized and mapped to False. Unknown non-bool types fall
+        back to ``False``.
+        """
+
+        def _as_bool(value: Any) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "1", "yes", "y"}
+            if isinstance(value, (int, float)):
+                return bool(value)
+            return False
+
+        known = {
+            "score_direct",
+            "score_artifact",
+            "passed_direct",
+            "passed_artifact",
+            "scoring_policy",
+            "extra",
+        }
+        extra = dict(d.get("extra", {}))
+        for key, value in d.items():
+            if key not in known:
+                extra[key] = value
         return cls(
             score_direct=float(d.get("score_direct", 0.0)),
             score_artifact=float(d.get("score_artifact", 0.0)),
-            passed_direct=bool(d.get("passed_direct", False)),
-            passed_artifact=bool(d.get("passed_artifact", False)),
+            passed_direct=_as_bool(d.get("passed_direct", False)),
+            passed_artifact=_as_bool(d.get("passed_artifact", False)),
             scoring_policy=str(d.get("scoring_policy", "")),
-            extra=dict(d.get("extra", {})),
+            extra=extra,
         )
 
     def to_dict(self) -> dict[str, Any]:

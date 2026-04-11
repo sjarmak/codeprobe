@@ -40,6 +40,7 @@ from codeprobe.core.scoring import (
     get_scorer,
     read_task_metadata,
     sanitize_secrets,
+    scorer_env_override,
 )
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
@@ -228,9 +229,10 @@ def execute_task(
         if task_rt and task_rt != "binary":
             reward_type = task_rt
 
-    # Remove stale agent artifacts from prior runs so they don't leak into
-    # this task's scoring sandbox.
-    _drop_stale_answers(task_dir)
+    # NOTE: task_dir is intentionally never mutated here. Stale agent
+    # artifacts are removed inside the per-run scoring sandbox (after the
+    # snapshot copytree) so concurrent runs can't race on the shared
+    # task_dir and fixture files are never destroyed.
 
     def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
@@ -383,23 +385,27 @@ def execute_task(
             )
 
         # For oracle tasks, the agent writes answer.txt / answer.json to the
-        # workspace root. We locate any such artifacts now; the actual copy
+        # workspace root. Locate any such artifacts now; the actual copy
         # into the scoring sandbox happens below so the ORIGINAL task_dir is
-        # never mutated by scoring.
+        # never mutated by scoring. In dual mode the effective workspace is
+        # authoritative — we never fall back to ``repo_path`` because a
+        # stale file from another run or manual testing could silently
+        # leak in and pass the artifact leg.
+        dual_mode = reward_type == "dual"
         effective_repo = _effective_wt or repo_path
-        answer_fallback = repo_path / "answer.txt" if _effective_wt else None
+        allow_repo_fallback = _effective_wt is not None and not dual_mode
+
         found_answer: Path | None = None
         if (effective_repo / "answer.txt").is_file():
             found_answer = effective_repo / "answer.txt"
-        elif answer_fallback is not None and answer_fallback.is_file():
-            found_answer = answer_fallback
+        elif allow_repo_fallback and (repo_path / "answer.txt").is_file():
+            found_answer = repo_path / "answer.txt"
 
-        answer_json_fallback = repo_path / "answer.json" if _effective_wt else None
         found_answer_json: Path | None = None
         if (effective_repo / "answer.json").is_file():
             found_answer_json = effective_repo / "answer.json"
-        elif answer_json_fallback is not None and answer_json_fallback.is_file():
-            found_answer_json = answer_json_fallback
+        elif allow_repo_fallback and (repo_path / "answer.json").is_file():
+            found_answer_json = repo_path / "answer.json"
 
         # If the agent failed with no output AND no answer file was produced,
         # return an error. But if an answer exists (e.g. agent timed out
@@ -464,18 +470,48 @@ def execute_task(
             # — we only want the current run's artifacts in the sandbox.
             _drop_stale_answers(scoring_dir)
 
+            artifact_copy_error: str | None = None
             if found_answer is not None:
                 try:
                     shutil.copy2(found_answer, scoring_dir / "answer.txt")
-                except OSError:
-                    pass  # Non-fatal; scorer will report missing answer
-            if found_answer_json is not None:
+                except OSError as exc:
+                    artifact_copy_error = (
+                        f"failed to stage answer.txt from {found_answer}: {exc}"
+                    )
+            if found_answer_json is not None and artifact_copy_error is None:
                 try:
                     shutil.copy2(found_answer_json, scoring_dir / "answer.json")
-                except OSError:
-                    pass  # Non-fatal; scorer will report missing answer
+                except OSError as exc:
+                    artifact_copy_error = (
+                        f"failed to stage answer.json from {found_answer_json}: {exc}"
+                    )
 
-            score_result = scorer.score(output.stdout, scoring_dir)
+            # In dual mode the artifact leg is load-bearing for scoring;
+            # a missing copy would silently fall through to a 0-score
+            # artifact result that default/weighted policy can still
+            # clamp into a pass. Fail closed instead.
+            if dual_mode and artifact_copy_error is not None:
+                return TaskResult(
+                    completed=CompletedTask(
+                        task_id=task_id,
+                        automated_score=0.0,
+                        status="error",
+                        metadata={"error": artifact_copy_error},
+                        **_output_fields(),
+                    ),
+                    agent_stdout=output.stdout,
+                    agent_stderr=output.stderr or "",
+                )
+
+            # Bind TASK_REPO_ROOT so a dual task's ``tests/test.sh`` cd's
+            # into the per-run worktree instead of the shared mined
+            # ``repo_path`` fallback. Non-dual runs and runs without an
+            # owned worktree see no override.
+            env_overrides: dict[str, str] | None = None
+            if _effective_wt is not None:
+                env_overrides = {"TASK_REPO_ROOT": str(_effective_wt)}
+            with scorer_env_override(env_overrides):
+                score_result = scorer.score(output.stdout, scoring_dir)
 
         metadata: dict = {}
         if resolved_preambles:

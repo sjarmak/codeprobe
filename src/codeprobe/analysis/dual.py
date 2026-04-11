@@ -30,6 +30,25 @@ def has_dual_scoring(task: CompletedTask) -> bool:
     return any(key in details for key in _DUAL_KEYS)
 
 
+def _strict_bool(value: object) -> bool | None:
+    """Return a bool only for actual bool or recognizable serialized forms.
+
+    Returns ``None`` when *value* is absent or of an unexpected type, so
+    callers can fall back to a score threshold. This guards against the
+    ``bool("False") is True`` pitfall for JSON-round-tripped checkpoints.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in {"true", "1", "yes", "y"}:
+            return True
+        if s in {"false", "0", "no", "n"}:
+            return False
+        return None
+    return None
+
+
 def resolve_leg_pass(task: CompletedTask) -> tuple[bool, bool]:
     """Return ``(direct_pass, artifact_pass)`` booleans for a dual task.
 
@@ -48,9 +67,13 @@ def resolve_leg_pass(task: CompletedTask) -> tuple[bool, bool]:
         artifact_score = float(details.get("score_artifact", 0.0))
     except (TypeError, ValueError):
         artifact_score = 0.0
-    direct_pass = bool(details.get("passed_direct", direct_score >= PASS_THRESHOLD))
-    artifact_pass = bool(
-        details.get("passed_artifact", artifact_score >= PASS_THRESHOLD)
+    direct_raw = _strict_bool(details.get("passed_direct"))
+    artifact_raw = _strict_bool(details.get("passed_artifact"))
+    direct_pass = (
+        direct_raw if direct_raw is not None else direct_score >= PASS_THRESHOLD
+    )
+    artifact_pass = (
+        artifact_raw if artifact_raw is not None else artifact_score >= PASS_THRESHOLD
     )
     return direct_pass, artifact_pass
 

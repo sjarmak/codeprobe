@@ -19,6 +19,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -147,12 +150,44 @@ _SAFE_ENV_KEYS = frozenset(
 )
 
 
+# Thread-local env overrides for sandboxed scorer subprocesses. Callers use
+# :func:`scorer_env_override` as a context manager to bind extra env vars
+# (e.g. ``TASK_REPO_ROOT`` for dual tasks) so test.sh can cd into a
+# per-run worktree instead of the shared mined repo_path. Raw threads
+# each get their own override — no cross-thread leakage.
+_scorer_env_tls = threading.local()
+
+
+def _thread_env_overrides() -> dict[str, str]:
+    return getattr(_scorer_env_tls, "overrides", None) or {}
+
+
+@contextmanager
+def scorer_env_override(overrides: dict[str, str] | None) -> Iterator[None]:
+    """Bind a thread-local env overlay visible to sandboxed scorer processes.
+
+    ``overrides`` is merged into the filtered env built by :func:`_safe_env`.
+    The previous overlay is restored on exit, so nested overrides compose
+    in LIFO order.
+    """
+    previous = _thread_env_overrides()
+    _scorer_env_tls.overrides = dict(overrides) if overrides else {}
+    try:
+        yield
+    finally:
+        _scorer_env_tls.overrides = previous
+
+
 def _safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a filtered environment with only safe keys.
 
-    Prevents secret leakage via inherited environment variables.
+    Prevents secret leakage via inherited environment variables. Any
+    thread-local overrides bound via :func:`scorer_env_override` are merged
+    on top of the filtered env, and the caller's ``extra`` takes highest
+    precedence.
     """
     env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
+    env.update(_thread_env_overrides())
     if extra:
         env.update(extra)
     return env
@@ -713,6 +748,27 @@ class DualScorer:
         # No config — everything is read from task_dir/metadata.json at score() time.
         pass
 
+    @staticmethod
+    def _parse_weight(raw: object, default: float) -> tuple[float, str | None]:
+        """Coerce a weight value to a finite float in ``[0.0, 1.0]``.
+
+        Returns ``(weight, error_message)``. Malformed or out-of-range
+        weights propagate as an error instead of silently falling back to
+        a default — the caller decides whether that's fatal for the
+        current scoring_policy.
+        """
+        if raw is None:
+            return default, None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return default, f"invalid weight value: {raw!r}"
+        if not math.isfinite(value):
+            return default, f"non-finite weight: {raw!r}"
+        if value < 0.0 or value > 1.0:
+            return default, f"weight out of range [0,1]: {value}"
+        return value, None
+
     def score(
         self,
         agent_output: str,
@@ -721,14 +777,12 @@ class DualScorer:
         verification = read_task_verification(task_dir)
         reward_type = verification.get("reward_type", "binary") or "binary"
         scoring_policy = verification.get("scoring_policy", "") or ""
-        try:
-            weight_direct = float(verification.get("weight_direct", 0.5))
-        except (TypeError, ValueError):
-            weight_direct = 0.5
-        try:
-            weight_artifact = float(verification.get("weight_artifact", 0.5))
-        except (TypeError, ValueError):
-            weight_artifact = 0.5
+        weight_direct, weight_direct_error = self._parse_weight(
+            verification.get("weight_direct"), 0.5
+        )
+        weight_artifact, weight_artifact_error = self._parse_weight(
+            verification.get("weight_artifact"), 0.5
+        )
 
         direct_scorer: BinaryScorer | ContinuousScorer
         if reward_type == "continuous":
@@ -752,32 +806,41 @@ class DualScorer:
         if artifact_result.error:
             details["error_artifact"] = artifact_result.error
 
+        weight_errors: list[str] = []
+        if scoring_policy == "weighted":
+            if weight_direct_error:
+                weight_errors.append(f"weight_direct: {weight_direct_error}")
+            if weight_artifact_error:
+                weight_errors.append(f"weight_artifact: {weight_artifact_error}")
+            if weight_errors:
+                details["error_weights"] = "; ".join(weight_errors)
+
         if scoring_policy == "min":
             composite = min(direct_result.score, artifact_result.score)
         elif scoring_policy == "mean":
             composite = (direct_result.score + artifact_result.score) / 2.0
         elif scoring_policy == "weighted":
-            composite = (
-                weight_direct * direct_result.score
-                + weight_artifact * artifact_result.score
-            )
+            if weight_errors:
+                # Invalid weights are a scoring error — fail closed rather
+                # than silently falling back to defaults and masking the bug.
+                composite = 0.0
+            else:
+                composite = (
+                    weight_direct * direct_result.score
+                    + weight_artifact * artifact_result.score
+                )
         else:
             composite = direct_result.score
 
         composite = max(0.0, min(1.0, composite))
         passed = composite >= PASS_THRESHOLD
 
-        combined_error: str | None
-        if direct_result.error and artifact_result.error:
-            combined_error = (
-                f"direct: {direct_result.error}; " f"artifact: {artifact_result.error}"
-            )
-        elif direct_result.error:
-            combined_error = f"direct: {direct_result.error}"
-        elif artifact_result.error:
-            combined_error = f"artifact: {artifact_result.error}"
-        else:
-            combined_error = None
+        error_parts = [
+            f"direct: {direct_result.error}" if direct_result.error else None,
+            f"artifact: {artifact_result.error}" if artifact_result.error else None,
+            f"weights: {'; '.join(weight_errors)}" if weight_errors else None,
+        ]
+        combined_error = "; ".join(p for p in error_parts if p) or None
 
         return ScoreResult(
             score=composite,

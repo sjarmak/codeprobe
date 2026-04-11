@@ -282,16 +282,24 @@ def test_non_dual_verification_mode_does_not_override(
     assert received == ["continuous"]
 
 
-def test_answer_json_in_stale_cleanup(
+def test_stale_answer_json_in_task_dir_is_preserved_but_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pre-existing answer.json in task_dir is removed before run begins."""
+    """A pre-existing ``answer.json`` in task_dir survives the run unchanged.
+
+    The old behavior mutated task_dir at the start of every run. That
+    raced with concurrent execute_task calls and could destroy legitimate
+    fixture files. The new contract is: task_dir is NEVER mutated. Stale
+    artifacts get scrubbed inside the per-run scoring sandbox after the
+    snapshot copytree, not in the shared task_dir.
+    """
     repo = tmp_path / "repo"
     _init_git_repo(repo)
+    stale_content = '{"old": true}'
     task = _make_dual_task(
         tmp_path / "task",
         verification_mode="test_script",
-        extra_files={"answer.json": '{"old": true}'},
+        extra_files={"answer.json": stale_content},
     )
     assert (task / "answer.json").is_file()
 
@@ -308,9 +316,10 @@ def test_answer_json_in_stale_cleanup(
         agent_config=AgentConfig(),
         reward_type="binary",
     )
-    # The stale answer.json should have been removed; nothing in this run
-    # writes a new one (FakeAdapter doesn't touch the workspace).
-    assert not (task / "answer.json").exists()
+    # task_dir was not mutated — the stale file is still there with its
+    # original contents.
+    assert (task / "answer.json").is_file()
+    assert (task / "answer.json").read_text(encoding="utf-8") == stale_content
 
 
 def test_task_dir_unchanged_by_scoring(
