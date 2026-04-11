@@ -65,7 +65,7 @@ def dual_task_dir(tmp_path: Path) -> Path:
     test_sh.write_text("#!/bin/bash\nexit 0\n")
     test_sh.chmod(test_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     (tests_dir / "ground_truth.json").write_text(
-        json.dumps({"answer_type": "boolean", "expected": True})
+        json.dumps({"answer_type": "boolean", "answer": True})
     )
     return tmp_path
 

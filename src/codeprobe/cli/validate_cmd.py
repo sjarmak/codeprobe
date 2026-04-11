@@ -189,6 +189,145 @@ def _check_ground_truth(task_dir: Path) -> CheckResult:
     )
 
 
+def _check_ground_truth_dual(task_dir: Path) -> CheckResult:
+    """Check dual-mode ground_truth.json: exists, parses, has 'answer' field.
+
+    Dual verification uses the new ground-truth schema where the expected
+    answer value is stored under the top-level ``answer`` key.
+    """
+    path = task_dir / "tests" / "ground_truth.json"
+    if not path.exists():
+        return CheckResult(
+            name="tests/ground_truth.json exists",
+            passed=False,
+            detail="tests/ground_truth.json not found (required for dual mode)",
+        )
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as exc:
+        return CheckResult(
+            name="tests/ground_truth.json valid",
+            passed=False,
+            detail=f"tests/ground_truth.json parse error: {exc}",
+        )
+
+    if not isinstance(data, dict):
+        return CheckResult(
+            name="tests/ground_truth.json schema",
+            passed=False,
+            detail="tests/ground_truth.json must be a JSON object",
+        )
+    if "answer" not in data:
+        return CheckResult(
+            name="tests/ground_truth.json has answer",
+            passed=False,
+            detail="tests/ground_truth.json missing 'answer' field (required for dual mode)",
+        )
+    return CheckResult(
+        name="tests/ground_truth.json valid",
+        passed=True,
+        detail="ground_truth.json valid with 'answer' field",
+    )
+
+
+_VALID_SCORING_POLICIES: frozenset[str] = frozenset({"", "min", "mean", "weighted"})
+
+
+def _get_scoring_policy(meta: dict | None) -> str | None:
+    """Extract scoring_policy from parsed metadata, if present.
+
+    Returns None when the key is absent (caller may skip the check).
+    """
+    if meta is None:
+        return None
+    sp = meta.get("scoring_policy")
+    if sp is None:
+        verification = meta.get("verification", {})
+        if isinstance(verification, dict):
+            sp = verification.get("scoring_policy")
+    return sp
+
+
+def _get_weight(meta: dict | None, key: str, default: float) -> float:
+    """Extract a weight_* float from parsed metadata (top-level or [verification])."""
+    if meta is None:
+        return default
+    val = meta.get(key)
+    if val is None:
+        verification = meta.get("verification", {})
+        if isinstance(verification, dict):
+            val = verification.get(key)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def _check_scoring_policy(meta: dict | None) -> list[CheckResult]:
+    """Validate scoring_policy and (for 'weighted') the weight sum.
+
+    - scoring_policy must be one of {'', 'min', 'mean', 'weighted'}
+    - if 'weighted', weight_direct + weight_artifact must equal 1.0 (+/- 1e-6)
+
+    Returns an empty list when scoring_policy is absent from metadata
+    (absent = use default of '' = valid; no policy check needed).
+    """
+    results: list[CheckResult] = []
+    sp = _get_scoring_policy(meta)
+    if sp is None:
+        return results
+
+    if sp not in _VALID_SCORING_POLICIES:
+        results.append(
+            CheckResult(
+                name="scoring_policy valid",
+                passed=False,
+                detail=(
+                    f"scoring_policy '{sp}' not in "
+                    f"{sorted(_VALID_SCORING_POLICIES)}"
+                ),
+            )
+        )
+        return results
+
+    results.append(
+        CheckResult(
+            name="scoring_policy valid",
+            passed=True,
+            detail=f"scoring_policy '{sp}' is valid",
+        )
+    )
+
+    if sp == "weighted":
+        wd = _get_weight(meta, "weight_direct", 0.5)
+        wa = _get_weight(meta, "weight_artifact", 0.5)
+        total = wd + wa
+        if abs(total - 1.0) > 1e-6:
+            results.append(
+                CheckResult(
+                    name="weight sum",
+                    passed=False,
+                    detail=(
+                        f"weight_direct ({wd}) + weight_artifact ({wa}) = "
+                        f"{total}, expected 1.0 (+/- 1e-6)"
+                    ),
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name="weight sum",
+                    passed=True,
+                    detail=f"weight_direct + weight_artifact = {total}",
+                )
+            )
+
+    return results
+
+
 def _check_task_type(task_type: str) -> CheckResult:
     """Check that task_type is in the valid set."""
     if task_type in TASK_TYPES:
@@ -250,8 +389,14 @@ def run_validate(task_dir: Path, *, strict: bool = False) -> list[CheckResult]:
         # Default assumption: test_script if no mode specified
         results.append(_check_test_script(task_dir))
 
-    if vm in ("artifact_eval", "dual"):
+    if vm == "dual":
+        # Dual mode uses the new ground-truth schema with 'answer' field.
+        results.append(_check_ground_truth_dual(task_dir))
+    elif vm == "artifact_eval":
         results.append(_check_ground_truth(task_dir))
+
+    # 6. Scoring policy / weight sum checks (always, regardless of mode)
+    results.extend(_check_scoring_policy(meta))
 
     return results
 
