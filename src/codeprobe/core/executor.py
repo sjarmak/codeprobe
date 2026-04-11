@@ -7,8 +7,10 @@ import logging
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -177,10 +179,16 @@ def execute_task(
     preamble_resolver: PreambleResolver | None = None,
     worktree_path: Path | None = None,
     session_env: dict[str, str] | None = None,
+    dual_worktree_factory: Callable[[Path, str], IsolationStrategy] | None = None,
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
     Never raises — errors are captured in the result metadata.
+
+    When ``task.verification.verification_mode == 'dual'`` (read from the
+    task's ``metadata.json``) the executor forces ``reward_type='dual'`` and
+    binds a per-run worktree plus a per-run scoring sandbox so parallel
+    runs of the same task never share mutable state.
     """
     task_id = task_dir.name
 
@@ -196,17 +204,26 @@ def execute_task(
         except (ValueError, OSError):
             pass
 
+    # (R5) Verification-mode override — TOP LEVEL and unconditional.
+    # A task whose metadata declares ``verification_mode == 'dual'`` forces
+    # the dual scorer regardless of the reward_type configured on the
+    # experiment. This is NOT nested inside the "binary" auto-detect block
+    # because a continuous-reward experiment can still carry a dual task.
+    _verification = _task_meta.get("verification") or {}
+    if _verification.get("verification_mode") == "dual":
+        reward_type = "dual"
+
     # Auto-detect reward_type from task metadata when caller uses default.
     # Oracle tasks (org-scale) need "continuous" scoring to read reward.txt;
     # the default "binary" would score exit-code-only and always pass.
     if reward_type == "binary":
-        task_rt = (_task_meta.get("verification") or {}).get("reward_type")
+        task_rt = _verification.get("reward_type")
         if task_rt and task_rt != "binary":
             reward_type = task_rt
 
-    # Remove stale answer.txt / reward.txt from prior runs so they don't
-    # leak into this task's scoring sandbox.
-    for stale in ("answer.txt", "reward.txt"):
+    # Remove stale answer.txt / reward.txt / answer.json from prior runs so
+    # they don't leak into this task's scoring sandbox.
+    for stale in ("answer.txt", "reward.txt", "answer.json"):
         stale_path = task_dir / stale
         if stale_path.is_file():
             stale_path.unlink(missing_ok=True)
@@ -222,191 +239,280 @@ def execute_task(
             ),
         )
 
-    try:
-        instruction = load_instruction(task_dir, variant=instruction_variant)
-    except FileNotFoundError as exc:
-        return _error_result(str(exc))
-
-    resolved_preambles: list[dict[str, str]] = []
-    if preamble_names and preamble_resolver is None:
-        return _error_result(
-            f"preambles={preamble_names!r} requested but no "
-            "preamble_resolver provided"
-        )
-
-    if preamble_names and preamble_resolver is not None:
-        # Build extra context from task metadata for preamble templates
-        extra_ctx: dict[str, str] = {}
-        sg_repo = (_task_meta.get("metadata") or {}).get("sg_repo", "")
-        if sg_repo:
-            extra_ctx["sg_repo"] = sg_repo
-
+    # (R9-PM) Per-run worktree for dual-mode tasks.
+    # Mined test.sh scripts hardcode ``cd {repo_path}`` to the original
+    # repo, so two parallel runs of the same dual task would trample each
+    # other's workspace state. Bind a dedicated worktree slot from the
+    # isolation pool when the caller didn't already supply one.
+    _owned_dual_iso: IsolationStrategy | None = None
+    _owned_dual_wt: Path | None = None
+    if reward_type == "dual" and worktree_path is None:
         try:
-            prompt, resolved_preambles = compose_instruction(
-                instruction,
-                repo_path,
-                preamble_names=list(preamble_names),
-                resolver=preamble_resolver,
-                task_id=task_id,
-                worktree_path=worktree_path,
-                extra_context=extra_ctx or None,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            return _error_result(f"Preamble resolution failed: {exc}")
-    else:
-        prompt = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
-
-    # Pin workspace to pre-merge commit when task has a ground_truth_commit.
-    # The agent starts from the parent of the merge commit (the state before
-    # the PR landed) and must reproduce the changes.
-    pin_commit = (_task_meta.get("metadata") or {}).get("ground_truth_commit", "")
-    effective_workspace = worktree_path or repo_path
-    if pin_commit:
-        try:
-            git_pin_commit(effective_workspace, f"{pin_commit}^")
-            logger.info(
-                "[%s] Pinned workspace to %s^ (pre-merge state)",
-                task_id,
-                pin_commit[:8],
-            )
-        except subprocess.CalledProcessError as exc:
+            if dual_worktree_factory is not None:
+                _owned_dual_iso = dual_worktree_factory(
+                    repo_path, f"dual-{task_id}-{uuid.uuid4().hex[:8]}"
+                )
+            else:
+                _owned_dual_iso = WorktreeIsolation(
+                    repo_path,
+                    pool_size=1,
+                    namespace=f"dual-{task_id}-{uuid.uuid4().hex[:8]}",
+                )
+            _owned_dual_wt = _owned_dual_iso.acquire()
+        except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+            # Roll back a half-built isolation before bailing.
+            if _owned_dual_iso is not None:
+                try:
+                    _owned_dual_iso.cleanup()
+                except Exception:  # pragma: no cover — defensive
+                    pass
             return _error_result(
-                f"Failed to pin workspace to {pin_commit[:8]}^: "
-                + (exc.stderr.decode(errors="replace") if exc.stderr else str(exc)),
+                f"Failed to acquire dual-mode worktree: {exc}",
                 error_category="system",
             )
 
-    # Cross-repo tasks: lay out additional repos as workspace/repos/<name>
-    # and pin each to its own ground_truth_commit^.  Primary repo keeps
-    # its existing location so single-repo tasks are unaffected.
-    additional_repos = (_task_meta.get("metadata") or {}).get("additional_repos", [])
-    if additional_repos:
-        try:
-            setup_multi_repo_workspace(effective_workspace, additional_repos)
-            logger.info(
-                "[%s] Set up %d additional repo(s) under %s/repos/",
-                task_id,
-                len(additional_repos),
-                effective_workspace,
-            )
-        except (subprocess.CalledProcessError, OSError, ValueError, TypeError) as exc:
-            stderr = ""
-            if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
-                stderr = exc.stderr.decode(errors="replace")
-            return _error_result(
-                f"Failed to set up multi-repo workspace: {stderr or exc}",
-                error_category="system",
-            )
+    # Effective worktree: caller-provided > owned dual worktree > None.
+    _effective_wt: Path | None = worktree_path or _owned_dual_wt
 
     try:
-        output = adapter.run(prompt, agent_config, session_env=session_env)
-    except Exception as exc:
-        return _error_result(
-            sanitize_secrets(str(exc)),
-            error_category=_classify_error(exc),
-        )
-
-    def _output_fields() -> dict:
-        return dict(
-            duration_seconds=output.duration_seconds,
-            input_tokens=output.input_tokens,
-            output_tokens=output.output_tokens,
-            cache_read_tokens=output.cache_read_tokens,
-            cost_usd=output.cost_usd,
-            cost_model=output.cost_model,
-            cost_source=output.cost_source,
-            tool_call_count=output.tool_call_count,
-        )
-
-    # For oracle tasks, the agent writes answer.txt to the repo root.
-    # Copy it into the task dir so the scorer's sandbox has it.
-    # Done before error checks so partial results from timeouts are scored.
-    effective_repo = worktree_path or repo_path
-    answer_src = effective_repo / "answer.txt"
-    # Also check the original repo root — agent may have followed
-    # TASK_REPO_ROOT from the instruction (which points to the real repo
-    # when worktree_path wasn't rewritten in older instructions).
-    answer_fallback = repo_path / "answer.txt" if worktree_path else None
-    found_answer = None
-    if answer_src.is_file():
-        found_answer = answer_src
-    elif answer_fallback is not None and answer_fallback.is_file():
-        found_answer = answer_fallback
-    if found_answer is not None:
         try:
-            shutil.copy2(found_answer, task_dir / "answer.txt")
-        except OSError:
-            pass  # Non-fatal; scorer will report missing answer
+            instruction = load_instruction(task_dir, variant=instruction_variant)
+        except FileNotFoundError as exc:
+            return _error_result(str(exc))
 
-    # Comprehension tasks use answer.json instead of answer.txt.
-    # Same copy logic: workspace root → task_dir so ArtifactScorer finds it.
-    answer_json_src = effective_repo / "answer.json"
-    answer_json_fallback = repo_path / "answer.json" if worktree_path else None
-    found_answer_json = None
-    if answer_json_src.is_file():
-        found_answer_json = answer_json_src
-    elif answer_json_fallback is not None and answer_json_fallback.is_file():
-        found_answer_json = answer_json_fallback
-    if found_answer_json is not None:
+        resolved_preambles: list[dict[str, str]] = []
+        if preamble_names and preamble_resolver is None:
+            return _error_result(
+                f"preambles={preamble_names!r} requested but no "
+                "preamble_resolver provided"
+            )
+
+        if preamble_names and preamble_resolver is not None:
+            # Build extra context from task metadata for preamble templates
+            extra_ctx: dict[str, str] = {}
+            sg_repo = (_task_meta.get("metadata") or {}).get("sg_repo", "")
+            if sg_repo:
+                extra_ctx["sg_repo"] = sg_repo
+
+            try:
+                prompt, resolved_preambles = compose_instruction(
+                    instruction,
+                    repo_path,
+                    preamble_names=list(preamble_names),
+                    resolver=preamble_resolver,
+                    task_id=task_id,
+                    worktree_path=_effective_wt,
+                    extra_context=extra_ctx or None,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                return _error_result(f"Preamble resolution failed: {exc}")
+        else:
+            prompt = _base_prompt(instruction, repo_path, worktree_path=_effective_wt)
+
+        # Pin workspace to pre-merge commit when task has a ground_truth_commit.
+        # The agent starts from the parent of the merge commit (the state before
+        # the PR landed) and must reproduce the changes.
+        pin_commit = (_task_meta.get("metadata") or {}).get("ground_truth_commit", "")
+        effective_workspace = _effective_wt or repo_path
+        if pin_commit:
+            try:
+                git_pin_commit(effective_workspace, f"{pin_commit}^")
+                logger.info(
+                    "[%s] Pinned workspace to %s^ (pre-merge state)",
+                    task_id,
+                    pin_commit[:8],
+                )
+            except subprocess.CalledProcessError as exc:
+                return _error_result(
+                    f"Failed to pin workspace to {pin_commit[:8]}^: "
+                    + (exc.stderr.decode(errors="replace") if exc.stderr else str(exc)),
+                    error_category="system",
+                )
+
+        # Cross-repo tasks: lay out additional repos as workspace/repos/<name>
+        # and pin each to its own ground_truth_commit^.  Primary repo keeps
+        # its existing location so single-repo tasks are unaffected.
+        additional_repos = (_task_meta.get("metadata") or {}).get(
+            "additional_repos", []
+        )
+        if additional_repos:
+            try:
+                setup_multi_repo_workspace(effective_workspace, additional_repos)
+                logger.info(
+                    "[%s] Set up %d additional repo(s) under %s/repos/",
+                    task_id,
+                    len(additional_repos),
+                    effective_workspace,
+                )
+            except (
+                subprocess.CalledProcessError,
+                OSError,
+                ValueError,
+                TypeError,
+            ) as exc:
+                stderr = ""
+                if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+                    stderr = exc.stderr.decode(errors="replace")
+                return _error_result(
+                    f"Failed to set up multi-repo workspace: {stderr or exc}",
+                    error_category="system",
+                )
+
         try:
-            shutil.copy2(found_answer_json, task_dir / "answer.json")
-        except OSError:
-            pass  # Non-fatal; scorer will report missing answer
+            output = adapter.run(prompt, agent_config, session_env=session_env)
+        except Exception as exc:
+            return _error_result(
+                sanitize_secrets(str(exc)),
+                error_category=_classify_error(exc),
+            )
 
-    # If the agent failed with no output AND no answer file was produced,
-    # return an error. But if an answer exists (e.g. agent timed out
-    # after writing it), fall through to scoring.
-    has_answer = found_answer is not None or found_answer_json is not None
-    if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
-        error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
+        def _output_fields() -> dict:
+            return dict(
+                duration_seconds=output.duration_seconds,
+                input_tokens=output.input_tokens,
+                output_tokens=output.output_tokens,
+                cache_read_tokens=output.cache_read_tokens,
+                cost_usd=output.cost_usd,
+                cost_model=output.cost_model,
+                cost_source=output.cost_source,
+                tool_call_count=output.tool_call_count,
+            )
+
+        # For oracle tasks, the agent writes answer.txt / answer.json to the
+        # workspace root. We locate any such artifacts now; the actual copy
+        # into the scoring sandbox happens below so the ORIGINAL task_dir is
+        # never mutated by scoring.
+        effective_repo = _effective_wt or repo_path
+        answer_fallback = repo_path / "answer.txt" if _effective_wt else None
+        found_answer: Path | None = None
+        if (effective_repo / "answer.txt").is_file():
+            found_answer = effective_repo / "answer.txt"
+        elif answer_fallback is not None and answer_fallback.is_file():
+            found_answer = answer_fallback
+
+        answer_json_fallback = repo_path / "answer.json" if _effective_wt else None
+        found_answer_json: Path | None = None
+        if (effective_repo / "answer.json").is_file():
+            found_answer_json = effective_repo / "answer.json"
+        elif answer_json_fallback is not None and answer_json_fallback.is_file():
+            found_answer_json = answer_json_fallback
+
+        # If the agent failed with no output AND no answer file was produced,
+        # return an error. But if an answer exists (e.g. agent timed out
+        # after writing it), fall through to scoring.
+        has_answer = found_answer is not None or found_answer_json is not None
+        if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
+            error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
+            return TaskResult(
+                completed=CompletedTask(
+                    task_id=task_id,
+                    automated_score=0.0,
+                    status="error",
+                    metadata={"error": sanitize_secrets(error_msg)},
+                    **_output_fields(),
+                ),
+                agent_stdout=output.stdout,
+                agent_stderr=output.stderr or "",
+            )
+
+        try:
+            scorer = get_scorer(reward_type)
+        except ValueError as exc:
+            return TaskResult(
+                completed=CompletedTask(
+                    task_id=task_id,
+                    automated_score=0.0,
+                    status="error",
+                    metadata={"error": f"Invalid reward_type: {exc}"},
+                    **_output_fields(),
+                ),
+                agent_stdout=output.stdout,
+                agent_stderr=output.stderr or "",
+            )
+
+        # (R9-PM) Per-run scoring sandbox: snapshot the task files (and any
+        # agent-produced answer artifacts) into a fresh temp directory so
+        # concurrent runs never share mutable scoring state. The original
+        # task_dir on disk is never mutated by scoring.
+        with tempfile.TemporaryDirectory(prefix=f"codeprobe-score-{task_id}-") as _tmp:
+            scoring_dir = Path(_tmp) / task_id
+            try:
+                shutil.copytree(task_dir, scoring_dir, symlinks=True)
+            except OSError as exc:
+                return TaskResult(
+                    completed=CompletedTask(
+                        task_id=task_id,
+                        automated_score=0.0,
+                        status="error",
+                        metadata={"error": f"Failed to snapshot task dir: {exc}"},
+                        **_output_fields(),
+                    ),
+                    agent_stdout=output.stdout,
+                    agent_stderr=output.stderr or "",
+                )
+
+            # Drop any stale answer files copied from the source task dir
+            # — we only want the current run's artifacts in the sandbox.
+            for stale_name in ("answer.txt", "answer.json", "reward.txt"):
+                stale_in_scoring = scoring_dir / stale_name
+                if stale_in_scoring.is_file():
+                    stale_in_scoring.unlink(missing_ok=True)
+
+            if found_answer is not None:
+                try:
+                    shutil.copy2(found_answer, scoring_dir / "answer.txt")
+                except OSError:
+                    pass  # Non-fatal; scorer will report missing answer
+            if found_answer_json is not None:
+                try:
+                    shutil.copy2(found_answer_json, scoring_dir / "answer.json")
+                except OSError:
+                    pass  # Non-fatal; scorer will report missing answer
+
+            score_result = scorer.score(output.stdout, scoring_dir)
+
+        metadata: dict = {}
+        if resolved_preambles:
+            metadata["resolved_preambles"] = resolved_preambles
+
+        # Propagate ScoreResult.details into CompletedTask.scoring_details as
+        # a plain dict (u4 TaskScored event also carries it). Keep the
+        # backward-compatible passed/error fields so existing consumers
+        # continue to work.
+        scoring_details: dict = {
+            "passed": score_result.passed,
+            "error": score_result.error,
+        }
+        if score_result.details:
+            scoring_details.update(dict(score_result.details))
+
         return TaskResult(
             completed=CompletedTask(
                 task_id=task_id,
-                automated_score=0.0,
-                status="error",
-                metadata={"error": sanitize_secrets(error_msg)},
+                automated_score=score_result.score,
+                status="completed",
+                scoring_details=scoring_details,
+                metadata=metadata,
                 **_output_fields(),
             ),
             agent_stdout=output.stdout,
             agent_stderr=output.stderr or "",
         )
-
-    try:
-        scorer = get_scorer(reward_type)
-    except ValueError as exc:
-        return TaskResult(
-            completed=CompletedTask(
-                task_id=task_id,
-                automated_score=0.0,
-                status="error",
-                metadata={"error": f"Invalid reward_type: {exc}"},
-                **_output_fields(),
-            ),
-            agent_stdout=output.stdout,
-            agent_stderr=output.stderr or "",
-        )
-
-    score_result = scorer.score(output.stdout, task_dir)
-
-    metadata: dict = {}
-    if resolved_preambles:
-        metadata["resolved_preambles"] = resolved_preambles
-
-    return TaskResult(
-        completed=CompletedTask(
-            task_id=task_id,
-            automated_score=score_result.score,
-            status="completed",
-            scoring_details={
-                "passed": score_result.passed,
-                "error": score_result.error,
-            },
-            metadata=metadata,
-            **_output_fields(),
-        ),
-        agent_stdout=output.stdout,
-        agent_stderr=output.stderr or "",
-    )
+    finally:
+        if _owned_dual_iso is not None:
+            if _owned_dual_wt is not None:
+                try:
+                    _owned_dual_iso.release(_owned_dual_wt)
+                except Exception:  # pragma: no cover — defensive
+                    logger.debug(
+                        "[%s] dual-worktree release failed", task_id, exc_info=True
+                    )
+            try:
+                _owned_dual_iso.cleanup()
+            except Exception:  # pragma: no cover — defensive
+                logger.debug(
+                    "[%s] dual-worktree cleanup failed", task_id, exc_info=True
+                )
 
 
 _BILLABLE_COST_MODELS = frozenset({"per_token"})
@@ -733,6 +839,9 @@ def execute_config(
                     cost_source=result.cost_source,
                     error=result.metadata.get("error") if result.metadata else None,
                     timestamp=time.time(),
+                    scoring_details=(
+                        dict(result.scoring_details) if result.scoring_details else None
+                    ),
                 )
             )
 

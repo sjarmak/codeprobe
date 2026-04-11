@@ -1257,7 +1257,12 @@ class TestRewardTypeAutoDetect:
 
 
 class TestAnswerJsonCopy:
-    """Executor copies answer.json from workspace root to task_dir."""
+    """Executor stages answer.json/.txt into the per-run scoring sandbox.
+
+    The original task_dir on disk is intentionally NOT mutated by scoring
+    (per u6: per-run isolation). The scorer receives a temp snapshot dir
+    that contains both the task files and any agent-produced answer files.
+    """
 
     def _make_adapter_mock(self) -> MagicMock:
         adapter = MagicMock()
@@ -1276,10 +1281,26 @@ class TestAnswerJsonCopy:
         )
         return adapter
 
-    def test_answer_json_copied_from_workspace_to_task_dir(
-        self, tmp_path: Path
+    def _scorer_spy(self, captured: dict) -> object:
+        """Stub scorer that copies the sandbox state into ``captured``."""
+        from codeprobe.core.scoring import ScoreResult
+
+        class _Spy:
+            def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+                captured["sandbox"] = Path(task_dir)
+                captured["files"] = {
+                    p.name: p.read_text()
+                    for p in Path(task_dir).iterdir()
+                    if p.is_file()
+                }
+                return ScoreResult(score=1.0, passed=True)
+
+        return _Spy()
+
+    def test_answer_json_copied_from_workspace_to_scoring_sandbox(
+        self, tmp_path: Path, monkeypatch
     ) -> None:
-        """answer.json written to workspace root is copied to task_dir."""
+        """answer.json written to workspace root is staged in the scoring sandbox."""
         task_dir = tmp_path / "task-json"
         task_dir.mkdir()
         (task_dir / "instruction.md").write_text("Answer the question.\n")
@@ -1297,21 +1318,31 @@ class TestAnswerJsonCopy:
         answer_data = {"answer": ["foo", "bar"]}
         (repo / "answer.json").write_text(json.dumps(answer_data))
 
+        captured: dict = {}
+        monkeypatch.setattr(
+            "codeprobe.core.executor.get_scorer",
+            lambda rt: self._scorer_spy(captured),
+        )
+
         adapter = self._make_adapter_mock()
 
-        result = execute_task(
+        execute_task(
             adapter=adapter,
             task_dir=task_dir,
             repo_path=repo,
             agent_config=AgentConfig(),
             reward_type="binary",
         )
-        # answer.json should now exist in task_dir
-        copied = task_dir / "answer.json"
-        assert copied.is_file(), "answer.json was not copied to task_dir"
-        assert json.loads(copied.read_text()) == answer_data
 
-    def test_answer_json_fallback_from_original_repo(self, tmp_path: Path) -> None:
+        # Sandbox received the answer file
+        assert "answer.json" in captured["files"]
+        assert json.loads(captured["files"]["answer.json"]) == answer_data
+        # Original task_dir was NOT mutated
+        assert not (task_dir / "answer.json").exists()
+
+    def test_answer_json_fallback_from_original_repo(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         """answer.json is found via repo_path fallback when worktree is used."""
         task_dir = tmp_path / "task-json-fb"
         task_dir.mkdir()
@@ -1333,9 +1364,15 @@ class TestAnswerJsonCopy:
         # Agent wrote to real repo root, not worktree
         (repo / "answer.json").write_text(json.dumps(answer_data))
 
+        captured: dict = {}
+        monkeypatch.setattr(
+            "codeprobe.core.executor.get_scorer",
+            lambda rt: self._scorer_spy(captured),
+        )
+
         adapter = self._make_adapter_mock()
 
-        result = execute_task(
+        execute_task(
             adapter=adapter,
             task_dir=task_dir,
             repo_path=repo,
@@ -1343,12 +1380,13 @@ class TestAnswerJsonCopy:
             reward_type="binary",
             worktree_path=worktree,
         )
-        copied = task_dir / "answer.json"
-        assert copied.is_file(), "answer.json was not copied via fallback"
-        assert json.loads(copied.read_text()) == answer_data
+        assert "answer.json" in captured["files"]
+        assert json.loads(captured["files"]["answer.json"]) == answer_data
+        # Original task_dir was NOT mutated
+        assert not (task_dir / "answer.json").exists()
 
-    def test_answer_txt_still_copied(self, tmp_path: Path) -> None:
-        """Existing answer.txt copy logic is not broken."""
+    def test_answer_txt_still_staged(self, tmp_path: Path, monkeypatch) -> None:
+        """answer.txt copy still works — staged into the scoring sandbox."""
         task_dir = tmp_path / "task-txt"
         task_dir.mkdir()
         (task_dir / "instruction.md").write_text("Answer.\n")
@@ -1362,18 +1400,24 @@ class TestAnswerJsonCopy:
         repo.mkdir()
         (repo / "answer.txt").write_text("42")
 
+        captured: dict = {}
+        monkeypatch.setattr(
+            "codeprobe.core.executor.get_scorer",
+            lambda rt: self._scorer_spy(captured),
+        )
+
         adapter = self._make_adapter_mock()
 
-        result = execute_task(
+        execute_task(
             adapter=adapter,
             task_dir=task_dir,
             repo_path=repo,
             agent_config=AgentConfig(),
             reward_type="binary",
         )
-        copied = task_dir / "answer.txt"
-        assert copied.is_file(), "answer.txt was not copied to task_dir"
-        assert copied.read_text() == "42"
+        assert captured["files"].get("answer.txt") == "42"
+        # Original task_dir was NOT mutated
+        assert not (task_dir / "answer.txt").exists()
 
     def test_answer_json_triggers_has_answer(self, tmp_path: Path) -> None:
         """Agent that writes answer.json but exits non-zero still gets scored."""
