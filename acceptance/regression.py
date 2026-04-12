@@ -55,6 +55,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 import subprocess
 import sys
@@ -186,7 +187,7 @@ def run_regression_gate(
     resolved_pytest: tuple[str, ...] = (
         pytest_args if pytest_args is not None else DEFAULT_PYTEST_ARGS
     )
-    resolved_ruff = _resolve_scoped_args(
+    resolved_ruff, ruff_line_filter = _compute_tool_plan(
         explicit=ruff_args,
         scope_to_diff=scope_to_diff,
         repo_root=repo_root,
@@ -194,7 +195,7 @@ def run_regression_gate(
         default=DEFAULT_RUFF_ARGS,
         prefix_flags=("check",),
     )
-    resolved_mypy = _resolve_scoped_args(
+    resolved_mypy, mypy_line_filter = _compute_tool_plan(
         explicit=mypy_args,
         scope_to_diff=scope_to_diff,
         repo_root=repo_root,
@@ -203,31 +204,53 @@ def run_regression_gate(
         prefix_flags=(),
     )
 
-    checks: list[tuple[CheckName, tuple[str, ...]]] = [
-        ("pytest", (sys.executable, "-m", "pytest", *resolved_pytest)),
+    checks: list[tuple[CheckName, tuple[str, ...], list[str] | None]] = [
+        ("pytest", (sys.executable, "-m", "pytest", *resolved_pytest), None),
     ]
     if resolved_ruff is not None:
-        checks.append(("ruff", (sys.executable, "-m", "ruff", *resolved_ruff)))
+        checks.append(
+            ("ruff", (sys.executable, "-m", "ruff", *resolved_ruff), ruff_line_filter)
+        )
     if resolved_mypy is not None:
-        checks.append(("mypy", (sys.executable, "-m", "mypy", *resolved_mypy)))
+        checks.append(
+            ("mypy", (sys.executable, "-m", "mypy", *resolved_mypy), mypy_line_filter)
+        )
 
-    for name, cmd in checks:
+    for name, cmd, line_filter_scope in checks:
         returncode, output = _run_check(cmd, cwd=repo_root, timeout_s=timeout_s)
-        if returncode != 0:
-            reverted, revert_output = _maybe_revert(
-                repo_root, enabled=revert_on_failure
+        if returncode == 0:
+            continue
+        # Non-zero exit. When the tool is running in diff-scoped mode, drop
+        # diagnostics that point at lines this commit did not add — those
+        # are pre-existing debt, not regressions introduced by the Fix
+        # Agent's patch. If nothing remains after filtering, the commit
+        # did not worsen the state and the check is treated as pass.
+        if line_filter_scope is not None:
+            filtered_output, has_in_scope, saw_any = _filter_diagnostics_to_diff(
+                output, repo_root, line_filter_scope
             )
-            combined = (
-                output
-                if reverted or not revert_output
-                else (f"{output}\n--- git revert output ---\n{revert_output}")
-            )
-            return RegressionResult(
-                passed=False,
-                failed_check=name,
-                reverted=reverted,
-                output=combined,
-            )
+            if saw_any and not has_in_scope:
+                # Every parseable diagnostic pointed at an unchanged line,
+                # so the failure is entirely pre-existing debt. Move on.
+                continue
+            if has_in_scope:
+                output = filtered_output
+            # If the tool failed but produced no parseable diagnostics
+            # (crash, free-text failure, or an unexpected output format),
+            # fall through to the revert path — we cannot prove the
+            # failure is pre-existing and must treat it as a regression.
+        reverted, revert_output = _maybe_revert(repo_root, enabled=revert_on_failure)
+        combined = (
+            output
+            if reverted or not revert_output
+            else (f"{output}\n--- git revert output ---\n{revert_output}")
+        )
+        return RegressionResult(
+            passed=False,
+            failed_check=name,
+            reverted=reverted,
+            output=combined,
+        )
 
     return RegressionResult(
         passed=True,
@@ -290,7 +313,117 @@ def _changed_py_files(
     return scoped
 
 
-def _resolve_scoped_args(
+def _changed_line_ranges(
+    repo_root: Path,
+    file_path: str,
+) -> list[tuple[int, int]] | None:
+    """Return ``[(start, end), ...]`` line ranges added in HEAD for ``file_path``.
+
+    The ranges correspond to ``+`` lines produced by
+    ``git diff --unified=0 HEAD~1 HEAD -- <file_path>``, i.e. the lines whose
+    content is new in HEAD. Context lines and pure deletions are excluded —
+    filtering is meant to distinguish "bug introduced by this commit" from
+    "bug pre-existing at a different line in the same file."
+
+    Returns ``None`` if the diff cannot be computed. Returns an empty list
+    if the file has no added lines in HEAD (pure deletions).
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--unified=0", "HEAD~1", "HEAD", "--", file_path],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    ranges: list[tuple[int, int]] = []
+    hunk_re = re.compile(r"^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@")
+    for line in proc.stdout.splitlines():
+        m = hunk_re.match(line)
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        if count == 0:
+            continue  # pure deletion hunk, no new lines
+        ranges.append((start, start + count - 1))
+    return ranges
+
+
+#: Regex matching the ``file:line:`` prefix of a ruff/mypy diagnostic line.
+#: Ruff concise format is ``file.py:line:col: CODE message`` and mypy is
+#: ``file.py:line: error|note|warning: message``. Both start identically.
+_DIAGNOSTIC_LINE_RE = re.compile(r"^([^\s:][^:]*\.py):(\d+)[:,]")
+
+
+def _filter_diagnostics_to_diff(
+    output: str,
+    repo_root: Path,
+    scoped_files: list[str],
+) -> tuple[str, bool, bool]:
+    """Keep diagnostics whose line number falls inside HEAD's added-line ranges.
+
+    This is the line-level companion to ``_changed_py_files``: given the raw
+    stdout+stderr of a ruff/mypy run and the list of .py files the commit
+    actually touched, it drops any diagnostic that points at a line the
+    commit did not add. Non-diagnostic lines (summary, headers, banners)
+    are preserved so the Fix Agent still sees context when a real in-scope
+    error is reported.
+
+    Returns ``(filtered_output, has_in_scope_diagnostic, saw_any_diagnostic)``:
+
+    - ``has_in_scope_diagnostic`` is True iff at least one parseable
+      diagnostic pointed at a line the commit added (i.e. a real
+      regression).
+    - ``saw_any_diagnostic`` is True iff at least one line in ``output``
+      matched the ``file:line:`` diagnostic pattern at all. The caller
+      uses this to distinguish "all diagnostics were pre-existing" (safe
+      to ignore) from "tool reported failure but we could not parse any
+      diagnostic" (must not be ignored — probably a free-text crash or
+      an unparseable tool output we cannot reason about).
+    """
+    if not scoped_files:
+        return output, False, False
+
+    file_ranges: dict[str, list[tuple[int, int]] | None] = {}
+    for rel in scoped_files:
+        file_ranges[rel] = _changed_line_ranges(repo_root, rel)
+
+    kept: list[str] = []
+    has_in_scope = False
+    saw_any = False
+    for line in output.splitlines():
+        m = _DIAGNOSTIC_LINE_RE.match(line)
+        if m is None:
+            kept.append(line)
+            continue
+        saw_any = True
+        diag_file = m.group(1)
+        diag_line = int(m.group(2))
+        ranges = file_ranges.get(diag_file)
+        if ranges is None:
+            # Either a file outside the commit's scope (ruff/mypy followed
+            # an import into src/foo.py while checking src/bar.py) or diff
+            # unavailable for that file. Preserve the diagnostic — we
+            # cannot prove it is pre-existing, so safety-first: treat as
+            # in-scope.
+            kept.append(line)
+            has_in_scope = True
+            continue
+        if any(start <= diag_line <= end for start, end in ranges):
+            kept.append(line)
+            has_in_scope = True
+        # else: silently drop — pre-existing diagnostic on an unchanged line.
+
+    return "\n".join(kept), has_in_scope, saw_any
+
+
+def _compute_tool_plan(
     *,
     explicit: tuple[str, ...] | None,
     scope_to_diff: bool,
@@ -298,28 +431,35 @@ def _resolve_scoped_args(
     scope_prefixes: tuple[str, ...],
     default: tuple[str, ...],
     prefix_flags: tuple[str, ...],
-) -> tuple[str, ...] | None:
-    """Resolve a linter/type-checker argument tuple for the gate.
+) -> tuple[tuple[str, ...] | None, list[str] | None]:
+    """Plan one tool invocation for :func:`run_regression_gate`.
 
-    Returns:
-        - ``explicit`` unchanged if the caller supplied it.
-        - ``default`` when ``scope_to_diff`` is False or the diff cannot
-          be computed (no baseline).
-        - ``(*prefix_flags, *changed_files)`` when diff scoping succeeded
-          and at least one in-scope file changed.
-        - ``None`` when diff scoping succeeded but zero in-scope files
-          changed; the caller should skip this check entirely.
+    Returns a ``(args, line_filter_files)`` pair:
+
+    - ``(explicit, None)`` when the caller supplied explicit args. The
+      second slot is ``None`` so the gate does not apply line-level
+      filtering — an explicit caller has their own intent.
+    - ``(default, None)`` when ``scope_to_diff`` is ``False`` or the
+      diff is unavailable (initial commit, git failure). Full-tree
+      behavior, no line filter.
+    - ``(None, None)`` when ``scope_to_diff`` succeeded but zero .py
+      files in scope changed. The gate skips this check entirely.
+    - ``((*prefix_flags, *changed_files), changed_files)`` when diff
+      scoping succeeded. The gate runs the tool against just the
+      changed files AND line-filters the output so pre-existing
+      diagnostics on unchanged lines of those files do not fail the
+      gate.
     """
     if explicit is not None:
-        return explicit
+        return explicit, None
     if not scope_to_diff:
-        return default
+        return default, None
     changed = _changed_py_files(repo_root, scope_prefixes)
     if changed is None:
-        return default
+        return default, None
     if not changed:
-        return None
-    return (*prefix_flags, *changed)
+        return None, None
+    return (*prefix_flags, *changed), changed
 
 
 def _run_check(

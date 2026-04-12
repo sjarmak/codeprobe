@@ -426,6 +426,134 @@ def test_scope_to_diff_explicit_args_bypass_scoping(
 
 
 # ---------------------------------------------------------------------------
+# run_regression_gate — line-level diff filtering
+# ---------------------------------------------------------------------------
+
+
+def _stage_two_commit_py(
+    repo: Path,
+    rel_path: str,
+    baseline: str,
+    fix: str,
+) -> str:
+    """Two commits: baseline, then fix. Returns the fix commit SHA."""
+    target = repo / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(baseline)
+    _git(repo, "add", rel_path)
+    _git(repo, "commit", "-q", "-m", f"baseline {rel_path}")
+    target.write_text(fix)
+    _git(repo, "add", rel_path)
+    _git(repo, "commit", "-q", "-m", f"fix {rel_path}")
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_line_filter_drops_preexisting_mypy_errors(
+    gate_env: dict[str, Path],
+) -> None:
+    """Pre-existing mypy diagnostics on unchanged lines do not fail the gate.
+
+    Baseline has 5 lines; the fix appends 2 lines (6-7). The shim emits an
+    error pointing at line 2 (pre-existing debt). The gate must pass.
+    """
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    fix_sha = _stage_two_commit_py(
+        repo,
+        "src/codeprobe/mod.py",
+        baseline="a = 1\nb = 2\nc = 3\nd = 4\ne = 5\n",
+        fix="a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\n",
+    )
+
+    (bin_dir / "mypy.fail").write_text(
+        "src/codeprobe/mod.py:2: error: Incompatible types [arg-type]\n"
+        "Found 1 error in 1 file\n"
+    )
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is True
+    assert result.failed_check is None
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == fix_sha
+
+
+def test_line_filter_keeps_mypy_errors_on_added_lines(
+    gate_env: dict[str, Path],
+) -> None:
+    """A diagnostic on a line the commit added IS a regression and fails."""
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_two_commit_py(
+        repo,
+        "src/codeprobe/mod.py",
+        baseline="a = 1\nb = 2\nc = 3\nd = 4\ne = 5\n",
+        fix="a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\n",
+    )
+
+    (bin_dir / "mypy.fail").write_text(
+        "src/codeprobe/mod.py:7: error: REAL-REGRESSION [arg-type]\n"
+        "Found 1 error in 1 file\n"
+    )
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is False
+    assert result.failed_check == "mypy"
+    assert result.reverted is True
+    assert "REAL-REGRESSION" in result.output
+
+
+def test_line_filter_mixed_keeps_only_in_scope_errors(
+    gate_env: dict[str, Path],
+) -> None:
+    """Mixed output: pre-existing dropped, in-scope kept in filtered output."""
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_two_commit_py(
+        repo,
+        "src/codeprobe/mod.py",
+        baseline="a = 1\nb = 2\nc = 3\nd = 4\ne = 5\n",
+        fix="a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\n",
+    )
+
+    (bin_dir / "mypy.fail").write_text(
+        "src/codeprobe/mod.py:2: error: PREEXISTING [arg-type]\n"
+        "src/codeprobe/mod.py:7: error: REGRESSION [arg-type]\n"
+        "Found 2 errors in 1 file\n"
+    )
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is False
+    assert result.failed_check == "mypy"
+    assert "REGRESSION" in result.output
+    assert "PREEXISTING" not in result.output
+
+
+def test_line_filter_unparseable_failure_is_not_swallowed(
+    gate_env: dict[str, Path],
+) -> None:
+    """A non-zero exit with no parseable diagnostic must still fail the gate.
+
+    The filter can only safely ignore a failure if every diagnostic was
+    pre-existing (parseable but out-of-scope). A crash or free-text failure
+    yields zero parseable diagnostics, and the gate cannot prove the failure
+    is pre-existing, so it falls through to the revert path.
+    """
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_py_commit(repo, "src/codeprobe/mod.py", "x = 1\n")
+
+    (bin_dir / "mypy.fail").write_text("Segmentation fault (core dumped)\n")
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is False
+    assert result.failed_check == "mypy"
+    assert result.reverted is True
+
+
+# ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
 
