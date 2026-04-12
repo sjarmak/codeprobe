@@ -1,0 +1,371 @@
+# Acceptance criteria manifest for codeprobe.
+#
+# Criteria are derived from docs/prd/*.md and encode contracts that the
+# acceptance loop runner can verify mechanically. Each criterion declares:
+#
+#   id           unique stable identifier
+#   description  human-readable summary
+#   tier         structural | behavioral | statistical
+#   check_type   discriminator for the check runner (e.g. cli_exit_code)
+#   severity     critical | high | medium | low
+#   prd_source   relative path + anchor into docs/prd/
+#   depends_on   list of criterion ids that must run first
+#   [criterion.params]  check-type-specific parameters
+#
+# Tiers
+#   structural   source-level assertions (constants, types, file layout)
+#   behavioral   runtime assertions (CLI exit codes, log content, IO)
+#   statistical  aggregate assertions over a run's outputs
+#
+# The loader (acceptance/loader.py) parses this file with tomllib, validates
+# required fields and enum values, checks for duplicate ids, resolves the
+# dependency DAG, and returns a topologically sorted list[Criterion].
+
+# ---------------------------------------------------------------------------
+# Known integration-test bugs (6 behavioral)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "BUG-MINE-RUN-001"
+description = "codeprobe mine creates .codeprobe/experiment.json that run can consume"
+tier = "behavioral"
+check_type = "cli_exit_code"
+severity = "critical"
+prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
+depends_on = []
+[criterion.params]
+command = "codeprobe mine {repo} --count 3 --no-interactive --no-llm --source local && test -f {repo}/.codeprobe/experiment.json"
+expected_exit = 0
+
+[[criterion]]
+id = "BUG-OUT-FLAG-002"
+description = "mine, run, and interpret commands accept a --out flag for custom output paths"
+tier = "behavioral"
+check_type = "cli_help_contains"
+severity = "high"
+prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
+depends_on = []
+[criterion.params]
+commands = ["codeprobe mine --help", "codeprobe run --help", "codeprobe interpret --help"]
+must_contain = "--out"
+
+[[criterion]]
+id = "BUG-INTERPRET-STDOUT-003"
+description = "interpret --format json writes warnings to stderr, leaving stdout pure JSON"
+tier = "behavioral"
+check_type = "stream_separation"
+severity = "critical"
+prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#stderr"
+depends_on = ["BUG-MINE-RUN-001"]
+[criterion.params]
+command = "codeprobe interpret {results} --format json"
+stdout_must_parse_as = "json"
+warning_channel = "stderr"
+
+[[criterion]]
+id = "BUG-INTERPRET-EXIT-004"
+description = "interpret exits non-zero when no results exist instead of silently succeeding"
+tier = "behavioral"
+check_type = "cli_exit_code"
+severity = "high"
+prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
+depends_on = []
+[criterion.params]
+command = "codeprobe interpret /nonexistent/results.json"
+expected_exit_not = 0
+
+[[criterion]]
+id = "BUG-VALIDATE-DISCOVERY-005"
+description = "codeprobe validate discovers task subdirectories recursively"
+tier = "behavioral"
+check_type = "cli_stdout_contains"
+severity = "high"
+prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
+depends_on = []
+[criterion.params]
+command = "codeprobe validate {tasks_dir}"
+fixture = "tests/fixtures/nested_tasks"
+must_contain = "task-001"
+
+[[criterion]]
+id = "BUG-INIT-DEFAULT-006"
+description = "experiment init defaults output directory to .codeprobe/ instead of cwd"
+tier = "behavioral"
+check_type = "cli_writes_file"
+severity = "high"
+prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
+depends_on = []
+[criterion.params]
+command = "codeprobe experiment init --non-interactive"
+expected_path = ".codeprobe/experiment.json"
+
+# ---------------------------------------------------------------------------
+# Silent pass-through detection (3 statistical)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "SILENT-MINE-COUNT-001"
+description = "mine produces at least 3 tasks; fewer indicates silent pass-through failure"
+tier = "statistical"
+check_type = "count_ge"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
+depends_on = ["BUG-MINE-RUN-001"]
+[criterion.params]
+source = "{repo}/.codeprobe/tasks"
+pattern = "task-*"
+min_count = 3
+
+[[criterion]]
+id = "SILENT-RUN-RESULTS-002"
+description = "run produces at least 1 result record; zero results indicates silent skip"
+tier = "statistical"
+check_type = "json_count_ge"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
+depends_on = ["BUG-MINE-RUN-001"]
+[criterion.params]
+source = "{repo}/.codeprobe/results.json"
+jsonpath = "$.completed_tasks"
+min_count = 1
+
+[[criterion]]
+id = "SILENT-CANARY-003"
+description = "canary UUID injected into workspace appears in captured agent output"
+tier = "statistical"
+check_type = "canary_detect"
+severity = "high"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
+depends_on = ["SILENT-RUN-RESULTS-002"]
+[criterion.params]
+canary_env = "CODEPROBE_CANARY_UUID"
+search_in = "{repo}/.codeprobe/results.json"
+
+# ---------------------------------------------------------------------------
+# Telemetry completeness (2 statistical + 1 structural)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "TELEM-COST-SOURCE-001"
+description = "cost_source is never None on completed tasks"
+tier = "statistical"
+check_type = "json_field_not_null"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R18"
+depends_on = ["SILENT-RUN-RESULTS-002"]
+[criterion.params]
+source = "{repo}/.codeprobe/results.json"
+jsonpath = "$.completed_tasks[*].cost_source"
+forbid_values = ["", "none", "null"]
+
+[[criterion]]
+id = "TELEM-COST-USD-002"
+description = "cost_usd is a float (not null) for every completed task"
+tier = "statistical"
+check_type = "json_field_type"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R18"
+depends_on = ["SILENT-RUN-RESULTS-002"]
+[criterion.params]
+source = "{repo}/.codeprobe/results.json"
+jsonpath = "$.completed_tasks[*].cost_usd"
+expected_type = "float"
+
+[[criterion]]
+id = "TELEM-TOKENS-001"
+description = "input_tokens and output_tokens fields exist on the AgentOutput dataclass"
+tier = "structural"
+check_type = "dataclass_has_fields"
+severity = "high"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R18"
+depends_on = []
+[criterion.params]
+module = "codeprobe.adapters.protocol"
+symbol = "AgentOutput"
+required_fields = ["input_tokens", "output_tokens", "cost_source", "cost_usd"]
+
+# ---------------------------------------------------------------------------
+# Scoring correctness (3 structural)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "SCORE-PASS-THRESHOLD-001"
+description = "PASS_THRESHOLD constant equals 0.5 in analysis/stats.py"
+tier = "structural"
+check_type = "import_equals"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#scoring"
+depends_on = []
+[criterion.params]
+module = "codeprobe.analysis.stats"
+symbol = "PASS_THRESHOLD"
+expected = 0.5
+
+[[criterion]]
+id = "SCORE-FILE-LIST-F1-002"
+description = "file_list scorer uses F1 score (not Jaccard) for set comparison"
+tier = "structural"
+check_type = "regex_present"
+severity = "high"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#scoring"
+depends_on = []
+[criterion.params]
+file = "src/codeprobe/core/scoring.py"
+pattern = "f1|F1|harmonic|2\\s*\\*\\s*precision\\s*\\*\\s*recall"
+forbid_pattern = "jaccard"
+
+[[criterion]]
+id = "SCORE-TESTSH-EXIT-003"
+description = "test_script scorer maps subprocess exit 0 to score 1.0"
+tier = "structural"
+check_type = "regex_present"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#scoring"
+depends_on = []
+[criterion.params]
+file = "src/codeprobe/core/scoring.py"
+pattern = "returncode\\s*==\\s*0|exit.*0.*1\\.0"
+
+# ---------------------------------------------------------------------------
+# Error handling (1 structural + 2 behavioral)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "ERR-NO-SILENT-ZERO-003"
+description = "no silent 0.0 score fallbacks in scoring.py — every zero path sets an error field"
+tier = "structural"
+check_type = "regex_absent"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
+depends_on = []
+[criterion.params]
+file = "src/codeprobe/core/scoring.py"
+forbid_pattern = "return\\s+0\\.0\\s*$"
+allow_if_near = "error"
+
+[[criterion]]
+id = "ERR-TIMEOUT-CAT-001"
+description = "executor sets error_category='timeout' when subprocess times out"
+tier = "behavioral"
+check_type = "regex_present"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R20"
+depends_on = []
+[criterion.params]
+file = "src/codeprobe/core/executor.py"
+pattern = "error_category\\s*=\\s*[\"']timeout[\"']"
+
+[[criterion]]
+id = "ERR-FALLBACK-LOG-002"
+description = "fallback parse paths emit WARNING-level log messages"
+tier = "behavioral"
+check_type = "regex_present"
+severity = "high"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
+depends_on = []
+[criterion.params]
+file = "src/codeprobe/adapters/copilot.py"
+pattern = "logger\\.warning|log\\.warning"
+
+# ---------------------------------------------------------------------------
+# Logging (3 behavioral)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "LOG-VERBOSE-DEBUG-001"
+description = "codeprobe -v sets the codeprobe logger to DEBUG level"
+tier = "behavioral"
+check_type = "log_level_matches"
+severity = "high"
+prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#R-verbose"
+depends_on = []
+[criterion.params]
+command = "codeprobe -v --help"
+logger_name = "codeprobe"
+expected_level = "DEBUG"
+
+[[criterion]]
+id = "LOG-QUIET-WARNING-002"
+description = "codeprobe -q sets the codeprobe logger to WARNING level"
+tier = "behavioral"
+check_type = "log_level_matches"
+severity = "high"
+prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#R-quiet"
+depends_on = []
+[criterion.params]
+command = "codeprobe -q --help"
+logger_name = "codeprobe"
+expected_level = "WARNING"
+
+[[criterion]]
+id = "LOG-STDERR-003"
+description = "log messages are written to stderr, not stdout"
+tier = "behavioral"
+check_type = "stream_separation"
+severity = "critical"
+prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#stderr"
+depends_on = []
+[criterion.params]
+command = "codeprobe probe {repo}"
+stdout_must_not_contain = "INFO codeprobe"
+stderr_may_contain = "INFO codeprobe"
+
+# ---------------------------------------------------------------------------
+# Output format (1 behavioral + 1 structural)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "OUT-JSON-LINES-001"
+description = "--log-format json produces one valid JSON object per log line"
+tier = "behavioral"
+check_type = "json_lines_valid"
+severity = "high"
+prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#json-events"
+depends_on = ["LOG-STDERR-003"]
+[criterion.params]
+command = "codeprobe --log-format json run {experiment}"
+channel = "stderr"
+required_keys = ["level", "logger", "message"]
+
+[[criterion]]
+id = "OUT-ROUNDTRIP-002"
+description = "results.json round-trips through the CompletedTask dataclass without data loss"
+tier = "structural"
+check_type = "dataclass_roundtrip"
+severity = "critical"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
+depends_on = []
+[criterion.params]
+module = "codeprobe.models.experiment"
+symbol = "CompletedTask"
+fixture = "tests/fixtures/results.json"
+
+# ---------------------------------------------------------------------------
+# CI hygiene (2 structural)
+# ---------------------------------------------------------------------------
+
+[[criterion]]
+id = "CI-DEPS-UPPER-001"
+description = "all dependencies in pyproject.toml declare an upper version bound"
+tier = "structural"
+check_type = "pyproject_deps_bounded"
+severity = "high"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#ci"
+depends_on = []
+[criterion.params]
+file = "pyproject.toml"
+sections = ["project.dependencies", "project.optional-dependencies.dev"]
+require_upper_bound = true
+
+[[criterion]]
+id = "CI-SAME-IMAGE-002"
+description = "publish.yml and ci.yml use the same runner image for reproducibility"
+tier = "structural"
+check_type = "yaml_field_equal"
+severity = "medium"
+prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#ci"
+depends_on = []
+[criterion.params]
+files = [".github/workflows/ci.yml", ".github/workflows/publish.yml"]
+jsonpath = "$.jobs.*.runs-on"
+must_match = true
