@@ -69,6 +69,11 @@ def run_init(path: str) -> None:
     )
     codeprobe_dir = target / ".codeprobe"
     codeprobe_dir.mkdir(exist_ok=True)
+
+    from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
+
+    ensure_codeprobe_excluded(target)
+
     exp_dir = create_experiment_dir(codeprobe_dir, experiment)
 
     # Summary

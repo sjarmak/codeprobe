@@ -253,3 +253,53 @@ class TestTaskScoredScoringDetailsDefault:
         # Empty dict should NOT trigger dual format
         assert "code:" not in out
         assert "artifact:" not in out
+
+
+# ---------------------------------------------------------------------------
+# RichLiveListener pass-count threshold alignment (codeprobe-kth)
+# ---------------------------------------------------------------------------
+
+
+class TestRichLiveListenerPassThreshold:
+    """Live dashboard pass counter must use PASS_THRESHOLD (not ``> 0``)
+    to match the final report's ``_task_passed()`` logic."""
+
+    def _get_passed_count(
+        self,
+        automated_score: float,
+        scoring_details: dict | None = None,
+    ) -> int:
+        listener, _ = _make_rich_listener()
+        _start_run(listener, total=1)
+        try:
+            event = _make_task_scored(
+                task_id="threshold-test",
+                automated_score=automated_score,
+                scoring_details=scoring_details,
+            )
+            listener.on_event(event)
+            state = listener._configs["cfg"]  # type: ignore[attr-defined]
+            return state.passed
+        finally:
+            if listener._live is not None:  # type: ignore[attr-defined]
+                listener._live.stop()  # type: ignore[attr-defined]
+
+    def test_partial_score_below_threshold_is_not_passed(self) -> None:
+        """Score 0.3 with no scoring_details should NOT count as passed."""
+        assert self._get_passed_count(0.3) == 0
+
+    def test_score_at_threshold_is_passed(self) -> None:
+        """Score 0.5 (== PASS_THRESHOLD) should count as passed."""
+        assert self._get_passed_count(0.5) == 1
+
+    def test_full_score_with_explicit_false_is_not_passed(self) -> None:
+        """Score 1.0 but scoring_details={'passed': False} → not passed."""
+        assert self._get_passed_count(1.0, {"passed": False}) == 0
+
+    def test_zero_score_with_explicit_true_is_passed(self) -> None:
+        """Score 0.0 but scoring_details={'passed': True} → passed."""
+        assert self._get_passed_count(0.0, {"passed": True}) == 1
+
+    def test_string_false_in_details_is_not_passed(self) -> None:
+        """scoring_details={'passed': 'false'} (JSON round-trip) → not passed."""
+        assert self._get_passed_count(1.0, {"passed": "false"}) == 0

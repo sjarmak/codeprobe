@@ -17,6 +17,8 @@ Covers the critical / high findings from codex + copilot reviews:
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import subprocess
@@ -24,10 +26,20 @@ from pathlib import Path
 
 import pytest
 
+from codeprobe.analysis import (
+    format_csv_report,
+    format_html_report,
+    format_text_report,
+    generate_report,
+)
 from codeprobe.analysis.dual import resolve_leg_pass
 from codeprobe.core.scoring import DualScorer, scorer_env_override
 from codeprobe.mining.writer import _build_test_script
-from codeprobe.models.experiment import CompletedTask, DualScoringDetails
+from codeprobe.models.experiment import (
+    CompletedTask,
+    ConfigResults,
+    DualScoringDetails,
+)
 
 
 class TestWriterCommandHardening:
@@ -245,3 +257,164 @@ class TestScorerEnvOverride:
         t1.join()
         t2.join()
         assert results == {"a": "/tmp/wt-a", "b": "/tmp/wt-b"}
+
+
+class TestReportPassThreshold:
+    """Regression for bead codeprobe-c8g: report rendering must honor
+    PASS_THRESHOLD and the explicit ``scoring_details['passed']`` flag, never
+    ``automated_score > 0``. A weighted dual composite of 0.25 (below 0.5) was
+    rendering as pass, contradicting the scorer's verdict.
+    """
+
+    @staticmethod
+    def _render(task: CompletedTask) -> tuple[str, str, str]:
+        cr = ConfigResults(config="cfg", completed=[task])
+        report = generate_report("exp", [cr])
+        return (
+            format_text_report(report),
+            format_html_report(report),
+            format_csv_report(report),
+        )
+
+    @staticmethod
+    def _csv_pass_value(csv_text: str, task_id: str) -> str:
+        body = "\n".join(
+            line for line in csv_text.splitlines() if not line.startswith("#")
+        )
+        for row in csv.DictReader(io.StringIO(body)):
+            if row["task_id"] == task_id:
+                return row["pass"]
+        raise AssertionError(f"task_id {task_id} not in csv output")
+
+    def test_weighted_dual_below_threshold_reports_fail(self) -> None:
+        task = CompletedTask(
+            task_id="weighted-fail",
+            automated_score=0.3,
+            status="completed",
+            duration_seconds=5.0,
+            cost_usd=0.02,
+            scoring_details={
+                "score_direct": 1.0,
+                "score_artifact": 0.0,
+                "passed_direct": True,
+                "passed_artifact": False,
+                "scoring_policy": "weighted",
+                "passed": False,
+            },
+        )
+        text, html, csv_text = self._render(task)
+
+        row = next(line for line in text.splitlines() if "weighted-fail" in line)
+        assert "| N |" in row and "| Y |" not in row
+
+        start = html.index("weighted-fail")
+        row_html = html[start : html.index("</tr>", start)]
+        assert '<td class="fail">N</td>' in row_html
+        assert '<td class="pass">Y</td>' not in row_html
+
+        assert self._csv_pass_value(csv_text, "weighted-fail") == "0"
+
+    def test_continuous_partial_score_reports_fail(self) -> None:
+        """No scoring_details → fallback to ``score >= PASS_THRESHOLD``.
+
+        A 0.4 continuous score is below the 0.5 threshold → N, even though
+        the legacy ``> 0`` check would have marked it as a pass.
+        """
+        task = CompletedTask(
+            task_id="partial-score",
+            automated_score=0.4,
+            status="completed",
+            duration_seconds=5.0,
+            cost_usd=0.02,
+            scoring_details={},
+        )
+        text, html, csv_text = self._render(task)
+
+        row = next(line for line in text.splitlines() if "partial-score" in line)
+        assert "| N |" in row
+
+        start = html.index("partial-score")
+        row_html = html[start : html.index("</tr>", start)]
+        assert '<td class="fail">N</td>' in row_html
+
+        assert self._csv_pass_value(csv_text, "partial-score") == "0"
+
+    def test_explicit_fail_flag_wins_over_high_score(self) -> None:
+        """Scorer's explicit ``passed=False`` overrides a high numeric score.
+
+        Handles the case where a scorer marks a task failed despite a high
+        composite score (e.g., a critical assertion missed).
+        """
+        task = CompletedTask(
+            task_id="explicit-fail",
+            automated_score=1.0,
+            status="completed",
+            duration_seconds=5.0,
+            cost_usd=0.02,
+            scoring_details={"passed": False},
+        )
+        text, _, csv_text = self._render(task)
+
+        row = next(line for line in text.splitlines() if "explicit-fail" in line)
+        assert "| N |" in row and "| Y |" not in row
+        assert self._csv_pass_value(csv_text, "explicit-fail") == "0"
+
+    def test_json_round_tripped_false_string_reports_fail(self) -> None:
+        """``scoring_details['passed'] == 'false'`` (from JSON checkpoint)
+        must resolve to fail via _strict_bool, not silently fall through
+        to the score threshold.
+
+        Regression for the ``bool("False") is True`` pitfall: a naive
+        ``isinstance(value, bool)`` check would reject the string and fall
+        back to the score (1.0), flipping a scorer-confirmed fail into a
+        pass.
+        """
+        task = CompletedTask(
+            task_id="json-false",
+            automated_score=1.0,
+            status="completed",
+            duration_seconds=5.0,
+            cost_usd=0.02,
+            scoring_details={"passed": "false"},
+        )
+        text, _, csv_text = self._render(task)
+
+        row = next(line for line in text.splitlines() if "json-false" in line)
+        assert "| N |" in row and "| Y |" not in row
+        assert self._csv_pass_value(csv_text, "json-false") == "0"
+
+    def test_zero_score_no_details_reports_fail(self) -> None:
+        """Edge case: score exactly 0.0 with empty scoring_details.
+
+        Falls through to ``0.0 >= 0.5`` → False. Guards against any future
+        accidental change to ``> PASS_THRESHOLD`` instead of ``>=``.
+        """
+        task = CompletedTask(
+            task_id="zero-score",
+            automated_score=0.0,
+            status="completed",
+            duration_seconds=5.0,
+            cost_usd=0.02,
+            scoring_details={},
+        )
+        text, _, csv_text = self._render(task)
+
+        row = next(line for line in text.splitlines() if "zero-score" in line)
+        assert "| N |" in row
+        assert self._csv_pass_value(csv_text, "zero-score") == "0"
+
+    def test_explicit_pass_flag_renders_pass(self) -> None:
+        """Sanity: explicit ``passed=True`` renders as pass regardless of score."""
+        task = CompletedTask(
+            task_id="explicit-pass",
+            automated_score=0.3,
+            status="completed",
+            duration_seconds=5.0,
+            cost_usd=0.02,
+            scoring_details={"passed": True},
+        )
+        text, _, csv_text = self._render(task)
+
+        row = next(line for line in text.splitlines() if "explicit-pass" in line)
+        assert "| Y |" in row
+        assert self._csv_pass_value(csv_text, "explicit-pass") == "1"

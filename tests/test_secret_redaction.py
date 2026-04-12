@@ -175,6 +175,120 @@ class TestRedactMcpHeaders:
         result = redact_mcp_headers(config)
         assert result == config
 
+    # --- CLI-arg token redaction (BUG-10: mcp-remote --header pattern) ---
+
+    def test_redacts_token_in_args_header_flag(self) -> None:
+        """Tokens passed as --header args to mcp-remote must be redacted."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        config = {
+            "mcpServers": {
+                "sourcegraph": {
+                    "type": "stdio",
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "mcp-remote",
+                        "https://demo.sourcegraph.com/.api/mcp/all",
+                        "--header",
+                        "Authorization: token sgp_db0c9af43ab9c365_fake_test_value",
+                    ],
+                    "env": {},
+                }
+            }
+        }
+        result = redact_mcp_headers(config)
+        dumped = json.dumps(result)
+        assert "sgp_db0c9af43ab9c365" not in dumped
+        assert "[REDACTED]" in dumped
+
+    def test_redacts_bearer_token_in_args(self) -> None:
+        """Bearer tokens in CLI args are also redacted."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        config = {
+            "mcpServers": {
+                "api": {
+                    "command": "mcp-remote",
+                    "args": [
+                        "https://api.example.com",
+                        "--header",
+                        "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
+                    ],
+                }
+            }
+        }
+        result = redact_mcp_headers(config)
+        assert "eyJhbG" not in json.dumps(result)
+
+    def test_redacts_known_token_patterns_in_env(self) -> None:
+        """Token-shaped values in env dict are redacted."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        config = {
+            "mcpServers": {
+                "sg": {
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {
+                        "SRC_ACCESS_TOKEN": "sgp_abc123_def456789012345678901234567890",
+                        "GITHUB_TOKEN": "ghp_1234567890abcdef1234567890abcdef12345678",
+                        "OPENAI_API_KEY": "sk-proj-abc123def456ghi789",
+                        "SAFE_VALUE": "not-a-secret",
+                    },
+                }
+            }
+        }
+        result = redact_mcp_headers(config)
+        env = result["mcpServers"]["sg"]["env"]
+        assert "sgp_abc123" not in json.dumps(env)
+        assert "ghp_1234567890" not in json.dumps(env)
+        assert "sk-proj-abc123" not in json.dumps(env)
+        assert env["SAFE_VALUE"] == "not-a-secret"
+
+    def test_redacts_token_in_args_preserves_non_sensitive_args(self) -> None:
+        """Non-sensitive args like URLs and flags should be unchanged."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        config = {
+            "mcpServers": {
+                "sg": {
+                    "command": "npx",
+                    "args": [
+                        "-y",
+                        "mcp-remote",
+                        "https://example.com/.api/mcp/all",
+                        "--header",
+                        "Authorization: token sgp_secret_value_1234567890123456789012345",
+                    ],
+                }
+            }
+        }
+        result = redact_mcp_headers(config)
+        args = result["mcpServers"]["sg"]["args"]
+        assert args[0] == "-y"
+        assert args[1] == "mcp-remote"
+        assert args[2] == "https://example.com/.api/mcp/all"
+        assert args[3] == "--header"
+
+    def test_no_mutation_of_original_with_args_tokens(self) -> None:
+        """Original config must not be mutated when redacting args tokens."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        config = {
+            "mcpServers": {
+                "sg": {
+                    "args": [
+                        "--header",
+                        "Authorization: token sgp_original_should_not_change_here",
+                    ],
+                }
+            }
+        }
+        original_arg = config["mcpServers"]["sg"]["args"][1]
+        redact_mcp_headers(config)
+        assert config["mcpServers"]["sg"]["args"][1] == original_arg
+
 
 # ---------------------------------------------------------------------------
 # experiment.json serialization redacts tokens

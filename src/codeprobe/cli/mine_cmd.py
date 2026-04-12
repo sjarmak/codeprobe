@@ -477,6 +477,10 @@ def _discover_and_select(
 
 def _clear_tasks_dir(repo_path: Path) -> Path:
     """Clear stale tasks and return the tasks directory path."""
+    from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
+
+    ensure_codeprobe_excluded(repo_path)
+
     tasks_dir = repo_path / ".codeprobe" / "tasks"
     if tasks_dir.exists():
         shutil.rmtree(tasks_dir)

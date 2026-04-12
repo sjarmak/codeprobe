@@ -8,9 +8,10 @@ import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
-from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
+from codeprobe.analysis.dual import _strict_bool, dual_matrix, has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
+    PASS_THRESHOLD,
     ConfigSummary,
     PairwiseComparison,
     compare_configs,
@@ -18,6 +19,22 @@ from codeprobe.analysis.stats import (
     summarize_config,
 )
 from codeprobe.models.experiment import CompletedTask, ConfigResults
+
+
+def _task_passed(task: CompletedTask) -> bool:
+    """Return whether a task passed for display purposes.
+
+    Prefers the scorer's explicit ``scoring_details['passed']`` flag when
+    present (accepting bool or JSON-round-tripped string forms like
+    ``"false"``/``"true"`` via :func:`_strict_bool`), else falls back to
+    ``automated_score >= PASS_THRESHOLD``. Never uses ``> 0``: a nonzero
+    partial score is not a pass under any policy used by the scorer.
+    """
+    details = task.scoring_details or {}
+    explicit = _strict_bool(details.get("passed"))
+    if explicit is not None:
+        return explicit
+    return task.automated_score >= PASS_THRESHOLD
 
 
 @dataclass(frozen=True)
@@ -215,7 +232,7 @@ def format_text_report(report: Report) -> str:
             lines.append("|--------|------|-------|------|--------------|----------|")
         for cr in report.config_results:
             for task in cr.completed:
-                passed = "Y" if task.automated_score > 0 else "N"
+                passed = "Y" if _task_passed(task) else "N"
                 cost_cell = f"{task.cost_usd:.4f}" if task.cost_usd is not None else ""
                 if any_dual_tasks:
                     details = task.scoring_details or {}
@@ -269,7 +286,7 @@ def _build_task_rows(report: Report) -> list[dict]:
                     "task_id": task.task_id,
                     "repeat": 1,
                     "score": task.automated_score,
-                    "pass": 1 if task.automated_score > 0 else 0,
+                    "pass": 1 if _task_passed(task) else 0,
                     "duration_sec": task.duration_seconds,
                     "cost_usd": task.cost_usd,
                     "cost_source": task.cost_source,
@@ -576,7 +593,7 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                 )
             parts.append("</tr></thead>\n<tbody>\n")
             for task in cr.completed:
-                passed = task.automated_score > 0
+                passed = _task_passed(task)
                 cls = "pass" if passed else "fail"
                 if any_dual_tasks_html:
                     details = task.scoring_details or {}

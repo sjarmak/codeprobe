@@ -43,6 +43,13 @@ def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
     exp_dir = base_dir / experiment.name
     (exp_dir / "tasks").mkdir(parents=True, exist_ok=True)
 
+    # Ensure .codeprobe/ is excluded from git in the target repo.
+    # base_dir is typically <repo>/.codeprobe — walk up to the repo root.
+    from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
+
+    if base_dir.name == ".codeprobe":
+        ensure_codeprobe_excluded(base_dir.parent)
+
     for config in experiment.configs:
         (exp_dir / "runs" / config.label).mkdir(parents=True, exist_ok=True)
 
