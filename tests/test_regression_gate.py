@@ -135,6 +135,9 @@ def gate_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]
     # Shadow real tools by prepending the shim dir to PATH. git must still
     # resolve from the system PATH, so we append it after.
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    # The gate uses sys.executable to invoke its checks; point it at the shim
+    # so tests drive pytest/ruff/mypy behavior deterministically.
+    monkeypatch.setattr("sys.executable", str(bin_dir / "python"))
     return {"repo": repo, "bin": bin_dir}
 
 

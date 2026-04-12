@@ -5,8 +5,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 
 def _git_init(tmp_path: Path) -> Path:
     """Create a minimal git repo in a temp directory and return its path."""

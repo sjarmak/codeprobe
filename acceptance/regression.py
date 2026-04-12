@@ -154,9 +154,9 @@ def run_regression_gate(
         raise ValueError(f"repo_root is not a git repository: {repo_root}")
 
     checks: tuple[tuple[CheckName, tuple[str, ...]], ...] = (
-        ("pytest", ("python", "-m", "pytest", *pytest_args)),
-        ("ruff", ("python", "-m", "ruff", *ruff_args)),
-        ("mypy", ("python", "-m", "mypy", *mypy_args)),
+        ("pytest", (sys.executable, "-m", "pytest", *pytest_args)),
+        ("ruff", (sys.executable, "-m", "ruff", *ruff_args)),
+        ("mypy", (sys.executable, "-m", "mypy", *mypy_args)),
     )
 
     for name, cmd in checks:
