@@ -28,6 +28,7 @@ from pathlib import Path
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.analysis.report import Report, generate_report
+from codeprobe.analysis.stats import task_passed
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.executor import execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
@@ -185,14 +186,14 @@ def run_experiment(
 
         save_config_results(experiment_dir, exp_config.label, results)
 
-        scoring = sum(1 for r in results if r.automated_score > 0.0)
+        passed = sum(1 for r in results if task_passed(r))
         mean = (
             sum(r.automated_score for r in results) / len(results) if results else 0.0
         )
         logger.info(
-            "[%s] %d/%d scored (mean=%.2f)",
+            "[%s] %d/%d passed (mean=%.2f)",
             exp_config.label,
-            scoring,
+            passed,
             len(results),
             mean,
         )

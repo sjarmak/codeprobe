@@ -76,10 +76,21 @@ def generate_report(
     summaries = [summarize_config(r, total_tasks=total_tasks) for r in all_results]
     rankings = rank_configs(summaries)
 
+    # Build per-config binary pass/fail scores keyed by task_id so that
+    # paired comparisons use task_passed() instead of raw automated_score.
+    config_binary: dict[str, dict[str, float]] = {}
+    for cr in all_results:
+        config_binary[cr.config] = {
+            t.task_id: (1.0 if _task_passed(t) else 0.0) for t in cr.completed
+        }
+
     comparisons: list[PairwiseComparison] = []
     for i, a in enumerate(summaries):
         for b in summaries[i + 1 :]:
-            comparisons.append(compare_configs(a, b))
+            a_scores, b_scores = _paired_binary_scores(config_binary, a.label, b.label)
+            comparisons.append(
+                compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
+            )
 
     is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
         summaries, total_tasks
@@ -94,6 +105,38 @@ def generate_report(
         tasks_expected=tasks_expected,
         completion_ratio=completion_ratio,
         config_results=tuple(all_results),
+    )
+
+
+def _tee_binary_scores(
+    tasks: Iterator[CompletedTask],
+    sink: dict[str, float],
+) -> Iterator[CompletedTask]:
+    """Yield tasks unchanged while recording binary pass/fail into *sink*."""
+    for t in tasks:
+        sink[t.task_id] = 1.0 if _task_passed(t) else 0.0
+        yield t
+
+
+def _paired_binary_scores(
+    config_binary: dict[str, dict[str, float]],
+    label_a: str,
+    label_b: str,
+) -> tuple[list[float] | None, list[float] | None]:
+    """Extract paired binary score lists for two configs.
+
+    Returns ``(a_scores, b_scores)`` containing only tasks present in both
+    configs (paired by task_id), or ``(None, None)`` when there are no
+    shared tasks.
+    """
+    a_by_id = config_binary.get(label_a, {})
+    b_by_id = config_binary.get(label_b, {})
+    shared_ids = sorted(set(a_by_id) & set(b_by_id))
+    if not shared_ids:
+        return None, None
+    return (
+        [a_by_id[tid] for tid in shared_ids],
+        [b_by_id[tid] for tid in shared_ids],
     )
 
 
@@ -113,16 +156,26 @@ def generate_report_streaming(
     When *total_tasks* is provided and exceeds completed tasks, the report
     is flagged as partial with a completion ratio.
     """
-    summaries = [
-        summarize_completed_tasks(label, tasks, total_tasks=total_tasks)
-        for label, tasks in config_task_pairs
-    ]
+    config_binary: dict[str, dict[str, float]] = {}
+    summaries: list[ConfigSummary] = []
+    for label, tasks in config_task_pairs:
+        sink: dict[str, float] = {}
+        config_binary[label] = sink
+        summaries.append(
+            summarize_completed_tasks(
+                label, _tee_binary_scores(tasks, sink), total_tasks=total_tasks
+            )
+        )
+
     rankings = rank_configs(summaries)
 
     comparisons: list[PairwiseComparison] = []
     for i, a in enumerate(summaries):
         for b in summaries[i + 1 :]:
-            comparisons.append(compare_configs(a, b))
+            a_scores, b_scores = _paired_binary_scores(config_binary, a.label, b.label)
+            comparisons.append(
+                compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
+            )
 
     is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
         summaries, total_tasks
