@@ -366,11 +366,6 @@ def execute_task(
 
         try:
             output = adapter.run(prompt, agent_config, session_env=session_env)
-        except subprocess.TimeoutExpired as exc:
-            return _error_result(
-                sanitize_secrets(str(exc)),
-                error_category="timeout",
-            )
         except Exception as exc:
             return _error_result(
                 sanitize_secrets(str(exc)),
