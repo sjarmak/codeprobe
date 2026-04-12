@@ -269,6 +269,7 @@ def _emit_sync_action(
         if [ -d "{target_repo}/.codeprobe" ]; then
           cp -r "{target_repo}/.codeprobe/." "{workspace}/.codeprobe/"
         fi
+        touch "{workspace}/{c.id}.synced"
     """).strip()
     return TestAction(
         criterion_id=c.id,
@@ -316,6 +317,8 @@ def _stub_compile_error(c: Criterion, workspace: Path) -> TestAction:
     """
     snippet = textwrap.dedent(f"""\
         echo "COMPILE_ERROR: missing or invalid params for {c.id}" \\
+          > "{workspace}/{c.id}.stdout"
+        echo "COMPILE_ERROR: missing or invalid params for {c.id}" \\
           > "{workspace}/{c.id}.stderr"
         echo "255" > "{workspace}/{c.id}.exit"
     """).strip()
@@ -323,7 +326,7 @@ def _stub_compile_error(c: Criterion, workspace: Path) -> TestAction:
         criterion_id=c.id,
         description=f"STUB: {c.id} (missing params)",
         shell_snippet=snippet,
-        artifact_paths=(f"{c.id}.exit", f"{c.id}.stderr"),
+        artifact_paths=(f"{c.id}.exit", f"{c.id}.stdout", f"{c.id}.stderr"),
     )
 
 

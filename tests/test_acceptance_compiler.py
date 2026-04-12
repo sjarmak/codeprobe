@@ -495,7 +495,7 @@ class TestRealCriteria:
             criteria,
             target_repo=TARGET_REPO,
             workspace=WORKSPACE,
-            project_root=Path("/home/ds/projects/codeprobe"),
+            project_root=Path(__file__).resolve().parent.parent,
         )
         # At least 9 actions (behavioral + statistical that have handlers)
         assert len(actions) >= 9
@@ -511,7 +511,7 @@ class TestRealCriteria:
             criteria,
             target_repo=TARGET_REPO,
             workspace=WORKSPACE,
-            project_root=Path("/home/ds/projects/codeprobe"),
+            project_root=Path(__file__).resolve().parent.parent,
         )
         ids = [a.criterion_id for a in actions]
         assert len(ids) == len(set(ids))
