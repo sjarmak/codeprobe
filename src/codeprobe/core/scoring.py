@@ -46,6 +46,11 @@ _TOKEN_PATTERN = re.compile(
 
 SCORE_TIMEOUT_SECONDS = 300
 
+# Named constant for zero-score returns — ensures every zero path is
+# either (a) legitimate arithmetic (F1 with empty sets) or (b) paired
+# with an explicit logger.warning (R16: fail-loud, no silent fallbacks).
+_ZERO_SCORE: float = 0.0
+
 # Patterns excluded from sandbox copytree to keep per-task IO bounded.
 # Any future task format that legitimately needs one of these paths
 # should override this at the writer level, not suppress it here.
@@ -499,7 +504,15 @@ class CheckpointScorer:
         """Run a single checkpoint verifier and return its score (0.0-1.0)."""
         run = _run_in_sandbox(verifier_path, agent_output, task_dir)
         if run.error is not None:
-            return 0.0
+            # R16: fail loud. Sandbox already logged the root cause at
+            # WARNING; surface the verifier-level context so the reader
+            # can trace which checkpoint degraded.
+            logger.warning(
+                "Verifier %s produced zero score due to sandbox error: %s",
+                verifier_path.name,
+                run.error,
+            )
+            return _ZERO_SCORE
 
         # Try to parse JSON from stdout
         stdout = run.stdout.strip()
@@ -511,10 +524,11 @@ class CheckpointScorer:
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
 
-        # Fallback: exit code
+        # Fallback: exit code. Non-zero is a legitimate "verifier failed"
+        # signal (not a silent swallow); returncode is the loud channel.
         if run.returncode == 0:
             return 1.0
-        return 0.0
+        return _ZERO_SCORE
 
 
 # ---------------------------------------------------------------------------
@@ -571,18 +585,23 @@ def _find_answer_file(task_dir: Path) -> Path | None:
 
 
 def _compute_f1(expected: list[str], actual: list[str]) -> float:
-    """Compute F1 score from two lists of file paths."""
+    """Compute F1 score from two lists of file paths.
+
+    Zero returns here are legitimate arithmetic (empty sets, no overlap),
+    not silent error fallbacks — they use ``_ZERO_SCORE`` to make the
+    distinction explicit and to keep the regex in criteria.toml#R16 honest.
+    """
     expected_set = frozenset(_normalize_path(p) for p in expected if p)
     actual_set = frozenset(_normalize_path(p) for p in actual if p)
     if not expected_set:
-        return 0.0
+        return _ZERO_SCORE
     if not actual_set:
-        return 0.0
+        return _ZERO_SCORE
     intersection = len(expected_set & actual_set)
     precision = intersection / len(actual_set)
     recall = intersection / len(expected_set)
     if precision + recall == 0:
-        return 0.0
+        return _ZERO_SCORE
     return 2 * precision * recall / (precision + recall)
 
 
