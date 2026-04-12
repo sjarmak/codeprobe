@@ -30,9 +30,55 @@ def experiment_init(
     path: str,
     name: str,
     description: str,
+    non_interactive: bool = False,
 ) -> None:
-    """Create a new experiment directory."""
+    """Create a new experiment directory.
+
+    In ``non_interactive`` mode the experiment is materialized inside the
+    target's ``.codeprobe/`` directory so that ``.codeprobe/experiment.json``
+    is the canonical default location, matching the documented golden path.
+    """
     base_dir = Path(path)
+    if non_interactive:
+        # Default location is <path>/.codeprobe/, with experiment.json
+        # written directly inside it (no nested name subdir).
+        from codeprobe.core.experiment import _validate_path_component
+        from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
+
+        try:
+            _validate_path_component(name, "experiment name")
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1)
+
+        codeprobe_dir = base_dir / ".codeprobe"
+        codeprobe_dir.mkdir(exist_ok=True)
+        ensure_codeprobe_excluded(base_dir)
+
+        exp_json = codeprobe_dir / "experiment.json"
+        if exp_json.exists():
+            click.echo(
+                f"Error: experiment already exists at {exp_json}",
+                err=True,
+            )
+            raise SystemExit(1)
+
+        experiment = Experiment(name=name, description=description)
+        try:
+            save_experiment(codeprobe_dir, experiment)
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1)
+        (codeprobe_dir / "tasks").mkdir(exist_ok=True)
+
+        click.echo(f"Experiment '{name}' created at {codeprobe_dir}/")
+        click.echo("  Tasks: 0 (add tasks to tasks/ directory)")
+        click.echo(
+            "  Configs: 0 (use 'codeprobe experiment add-config' to define "
+            "configurations)"
+        )
+        return
+
     exp_dir = base_dir / name
 
     if exp_dir.exists():

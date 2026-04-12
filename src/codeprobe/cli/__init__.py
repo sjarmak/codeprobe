@@ -667,13 +667,37 @@ def experiment() -> None:
 
 @experiment.command("init")
 @click.argument("path", default=".", type=click.Path(exists=True))
-@click.option("--name", required=True, help="Experiment name (used as directory name).")
+@click.option("--name", default=None, help="Experiment name (used as directory name).")
 @click.option("--description", default="", help="One-line experiment description.")
-def init_experiment(path: str, name: str, description: str) -> None:
+@click.option(
+    "--non-interactive",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip prompts and write a minimal experiment.json to .codeprobe/ "
+        "in the target path. Defaults --name to 'default'."
+    ),
+)
+def init_experiment(
+    path: str,
+    name: str | None,
+    description: str,
+    non_interactive: bool,
+) -> None:
     """Create a new experiment directory."""
     from codeprobe.cli.experiment_cmd import experiment_init
 
-    experiment_init(path, name=name, description=description)
+    if not non_interactive and not name:
+        raise click.UsageError(
+            "--name is required (or pass --non-interactive to use the default)."
+        )
+
+    experiment_init(
+        path,
+        name=name or "default",
+        description=description,
+        non_interactive=non_interactive,
+    )
 
 
 # Use a hyphenated command name to match the reference CLI
