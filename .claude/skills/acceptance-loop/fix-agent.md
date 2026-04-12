@@ -125,14 +125,21 @@ Read the evidence string attached to your chosen failure in `verdict.json`. Evid
 - `exit code 2, expected 0`
 - `count 3 < 5`
 - `null/forbidden values found: [None]`
+- `file missing: .codeprobe/experiment.json`
 
-Use the evidence to navigate the code:
+**You MUST read the verifier check implementation before patching.** The evidence string alone is not enough — the verifier is the ground truth for what "pass" means, and your fix has to move that specific check from fail to pass, not some related-looking thing.
 
-1. If the evidence names a file (`src/codeprobe/X.py`), open it with `Read`.
-2. Read the criterion `prd_source` field — it points to the PRD under `docs/prd/` that describes the intended behavior. That PRD is your spec, NOT your intuition.
-3. If `params.pattern` is a regex, search for nearby matches with `Grep` so you understand the local style before adding code.
+1. Look up `criterion.check_type` from `acceptance/criteria.toml` for your chosen id.
+2. Open `acceptance/verify.py` and read the corresponding `_check_<check_type>` method. Note **exactly** what it does:
+   - Does it spawn a subprocess, or does it read pre-captured artifacts from the workspace (`<criterion_id>.exit`, `<criterion_id>.stdout`, `.codeprobe/experiment.json`, etc.)?
+   - If it reads artifacts, then your fix must make the **Test Agent's pipeline** produce those artifacts — not just patch the CLI the criterion *describes*. A `cli_writes_file` check for `.codeprobe/experiment.json` will stay red forever unless the Test Agent actually runs the command that creates that file, regardless of how nice your CLI fix is.
+   - If it does spawn a subprocess, the `command` template in `criterion.params` is what gets run, and your fix must make that exact invocation succeed.
+3. Now navigate the product code:
+   - If the evidence names a file (`src/codeprobe/X.py`), open it with `Read`.
+   - Read the criterion's `prd_source` field — it points to the PRD under `docs/prd/`. That PRD is your spec, NOT your intuition.
+   - If `params.pattern` is a regex, `Grep` for nearby matches to pick up local style.
 
-Do not guess. If after reading the file + the PRD you still cannot identify the bug, print `FAILURE: {{TARGET_CRITERION_ID}} evidence_unclear` and exit — the orchestrator will surface it to a human.
+Do not guess. If after reading the verifier check, the file, and the PRD you still cannot identify the bug, print `FAILURE: {{TARGET_CRITERION_ID}} evidence_unclear` and exit.
 
 ---
 

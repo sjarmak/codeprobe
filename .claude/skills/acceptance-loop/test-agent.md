@@ -233,6 +233,18 @@ codeprobe doctor 2>&1 | tee "$WORKSPACE/logs/13-doctor.log"
 echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/13-doctor.rc"
 ```
 
+### 5e. Experiment init (cli_writes_file artifact for BUG-INIT-DEFAULT-006)
+
+The verifier's `cli_writes_file` check for `BUG-INIT-DEFAULT-006` reads a real file on disk: `$WORKSPACE/.codeprobe/experiment.json`. Nothing in the main pipeline produces it, so run `experiment init --non-interactive` directly in the workspace so the artifact is there for the check. Capture the log and rc alongside the other phases:
+
+```
+(cd "$WORKSPACE" && codeprobe experiment init --non-interactive) \
+  2>&1 | tee "$WORKSPACE/logs/14-experiment-init.log"
+echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/14-experiment-init.rc"
+```
+
+If `--non-interactive` is rejected (`No such option`), that is itself the evidence the Fix Agent needs — log it and keep going, the verifier will see the missing file and fail the criterion. Do NOT invent an alternative flag.
+
 ---
 
 ## Phase 6 — Workspace manifest
@@ -337,6 +349,7 @@ steps:
   11-run           rc=<n>
   12-interpret     rc=<n>
   13-doctor        rc=<n>
+  14-experiment-init rc=<n>
 manifest=/tmp/codeprobe-loop-{{ITERATION}}/workspace-manifest.json
 artifact_count=<n>
 ```
