@@ -99,7 +99,37 @@ mkdir -p "$WORKSPACE"
 
 ### 1.2 Spawn the Test Agent sub-agent
 
-Read `./.claude/skills/acceptance-loop/test-agent.md`, substitute the four `{{PARAM}}` tokens (`{{ITERATION}}`, `{{TARGET_REPO}}`, `{{PINNED_SHA}}`, `{{EVAL_MODE}}`), and hand the bound prompt to a `general-purpose` sub-agent via the Agent tool. Also pass `{{WORKSPACE}} = $WORKSPACE` if the sub-skill references it.
+#### 1.2a Compile criterion-driven actions
+
+Before reading the Test Agent prompt, compile the Phase 5 pipeline steps from `acceptance/criteria.toml`. This replaces the old hardcoded 5a-5e pipeline with one step per criterion that the Verifier can actually check:
+
+```bash
+COMPILED_ACTIONS=$(python3 -c "
+import pathlib
+from acceptance.loader import load_criteria
+from codeprobe.acceptance_compiler import compile_actions
+
+criteria = load_criteria()
+actions = compile_actions(
+    criteria,
+    target_repo=pathlib.Path('$TARGET_REPO'),
+    workspace=pathlib.Path('$WORKSPACE'),
+    project_root=pathlib.Path('$REPO_ROOT'),
+)
+
+for i, a in enumerate(actions, start=1):
+    print(f'### 5.{i}. {a.description}')
+    print()
+    print('\`\`\`')
+    print(a.shell_snippet)
+    print('\`\`\`')
+    print()
+")
+```
+
+#### 1.2b Bind and spawn
+
+Read `./.claude/skills/acceptance-loop/test-agent.md`, substitute the five `{{PARAM}}` tokens (`{{ITERATION}}`, `{{TARGET_REPO}}`, `{{PINNED_SHA}}`, `{{EVAL_MODE}}`, `{{COMPILED_ACTIONS}}`), and hand the bound prompt to a `general-purpose` sub-agent via the Agent tool. Also pass `{{WORKSPACE}} = $WORKSPACE` if the sub-skill references it.
 
 Wait for the sub-agent to exit. It MUST produce `$WORKSPACE/workspace-manifest.json`. If the manifest is missing, jump to the ESCALATE handler with reason `test_agent_no_manifest`.
 
@@ -239,6 +269,7 @@ Always executed, even on failure, via a `trap` at the top of the loop or an expl
 
 - `acceptance/criteria.toml` — 25 seed criteria in TOML.
 - `acceptance/loader.py::load_criteria()` — parsed into `Criterion` objects.
+- `src/codeprobe/acceptance_compiler.py::compile_actions()` — compiles criteria into Test Agent shell actions.
 - `acceptance/verify.py::Verifier.run()` / `.write_verdict()` — produces `verdict.json`.
 - `acceptance/converge.py::ConvergenceController` — `record_verdict`, `decide`, `is_release_ready`, `get_escalation_report`.
 - `acceptance/regression.py` — `python3 -m acceptance.regression --repo-root <path>`.

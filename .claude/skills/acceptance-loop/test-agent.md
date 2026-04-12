@@ -134,7 +134,7 @@ Generate a fresh UUID for this iteration, store it on both sides of the boundary
 
 ```
 CANARY_UUID=$(python -c "import uuid; print(uuid.uuid4())")
-echo "$CANARY_UUID" > "$WORKSPACE/canary/canary.txt"
+echo "$CANARY_UUID" > "$WORKSPACE/canary.txt"
 echo "$CANARY_UUID" > "{{TARGET_REPO}}/.codeprobe-canary"
 export CODEPROBE_CANARY_UUID="$CANARY_UUID"
 ```
@@ -153,7 +153,7 @@ python - <<'PY'
 import json, os
 data = {
     "uuid": os.environ["CODEPROBE_CANARY_UUID"],
-    "workspace_path": os.environ["WORKSPACE"] + "/canary/canary.txt",
+    "workspace_path": os.environ["WORKSPACE"] + "/canary.txt",
     "repo_side_channel": os.environ["TARGET_REPO"] + "/.codeprobe-canary",
     "env_var": "CODEPROBE_CANARY_UUID",
 }
@@ -164,86 +164,13 @@ PY
 
 ---
 
-## Phase 5 — Pipeline execution
+## Phase 5 — Pipeline execution (compiled from criteria.toml)
 
-Run the three codeprobe steps in order. Every invocation gets its own numbered log. Every exit code gets recorded to a `.rc` file next to the log. Do NOT concatenate steps with `&&` — run them independently so a failure in step N does not prevent step N+1 from running.
+The steps below are **compiled at orchestrator time** from `acceptance/criteria.toml` by `codeprobe.acceptance_compiler.compile_actions()`. Each step exercises one acceptance criterion by running a command and capturing its artifacts (stdout, stderr, exit code, or files) into `$WORKSPACE` where the Verifier will read them.
 
-### 5a. Mine
+Run each step independently — do NOT concatenate with `&&`. A failure in step N must not prevent step N+1 from running. Every exit code gets recorded. If any step hangs past 5 minutes, kill it and write the literal string `timeout` into the corresponding `.exit` file.
 
-```
-codeprobe -v --log-format json mine "{{TARGET_REPO}}" \
-  --count 3 \
-  --no-interactive \
-  --no-llm \
-  --source local \
-  --out "$WORKSPACE/tasks" \
-  2>&1 | tee "$WORKSPACE/logs/10-mine.log"
-echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/10-mine.rc"
-```
-
-Notes:
-
-- `--out` may not exist in older versions. If the step fails with "no such option", log it, then re-run without the flag and tee to `$WORKSPACE/logs/10-mine-fallback.log`. Keep both logs.
-- If the mine step hangs past 5 minutes, kill it and write the literal string `timeout` into `10-mine.rc`.
-- Copy or symlink any mined task directories into `$WORKSPACE/tasks` if codeprobe wrote them somewhere else (e.g. under `{{TARGET_REPO}}/.codeprobe/tasks`). The Verifier expects tasks under `$WORKSPACE/tasks`.
-
-### 5b. Run (honor EVAL_MODE)
-
-```
-if [ "{{EVAL_MODE}}" = "dry-run" ]; then
-  codeprobe -v --log-format json run "$WORKSPACE/tasks" \
-    --dry-run \
-    --out "$WORKSPACE/results" \
-    2>&1 | tee "$WORKSPACE/logs/11-run.log"
-else
-  codeprobe -v --log-format json run "$WORKSPACE/tasks" \
-    --agent claude \
-    --max-cost-usd 0.50 \
-    --out "$WORKSPACE/results" \
-    2>&1 | tee "$WORKSPACE/logs/11-run.log"
-fi
-echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/11-run.rc"
-```
-
-For `dry-run` mode, the run should complete quickly and write a cost estimate. For `real` mode, each task should produce a score, cost, and duration. Do not judge whether those numbers are "right" — that is the Verifier's job. Just make sure the output is captured.
-
-### 5c. Interpret
-
-```
-codeprobe -v --log-format json interpret "$WORKSPACE/results" \
-  --format text \
-  2>&1 | tee "$WORKSPACE/logs/12-interpret-text.log"
-echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/12-interpret-text.rc"
-
-codeprobe -v --log-format json interpret "$WORKSPACE/results" \
-  --format json \
-  > "$WORKSPACE/logs/12-interpret.json" \
-  2> "$WORKSPACE/logs/12-interpret.err"
-echo "$?" > "$WORKSPACE/logs/12-interpret.rc"
-```
-
-Important: for the JSON form, send stdout to a `.json` file and stderr to a separate `.err` file (do NOT tee or merge the streams). One of the acceptance criteria (`BUG-INTERPRET-STDOUT-003`) depends on stream separation — merging them here destroys the signal.
-
-### 5d. Doctor (sanity sweep)
-
-After the main pipeline, run `codeprobe doctor` one more time so the Verifier has a post-run snapshot of the environment:
-
-```
-codeprobe doctor 2>&1 | tee "$WORKSPACE/logs/13-doctor.log"
-echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/13-doctor.rc"
-```
-
-### 5e. Experiment init (cli_writes_file artifact for BUG-INIT-DEFAULT-006)
-
-The verifier's `cli_writes_file` check for `BUG-INIT-DEFAULT-006` reads a real file on disk: `$WORKSPACE/.codeprobe/experiment.json`. Nothing in the main pipeline produces it, so run `experiment init --non-interactive` directly in the workspace so the artifact is there for the check. Capture the log and rc alongside the other phases:
-
-```
-(cd "$WORKSPACE" && codeprobe experiment init --non-interactive) \
-  2>&1 | tee "$WORKSPACE/logs/14-experiment-init.log"
-echo "${PIPESTATUS[0]}" > "$WORKSPACE/logs/14-experiment-init.rc"
-```
-
-If `--non-interactive` is rejected (`No such option`), that is itself the evidence the Fix Agent needs — log it and keep going, the verifier will see the missing file and fail the criterion. Do NOT invent an alternative flag.
+{{COMPILED_ACTIONS}}
 
 ---
 
@@ -390,7 +317,7 @@ Before you return control to the orchestrator, confirm:
 
 - [ ] `$WORKSPACE/logs/` contains at least one `.log` file per phase executed.
 - [ ] Each `.log` has a sibling `.rc` file with the exit code (or the literal `timeout`).
-- [ ] `$WORKSPACE/canary/canary.txt` exists and contains a UUID.
+- [ ] `$WORKSPACE/canary.txt` exists and contains a UUID.
 - [ ] `{{TARGET_REPO}}/.codeprobe-canary` exists and contains the same UUID.
 - [ ] `$WORKSPACE/workspace-manifest.json` exists, parses as JSON, and has `artifact_count > 0`.
 - [ ] The plain-text summary in Phase 7 has been printed to stdout.
