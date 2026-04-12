@@ -87,6 +87,14 @@ DEFAULT_RUFF_ARGS: tuple[str, ...] = ("check", "src/", "tests/")
 #: test suite would require stub installs most projects skip.
 DEFAULT_MYPY_ARGS: tuple[str, ...] = ("src/codeprobe",)
 
+#: Path prefixes ruff is scoped to when ``scope_to_diff=True``. A changed
+#: .py file outside these prefixes is ignored by ruff's incremental check.
+_RUFF_SCOPE_PREFIXES: tuple[str, ...] = ("src/", "tests/")
+
+#: Path prefixes mypy is scoped to when ``scope_to_diff=True``. mypy only
+#: runs against library source even in diff-scoped mode.
+_MYPY_SCOPE_PREFIXES: tuple[str, ...] = ("src/codeprobe/",)
+
 
 @dataclass(frozen=True)
 class RegressionResult:
@@ -118,12 +126,22 @@ def run_regression_gate(
     repo_root: Path,
     *,
     revert_on_failure: bool = True,
-    pytest_args: tuple[str, ...] = DEFAULT_PYTEST_ARGS,
-    ruff_args: tuple[str, ...] = DEFAULT_RUFF_ARGS,
-    mypy_args: tuple[str, ...] = DEFAULT_MYPY_ARGS,
+    pytest_args: tuple[str, ...] | None = None,
+    ruff_args: tuple[str, ...] | None = None,
+    mypy_args: tuple[str, ...] | None = None,
+    scope_to_diff: bool = True,
     timeout_s: float = DEFAULT_CHECK_TIMEOUT_S,
 ) -> RegressionResult:
     """Run pytest, ruff, mypy in sequence; revert ``HEAD`` on failure.
+
+    The gate's job is to catch **regressions introduced by the most recent
+    commit**, not to police pre-existing debt. When ``scope_to_diff`` is
+    ``True`` (the default), ruff and mypy run only against .py files that
+    differ between ``HEAD~1`` and ``HEAD`` — a Fix Agent commit that does
+    not touch any in-scope file skips the linter/type-checker entirely.
+    pytest always runs the full suite because a fix can break tests in
+    unrelated modules. Explicit ``ruff_args`` / ``mypy_args`` override
+    diff-scoping entirely.
 
     Args:
         repo_root: Absolute path to the git repository the Fix Agent just
@@ -132,10 +150,22 @@ def run_regression_gate(
             triggers ``git revert HEAD --no-edit`` so the broken commit is
             rolled back. When ``False``, the function returns a failure
             result without touching history (used for dry-run inspection).
-        pytest_args: Tuple of arguments passed to ``python -m pytest``.
-            Defaults to the project's coverage-gated suite invocation.
-        ruff_args: Tuple of arguments passed to ``python -m ruff``.
-        mypy_args: Tuple of arguments passed to ``python -m mypy``.
+        pytest_args: Tuple of arguments passed to ``pytest``. When
+            ``None`` (default), uses :data:`DEFAULT_PYTEST_ARGS`.
+        ruff_args: Tuple of arguments passed to ``ruff``. When ``None``
+            and ``scope_to_diff`` is True, the gate computes the argument
+            list from the HEAD diff. When ``None`` and ``scope_to_diff``
+            is False, uses :data:`DEFAULT_RUFF_ARGS`.
+        mypy_args: Same semantics as ``ruff_args`` but for mypy, scoped
+            to :data:`_MYPY_SCOPE_PREFIXES`.
+        scope_to_diff: When True (default), ruff and mypy args are derived
+            from ``git diff --name-only HEAD~1 HEAD`` filtered to each
+            tool's scope prefixes. A check with no in-scope changes is
+            skipped. When the diff is unavailable (initial commit,
+            detached HEAD, no parent) the gate falls back to the
+            ``DEFAULT_*_ARGS`` full-tree behavior so nothing is silently
+            un-checked. Ignored for any tool whose ``*_args`` is supplied
+            explicitly.
         timeout_s: Per-check subprocess timeout in seconds. A timeout is
             treated as a failure of the current check.
 
@@ -153,11 +183,33 @@ def run_regression_gate(
     if not (repo_root / ".git").exists():
         raise ValueError(f"repo_root is not a git repository: {repo_root}")
 
-    checks: tuple[tuple[CheckName, tuple[str, ...]], ...] = (
-        ("pytest", (sys.executable, "-m", "pytest", *pytest_args)),
-        ("ruff", (sys.executable, "-m", "ruff", *ruff_args)),
-        ("mypy", (sys.executable, "-m", "mypy", *mypy_args)),
+    resolved_pytest: tuple[str, ...] = (
+        pytest_args if pytest_args is not None else DEFAULT_PYTEST_ARGS
     )
+    resolved_ruff = _resolve_scoped_args(
+        explicit=ruff_args,
+        scope_to_diff=scope_to_diff,
+        repo_root=repo_root,
+        scope_prefixes=_RUFF_SCOPE_PREFIXES,
+        default=DEFAULT_RUFF_ARGS,
+        prefix_flags=("check",),
+    )
+    resolved_mypy = _resolve_scoped_args(
+        explicit=mypy_args,
+        scope_to_diff=scope_to_diff,
+        repo_root=repo_root,
+        scope_prefixes=_MYPY_SCOPE_PREFIXES,
+        default=DEFAULT_MYPY_ARGS,
+        prefix_flags=(),
+    )
+
+    checks: list[tuple[CheckName, tuple[str, ...]]] = [
+        ("pytest", (sys.executable, "-m", "pytest", *resolved_pytest)),
+    ]
+    if resolved_ruff is not None:
+        checks.append(("ruff", (sys.executable, "-m", "ruff", *resolved_ruff)))
+    if resolved_mypy is not None:
+        checks.append(("mypy", (sys.executable, "-m", "mypy", *resolved_mypy)))
 
     for name, cmd in checks:
         returncode, output = _run_check(cmd, cwd=repo_root, timeout_s=timeout_s)
@@ -188,6 +240,86 @@ def run_regression_gate(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
+
+
+def _changed_py_files(
+    repo_root: Path,
+    scope_prefixes: tuple[str, ...],
+) -> list[str] | None:
+    """Return .py files changed in ``HEAD`` vs ``HEAD~1`` matching a prefix.
+
+    Returns ``None`` when the diff cannot be computed (initial commit, no
+    parent, detached HEAD with no ancestor, git subprocess failure). The
+    caller interprets ``None`` as "no baseline — fall back to full-tree".
+
+    Returns an empty list when the diff is available but no changed file
+    falls within ``scope_prefixes``. The caller interprets this as "the
+    commit touched nothing this tool cares about, skip it."
+
+    Deleted files are excluded via ``--diff-filter=AMR`` so the returned
+    paths can be passed directly to ruff / mypy without further checks.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--name-only",
+                "--diff-filter=AMR",
+                "HEAD~1",
+                "HEAD",
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=30.0,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    scoped: list[str] = []
+    for line in proc.stdout.splitlines():
+        path = line.strip()
+        if not path.endswith(".py"):
+            continue
+        if not any(path.startswith(p) for p in scope_prefixes):
+            continue
+        scoped.append(path)
+    return scoped
+
+
+def _resolve_scoped_args(
+    *,
+    explicit: tuple[str, ...] | None,
+    scope_to_diff: bool,
+    repo_root: Path,
+    scope_prefixes: tuple[str, ...],
+    default: tuple[str, ...],
+    prefix_flags: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    """Resolve a linter/type-checker argument tuple for the gate.
+
+    Returns:
+        - ``explicit`` unchanged if the caller supplied it.
+        - ``default`` when ``scope_to_diff`` is False or the diff cannot
+          be computed (no baseline).
+        - ``(*prefix_flags, *changed_files)`` when diff scoping succeeded
+          and at least one in-scope file changed.
+        - ``None`` when diff scoping succeeded but zero in-scope files
+          changed; the caller should skip this check entirely.
+    """
+    if explicit is not None:
+        return explicit
+    if not scope_to_diff:
+        return default
+    changed = _changed_py_files(repo_root, scope_prefixes)
+    if changed is None:
+        return default
+    if not changed:
+        return None
+    return (*prefix_flags, *changed)
 
 
 def _run_check(

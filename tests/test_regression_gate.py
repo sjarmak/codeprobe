@@ -149,6 +149,16 @@ def _stage_fix_commit(repo: Path, payload: str) -> str:
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
 
+def _stage_py_commit(repo: Path, rel_path: str, payload: str) -> str:
+    """Commit a .py file at ``rel_path`` so diff-scoped tests have a target."""
+    target = repo / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(payload)
+    _git(repo, "add", rel_path)
+    _git(repo, "commit", "-q", "-m", f"fix: {rel_path}")
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
 # ---------------------------------------------------------------------------
 # RegressionResult dataclass
 # ---------------------------------------------------------------------------
@@ -310,6 +320,109 @@ def test_revert_on_failure_false_preserves_commit(
     head = _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert head == fix_sha
     assert (repo / "fix.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# run_regression_gate — scope_to_diff
+# ---------------------------------------------------------------------------
+
+
+def test_scope_to_diff_skips_tools_when_no_py_changed(
+    gate_env: dict[str, Path],
+) -> None:
+    """A fix that touches only non-.py files skips ruff and mypy entirely.
+
+    This is the whole point of diff-scoping: the gate detects regressions
+    introduced by the commit, not pre-existing debt in files the commit
+    never touched. Both ruff and mypy are armed to fail — neither should
+    actually run, so the gate must still report pass.
+    """
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    fix_sha = _stage_fix_commit(repo, "docs-only change")
+
+    (bin_dir / "ruff.fail").write_text("E501 Line too long\n")
+    (bin_dir / "mypy.fail").write_text("error: Incompatible types\n")
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is True
+    assert result.failed_check is None
+    assert result.reverted is False
+    head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert head == fix_sha
+
+
+def test_scope_to_diff_runs_pytest_regardless_of_diff(
+    gate_env: dict[str, Path],
+) -> None:
+    """pytest always runs the full suite — a fix can break unrelated tests."""
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_fix_commit(repo, "docs-only but pytest-breaking")
+
+    (bin_dir / "pytest.fail").write_text("E   AssertionError: unrelated\n")
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is False
+    assert result.failed_check == "pytest"
+    assert result.reverted is True
+
+
+def test_scope_to_diff_runs_ruff_when_py_in_src_changed(
+    gate_env: dict[str, Path],
+) -> None:
+    """A commit touching src/*.py must still be checked by ruff."""
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_py_commit(repo, "src/pkg/mod.py", "x = 1\n")
+
+    (bin_dir / "ruff.fail").write_text("E501 Line too long in mod.py\n")
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is False
+    assert result.failed_check == "ruff"
+    assert result.reverted is True
+    assert "mod.py" in result.output or "Line too long" in result.output
+
+
+def test_scope_to_diff_runs_mypy_only_on_src_codeprobe(
+    gate_env: dict[str, Path],
+) -> None:
+    """A test-only commit is checked by ruff (tests/ is in scope) but not mypy."""
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_py_commit(repo, "tests/test_thing.py", "def test_x():\n    assert 1\n")
+
+    # Arm mypy to fail — if it runs, the gate fails. It must NOT run because
+    # tests/ is outside _MYPY_SCOPE_PREFIXES.
+    (bin_dir / "mypy.fail").write_text("error: Incompatible types\n")
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is True
+    assert result.failed_check is None
+
+
+def test_scope_to_diff_explicit_args_bypass_scoping(
+    gate_env: dict[str, Path],
+) -> None:
+    """Passing explicit ruff_args overrides scope_to_diff for that tool."""
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_fix_commit(repo, "non-py change")
+
+    (bin_dir / "ruff.fail").write_text("explicit-args-path\n")
+
+    # Even though the commit touches no .py, explicit ruff_args=() forces the
+    # check to run and fail.
+    result = run_regression_gate(repo, ruff_args=(), scope_to_diff=True)
+
+    assert result.passed is False
+    assert result.failed_check == "ruff"
+    assert "explicit-args-path" in result.output
 
 
 # ---------------------------------------------------------------------------
