@@ -8,7 +8,7 @@ import json
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
-from codeprobe.analysis.dual import _strict_bool, dual_matrix, has_dual_scoring
+from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
     PASS_THRESHOLD,
@@ -17,24 +17,13 @@ from codeprobe.analysis.stats import (
     compare_configs,
     summarize_completed_tasks,
     summarize_config,
+    task_passed,
 )
 from codeprobe.models.experiment import CompletedTask, ConfigResults
 
-
-def _task_passed(task: CompletedTask) -> bool:
-    """Return whether a task passed for display purposes.
-
-    Prefers the scorer's explicit ``scoring_details['passed']`` flag when
-    present (accepting bool or JSON-round-tripped string forms like
-    ``"false"``/``"true"`` via :func:`_strict_bool`), else falls back to
-    ``automated_score >= PASS_THRESHOLD``. Never uses ``> 0``: a nonzero
-    partial score is not a pass under any policy used by the scorer.
-    """
-    details = task.scoring_details or {}
-    explicit = _strict_bool(details.get("passed"))
-    if explicit is not None:
-        return explicit
-    return task.automated_score >= PASS_THRESHOLD
+# Re-export under the old private name for any callers that referenced it
+# directly, and for internal use in this module.
+_task_passed = task_passed
 
 
 @dataclass(frozen=True)

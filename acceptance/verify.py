@@ -125,9 +125,11 @@ class Verifier:
         self,
         criteria_path: Path | str,
         project_root: Path | str | None = None,
+        eval_mode: str | None = None,
     ) -> None:
         self.criteria_path = Path(criteria_path).resolve()
         self.criteria: list[Criterion] = load_criteria(self.criteria_path)
+        self.eval_mode: str | None = eval_mode
         if project_root is not None:
             self.project_root = Path(project_root).resolve()
         else:
@@ -160,6 +162,10 @@ class Verifier:
 
         results: list[CheckResult] = []
         for criterion in self.criteria:
+            mode_skip = self._check_eval_mode(criterion)
+            if mode_skip is not None:
+                results.append(mode_skip)
+                continue
             handler = self._handlers().get(criterion.check_type)
             if handler is None:
                 results.append(
@@ -343,6 +349,26 @@ class Verifier:
             severity=criterion.severity,
             result=RESULT_FAIL,
             evidence=evidence,
+        )
+
+    def _check_eval_mode(self, criterion: Criterion) -> CheckResult | None:
+        """Return a skip result if the criterion requires an eval mode that
+        does not match the current mode. Returns ``None`` when the criterion
+        should proceed to its normal check handler.
+
+        When ``eval_mode`` is ``None`` (default), criteria with
+        ``eval_mode_required`` are skipped because the verifier is running
+        outside a full eval context.
+        """
+        required = criterion.eval_mode_required
+        if required is None:
+            return None
+        if self.eval_mode == required:
+            return None
+        current = self.eval_mode or "none"
+        return self._skip(
+            criterion,
+            f"eval_mode mismatch: requires {required!r}, current is {current!r}",
         )
 
     # ------------------------------------------------ structural handlers

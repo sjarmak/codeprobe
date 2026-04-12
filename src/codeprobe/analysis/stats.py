@@ -22,7 +22,31 @@ _SMALL_SAMPLE_THRESHOLD = 10
 
 # Import AFTER PASS_THRESHOLD is defined: dual.py defers its own stats
 # import to function bodies, so this direction is the only safe one.
-from codeprobe.analysis.dual import has_dual_scoring, resolve_leg_pass  # noqa: E402
+from codeprobe.analysis.dual import (  # noqa: E402
+    _strict_bool,
+    has_dual_scoring,
+    resolve_leg_pass,
+)
+
+# ---------------------------------------------------------------------------
+# Pass/fail predicate — single source of truth
+# ---------------------------------------------------------------------------
+
+
+def task_passed(task: CompletedTask) -> bool:
+    """Return whether a task passed.
+
+    Prefers the scorer's explicit ``scoring_details['passed']`` flag when
+    present (accepting bool or JSON-round-tripped string forms like
+    ``"false"``/``"true"`` via :func:`_strict_bool`), else falls back to
+    ``automated_score >= PASS_THRESHOLD``.
+    """
+    details = task.scoring_details or {}
+    explicit = _strict_bool(details.get("passed"))
+    if explicit is not None:
+        return explicit
+    return task.automated_score >= PASS_THRESHOLD
+
 
 # ---------------------------------------------------------------------------
 # Statistical helper functions
@@ -251,7 +275,7 @@ def summarize_config(
     errored_tasks = [t for t in tasks if t.status != "completed"]
 
     scores = [t.automated_score for t in tasks]
-    passed = sum(1 for s in scores if s >= PASS_THRESHOLD)
+    passed = sum(1 for t in tasks if task_passed(t))
     pass_rate = passed / total
 
     mean_score = statistics.mean(scores)
@@ -342,7 +366,7 @@ def summarize_completed_tasks(
             errored_count += 1
 
         scores.append(task.automated_score)
-        if task.automated_score >= PASS_THRESHOLD:
+        if task_passed(task):
             passed += 1
 
         durations.append(task.duration_seconds)

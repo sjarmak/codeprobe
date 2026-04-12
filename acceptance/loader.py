@@ -59,6 +59,7 @@ class Criterion:
     prd_source: str
     depends_on: tuple[str, ...] = ()
     params: dict[str, Any] = field(default_factory=dict)
+    eval_mode_required: str | None = None
 
 
 def load_criteria(path: Path | str | None = None) -> list[Criterion]:
@@ -223,6 +224,11 @@ def _parse_entry(entry: Any, index: int) -> Criterion:
             f"expected table"
         )
 
+    eval_mode_raw = entry.get("eval_mode_required")
+    eval_mode_required: str | None = (
+        str(eval_mode_raw) if eval_mode_raw is not None else None
+    )
+
     return Criterion(
         id=str(entry["id"]),
         description=str(entry["description"]),
@@ -232,6 +238,7 @@ def _parse_entry(entry: Any, index: int) -> Criterion:
         prd_source=str(entry["prd_source"]),
         depends_on=tuple(depends_on_raw),
         params=dict(params_raw),
+        eval_mode_required=eval_mode_required,
     )
 
 

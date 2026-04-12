@@ -116,6 +116,84 @@ def test_init_rejects_unsafe_name(runner: CliRunner, tmp_path: Path) -> None:
     assert "Unsafe" in result.output or "error" in result.output.lower()
 
 
+# ---- init --non-interactive (BUG-INIT-DEFAULT-006) ----
+
+
+def test_init_non_interactive_creates_experiment_json(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """--non-interactive writes .codeprobe/experiment.json inside the target path."""
+    result = runner.invoke(
+        main,
+        ["experiment", "init", str(tmp_path), "--non-interactive"],
+    )
+    assert result.exit_code == 0, result.output
+
+    codeprobe_dir = tmp_path / ".codeprobe"
+    exp_json = codeprobe_dir / "experiment.json"
+    assert codeprobe_dir.is_dir(), ".codeprobe/ directory not created"
+    assert exp_json.is_file(), ".codeprobe/experiment.json not created"
+    assert (codeprobe_dir / "tasks").is_dir(), ".codeprobe/tasks/ not created"
+
+    loaded = load_experiment(codeprobe_dir)
+    assert loaded.name == "default"
+
+
+def test_init_non_interactive_with_custom_name(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """--non-interactive respects --name when provided."""
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "init",
+            str(tmp_path),
+            "--non-interactive",
+            "--name",
+            "custom-exp",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    loaded = load_experiment(tmp_path / ".codeprobe")
+    assert loaded.name == "custom-exp"
+
+
+def test_init_non_interactive_fails_if_already_exists(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """--non-interactive refuses to overwrite an existing experiment."""
+    # First init
+    runner.invoke(
+        main,
+        ["experiment", "init", str(tmp_path), "--non-interactive"],
+    )
+    # Second init should fail
+    result = runner.invoke(
+        main,
+        ["experiment", "init", str(tmp_path), "--non-interactive"],
+    )
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+
+
+def test_init_non_interactive_experiment_json_is_valid(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The generated experiment.json is valid JSON with expected structure."""
+    result = runner.invoke(
+        main,
+        ["experiment", "init", str(tmp_path), "--non-interactive"],
+    )
+    assert result.exit_code == 0, result.output
+    exp_json = tmp_path / ".codeprobe" / "experiment.json"
+    data = json.loads(exp_json.read_text())
+    assert "name" in data
+    assert "configs" in data
+    assert "tasks_dir" in data
+
+
 # ---- add-config ----
 
 

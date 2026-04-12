@@ -33,6 +33,7 @@ check_type = "cli_exit_code"
 severity = "critical"
 prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe mine {repo} --count 3 --no-interactive --no-llm --source local && test -f {repo}/.codeprobe/experiment.json"
 expected_exit = 0
@@ -45,6 +46,7 @@ check_type = "cli_help_contains"
 severity = "high"
 prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 commands = ["codeprobe mine --help", "codeprobe run --help", "codeprobe interpret --help"]
 must_contain = "--out"
@@ -57,6 +59,7 @@ check_type = "stream_separation"
 severity = "critical"
 prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#stderr"
 depends_on = ["BUG-MINE-RUN-001"]
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe interpret {results} --format json"
 stdout_must_parse_as = "json"
@@ -70,6 +73,7 @@ check_type = "cli_exit_code"
 severity = "high"
 prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe interpret /nonexistent/results.json"
 expected_exit_not = 0
@@ -82,6 +86,7 @@ check_type = "cli_stdout_contains"
 severity = "high"
 prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe validate {tasks_dir}"
 fixture = "tests/fixtures/nested_tasks"
@@ -95,6 +100,7 @@ check_type = "cli_writes_file"
 severity = "high"
 prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#golden-path"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe experiment init --non-interactive"
 expected_path = ".codeprobe/experiment.json"
@@ -111,6 +117,7 @@ check_type = "count_ge"
 severity = "critical"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
 depends_on = ["BUG-MINE-RUN-001"]
+eval_mode_required = "full"
 [criterion.params]
 source = "{repo}/.codeprobe/tasks"
 pattern = "task-*"
@@ -124,6 +131,7 @@ check_type = "json_count_ge"
 severity = "critical"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
 depends_on = ["BUG-MINE-RUN-001"]
+eval_mode_required = "full"
 [criterion.params]
 source = "{repo}/.codeprobe/results.json"
 jsonpath = "$.completed_tasks"
@@ -137,6 +145,7 @@ check_type = "canary_detect"
 severity = "high"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
 depends_on = ["SILENT-RUN-RESULTS-002"]
+eval_mode_required = "full"
 [criterion.params]
 canary_env = "CODEPROBE_CANARY_UUID"
 search_in = "{repo}/.codeprobe/results.json"
@@ -153,6 +162,7 @@ check_type = "json_field_not_null"
 severity = "critical"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R18"
 depends_on = ["SILENT-RUN-RESULTS-002"]
+eval_mode_required = "full"
 [criterion.params]
 source = "{repo}/.codeprobe/results.json"
 jsonpath = "$.completed_tasks[*].cost_source"
@@ -166,6 +176,7 @@ check_type = "json_field_type"
 severity = "critical"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R18"
 depends_on = ["SILENT-RUN-RESULTS-002"]
+eval_mode_required = "full"
 [criterion.params]
 source = "{repo}/.codeprobe/results.json"
 jsonpath = "$.completed_tasks[*].cost_usd"
@@ -279,6 +290,7 @@ check_type = "log_level_matches"
 severity = "high"
 prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#R-verbose"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe -v --help"
 logger_name = "codeprobe"
@@ -292,6 +304,7 @@ check_type = "log_level_matches"
 severity = "high"
 prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#R-quiet"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe -q --help"
 logger_name = "codeprobe"
@@ -305,6 +318,7 @@ check_type = "stream_separation"
 severity = "critical"
 prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#stderr"
 depends_on = []
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe probe {repo}"
 stdout_must_not_contain = "INFO codeprobe"
@@ -322,6 +336,7 @@ check_type = "json_lines_valid"
 severity = "high"
 prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_observability.md#json-events"
 depends_on = ["LOG-STDERR-003"]
+eval_mode_required = "full"
 [criterion.params]
 command = "codeprobe --log-format json run {experiment}"
 channel = "stderr"
