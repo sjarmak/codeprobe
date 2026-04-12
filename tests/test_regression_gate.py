@@ -530,6 +530,33 @@ def test_line_filter_mixed_keeps_only_in_scope_errors(
     assert "PREEXISTING" not in result.output
 
 
+def test_line_filter_drops_errors_from_untouched_imported_files(
+    gate_env: dict[str, Path],
+) -> None:
+    """mypy follow-imports diagnostics in untouched files are pre-existing.
+
+    The commit touches only ``alpha.py``. The shim emits a diagnostic
+    pointing at ``beta.py``, which the commit never wrote. By definition
+    this cannot be a regression introduced by the commit — mypy reached
+    beta.py via follow-imports from alpha.py, and whatever it complains
+    about in beta.py was already there at HEAD~1. The gate must drop it
+    and still report pass.
+    """
+    repo = gate_env["repo"]
+    bin_dir = gate_env["bin"]
+    _stage_py_commit(repo, "src/codeprobe/alpha.py", "x = 1\n")
+
+    (bin_dir / "mypy.fail").write_text(
+        "src/codeprobe/beta.py:47: error: pre-existing across file boundary\n"
+        "Found 1 error in 1 file\n"
+    )
+
+    result = run_regression_gate(repo, scope_to_diff=True)
+
+    assert result.passed is True
+    assert result.failed_check is None
+
+
 def test_line_filter_unparseable_failure_is_not_swallowed(
     gate_env: dict[str, Path],
 ) -> None:

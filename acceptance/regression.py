@@ -368,31 +368,42 @@ def _filter_diagnostics_to_diff(
 ) -> tuple[str, bool, bool]:
     """Keep diagnostics whose line number falls inside HEAD's added-line ranges.
 
-    This is the line-level companion to ``_changed_py_files``: given the raw
-    stdout+stderr of a ruff/mypy run and the list of .py files the commit
-    actually touched, it drops any diagnostic that points at a line the
-    commit did not add. Non-diagnostic lines (summary, headers, banners)
-    are preserved so the Fix Agent still sees context when a real in-scope
+    Filters ruff/mypy output to just the diagnostics that could have been
+    introduced by the current HEAD commit. Three cases:
+
+    1. **Diagnostic on an untouched file**: dropped. mypy and ruff both
+       follow imports, so a tool invoked on ``executor.py`` can emit
+       errors pointing at ``scoring.py`` even though the commit never
+       touched ``scoring.py``. By definition the commit cannot have
+       introduced a regression on a file it did not write.
+    2. **Diagnostic on a touched file, unchanged line**: dropped. The
+       line is pre-existing debt that predates the commit, regardless
+       of whether the commit edited other parts of the same file.
+    3. **Diagnostic on a touched file, added line**: kept. This is a
+       real regression introduced by the commit.
+
+    Non-diagnostic lines (summary, headers, banners) are preserved in
+    the output so the Fix Agent still sees context when a real in-scope
     error is reported.
 
     Returns ``(filtered_output, has_in_scope_diagnostic, saw_any_diagnostic)``:
 
-    - ``has_in_scope_diagnostic`` is True iff at least one parseable
-      diagnostic pointed at a line the commit added (i.e. a real
-      regression).
-    - ``saw_any_diagnostic`` is True iff at least one line in ``output``
-      matched the ``file:line:`` diagnostic pattern at all. The caller
-      uses this to distinguish "all diagnostics were pre-existing" (safe
-      to ignore) from "tool reported failure but we could not parse any
-      diagnostic" (must not be ignored — probably a free-text crash or
-      an unparseable tool output we cannot reason about).
+    - ``has_in_scope_diagnostic``: True iff at least one parseable
+      diagnostic was kept under case (3).
+    - ``saw_any_diagnostic``: True iff at least one line matched the
+      ``file:line:`` pattern at all (regardless of whether it survived
+      filtering). The caller uses this to distinguish "all diagnostics
+      were pre-existing" (safe to ignore) from "tool reported failure
+      but we could not parse any diagnostic" (must fall through to
+      revert — probably a crash or unparseable output).
     """
     if not scoped_files:
         return output, False, False
 
+    touched_set = {f.lstrip("./") for f in scoped_files}
     file_ranges: dict[str, list[tuple[int, int]] | None] = {}
     for rel in scoped_files:
-        file_ranges[rel] = _changed_line_ranges(repo_root, rel)
+        file_ranges[rel.lstrip("./")] = _changed_line_ranges(repo_root, rel)
 
     kept: list[str] = []
     has_in_scope = False
@@ -403,22 +414,28 @@ def _filter_diagnostics_to_diff(
             kept.append(line)
             continue
         saw_any = True
-        diag_file = m.group(1)
+        diag_file = m.group(1).lstrip("./")
         diag_line = int(m.group(2))
-        ranges = file_ranges.get(diag_file)
+
+        if diag_file not in touched_set:
+            # Diagnostic on a file this commit did not touch. Typically
+            # this is mypy following imports from a touched file into an
+            # untouched module with pre-existing debt — by construction
+            # the commit cannot have introduced a regression on a line
+            # it did not write. Drop.
+            continue
+
+        ranges = file_ranges[diag_file]
         if ranges is None:
-            # Either a file outside the commit's scope (ruff/mypy followed
-            # an import into src/foo.py while checking src/bar.py) or diff
-            # unavailable for that file. Preserve the diagnostic — we
-            # cannot prove it is pre-existing, so safety-first: treat as
-            # in-scope.
+            # Touched file but diff unavailable (git failure). We cannot
+            # prove the diagnostic is pre-existing, so safety-first: keep.
             kept.append(line)
             has_in_scope = True
             continue
         if any(start <= diag_line <= end for start, end in ranges):
             kept.append(line)
             has_in_scope = True
-        # else: silently drop — pre-existing diagnostic on an unchanged line.
+        # else: touched file, pre-existing line — drop.
 
     return "\n".join(kept), has_in_scope, saw_any
 
