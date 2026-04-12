@@ -202,18 +202,10 @@ class ConvergenceController:
                 context={"last_iteration": history[-1]["iteration"]},
             )
 
-        # 2. Three-strike rule — same criterion failing 3x with identical
-        #    evidence. This takes priority over regression because it's a
-        #    stronger signal that human help is required.
-        stuck = self._detect_three_strike(history)
-        if stuck:
-            return DecisionResult(
-                Decision.ESCALATE,
-                reason=f"three-strike rule triggered for {len(stuck)} criterion(ia)",
-                context={"stuck": stuck},
-            )
-
-        # 3. Regression — pass_count dropped between consecutive verdicts.
+        # 2. Regression — pass_count dropped between consecutive verdicts.
+        #    Checked before three-strike because a regression means the most
+        #    recent fix actively made things worse, which is more urgent than
+        #    "stuck on the same failure".
         regression = self._detect_regression(history)
         if regression is not None:
             return DecisionResult(
@@ -223,6 +215,16 @@ class ConvergenceController:
                     f"to {regression['current']} at iteration {regression['iteration']}"
                 ),
                 context=regression,
+            )
+
+        # 3. Three-strike rule — same criterion failing 3x with identical
+        #    evidence. Human intervention required.
+        stuck = self._detect_three_strike(history)
+        if stuck:
+            return DecisionResult(
+                Decision.ESCALATE,
+                reason=f"three-strike rule triggered for {len(stuck)} criterion(ia)",
+                context={"stuck": stuck},
             )
 
         # 4. Max iterations cap.
