@@ -24,7 +24,12 @@ from codeprobe.core.events import (
     TaskScored,
 )
 from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_config
-from codeprobe.core.experiment import load_experiment, save_config_results
+from codeprobe.core.experiment import (
+    Experiment,
+    load_experiment,
+    save_config_results,
+    save_experiment,
+)
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
@@ -419,9 +424,20 @@ def run_eval(
             raise SystemExit(1)
         click.echo(f"Suite '{suite.name}': {len(task_dirs)}/{pre_count} tasks selected")
 
-    configs_to_run = experiment.configs or [
-        ExperimentConfig(label="default", agent=agent, model=model),
-    ]
+    configs_to_run = experiment.configs
+    if not configs_to_run:
+        configs_to_run = [
+            ExperimentConfig(label="default", agent=agent, model=model),
+        ]
+        # Persist the auto-created config so interpret can find it later
+        experiment = Experiment(
+            name=experiment.name,
+            description=experiment.description,
+            tasks_dir=experiment.tasks_dir,
+            configs=configs_to_run,
+            task_ids=experiment.task_ids,
+        )
+        save_experiment(exp_dir, experiment)
 
     if dry_run:
         estimate = dry_run_estimate(
@@ -473,7 +489,7 @@ def run_eval(
         resolved_timeout = (
             timeout
             if timeout is not None
-            else exp_config.extra.get("timeout_seconds", 300)
+            else exp_config.extra.get("timeout_seconds", 3600)
         )
 
         logger.debug(

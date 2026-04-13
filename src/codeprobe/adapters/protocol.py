@@ -67,7 +67,7 @@ class AgentConfig:
 
     model: str | None = None
     permission_mode: str = "default"
-    timeout_seconds: int = 300
+    timeout_seconds: int = 3600
     mcp_config: dict | None = None
     extra: dict | None = None
     cwd: str | None = None
