@@ -51,6 +51,7 @@ import importlib
 import json
 import re
 from collections.abc import Callable
+import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -99,6 +100,7 @@ class CheckResult:
     severity: str
     result: str  # one of RESULT_PASS | RESULT_FAIL | RESULT_SKIP
     evidence: str
+    skip_reason: str | None = None  # "eval_mode" when skipped due to mode mismatch
 
 
 HandlerFn = Callable[["Verifier", Criterion], CheckResult]
@@ -175,6 +177,7 @@ class Verifier:
                         severity=criterion.severity,
                         result=RESULT_SKIP,
                         evidence=(f"unsupported check_type: {criterion.check_type!r}"),
+                        skip_reason="no_handler",
                     )
                 )
                 continue
@@ -228,7 +231,10 @@ class Verifier:
         pass_count = 0
         fail_count = 0
         skip_count = 0
+        mode_skip_count = 0
         failures: list[dict[str, str]] = []
+        # Track eval_mode skips per tier so they don't penalize evaluated_pct
+        tier_mode_skips: dict[str, int] = {tier: 0 for tier in sorted(ALLOWED_TIERS)}
 
         for res in results:
             bucket = tier_counts[res.tier]
@@ -248,15 +254,20 @@ class Verifier:
                 )
             else:
                 skip_count += 1
+                if res.skip_reason in ("eval_mode", "no_handler"):
+                    mode_skip_count += 1
+                    tier_mode_skips[res.tier] += 1
 
         evaluated_pct: dict[str, float] = {}
         for tier, counts in tier_counts.items():
-            total = counts["total"]
-            if total == 0:
-                evaluated_pct[tier] = 0.0
+            # Exclude eval_mode skips from the denominator — they are
+            # structurally unevaluable in this mode, not missing coverage.
+            effective_total = counts["total"] - tier_mode_skips[tier]
+            if effective_total <= 0:
+                evaluated_pct[tier] = 100.0 if counts["total"] > 0 else 0.0
                 continue
             evaluated = counts["pass"] + counts["fail"]
-            evaluated_pct[tier] = round(evaluated / total * 100.0, 2)
+            evaluated_pct[tier] = round(evaluated / effective_total * 100.0, 2)
 
         # Status rule: any tier with >=1 criterion below threshold ⇒
         # INCOMPLETE. Empty tiers (total == 0) are ignored so an unused tier
@@ -276,6 +287,7 @@ class Verifier:
             "pass_count": pass_count,
             "fail_count": fail_count,
             "skip_count": skip_count,
+            "mode_skip_count": mode_skip_count,
             "total_criteria": len(results),
             "evaluated_pct": evaluated_pct,
             "tier_counts": tier_counts,
@@ -366,10 +378,11 @@ class Verifier:
         if self.eval_mode == required:
             return None
         current = self.eval_mode or "none"
-        return self._skip(
+        result = self._skip(
             criterion,
             f"eval_mode mismatch: requires {required!r}, current is {current!r}",
         )
+        return dataclasses.replace(result, skip_reason="eval_mode")
 
     # ------------------------------------------------ structural handlers
 
