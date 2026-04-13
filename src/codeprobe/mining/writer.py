@@ -319,6 +319,7 @@ def write_task_dir(
     repo_path: Path,
     *,
     curation_backends: tuple[str, ...] = (),
+    ground_truth: dict | None = None,
 ) -> Path:
     """Write a mined task to the experiment directory structure.
 
@@ -433,6 +434,14 @@ def write_task_dir(
         json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+
+    # Write tests/ground_truth.json for SDLC tasks (when provided)
+    if ground_truth is not None:
+        gt_path = tests_dir / "ground_truth.json"
+        gt_path.write_text(
+            json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir

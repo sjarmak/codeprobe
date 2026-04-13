@@ -8,7 +8,7 @@ import re
 import shlex
 import subprocess
 from collections import Counter
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -234,6 +234,46 @@ def _get_deleted_dirs(merge_sha: str, repo_path: Path) -> set[str]:
     return {str(Path(f).parent) for f in deleted_files}
 
 
+_DIFF_STAT_MAX_LINES = 50
+
+
+def _get_diff_stat(merge_sha: str, repo_path: Path) -> str:
+    """Get the diff --stat output for a merge commit.
+
+    Returns the raw stat string (truncated to ``_DIFF_STAT_MAX_LINES`` lines).
+    Returns empty string on failure.
+    """
+    _validate_sha(merge_sha)
+    try:
+        result = subprocess.run(
+            ["git", "diff", f"{merge_sha}^..{merge_sha}", "--stat"],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            timeout=_DIFF_STAT_TIMEOUT,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "git diff --stat failed for %s: %s", merge_sha, result.stderr.strip()
+            )
+            return ""
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("git diff --stat error for %s: %s", merge_sha, exc)
+        return ""
+
+    lines = result.stdout.strip().splitlines()
+    if len(lines) > _DIFF_STAT_MAX_LINES:
+        logger.debug(
+            "diff --stat for %s truncated to %d lines",
+            merge_sha,
+            _DIFF_STAT_MAX_LINES,
+        )
+        lines = lines[:_DIFF_STAT_MAX_LINES]
+    # Strip control characters that could corrupt JSON output
+    lines = ["".join(c for c in ln if c >= " " or c in "\t")[:256] for ln in lines]
+    return "\n".join(lines)
+
+
 def extract_subsystems(
     prs: list[MergedPR],
     repo_path: Path,
@@ -286,23 +326,26 @@ def _find_test_files(changed_files: list[str]) -> list[str]:
     return [f for f in changed_files if _is_test_file(f)]
 
 
-def _extract_modified_symbols_from_diff(
+def _extract_modified_symbols_structured(
     merge_sha: str,
     repo_path: Path,
     source_files: list[str],
-) -> list[str]:
-    """Extract public symbol names modified in a merge commit's diff.
+) -> list[dict[str, str]]:
+    """Extract structured symbol info from a merge commit's diff.
+
+    Returns ``[{"file": ..., "symbol": ...}]`` so downstream consumers know
+    which file each symbol belongs to.  Deduplicates by ``(file, symbol)``
+    pair.  Skips private symbols (names starting with ``_``).
 
     Runs ``git diff <sha>^..<sha> -- <file>`` for each source file and
     regex-matches definition lines (Python def/class, Go func, JS function).
-    Purely structural — no semantic judgment.
+    Purely structural -- no semantic judgment.
     """
     _validate_sha(merge_sha)
-    # Import shared symbol extractors from multi_repo
     from codeprobe.mining.multi_repo import _SYMBOL_EXTRACTORS
 
-    symbols: list[str] = []
-    seen: set[str] = set()
+    symbols: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
 
     for path in source_files:
         try:
@@ -313,7 +356,8 @@ def _extract_modified_symbols_from_diff(
                 text=True,
                 timeout=_DIFF_STAT_TIMEOUT,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.debug("git diff error for %s path %s: %s", merge_sha, path, exc)
             continue
         if result.returncode != 0:
             continue
@@ -326,13 +370,37 @@ def _extract_modified_symbols_from_diff(
                 if match:
                     name = match.group(1)
                     if name.startswith("_"):
-                        continue  # skip private symbols
-                    if name not in seen:
-                        seen.add(name)
-                        symbols.append(name)
+                        continue
+                    key = (path, name)
+                    if key not in seen:
+                        seen.add(key)
+                        symbols.append({"file": path, "symbol": name})
                     break
 
     return symbols
+
+
+def _extract_modified_symbols_from_diff(
+    merge_sha: str,
+    repo_path: Path,
+    source_files: list[str],
+) -> list[str]:
+    """Extract public symbol names modified in a merge commit's diff.
+
+    Thin wrapper around :func:`_extract_modified_symbols_structured` that
+    returns a flat deduplicated list of symbol names (without file info).
+    """
+    structured = _extract_modified_symbols_structured(
+        merge_sha, repo_path, source_files
+    )
+    seen: set[str] = set()
+    names: list[str] = []
+    for entry in structured:
+        name = entry["symbol"]
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +440,38 @@ def _build_oracle_ground_truth(
             "merge_sha": merge_sha,
             "modified_symbols": symbols,
         },
+    }
+
+
+def _build_sdlc_ground_truth(
+    merge_sha: str,
+    repo_path: Path,
+    changed_files: list[str],
+) -> dict:
+    """Build ground truth for a standard SDLC task.
+
+    Always returns a dict (never None) — even with empty symbols the
+    ``changed_files`` alone are useful for downstream consumers (weighted
+    checklist scoring, access scope constraints).
+
+    Filters *changed_files* through ``_is_safe_relative_path`` at the boundary
+    so this function is safe to call with unvalidated input.
+    """
+    safe_changed = [f for f in changed_files if _is_safe_relative_path(f)]
+    source_files = [f for f in safe_changed if not _is_test_file(f)]
+    test_files = _find_test_files(safe_changed)
+    symbols = _extract_modified_symbols_structured(merge_sha, repo_path, source_files)
+    diff_summary = _get_diff_stat(merge_sha, repo_path)
+
+    return {
+        "schema_version": "sdlc-v1",
+        "changed_files": safe_changed,
+        "source_files": source_files,
+        "test_files": test_files,
+        "symbols": symbols,
+        "diff_summary": diff_summary,
+        "merge_sha": merge_sha,
+        "populated_by": "mining-sdlc-ground-truth",
     }
 
 
@@ -864,6 +964,9 @@ class MineResult:
     pr_bodies: dict[str, str]  # task.id → raw PR body
     changed_files_map: dict[str, list[str]]  # task.id → changed file paths
     min_files_used: int | None = None  # effective min_files after relaxation
+    ground_truth_map: dict[str, dict] = field(
+        default_factory=dict
+    )  # task.id → ground truth
 
 
 def _collect_candidates(
@@ -873,14 +976,20 @@ def _collect_candidates(
     min_files: int,
     min_quality: float,
     subsystems: tuple[str, ...],
-) -> tuple[list[tuple[float, int, Task]], dict[str, str], dict[str, list[str]]]:
+) -> tuple[
+    list[tuple[float, int, Task]],
+    dict[str, str],
+    dict[str, list[str]],
+    dict[str, str],
+]:
     """Score and filter PRs into ranked candidates.
 
-    Returns (candidates, pr_bodies, changed_files_map).
+    Returns (candidates, pr_bodies, changed_files_map, merge_sha_map).
     """
     candidates: list[tuple[float, int, Task]] = []
     pr_bodies: dict[str, str] = {}
     changed_files_map: dict[str, list[str]] = {}
+    merge_sha_map: dict[str, str] = {}
 
     # Rejection counters for diagnostics
     rejected_min_files = 0
@@ -931,6 +1040,7 @@ def _collect_candidates(
         candidates.append((quality, len(changed_files), task))
         pr_bodies[task.id] = pr_meta.body
         changed_files_map[task.id] = changed_files
+        merge_sha_map[task.id] = pr.merge_commit
 
     total_rejected = (
         rejected_min_files + rejected_subsystem + rejected_extraction + rejected_quality
@@ -946,7 +1056,7 @@ def _collect_candidates(
             rejected_quality,
         )
 
-    return candidates, pr_bodies, changed_files_map
+    return candidates, pr_bodies, changed_files_map, merge_sha_map
 
 
 # Thresholds to try when min_files filters out all candidates.
@@ -986,7 +1096,7 @@ def mine_tasks(
         logger.info("No merge commits found in %s", path)
         return MineResult(tasks=[], pr_bodies={}, changed_files_map={})
 
-    candidates, pr_bodies, changed_files_map = _collect_candidates(
+    candidates, pr_bodies, changed_files_map, merge_sha_map = _collect_candidates(
         prs,
         path,
         source,
@@ -1005,13 +1115,15 @@ def mine_tasks(
                 min_files,
                 relaxed,
             )
-            candidates, pr_bodies, changed_files_map = _collect_candidates(
-                prs,
-                path,
-                source,
-                relaxed,
-                min_quality,
-                subsystems,
+            candidates, pr_bodies, changed_files_map, merge_sha_map = (
+                _collect_candidates(
+                    prs,
+                    path,
+                    source,
+                    relaxed,
+                    min_quality,
+                    subsystems,
+                )
             )
             if candidates:
                 min_files = relaxed
@@ -1028,6 +1140,15 @@ def mine_tasks(
         k: v for k, v in changed_files_map.items() if k in selected_ids
     }
 
+    # Build ground truth only for selected tasks (deferred from _collect_candidates
+    # to avoid O(N) subprocess calls for candidates that are discarded)
+    ground_truth_map: dict[str, dict] = {}
+    for task in tasks:
+        sha = merge_sha_map.get(task.id)
+        files = changed_files_map.get(task.id)
+        if sha and files:
+            ground_truth_map[task.id] = _build_sdlc_ground_truth(sha, path, files)
+
     logger.info(
         "Mined %d tasks from %d merge commits (min_files=%d)",
         len(tasks),
@@ -1039,6 +1160,7 @@ def mine_tasks(
         pr_bodies=pr_bodies,
         changed_files_map=changed_files_map,
         min_files_used=min_files,
+        ground_truth_map=ground_truth_map,
     )
 
 

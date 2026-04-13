@@ -1195,7 +1195,12 @@ def _dispatch_sdlc(
 
     tasks_dir = _clear_tasks_dir(repo_path)
     for task in tasks:
-        write_task_dir(task, tasks_dir, repo_path)
+        write_task_dir(
+            task,
+            tasks_dir,
+            repo_path,
+            ground_truth=mine_result.ground_truth_map.get(task.id),
+        )
 
     _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
     _show_results_table(tasks)
@@ -1338,7 +1343,12 @@ def _dispatch_mixed(
         if dual_verify:
             sdlc_tasks = _apply_dual_verification(sdlc_tasks, mine_result, repo_path)
         for task in sdlc_tasks:
-            write_mining_task(task, tasks_dir, repo_path)
+            write_mining_task(
+                task,
+                tasks_dir,
+                repo_path,
+                ground_truth=mine_result.ground_truth_map.get(task.id),
+            )
         all_task_ids.extend(t.id for t in sdlc_tasks)
 
     # Probe generation
