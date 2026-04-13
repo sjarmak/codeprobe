@@ -229,14 +229,18 @@ def show_prompt_and_exit(
         experiment = None
         codeprobe_dir = Path(path) / ".codeprobe"
         if codeprobe_dir.is_dir():
-            candidates = sorted(
-                d
-                for d in codeprobe_dir.iterdir()
-                if d.is_dir() and (d / "experiment.json").is_file()
-            )
-            if len(candidates) == 1:
-                exp_dir = candidates[0]
+            if (codeprobe_dir / "experiment.json").is_file():
+                exp_dir = codeprobe_dir
                 experiment = load_experiment(exp_dir)
+            else:
+                candidates = sorted(
+                    d
+                    for d in codeprobe_dir.iterdir()
+                    if d.is_dir() and (d / "experiment.json").is_file()
+                )
+                if len(candidates) == 1:
+                    exp_dir = candidates[0]
+                    experiment = load_experiment(exp_dir)
         if experiment is None:
             click.echo(
                 f"Error: No experiment found in {Path(path) / '.codeprobe'}",
@@ -331,23 +335,30 @@ def run_eval(
         experiment = None
         codeprobe_dir = Path(path) / ".codeprobe"
         if codeprobe_dir.is_dir():
-            candidates = sorted(
-                d
-                for d in codeprobe_dir.iterdir()
-                if d.is_dir() and (d / "experiment.json").is_file()
-            )
-            if len(candidates) == 1:
-                exp_dir = candidates[0]
+            # First: check if experiment.json lives directly in .codeprobe/
+            # (created by `codeprobe experiment init --non-interactive`)
+            if (codeprobe_dir / "experiment.json").is_file():
+                exp_dir = codeprobe_dir
                 experiment = load_experiment(exp_dir)
-            elif len(candidates) > 1:
-                click.echo("Multiple experiments found:", err=True)
-                for c in candidates:
-                    click.echo(f"  {c.name}", err=True)
-                click.echo(
-                    "Use --config to specify: codeprobe run <path> --config <path>/.codeprobe/<name>",
-                    err=True,
+            else:
+                # Fallback: look for named experiment subdirectories
+                candidates = sorted(
+                    d
+                    for d in codeprobe_dir.iterdir()
+                    if d.is_dir() and (d / "experiment.json").is_file()
                 )
-                raise SystemExit(1)
+                if len(candidates) == 1:
+                    exp_dir = candidates[0]
+                    experiment = load_experiment(exp_dir)
+                elif len(candidates) > 1:
+                    click.echo("Multiple experiments found:", err=True)
+                    for c in candidates:
+                        click.echo(f"  {c.name}", err=True)
+                    click.echo(
+                        "Use --config to specify: codeprobe run <path> --config <path>/.codeprobe/<name>",
+                        err=True,
+                    )
+                    raise SystemExit(1)
         if experiment is None:
             click.echo(
                 f"Error: No experiment found in {Path(path) / '.codeprobe'}",

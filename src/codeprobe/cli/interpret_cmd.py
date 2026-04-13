@@ -36,7 +36,16 @@ def run_interpret(path: str, fmt: str = "text") -> None:
     from codeprobe.core.experiment import load_config_results, load_experiment
 
     exp_dir = Path(path).resolve()
-    experiment = load_experiment(exp_dir)
+    try:
+        experiment = load_experiment(exp_dir)
+    except (FileNotFoundError, ValueError):
+        # Try .codeprobe/ directory (experiment init puts it there)
+        codeprobe_dir = exp_dir / ".codeprobe"
+        if codeprobe_dir.is_dir() and (codeprobe_dir / "experiment.json").is_file():
+            exp_dir = codeprobe_dir
+            experiment = load_experiment(exp_dir)
+        else:
+            raise
 
     all_results = []
     for config in experiment.configs:
