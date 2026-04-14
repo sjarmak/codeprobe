@@ -568,7 +568,7 @@ def test_unsupported_check_type_skipped(tmp_path: Path) -> None:
     v = Verifier(manifest)
     verdict = v.run(tmp_path / "ws")
     assert verdict["skip_count"] == 1
-    assert verdict["status"] == STATUS_INCOMPLETE  # 0% evaluated in behavioral
+    assert verdict["status"] == STATUS_EVALUATED  # skip reduces effective_total to 0
 
 
 # ---------------------------------------------------------------------------

@@ -67,7 +67,7 @@ def test_agent_output_is_frozen():
 def test_agent_config_defaults():
     config = AgentConfig()
     assert config.permission_mode == "default"
-    assert config.timeout_seconds == 300
+    assert config.timeout_seconds == 3600
 
 
 def test_claude_permission_mode_passed():
