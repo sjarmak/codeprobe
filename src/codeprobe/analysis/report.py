@@ -21,10 +21,6 @@ from codeprobe.analysis.stats import (
 )
 from codeprobe.models.experiment import CompletedTask, ConfigResults
 
-# Re-export under the old private name for any callers that referenced it
-# directly, and for internal use in this module.
-_task_passed = task_passed
-
 
 @dataclass(frozen=True)
 class Report:
@@ -81,7 +77,7 @@ def generate_report(
     config_binary: dict[str, dict[str, float]] = {}
     for cr in all_results:
         config_binary[cr.config] = {
-            t.task_id: (1.0 if _task_passed(t) else 0.0) for t in cr.completed
+            t.task_id: (1.0 if task_passed(t) else 0.0) for t in cr.completed
         }
 
     comparisons: list[PairwiseComparison] = []
@@ -114,7 +110,7 @@ def _tee_binary_scores(
 ) -> Iterator[CompletedTask]:
     """Yield tasks unchanged while recording binary pass/fail into *sink*."""
     for t in tasks:
-        sink[t.task_id] = 1.0 if _task_passed(t) else 0.0
+        sink[t.task_id] = 1.0 if task_passed(t) else 0.0
         yield t
 
 
@@ -274,7 +270,7 @@ def format_text_report(report: Report) -> str:
             lines.append("|--------|------|-------|------|--------------|----------|")
         for cr in report.config_results:
             for task in cr.completed:
-                passed = "Y" if _task_passed(task) else "N"
+                passed = "Y" if task_passed(task) else "N"
                 cost_cell = f"{task.cost_usd:.4f}" if task.cost_usd is not None else ""
                 if any_dual_tasks:
                     details = task.scoring_details or {}
@@ -328,7 +324,7 @@ def _build_task_rows(report: Report) -> list[dict]:
                     "task_id": task.task_id,
                     "repeat": 1,
                     "score": task.automated_score,
-                    "pass": 1 if _task_passed(task) else 0,
+                    "pass": 1 if task_passed(task) else 0,
                     "duration_sec": task.duration_seconds,
                     "cost_usd": task.cost_usd,
                     "cost_source": task.cost_source,
@@ -635,7 +631,7 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                 )
             parts.append("</tr></thead>\n<tbody>\n")
             for task in cr.completed:
-                passed = _task_passed(task)
+                passed = task_passed(task)
                 cls = "pass" if passed else "fail"
                 if any_dual_tasks_html:
                     details = task.scoring_details or {}

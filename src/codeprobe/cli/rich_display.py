@@ -20,8 +20,8 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
-from codeprobe.analysis.dual import _strict_bool, format_dual_suffix
-from codeprobe.analysis.stats import PASS_THRESHOLD
+from codeprobe.analysis.dual import format_dual_suffix
+from codeprobe.analysis.stats import score_passed
 from codeprobe.core.events import (
     BudgetWarning,
     RunFinished,
@@ -139,13 +139,7 @@ class RichLiveListener:
         with self._lock:
             state = self._get_or_create_config(event.config_label)
             state.tasks_completed += 1
-            details = event.scoring_details or {}
-            explicit = _strict_bool(details.get("passed"))
-            if explicit is not None:
-                passed = explicit
-            else:
-                passed = event.automated_score >= PASS_THRESHOLD
-            if passed:
+            if score_passed(event.automated_score, event.scoring_details):
                 state.passed += 1
             state.durations.append(event.duration_seconds)
             if event.cost_usd is not None:

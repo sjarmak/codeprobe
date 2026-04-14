@@ -33,19 +33,27 @@ from codeprobe.analysis.dual import (  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def task_passed(task: CompletedTask) -> bool:
-    """Return whether a task passed.
+def score_passed(automated_score: float, scoring_details: dict | None = None) -> bool:
+    """Return whether a score represents a pass.
 
     Prefers the scorer's explicit ``scoring_details['passed']`` flag when
     present (accepting bool or JSON-round-tripped string forms like
     ``"false"``/``"true"`` via :func:`_strict_bool`), else falls back to
     ``automated_score >= PASS_THRESHOLD``.
     """
-    details = task.scoring_details or {}
+    details = scoring_details or {}
     explicit = _strict_bool(details.get("passed"))
     if explicit is not None:
         return explicit
-    return task.automated_score >= PASS_THRESHOLD
+    return automated_score >= PASS_THRESHOLD
+
+
+def task_passed(task: CompletedTask) -> bool:
+    """Return whether a completed task passed.
+
+    Thin wrapper around :func:`score_passed` for ``CompletedTask`` objects.
+    """
+    return score_passed(task.automated_score, task.scoring_details)
 
 
 # ---------------------------------------------------------------------------
