@@ -1,6 +1,6 @@
 """Extract symbols from Python/TypeScript repos and generate micro-benchmark probes.
 
-Ported from ~/MCP-Eval-Tasks/scripts/generate_probes.py with adaptations
+Ported from ~/projects/MCP-Eval-Tasks/scripts/generate_probes.py with adaptations
 for the codeprobe package structure.
 """
 

@@ -1,6 +1,6 @@
 """Write generated probe tasks to the standard eval task directory format.
 
-Ported from ~/MCP-Eval-Tasks/scripts/probe_writer.py with adaptations
+Ported from ~/projects/MCP-Eval-Tasks/scripts/probe_writer.py with adaptations
 for the codeprobe package structure.
 """
 

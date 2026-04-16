@@ -16,7 +16,7 @@ Every bead description MUST contain enough context that a fresh agent session ca
 2. **Line numbers or function names** — `line 43` or `parse_output()`
 3. **Numbered implementation steps** — what to do, in what order
 4. **Code snippets / data shapes** — JSON schemas, Protocol signatures, dataclass fields for anything non-obvious
-5. **Reference files with context** — `~/MCP-Eval-Tasks/scripts/run_experiment.py lines 178-194, look for envelope.get('usage')`
+5. **Reference files with context** — `~/projects/MCP-Eval-Tasks/scripts/run_experiment.py lines 178-194, look for envelope.get('usage')`
 6. **Acceptance criteria** — checkboxes so the agent knows when it's done
 7. **Test fixture descriptions** — what test files to create and their contents
 8. **Dependency context** — what prior beads changed and how it affects this work
