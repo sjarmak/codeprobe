@@ -7,9 +7,10 @@ import json
 import logging
 import re
 import shlex
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
+from codeprobe.mining.extractor import _is_safe_relative_path
 from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -313,6 +314,269 @@ def _build_test_script(cmd: str, repo_path: Path, *, header: str) -> str:
     )
 
 
+# Weighted-checklist schema version emitted in validation_result.json.
+_WEIGHTED_CHECKLIST_SCHEMA = "weighted_checklist.v1"
+
+_WEIGHTS = {
+    "correct_files": 0.30,
+    "syntax_valid": 0.25,
+    "scope_respected": 0.25,
+    "test_passed": 0.20,
+}
+
+# Vendored Python helper for the weighted-checklist verifier — shipped
+# as an f-string-free module-level constant so future edits don't fight
+# brace-escape rules. Reads its inputs from env vars (CP_*) and writes
+# reward.txt + validation_result.json into the sandbox dir. The final
+# stdout line is `composite_score=<float>` for ContinuousScorer's
+# stdout fallback path in codeprobe.core.scoring.
+_WEIGHTED_CHECKLIST_PY = '''\
+import json
+import os
+import py_compile
+from pathlib import Path
+
+
+def _normalize(p):
+    p = p.replace("\\\\", "/").strip()
+    for pfx in ("./", "/workspace/", "/tmp/", "/app/"):
+        while p.startswith(pfx):
+            p = p[len(pfx):]
+    return p.lstrip("/")
+
+
+gt = json.loads(os.environ["CP_GROUND_TRUTH"])
+source_files = [_normalize(f) for f in gt.get("source_files", [])]
+scope_dirs = gt.get("scope_dirs", [])
+language = gt.get("language", "")
+weights = gt["weights"]
+
+changed_set = {
+    _normalize(line)
+    for line in os.environ.get("CP_CHANGED_FILES", "").splitlines()
+    if line.strip()
+}
+test_exit = int(os.environ.get("CP_TEST_EXIT", "1"))
+
+checks = []
+
+if source_files:
+    matched = sum(1 for f in source_files if f in changed_set)
+    score = matched / len(source_files)
+    detail = f"{matched}/{len(source_files)} expected source files modified"
+else:
+    score = 0.0
+    detail = "no expected source files in ground truth"
+checks.append(
+    {
+        "name": "correct_files",
+        "weight": weights["correct_files"],
+        "score": score,
+        "detail": detail,
+    }
+)
+
+syntax_score = 1.0
+syntax_detail = f"syntax check skipped for language={language!r} (full credit)"
+if language in ("python", "py"):
+    ok = total = 0
+    for f in source_files:
+        if not f.endswith(".py") or not Path(f).is_file():
+            continue
+        total += 1
+        try:
+            py_compile.compile(f, doraise=True)
+            ok += 1
+        except (py_compile.PyCompileError, SyntaxError, OSError):
+            pass
+    if total > 0:
+        syntax_score = ok / total
+        syntax_detail = f"{ok}/{total} files parse"
+    else:
+        syntax_detail = "no python files to parse (full credit)"
+checks.append(
+    {
+        "name": "syntax_valid",
+        "weight": weights["syntax_valid"],
+        "score": syntax_score,
+        "detail": syntax_detail,
+    }
+)
+
+scope_score = 1.0
+scope_detail = "no scope constraints (full credit)"
+if scope_dirs and changed_set:
+    out_of_scope = [
+        f for f in changed_set
+        if not any(f == d or f.startswith(d + "/") for d in scope_dirs)
+    ]
+    if out_of_scope:
+        scope_score = 0.0
+        scope_detail = f"{len(out_of_scope)} file(s) outside {scope_dirs}"
+    else:
+        scope_detail = f"all changes within {scope_dirs}"
+checks.append(
+    {
+        "name": "scope_respected",
+        "weight": weights["scope_respected"],
+        "score": scope_score,
+        "detail": scope_detail,
+    }
+)
+
+checks.append(
+    {
+        "name": "test_passed",
+        "weight": weights["test_passed"],
+        "score": 1.0 if test_exit == 0 else 0.0,
+        "detail": f"verification command exit={test_exit}",
+    }
+)
+
+composite = sum(c["score"] * c["weight"] for c in checks)
+composite = max(0.0, min(1.0, composite))
+
+for c in checks:
+    if c["score"] >= 1.0:
+        marker = "x"
+    elif c["score"] > 0.0:
+        marker = "~"
+    else:
+        marker = " "
+    print(
+        f"[{marker}] {c['name']} ({c['weight']:.2f}): "
+        f"score={c['score']:.2f} - {c['detail']}"
+    )
+
+sandbox_dir = os.environ.get("CP_SANDBOX_DIR", "")
+if sandbox_dir:
+    sandbox_path = Path(sandbox_dir)
+    try:
+        (sandbox_path / "reward.txt").write_text(
+            f"{composite:.4f}\\n", encoding="utf-8"
+        )
+        (sandbox_path / "validation_result.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": gt.get(
+                        "schema_version", "weighted_checklist.v1"
+                    ),
+                    "composite_score": composite,
+                    "sub_scores": {c["name"]: c for c in checks},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+print(f"composite_score={composite:.4f}")
+'''
+
+
+def _build_weighted_checklist_script(
+    cmd: str,
+    repo_path: Path,
+    *,
+    language: str,
+    ground_truth: dict,
+    header: str,
+) -> str:
+    """Build a weighted-checklist test.sh that emits a float score in [0, 1].
+
+    The generated script runs four weighted sub-checks against the agent's
+    changes in ``TASK_REPO_ROOT`` (falling back to the mined ``repo_path``):
+
+    - ``correct_files`` (0.30): fraction of expected source files that the
+      agent actually modified
+    - ``syntax_valid`` (0.25): expected source files parse without syntax
+      errors (language-aware; unknown languages receive full credit)
+    - ``scope_respected`` (0.25): every changed file lives inside the set
+      of scope directories derived from the expected source files (an
+      empty scope or no changes falls through to full credit)
+    - ``test_passed`` (0.20): the mined verification command (``cmd``)
+      exits zero
+
+    Composite is printed as ``composite_score=<float>`` (last stdout line
+    consumed by :class:`codeprobe.core.scoring.ContinuousScorer`) and also
+    written to ``reward.txt`` in the sandbox task dir, with a full
+    sub-score breakdown in ``validation_result.json``.
+    """
+    _validate_verification_command(cmd)
+
+    # Filter source_files through the mining safety predicate so a malformed
+    # ground_truth cannot smuggle ``../etc/passwd`` into reward artifacts.
+    raw_sources = list(ground_truth.get("source_files") or [])
+    source_files = [f for f in raw_sources if _is_safe_relative_path(f)]
+
+    scope_dirs = sorted(
+        {
+            str(Path(f).parent)
+            for f in source_files
+            if str(Path(f).parent) != "."
+        }
+    )
+
+    # JSON is safe inside single-quoted bash strings: json.dumps produces
+    # no single quotes and no backslash escapes when ensure_ascii=True.
+    gt_payload = json.dumps(
+        {
+            "source_files": source_files,
+            "scope_dirs": scope_dirs,
+            "language": (language or "").lower(),
+            "weights": _WEIGHTS,
+            "schema_version": _WEIGHTED_CHECKLIST_SCHEMA,
+        },
+        ensure_ascii=True,
+    )
+
+    fallback = shlex.quote(str(repo_path))
+    # pipefail intentionally off so a failing verification command inside
+    # a subshell doesn't abort before the composite score is computed.
+    return f"""#!/usr/bin/env bash
+set -u
+
+# {header}
+_CODEPROBE_REPO_DEFAULT={fallback}
+_CP_SANDBOX_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+cd "${{TASK_REPO_ROOT:-$_CODEPROBE_REPO_DEFAULT}}"
+
+git config --global --add safe.directory "$(pwd)" 2>/dev/null || true
+
+_CP_ORIGIN_REF=""
+for ref in origin/main origin/master origin/HEAD; do
+    if git rev-parse "$ref" >/dev/null 2>&1; then
+        _CP_ORIGIN_REF="$ref"
+        break
+    fi
+done
+
+# Collect changed files: committed-vs-origin is a separate query from the
+# porcelain which covers unstaged, staged, and untracked in one fork.
+CP_CHANGED_FILES="$(
+    {{
+        if [ -n "$_CP_ORIGIN_REF" ]; then
+            git diff --name-only "$_CP_ORIGIN_REF..HEAD" 2>/dev/null || true
+        fi
+        git status --porcelain 2>/dev/null | awk '{{print $NF}}' || true
+    }} | sort -u | grep -v '^$' || true
+)"
+
+{cmd}
+CP_TEST_EXIT=$?
+
+export CP_CHANGED_FILES
+export CP_TEST_EXIT
+export CP_SANDBOX_DIR="$_CP_SANDBOX_DIR"
+export CP_GROUND_TRUTH={shlex.quote(gt_payload)}
+
+python3 - <<'PYEOF'
+{_WEIGHTED_CHECKLIST_PY}
+PYEOF
+"""
+
+
 def write_task_dir(
     task: Task,
     base_dir: Path,
@@ -418,12 +682,32 @@ def write_task_dir(
     if task.metadata.task_type == "mcp_tool_usage":
         _write_mcp_instruction_variant(task, task_dir, instruction)
 
-    # Write tests/test.sh — validate command against allowlist prefixes
-    test_script = _build_test_script(
-        task.verification.command,
-        repo_path,
-        header=f"Verification script for task {safe_id}",
-    )
+    # Write tests/test.sh — weighted checklist for sdlc-schema ground truth,
+    # otherwise a plain wrapper. Both paths validate the mined command against
+    # the allowlist in _build_*_script.
+    use_weighted = ground_truth is not None and str(
+        ground_truth.get("schema_version", "")
+    ).startswith("sdlc-")
+
+    if use_weighted:
+        test_script = _build_weighted_checklist_script(
+            task.verification.command,
+            repo_path,
+            language=language,
+            ground_truth=ground_truth,
+            header=f"Weighted-checklist verification for task {safe_id}",
+        )
+        # Composite is a float in [0, 1] → downstream must use ContinuousScorer.
+        task = replace(
+            task,
+            verification=replace(task.verification, reward_type="continuous"),
+        )
+    else:
+        test_script = _build_test_script(
+            task.verification.command,
+            repo_path,
+            header=f"Verification script for task {safe_id}",
+        )
     test_sh_path = tests_dir / "test.sh"
     test_sh_path.write_text(test_script, encoding="utf-8")
     test_sh_path.chmod(0o755)
