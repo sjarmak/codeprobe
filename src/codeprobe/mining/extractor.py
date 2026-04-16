@@ -1171,9 +1171,10 @@ def mine_tasks(
 _ENRICHMENT_THRESHOLD = 0.5
 
 _INSTRUCTION_PROMPT_TEMPLATE = """\
-You are an eval-task writer for an AI coding agent benchmark. Given raw PR \
-metadata from a merged pull request, write a clear task instruction that tells \
-an agent WHAT to implement without revealing HOW (the solution).
+You are an eval-task writer for an AI coding agent benchmark modeled after \
+CodeScaleBench (CSB). Given raw PR metadata from a merged pull request, \
+produce a rich, CSB-style task instruction that tells an agent WHAT to \
+implement without revealing HOW (the solution).
 
 ## Raw PR Metadata
 Title: {title}
@@ -1187,22 +1188,41 @@ Labels: {labels}
 Language: {language}
 Changed files: {changed_files}
 
-## Instructions
+## Output Schema
 Produce a JSON object with exactly these keys:
-- "heading": A short descriptive title for the task (not the raw PR title).
-- "problem": A clear 2-4 sentence problem description. Explain what is broken \
-or what feature is needed and why. Do NOT describe the solution or mention \
-specific code changes from the PR. If there is issue context, use it — it \
-describes the problem better than the PR body.
-- "requirements": A bullet list (as a single string with newlines) of what the \
-agent must accomplish. Focus on observable behavior and acceptance criteria, \
-not implementation details.
+
+- "heading": A short descriptive task title (not the raw PR title).
+- "team_context": 1-3 sentences of role-play framing. Identify the team the \
+agent belongs to based on the changed_files directory roots (e.g. files \
+under "pkg/scheduler/" → "You are a developer on the Scheduler team"). \
+Describe ownership: what this team owns vs. what neighbouring teams own. \
+Empty string "" if the changed_files list is empty or you cannot infer a \
+sensible owning subsystem.
+- "access_scope": 1-2 sentences describing which paths the agent may modify. \
+Derive from the top-level directories of changed_files — the agent should \
+only change files under those roots, but may read other code to understand \
+contracts. Empty string "" if changed_files is empty.
+- "problem": A 3-6 sentence problem description explaining what is broken or \
+what feature is needed and why it matters. Prefer issue context over PR \
+body text. Do NOT describe the solution, diffs, or specific code changes.
+- "reproduction": Steps or code to reproduce the bug, or a concrete scenario \
+that demonstrates the missing feature. Use a fenced code block when showing \
+commands or code. Empty string "" if no reproduction is possible (e.g. \
+pure refactor).
+- "requirements": A markdown bullet list (single string with newlines) of \
+what the agent must accomplish. Focus on observable behavior — not \
+implementation details.
+- "success_criteria": A markdown bullet list (single string with newlines) of \
+explicit, verifiable pass conditions the agent's solution must satisfy \
+(behavioral outcomes, scope constraints, syntactic validity).
 - "difficulty": One of "easy", "medium", or "hard".
 
-Strip any PR template boilerplate (e.g., "What type of PR is this?", \
-checklists, release notes, bot labels). Focus on the actual problem.
-
-Respond ONLY with the JSON object, no markdown fences.
+## Rules
+- Strip PR template boilerplate (e.g. "What type of PR is this?", \
+checklists, release notes, bot labels).
+- Never reveal the solution or name specific symbols introduced by the diff.
+- If a field is genuinely not applicable, return it as an empty string "".
+- Respond with ONLY the JSON object — no prose, no markdown fences.
 """
 
 
@@ -1240,7 +1260,7 @@ def generate_instruction(
     prompt = _build_instruction_prompt(task, pr_body, changed_files)
     try:
         response = call_claude(
-            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+            LLMRequest(prompt=prompt, model="sonnet", timeout_seconds=60)
         )
     except LLMError as exc:
         logger.warning("LLM instruction generation failed for %s: %s", task.id, exc)
@@ -1261,27 +1281,66 @@ def generate_instruction(
         return task
 
     heading = data.get("heading", "")
+    team_context = data.get("team_context", "")
+    access_scope = data.get("access_scope", "")
     problem = data.get("problem", "")
+    reproduction = data.get("reproduction", "")
     requirements = data.get("requirements", "")
+    success_criteria = data.get("success_criteria", "")
     difficulty = data.get("difficulty", task.metadata.difficulty)
 
     if difficulty not in ("easy", "medium", "hard"):
         difficulty = task.metadata.difficulty
 
     if not problem:
-        # LLM returned empty problem — keep original
         return task
 
     new_metadata = replace(
         task.metadata,
-        description=task.metadata.description,  # preserve raw for metadata.json
+        description=task.metadata.description,
         difficulty=difficulty,
         enrichment_source="llm",
         issue_title=heading or task.metadata.issue_title,
-        issue_body=problem
-        + ("\n\n## Requirements\n\n" + requirements if requirements else ""),
+        issue_body=_compose_issue_body(
+            team_context=team_context,
+            access_scope=access_scope,
+            problem=problem,
+            reproduction=reproduction,
+            requirements=requirements,
+            success_criteria=success_criteria,
+        ),
     )
     return replace(task, metadata=new_metadata)
+
+
+def _compose_issue_body(
+    *,
+    team_context: str,
+    access_scope: str,
+    problem: str,
+    reproduction: str,
+    requirements: str,
+    success_criteria: str,
+) -> str:
+    """Assemble the CSB-style issue body from LLM output fields.
+
+    The mining writer wraps this value in a ``## Problem`` section, so
+    problem text leads unprefixed; richer context, scope, repro, and
+    pass-conditions append as sibling ``##`` subsections. Empty fields
+    are skipped.
+    """
+    sections: list[str] = [problem.strip()]
+    if team_context.strip():
+        sections.append("## Context\n\n" + team_context.strip())
+    if access_scope.strip():
+        sections.append("## Access Scope\n\n" + access_scope.strip())
+    if reproduction.strip():
+        sections.append("## Steps to Reproduce\n\n" + reproduction.strip())
+    if requirements.strip():
+        sections.append("## Requirements\n\n" + requirements.strip())
+    if success_criteria.strip():
+        sections.append("## Success Criteria\n\n" + success_criteria.strip())
+    return "\n\n".join(sections)
 
 
 def generate_instructions(

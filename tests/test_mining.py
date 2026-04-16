@@ -1735,6 +1735,89 @@ class TestGenerateInstruction:
         # Template noise from raw description should NOT leak through
         assert "What type of PR is this" not in instruction
 
+    @patch("codeprobe.core.llm.call_claude")
+    def test_generate_instruction_csb_style_fields(
+        self, mock_call: object, tmp_path: Path
+    ) -> None:
+        """CSB-style fields (team_context, access_scope, reproduction, \
+success_criteria) flow into the written instruction."""
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text=json.dumps(
+                {
+                    "heading": "Implement workload-aware pod preemption",
+                    "team_context": (
+                        "You are a developer on the Scheduler team. Your "
+                        "team owns pkg/scheduler/."
+                    ),
+                    "access_scope": (
+                        "You may modify files under pkg/scheduler/ only; "
+                        "other packages are read-only."
+                    ),
+                    "problem": (
+                        "Pod groups currently preempt per-pod rather than as a "
+                        "group, causing suboptimal scheduling outcomes."
+                    ),
+                    "reproduction": (
+                        "```bash\nkubectl apply -f podgroup.yaml\n```"
+                    ),
+                    "requirements": (
+                        "- Preemption runs for the whole pod group\n"
+                        "- Existing per-pod preemption still works"
+                    ),
+                    "success_criteria": (
+                        "- Pod groups schedule atomically\n"
+                        "- All changes are within pkg/scheduler/ only"
+                    ),
+                    "difficulty": "hard",
+                }
+            )
+        )
+
+        task = self._make_task()
+        enriched = generate_instruction(
+            task,
+            pr_body="",
+            changed_files=["pkg/scheduler/preemption.go"],
+        )
+
+        body = enriched.metadata.issue_body
+        assert "## Context" in body
+        assert "Scheduler team" in body
+        assert "## Access Scope" in body
+        assert "## Steps to Reproduce" in body
+        assert "kubectl apply" in body
+        assert "## Requirements" in body
+        assert "## Success Criteria" in body
+        assert "Pod groups schedule atomically" in body
+
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "kubernetes"
+        result_path = write_task_dir(enriched, base_dir, repo_path)
+        instruction = (result_path / "instruction.md").read_text(encoding="utf-8")
+        assert "## Context" in instruction
+        assert "## Access Scope" in instruction
+        assert "## Steps to Reproduce" in instruction
+        assert "## Success Criteria" in instruction
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_generate_instruction_uses_sonnet(self, mock_call: object) -> None:
+        """Instruction generation requests the sonnet model, not haiku."""
+        from codeprobe.core.llm import LLMRequest, LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"heading": "x", "problem": "p.", "requirements": "", '
+            '"difficulty": "easy"}'
+        )
+        generate_instruction(self._make_task())
+
+        assert mock_call.call_count == 1
+        args, _ = mock_call.call_args
+        request = args[0]
+        assert isinstance(request, LLMRequest)
+        assert request.model == "sonnet"
+
 
 # ---------------------------------------------------------------------------
 # PR template stripping tests
