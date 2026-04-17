@@ -8,7 +8,7 @@ import logging
 import re
 import shlex
 from dataclasses import asdict, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from codeprobe.mining.extractor import _is_safe_relative_path
 from codeprobe.models.task import Task
@@ -510,13 +510,32 @@ def _build_weighted_checklist_script(
     raw_sources = list(ground_truth.get("source_files") or [])
     source_files = [f for f in raw_sources if _is_safe_relative_path(f)]
 
-    scope_dirs = sorted(
-        {
-            str(Path(f).parent)
-            for f in source_files
-            if str(Path(f).parent) != "."
-        }
-    )
+    # Prefer explicit writable_paths (mined per codeprobe-br7.5 from all
+    # changed files, so tests/ is included). Fall back to the historical
+    # source_files-parent derivation for ground_truth written before
+    # writable_paths was added. Re-filter at this boundary for defense in
+    # depth even though the miner already validates, and normalize through
+    # PurePosixPath so stray './' prefixes don't desync with the embedded
+    # Python's _normalize() on the agent side.
+    raw_writable = ground_truth.get("writable_paths")
+    if raw_writable is not None:
+        normalized: set[str] = set()
+        for p in raw_writable:
+            if not _is_safe_relative_path(p):
+                continue
+            norm = str(PurePosixPath(p))
+            if norm == ".":
+                continue
+            normalized.add(norm)
+        scope_dirs = sorted(normalized)
+    else:
+        scope_dirs = sorted(
+            {
+                str(Path(f).parent)
+                for f in source_files
+                if str(Path(f).parent) != "."
+            }
+        )
 
     # JSON is safe inside single-quoted bash strings: json.dumps produces
     # no single quotes and no backslash escapes when ensure_ascii=True.

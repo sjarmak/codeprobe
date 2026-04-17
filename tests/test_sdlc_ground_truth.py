@@ -7,8 +7,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
@@ -308,6 +306,128 @@ class TestBuildSdlcGroundTruth:
         assert result["source_files"] == []
         assert result["test_files"] == ["tests/test_a.py"]
         assert result["schema_version"] == "sdlc-v1"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _build_sdlc_ground_truth writable_paths (bead codeprobe-br7.5)
+# ---------------------------------------------------------------------------
+
+
+class TestSdlcGroundTruthWritablePaths:
+    @patch("codeprobe.mining.extractor._get_diff_stat", return_value="")
+    @patch(
+        "codeprobe.mining.extractor._extract_modified_symbols_structured",
+        return_value=[],
+    )
+    def test_emits_writable_paths_from_changed_files_parents(
+        self, mock_symbols, mock_stat
+    ) -> None:
+        from codeprobe.mining.extractor import _build_sdlc_ground_truth
+
+        changed = [
+            "src/auth/login.py",
+            "src/auth/session.py",
+            "tests/test_auth.py",
+        ]
+        result = _build_sdlc_ground_truth(
+            "abc1234567890abc", Path("/fake"), changed
+        )
+        # Includes test dir — CSB-style writable scope covers every directory
+        # the PR touched, including tests/.
+        assert result["writable_paths"] == ["src/auth", "tests"]
+
+    @patch("codeprobe.mining.extractor._get_diff_stat", return_value="")
+    @patch(
+        "codeprobe.mining.extractor._extract_modified_symbols_structured",
+        return_value=[],
+    )
+    def test_writable_paths_deduplicated_and_sorted(
+        self, mock_symbols, mock_stat
+    ) -> None:
+        from codeprobe.mining.extractor import _build_sdlc_ground_truth
+
+        changed = [
+            "pkg/b/x.go",
+            "pkg/a/y.go",
+            "pkg/b/z.go",
+            "pkg/a/y.go",
+        ]
+        result = _build_sdlc_ground_truth(
+            "abc1234567890abc", Path("/fake"), changed
+        )
+        assert result["writable_paths"] == ["pkg/a", "pkg/b"]
+
+    @patch("codeprobe.mining.extractor._get_diff_stat", return_value="")
+    @patch(
+        "codeprobe.mining.extractor._extract_modified_symbols_structured",
+        return_value=[],
+    )
+    def test_root_level_changes_emit_filename_entry(
+        self, mock_symbols, mock_stat
+    ) -> None:
+        """Root-level files (parent=='.') use the filename itself so the
+        bash matcher `f == d or f.startswith(d + '/')` still discriminates."""
+        from codeprobe.mining.extractor import _build_sdlc_ground_truth
+
+        changed = ["setup.py", "README.md", "src/pkg/mod.py"]
+        result = _build_sdlc_ground_truth(
+            "abc1234567890abc", Path("/fake"), changed
+        )
+        assert result["writable_paths"] == [
+            "README.md",
+            "setup.py",
+            "src/pkg",
+        ]
+
+    @patch("codeprobe.mining.extractor._get_diff_stat", return_value="")
+    @patch(
+        "codeprobe.mining.extractor._extract_modified_symbols_structured",
+        return_value=[],
+    )
+    def test_writable_paths_empty_when_no_changed_files(
+        self, mock_symbols, mock_stat
+    ) -> None:
+        from codeprobe.mining.extractor import _build_sdlc_ground_truth
+
+        result = _build_sdlc_ground_truth(
+            "abc1234567890abc", Path("/fake"), []
+        )
+        assert result["writable_paths"] == []
+
+    @patch("codeprobe.mining.extractor._get_diff_stat", return_value="")
+    @patch(
+        "codeprobe.mining.extractor._extract_modified_symbols_structured",
+        return_value=[],
+    )
+    def test_writable_paths_filters_unsafe_paths(
+        self, mock_symbols, mock_stat
+    ) -> None:
+        """Traversal attempts are dropped before the parent-dir step."""
+        from codeprobe.mining.extractor import _build_sdlc_ground_truth
+
+        changed = ["../etc/passwd", "/absolute/path.py", "src/ok.py"]
+        result = _build_sdlc_ground_truth(
+            "abc1234567890abc", Path("/fake"), changed
+        )
+        assert result["writable_paths"] == ["src"]
+
+    @patch("codeprobe.mining.extractor._get_diff_stat", return_value="")
+    @patch(
+        "codeprobe.mining.extractor._extract_modified_symbols_structured",
+        return_value=[],
+    )
+    def test_writable_paths_uses_posix_separators(
+        self, mock_symbols, mock_stat
+    ) -> None:
+        """Output must always use forward slashes regardless of mining host."""
+        from codeprobe.mining.extractor import _build_sdlc_ground_truth
+
+        changed = ["src/nested/deep/file.py"]
+        result = _build_sdlc_ground_truth(
+            "abc1234567890abc", Path("/fake"), changed
+        )
+        assert result["writable_paths"] == ["src/nested/deep"]
+        assert all("\\" not in p for p in result["writable_paths"])
 
 
 # ---------------------------------------------------------------------------

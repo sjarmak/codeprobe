@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -13,7 +14,6 @@ from codeprobe.mining.writer import (
     write_task_dir,
 )
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,8 +89,6 @@ class TestBuildWeightedChecklistScript:
         assert "test_passed" in script
 
     def test_weights_add_to_one(self, tmp_path: Path) -> None:
-        import re as _re
-
         script = _build_weighted_checklist_script(
             cmd="pytest tests/",
             repo_path=tmp_path,
@@ -100,7 +98,7 @@ class TestBuildWeightedChecklistScript:
         )
         # Ground-truth payload is JSON-embedded via a single-quoted env
         # var; extract it and check the weights arithmetic directly.
-        match = _re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
+        match = re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
         assert match is not None
         payload = json.loads(match.group(1))
         weights = payload["weights"]
@@ -415,3 +413,152 @@ class TestGeneratedScriptEndToEnd:
         score = float(last_line.split("=", 1)[1])
         # Loses 0.25 for scope violation → composite = 0.75
         assert 0.7 <= score <= 0.8
+
+
+# ---------------------------------------------------------------------------
+# Tests: writable_paths in ground_truth drive scope_dirs (bead codeprobe-br7.5)
+# ---------------------------------------------------------------------------
+
+
+class TestWritablePathsScopeSource:
+    def test_prefers_writable_paths_from_ground_truth(self, tmp_path: Path) -> None:
+        """When ground_truth carries writable_paths, use them verbatim."""
+        gt = _sdlc_gt(source_files=["src/auth.py"])
+        gt["writable_paths"] = ["src", "tests"]
+        script = _build_weighted_checklist_script(
+            cmd="pytest tests/",
+            repo_path=tmp_path,
+            language="python",
+            ground_truth=gt,
+            header="hdr",
+        )
+
+        match = re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
+        assert match is not None
+        payload = json.loads(match.group(1))
+        assert payload["scope_dirs"] == ["src", "tests"]
+
+    def test_falls_back_to_source_files_parents_when_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """Back-compat: old ground_truth without writable_paths still scopes."""
+        gt = _sdlc_gt(source_files=["src/auth.py", "src/session.py"])
+        # Explicitly ensure no writable_paths field
+        gt.pop("writable_paths", None)
+        script = _build_weighted_checklist_script(
+            cmd="pytest tests/",
+            repo_path=tmp_path,
+            language="python",
+            ground_truth=gt,
+            header="hdr",
+        )
+
+        match = re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
+        assert match is not None
+        payload = json.loads(match.group(1))
+        assert payload["scope_dirs"] == ["src"]
+
+    def test_filters_unsafe_writable_paths(self, tmp_path: Path) -> None:
+        """Defense-in-depth: unsafe entries are dropped at read time."""
+        gt = _sdlc_gt(source_files=["src/auth.py"])
+        gt["writable_paths"] = ["../etc", "/absolute", "src"]
+        script = _build_weighted_checklist_script(
+            cmd="pytest tests/",
+            repo_path=tmp_path,
+            language="python",
+            ground_truth=gt,
+            header="hdr",
+        )
+        match = re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
+        assert match is not None
+        payload = json.loads(match.group(1))
+        assert payload["scope_dirs"] == ["src"]
+
+    def test_normalizes_leading_dot_slash(self, tmp_path: Path) -> None:
+        """Writable paths with './' prefix are normalized so the matcher
+        stays in sync with the agent-side _normalize()."""
+        gt = _sdlc_gt(source_files=["src/auth.py"])
+        gt["writable_paths"] = ["./src", "./", "src//tests"]
+        script = _build_weighted_checklist_script(
+            cmd="pytest tests/",
+            repo_path=tmp_path,
+            language="python",
+            ground_truth=gt,
+            header="hdr",
+        )
+        match = re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
+        assert match is not None
+        payload = json.loads(match.group(1))
+        # './' resolves to '.' which is dropped; './src' → 'src';
+        # 'src//tests' → 'src/tests'.
+        assert payload["scope_dirs"] == ["src", "src/tests"]
+
+    def test_empty_writable_paths_yields_full_credit(self, tmp_path: Path) -> None:
+        """Empty writable_paths → scope check falls through to full credit
+        (matches existing semantics when scope_dirs is empty)."""
+        gt = _sdlc_gt(source_files=[])
+        gt["writable_paths"] = []
+        script = _build_weighted_checklist_script(
+            cmd="pytest tests/",
+            repo_path=tmp_path,
+            language="python",
+            ground_truth=gt,
+            header="hdr",
+        )
+        match = re.search(r"CP_GROUND_TRUTH='([^']+)'", script)
+        assert match is not None
+        payload = json.loads(match.group(1))
+        assert payload["scope_dirs"] == []
+
+
+class TestWritablePathsE2E:
+    def test_test_file_edit_allowed_when_in_writable_paths(
+        self, tmp_path: Path
+    ) -> None:
+        """Agent editing tests/ passes scope when writable_paths includes it."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "src").mkdir()
+        (repo / "src" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "test_auth.py").write_text(
+            "def test_x():\n    pass\n", encoding="utf-8"
+        )
+        _init_git_repo(repo)
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True
+        )
+        # Agent modifies both the source and the test file.
+        (repo / "src" / "auth.py").write_text("x = 2\n", encoding="utf-8")
+        (repo / "tests" / "test_auth.py").write_text(
+            "def test_x():\n    assert True\n", encoding="utf-8"
+        )
+
+        gt = _sdlc_gt(source_files=["src/auth.py"])
+        gt["writable_paths"] = ["src", "tests"]
+        script = _build_weighted_checklist_script(
+            cmd="bash -c true",
+            repo_path=repo,
+            language="python",
+            ground_truth=gt,
+            header="e2e",
+        )
+        script_path = tmp_path / "tests" / "test.sh"
+        script_path.parent.mkdir(parents=True)
+        script_path.write_text(script, encoding="utf-8")
+        script_path.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        last_line = [
+            ln for ln in result.stdout.strip().splitlines() if ln.strip()
+        ][-1]
+        score = float(last_line.split("=", 1)[1])
+        # correct_files=1.0, syntax=1.0, scope=1.0 (both dirs covered),
+        # test=1.0 → composite = 1.0
+        assert score == pytest.approx(1.0, abs=0.01)

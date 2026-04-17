@@ -9,7 +9,7 @@ import shlex
 import subprocess
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from codeprobe.mining.sources import RepoSource, detect_source
@@ -462,17 +462,39 @@ def _build_sdlc_ground_truth(
     test_files = _find_test_files(safe_changed)
     symbols = _extract_modified_symbols_structured(merge_sha, repo_path, source_files)
     diff_summary = _get_diff_stat(merge_sha, repo_path)
+    writable_paths = _compute_writable_paths(safe_changed)
 
     return {
         "schema_version": "sdlc-v1",
         "changed_files": safe_changed,
         "source_files": source_files,
         "test_files": test_files,
+        "writable_paths": writable_paths,
         "symbols": symbols,
         "diff_summary": diff_summary,
         "merge_sha": merge_sha,
         "populated_by": "mining-sdlc-ground-truth",
     }
+
+
+def _compute_writable_paths(safe_changed: list[str]) -> list[str]:
+    """Derive CSB-style writable_paths from pre-sanitized repo-relative paths.
+
+    Precondition: *safe_changed* must already have been filtered through
+    ``_is_safe_relative_path`` by the caller; this function performs no
+    additional validation.
+
+    For a file in a subdirectory, emit its parent directory. For a root-level
+    file (parent == "."), emit the filename itself so the downstream matcher
+    ``f == d or f.startswith(d + "/")`` still discriminates root-only PRs
+    (otherwise an empty scope would grant full credit). Results are normalized
+    to POSIX forward slashes, deduplicated, and sorted.
+    """
+    entries: set[str] = set()
+    for f in safe_changed:
+        parent = str(PurePosixPath(f).parent)
+        entries.add(f if parent == "." else parent)
+    return sorted(entries)
 
 
 def _oracle_discrimination_passed(
