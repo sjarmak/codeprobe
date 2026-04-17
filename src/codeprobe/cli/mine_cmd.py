@@ -678,6 +678,7 @@ _CLI_DEFAULTS = {
     "count": 5,
     "source": "auto",
     "min_files": 0,
+    "min_quality": 0.5,
     "enrich": False,
     "org_scale": False,
     "mcp_families": False,
@@ -800,6 +801,7 @@ def resolve_effective_config(
     enrich: bool,
     org_scale: bool,
     mcp_families: bool,
+    min_quality: float = 0.5,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
     warn: Callable[[str], None] | None = None,
@@ -832,6 +834,7 @@ def resolve_effective_config(
         "count": count,
         "source": source,
         "min_files": min_files,
+        "min_quality": min_quality,
         "enrich": enrich,
         "org_scale": org_scale,
         "mcp_families": mcp_families,
@@ -904,6 +907,7 @@ def _dispatch_by_task_type(
     enrich: bool,
     goal_name: str,
     bias: str,
+    min_quality: float = 0.5,
     dual_verify: bool = False,
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
@@ -920,6 +924,7 @@ def _dispatch_by_task_type(
             count=count,
             source=source,
             min_files=min_files,
+            min_quality=min_quality,
             subsystems=subsystems,
             no_llm=no_llm,
             enrich=enrich,
@@ -947,6 +952,7 @@ def _dispatch_by_task_type(
             count=count,
             source=source,
             min_files=min_files,
+            min_quality=min_quality,
             subsystems=subsystems,
             no_llm=no_llm,
             enrich=enrich,
@@ -961,6 +967,7 @@ def _dispatch_by_task_type(
             count=count,
             source=source,
             min_files=min_files,
+            min_quality=min_quality,
             subsystems=subsystems,
             no_llm=no_llm,
             enrich=enrich,
@@ -1156,6 +1163,7 @@ def _dispatch_sdlc(
     enrich: bool,
     goal_name: str,
     bias: str,
+    min_quality: float = 0.5,
     dual_verify: bool = False,
 ) -> None:
     """Run PR-based SDLC mining pipeline."""
@@ -1166,6 +1174,7 @@ def _dispatch_sdlc(
         count=count,
         source_hint=source,
         min_files=min_files,
+        min_quality=min_quality,
         subsystems=subsystems,
     )
     tasks = mine_result.tasks
@@ -1313,6 +1322,7 @@ def _dispatch_mixed(
     enrich: bool,
     goal_name: str,
     bias: str,
+    min_quality: float = 0.5,
     dual_verify: bool = False,
 ) -> None:
     """Run SDLC mining + probe generation, combining results."""
@@ -1335,6 +1345,7 @@ def _dispatch_mixed(
         count=sdlc_count,
         source_hint=source,
         min_files=min_files,
+        min_quality=min_quality,
         subsystems=subsystems,
     )
     sdlc_tasks = mine_result.tasks
@@ -1448,6 +1459,7 @@ def run_mine(
     cross_repo: tuple[str, ...] = (),
     source: str = "auto",
     min_files: int = 0,
+    min_quality: float = 0.5,
     subsystems: tuple[str, ...] = (),
     discover_subsystems: bool = False,
     enrich: bool = False,
@@ -1491,6 +1503,7 @@ def run_mine(
         count=count,
         source=source,
         min_files=min_files,
+        min_quality=min_quality,
         enrich=enrich,
         org_scale=org_scale,
         mcp_families=mcp_families,
@@ -1501,6 +1514,7 @@ def run_mine(
     count = resolved["count"]
     source = resolved["source"]
     min_files = resolved["min_files"]
+    min_quality = resolved["min_quality"]
     enrich = resolved["enrich"]
     org_scale = resolved["org_scale"]
     mcp_families = resolved["mcp_families"]
@@ -1611,6 +1625,7 @@ def run_mine(
         count=count,
         source=source,
         min_files=min_files,
+        min_quality=min_quality,
         subsystems=subsystems,
         no_llm=no_llm,
         enrich=enrich,

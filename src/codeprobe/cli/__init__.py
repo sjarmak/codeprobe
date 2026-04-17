@@ -223,6 +223,14 @@ def init(path: str) -> None:
     help="Minimum changed files per task. Use 4+ to bias toward harder tasks.",
 )
 @click.option(
+    "--min-quality",
+    default=0.5,
+    type=click.FloatRange(0.0, 1.0),
+    hidden=True,
+    help="Minimum PR quality score (0.0-1.0) for SDLC mining. "
+    "Lower to admit PRs with thin metadata; default 0.5.",
+)
+@click.option(
     "--subsystem",
     multiple=True,
     default=(),
@@ -345,6 +353,7 @@ def mine(
     cross_repo: tuple[str, ...],
     source: str,
     min_files: int,
+    min_quality: float,
     subsystem: tuple[str, ...],
     discover_subsystems: bool,
     enrich: bool,
@@ -477,6 +486,7 @@ def mine(
         count = _prof_val("count", count)  # type: ignore[assignment]
         source = _prof_val("source", source)  # type: ignore[assignment]
         min_files = _prof_val("min_files", min_files)  # type: ignore[assignment]
+        min_quality = _prof_val("min_quality", min_quality)  # type: ignore[assignment]
         enrich = _prof_val("enrich", enrich)  # type: ignore[assignment]
         org_scale = _prof_val("org_scale", org_scale)  # type: ignore[assignment]
         mcp_families = _prof_val("mcp_families", mcp_families)  # type: ignore[assignment]
@@ -509,6 +519,7 @@ def mine(
         cross_repo=cross_repo,
         source=source,
         min_files=min_files,
+        min_quality=min_quality,
         subsystems=subsystem,
         discover_subsystems=discover_subsystems,
         enrich=enrich,

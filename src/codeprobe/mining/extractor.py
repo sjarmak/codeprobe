@@ -34,11 +34,18 @@ _ISSUE_CLOSE_PATTERN = re.compile(
 
 @dataclass(frozen=True)
 class MergedPR:
-    """A merged pull request extracted from git log."""
+    """A merged pull request extracted from git log or the host API.
+
+    ``body`` and ``labels`` are populated by the host-API path (``gh pr list
+    --json body,labels``) when available. The ``git log --merges`` fallback
+    leaves them empty.
+    """
 
     sha: str
     title: str
     merge_commit: str
+    body: str = ""
+    labels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,21 @@ class PRMetadata:
     source_tier: Literal["api", "commit_message", "bare"] = "bare"
     issue_title: str = ""
     issue_body: str = ""
+
+
+def _parse_labels(raw: object) -> tuple[str, ...]:
+    """Sanitize + truncate GitHub label objects into a bounded tuple.
+
+    Accepts the ``labels`` field from ``gh pr list`` / ``gh pr view`` JSON
+    (a list of ``{"name": str, ...}`` dicts). Silently drops malformed entries.
+    """
+    if not isinstance(raw, list):
+        return ()
+    return tuple(
+        _LABEL_SANITIZE.sub("", str(lbl["name"]))[:_MAX_LABEL_LEN]
+        for lbl in raw[:_MAX_LABELS]
+        if isinstance(lbl, dict) and "name" in lbl
+    )
 
 
 def _list_merged_prs_gh(path: Path, limit: int) -> list[MergedPR] | None:
@@ -71,7 +93,7 @@ def _list_merged_prs_gh(path: Path, limit: int) -> list[MergedPR] | None:
                 "--limit",
                 str(limit),
                 "--json",
-                "mergeCommit,title",
+                "mergeCommit,title,body,labels",
             ],
             cwd=str(path),
             capture_output=True,
@@ -96,8 +118,18 @@ def _list_merged_prs_gh(path: Path, limit: int) -> list[MergedPR] | None:
         commit = item.get("mergeCommit") or {}
         sha = commit.get("oid", "")
         title = item.get("title", "")
+        body = item.get("body") or ""
+        labels = _parse_labels(item.get("labels"))
         if sha:
-            prs.append(MergedPR(sha=sha, title=title, merge_commit=sha))
+            prs.append(
+                MergedPR(
+                    sha=sha,
+                    title=title,
+                    merge_commit=sha,
+                    body=body,
+                    labels=labels,
+                )
+            )
     return prs if prs else None
 
 
@@ -721,30 +753,18 @@ def _fetch_pr_metadata_from_api(
         logger.debug("gh pr view returned invalid JSON for #%s", pr_number)
         return None
 
-    raw_labels = data.get("labels") or []
-    labels = tuple(
-        _LABEL_SANITIZE.sub("", str(lbl["name"]))[:_MAX_LABEL_LEN]
-        for lbl in raw_labels[:_MAX_LABELS]
-        if isinstance(lbl, dict) and "name" in lbl
-    )
+    labels = _parse_labels(data.get("labels"))
 
-    # Attempt to fetch linked issue content from PR body
     pr_body = data.get("body") or ""
-    issue_title = ""
-    issue_body = ""
-    issue_numbers = _extract_issue_numbers(pr_body)
-    if issue_numbers:
-        issue_data = _fetch_issue_body(repo_path, issue_numbers[0])
-        if issue_data is not None:
-            issue_title, issue_body = issue_data
+    issue_title, issue_body = _fetch_linked_issue(repo_path, pr_body)
 
     return PRMetadata(
         title=data.get("title") or merge_title,
-        body=pr_body,
+        body=pr_body[:_MAX_BODY_LENGTH],
         labels=labels,
         source_tier="api",
         issue_title=issue_title,
-        issue_body=issue_body,
+        issue_body=issue_body[:_MAX_BODY_LENGTH],
     )
 
 
@@ -785,14 +805,49 @@ def _fetch_pr_metadata_from_commit(
     )
 
 
+def _fetch_linked_issue(repo_path: Path, pr_body: str) -> tuple[str, str]:
+    """Resolve the first linked issue referenced in *pr_body*.
+
+    Returns ``(issue_title, issue_body)``, or ``("", "")`` when no issue is
+    referenced or the fetch fails.
+    """
+    issue_numbers = _extract_issue_numbers(pr_body)
+    if not issue_numbers:
+        return "", ""
+    issue_data = _fetch_issue_body(repo_path, issue_numbers[0])
+    return issue_data if issue_data is not None else ("", "")
+
+
 def resolve_pr_metadata(
     merge_sha: str,
     repo_path: Path,
     source: RepoSource,
     merge_title: str,
+    pr_body: str = "",
+    pr_labels: tuple[str, ...] = (),
 ) -> PRMetadata:
-    """Resolve PR metadata with three-tier fallback: API → commit message → bare."""
-    # Tier 1: Host API (GitHub only; _fetch_pr_metadata_from_api returns None for other hosts)
+    """Resolve PR metadata with three-tier fallback: API → commit message → bare.
+
+    When *pr_body* is non-empty, treat it as pre-fetched host-API data and
+    return an ``api``-tier ``PRMetadata`` directly without calling
+    ``gh pr view``. This avoids a per-PR API round-trip when the body was
+    already returned by ``gh pr list --json body,labels``, and succeeds even
+    when the merge title does not contain a ``#N`` reference (e.g. squash
+    merges).
+    """
+    # Tier 1a: Pre-fetched host-API body (from ``gh pr list --json``)
+    if pr_body:
+        issue_title, issue_body = _fetch_linked_issue(repo_path, pr_body)
+        return PRMetadata(
+            title=merge_title or f"Merge commit {merge_sha[:8]}",
+            body=pr_body[:_MAX_BODY_LENGTH],
+            labels=pr_labels,
+            source_tier="api",
+            issue_title=issue_title,
+            issue_body=issue_body[:_MAX_BODY_LENGTH],
+        )
+
+    # Tier 1b: Host API (GitHub only; _fetch_pr_metadata_from_api returns None for other hosts)
     meta = _fetch_pr_metadata_from_api(repo_path, source, merge_title)
     if meta is not None:
         return meta
@@ -808,6 +863,31 @@ def resolve_pr_metadata(
         title=merge_title or f"Merge commit {short_sha}",
         source_tier="bare",
     )
+
+
+_BARE_BODY_MAX_FILES = 20
+
+
+def _synthesize_bare_body(merge_title: str, changed_files: list[str]) -> str:
+    """Synthesize a minimal PR body from the merge title and changed files.
+
+    Used when the host API and commit message both yield no body (source_tier
+    == "bare"). The synthesized body lets the task survive into the quality
+    scoring + LLM enrichment stages instead of being hard-rejected.
+
+    ZFC compliant: purely structural formatting — no semantic judgment.
+    """
+    safe = [f for f in changed_files if _is_safe_relative_path(f)]
+    overflow = len(safe) - _BARE_BODY_MAX_FILES
+    file_list = ", ".join(safe[:_BARE_BODY_MAX_FILES])
+    if overflow > 0:
+        file_list += f" (+{overflow} more)"
+    parts: list[str] = []
+    if merge_title:
+        parts.append(f"Merge: {merge_title}")
+    if file_list:
+        parts.append(f"Files changed: {file_list}")
+    return "\n".join(parts)
 
 
 def _format_task_description(pr_meta: PRMetadata) -> str:
@@ -879,11 +959,16 @@ def extract_task_from_merge(
     changed_files: list[str] | None = None,
     source: RepoSource | None = None,
     merge_title: str = "",
+    pr_body: str = "",
+    pr_labels: tuple[str, ...] = (),
 ) -> tuple[Task, PRMetadata] | None:
     """Extract an eval task from a merge commit.
 
     Returns None if the merge has no test files (can't verify the task).
     Pass *changed_files* to avoid a redundant git-diff call.
+    ``pr_body`` / ``pr_labels`` are passed through to ``resolve_pr_metadata``
+    so callers that already fetched the body via ``gh pr list`` avoid a
+    second API round-trip.
     Returns (task, pr_metadata) so callers can score against raw PR body.
     """
     if changed_files is None:
@@ -909,19 +994,29 @@ def extract_task_from_merge(
 
     # Enrich description from PR metadata when source is available
     if source is not None:
-        pr_meta = resolve_pr_metadata(merge_sha, repo_path, source, merge_title)
+        pr_meta = resolve_pr_metadata(
+            merge_sha,
+            repo_path,
+            source,
+            merge_title,
+            pr_body=pr_body,
+            pr_labels=pr_labels,
+        )
     else:
         pr_meta = PRMetadata(
-            title=f"Reproduce changes from merge commit {short_sha}",
+            title=merge_title or f"Reproduce changes from merge commit {short_sha}",
             source_tier="bare",
         )
 
-    # Hard gate: bare metadata means no useful instruction context — skip
+    # br7.4 relaxation: synthesize a minimal description from merge_title +
+    # file list when metadata resolves to bare. Keep source_tier="bare" so
+    # downstream quality scoring + LLM enrichment know the context is thin.
+    # Only replace when synthesis produces something — an empty merge_title
+    # AND empty changed_files would leave body empty, offering no signal.
     if pr_meta.source_tier == "bare":
-        logger.debug(
-            "Skipping %s: bare metadata (no PR body or commit message)", short_sha
-        )
-        return None
+        synthesized = _synthesize_bare_body(merge_title, changed_files)
+        if synthesized:
+            pr_meta = replace(pr_meta, body=synthesized)
 
     # Detect deleted directories for removal-task verification
     deleted_dirs = _get_deleted_dirs(merge_sha, repo_path)
@@ -1036,6 +1131,8 @@ def _collect_candidates(
             changed_files=changed_files,
             source=source,
             merge_title=pr.title,
+            pr_body=pr.body,
+            pr_labels=pr.labels,
         )
         if result is None:
             rejected_extraction += 1

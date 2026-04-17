@@ -283,14 +283,18 @@ class TestExtractTaskFromMerge:
         assert pr_meta.source_tier == "commit_message"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
-    def test_extract_bare_metadata_filtered(self, mock_run: object) -> None:
-        """Tasks with no PR body or commit message body are rejected."""
+    def test_extract_bare_metadata_synthesized(self, mock_run: object) -> None:
+        """Bare metadata with files: description is synthesized (br7.4 relaxation)."""
         files = ["src/auth.py", "tests/test_auth.py", "README.md"]
         mock_run.side_effect = _mock_diff_name_only(files)
 
-        # No source → bare metadata → filtered
+        # No source → bare metadata, but files are present → synthesized description
         result = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
-        assert result is None
+        assert result is not None
+        task, pr_meta = result
+        assert pr_meta.source_tier == "bare"
+        # Synthesized body references changed files
+        assert any(f in task.metadata.description for f in files)
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     def test_extract_stub_test_command_filtered(self, mock_run: object) -> None:
@@ -462,16 +466,21 @@ class TestMineTasks:
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
-    def test_mine_tasks_bare_metadata_hard_gated(
+    def test_mine_tasks_bare_metadata_survives_with_low_min_quality(
         self, mock_sources_run: object, mock_extractor_run: object
     ) -> None:
-        """Tasks with bare metadata are rejected even with min_quality=0."""
+        """Bare metadata with files synthesizes a description (br7.4 relaxation);
+        survives when min_quality is low enough to admit synthesized-only tasks."""
         merge_log = "aaaa1111bbbb2222 Squash merge\n"
-        diff_files = "src/code.py\ntests/test_code.py\n"
+        # Non-overlapping stems so Signal 3 (test/source name overlap) does NOT
+        # fire — the synthesized body alone yields 1/4, below default 0.5.
+        diff_files = "src/misc.py\ntests/test_other.py\n"
 
         mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
 
         def _extractor_side_effect(cmd, **kwargs):
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 1, "", "")
             if "log" in cmd:
                 if "--merges" in cmd:
                     return subprocess.CompletedProcess(cmd, 0, merge_log, "")
@@ -483,9 +492,14 @@ class TestMineTasks:
 
         mock_extractor_run.side_effect = _extractor_side_effect
 
-        # Even min_quality=0 can't bypass hard gates
-        result = mine_tasks(Path("/fake/repo"), count=5, min_quality=0.0)
-        assert result.tasks == []
+        # Default min_quality (0.5) filters the synthesized-only task
+        default_result = mine_tasks(Path("/fake/repo"), count=5)
+        assert default_result.tasks == []
+
+        # With min_quality=0.0 the synthesized bare task is kept
+        relaxed_result = mine_tasks(Path("/fake/repo"), count=5, min_quality=0.0)
+        assert len(relaxed_result.tasks) == 1
+        assert relaxed_result.tasks[0].id == "aaaa1111"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
     @patch("codeprobe.mining.sources.subprocess.run")
@@ -1156,13 +1170,16 @@ class TestExtractTaskFromMergeEnriched:
         assert pr_meta.source_tier == "commit_message"
 
     @patch("codeprobe.mining.extractor.subprocess.run")
-    def test_without_source_returns_none(self, mock_run: object) -> None:
-        """No source → bare metadata → hard-gated out."""
+    def test_without_source_uses_synthesized_body(self, mock_run: object) -> None:
+        """No source → bare metadata with files: description is synthesized (br7.4)."""
         files = ["src/auth.py", "tests/test_auth.py"]
         mock_run.side_effect = _mock_diff_name_only(files)
 
         result = extract_task_from_merge("abc12345deadbeef", Path("/fake/myrepo"))
-        assert result is None
+        assert result is not None
+        task, pr_meta = result
+        assert pr_meta.source_tier == "bare"
+        assert "src/auth.py" in task.metadata.description
 
 
 # ---------------------------------------------------------------------------
@@ -2284,3 +2301,305 @@ class TestMCPSuiteInMetadata:
 
         meta = json.loads((result_path / "metadata.json").read_text(encoding="utf-8"))
         assert meta["metadata"]["mcp_suite"] is None
+
+
+# ---------------------------------------------------------------------------
+# br7.4: mining yield improvements
+# ---------------------------------------------------------------------------
+
+
+class TestGhPrListCapturesBodyLabels:
+    """``gh pr list`` should fetch body and labels inline."""
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_body_and_labels_populated_on_mergedpr(self, mock_run: object) -> None:
+        gh_json = json.dumps(
+            [
+                {
+                    "mergeCommit": {"oid": "aaa111"},
+                    "title": "feat: add search",
+                    "body": "Closes #42. Implements fuzzy search with ranking.",
+                    "labels": [{"name": "feature"}, {"name": "search"}],
+                },
+                {
+                    "mergeCommit": {"oid": "bbb222"},
+                    "title": "fix: typo",
+                    "body": "",
+                    "labels": [],
+                },
+            ]
+        )
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout=gh_json, stderr=""
+        )
+        source = RepoSource(host="github", owner="o", repo="r", remote_url="")
+
+        prs = list_merged_prs(source, Path("/fake"), limit=10)
+
+        assert len(prs) == 2
+        # First PR has body and labels populated
+        assert prs[0].sha == "aaa111"
+        assert prs[0].body == "Closes #42. Implements fuzzy search with ranking."
+        assert "feature" in prs[0].labels
+        assert "search" in prs[0].labels
+        # Second PR has empty body and no labels
+        assert prs[1].body == ""
+        assert prs[1].labels == ()
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_gh_pr_list_requests_body_and_labels(self, mock_run: object) -> None:
+        """The gh pr list command must ask for body and labels fields."""
+        gh_json = json.dumps(
+            [{"mergeCommit": {"oid": "aaa111"}, "title": "t", "body": "", "labels": []}]
+        )
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["gh"], returncode=0, stdout=gh_json, stderr=""
+        )
+        source = RepoSource(host="github", owner="o", repo="r", remote_url="")
+
+        list_merged_prs(source, Path("/fake"), limit=5)
+
+        # Find the gh pr list call among all subprocess.run invocations
+        gh_calls = [
+            c.args[0] for c in mock_run.call_args_list if c.args[0][0] == "gh"
+        ]
+        assert gh_calls, "Expected at least one gh invocation"
+        cmd = gh_calls[0]
+        assert "--json" in cmd
+        json_idx = cmd.index("--json")
+        fields = cmd[json_idx + 1]
+        assert "body" in fields
+        assert "labels" in fields
+        assert "mergeCommit" in fields
+        assert "title" in fields
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_git_log_fallback_has_empty_body(self, mock_run: object) -> None:
+        """Non-gh path (git log fallback) populates empty body/labels."""
+        log_output = "abc12345deadbeef Merge pull request #10 from fix/bug\n"
+        mock_run.side_effect = _mock_git_log(log_output)
+        source = RepoSource(host="gitlab", owner="o", repo="r", remote_url="")
+
+        prs = list_merged_prs(source, Path("/fake"), limit=5)
+
+        assert len(prs) == 1
+        assert prs[0].body == ""
+        assert prs[0].labels == ()
+
+
+class TestApiTierFromPrBodyWithoutHashN:
+    """When MergedPR carries a body inline, resolve_pr_metadata uses api tier."""
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_inline_body_skips_gh_pr_view(self, mock_run: object) -> None:
+        """Passing pr_body inline to resolve_pr_metadata yields api tier without
+        calling gh pr view (no #N needed in merge_title)."""
+        call_commands: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            call_commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "", "should not be called")
+
+        mock_run.side_effect = _side_effect
+        source = RepoSource(host="github", owner="o", repo="r", remote_url="")
+
+        meta = resolve_pr_metadata(
+            "abc1234",
+            Path("/fake"),
+            source,
+            "Squash merge of feature branch",
+            pr_body="Fixes a rendering bug when users resize the viewport.",
+            pr_labels=("bug", "ui"),
+        )
+
+        assert meta.source_tier == "api"
+        assert meta.title == "Squash merge of feature branch"
+        assert "rendering bug" in meta.body
+        assert "bug" in meta.labels
+        # gh pr view must NOT have been called
+        assert not any(
+            c[0] == "gh" and len(c) > 1 and c[1] == "pr" and c[2] == "view"
+            for c in call_commands
+            if len(c) >= 3
+        )
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_empty_inline_body_falls_through_to_commit(self, mock_run: object) -> None:
+        """Empty inline body → API tier skipped → commit message used."""
+        commit_body = "Add caching\n\nReduce DB queries for hot path."
+
+        def _side_effect(cmd, **kwargs):
+            if cmd[0] == "gh":
+                # gh pr view (no #N in title) shouldn't be called, but if it is
+                # it should fail
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            return subprocess.CompletedProcess(cmd, 0, commit_body, "")
+
+        mock_run.side_effect = _side_effect
+        source = RepoSource(host="github", owner="o", repo="r", remote_url="")
+
+        meta = resolve_pr_metadata(
+            "abc1234",
+            Path("/fake"),
+            source,
+            "Squash merge with no issue ref",
+            pr_body="",
+            pr_labels=(),
+        )
+
+        assert meta.source_tier == "commit_message"
+        assert "DB queries" in meta.body
+
+
+class TestBareWithFilesSurvivesSynthesized:
+    """Merges with bare metadata but non-empty changed_files get synthesized body."""
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_no_source_and_no_body_synthesizes_description(
+        self, mock_run: object
+    ) -> None:
+        """When source is None but files exist, task is created with synthesized
+        description (merge_title + file list) instead of rejection."""
+        files = ["src/auth.py", "tests/test_auth.py"]
+        mock_run.side_effect = _mock_diff_name_only(files)
+
+        result = extract_task_from_merge(
+            "abc12345deadbeef",
+            Path("/fake/myrepo"),
+            merge_title="Fix auth flow",
+        )
+
+        assert result is not None
+        task, pr_meta = result
+        assert pr_meta.source_tier == "bare"
+        # Synthesized body mentions changed files
+        assert "src/auth.py" in pr_meta.body
+        assert "src/auth.py" in task.metadata.description
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_bare_with_empty_files_still_rejected(self, mock_run: object) -> None:
+        """When changed_files is empty, the merge is still rejected."""
+        # Empty diff output
+        mock_run.side_effect = _mock_diff_name_only([])
+
+        result = extract_task_from_merge(
+            "abc12345deadbeef",
+            Path("/fake/myrepo"),
+            merge_title="Empty merge",
+        )
+        assert result is None
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_resolve_pr_metadata_all_tiers_fail_but_files_present(
+        self, mock_run: object
+    ) -> None:
+        """When all tiers fail during extract_task_from_merge with a local source
+        and merge_title + files, a task is produced with synthesized description."""
+        files = ["pkg/scheduler/queue.go", "pkg/scheduler/queue_test.go"]
+
+        def _side_effect(cmd, **kwargs):
+            if "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, "\n".join(files), "")
+            # git log for commit body — fail (bare)
+            if "log" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        mock_run.side_effect = _side_effect
+        source = RepoSource(host="local", owner="", repo="r", remote_url="")
+
+        result = extract_task_from_merge(
+            "abc12345deadbeef",
+            Path("/fake/r"),
+            source=source,
+            merge_title="Refactor scheduler queue",
+        )
+
+        assert result is not None
+        task, pr_meta = result
+        assert pr_meta.source_tier == "bare"
+        # Synthesis uses merge_title or file list
+        assert (
+            "queue" in task.metadata.description.lower()
+            or "scheduler" in task.metadata.description.lower()
+        )
+
+
+class TestMineTasksRespectsMinQualityFlag:
+    """mine_tasks must honor the min_quality parameter end-to-end."""
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_min_quality_zero_includes_low_score_tasks(
+        self, mock_sources_run: object, mock_extractor_run: object
+    ) -> None:
+        """With min_quality=0.0, tasks passing hard gates are kept even with low
+        quality scores."""
+        merge_log = "aaaa1111bbbb2222 chore: cleanup\n"
+        diff_files = "src/cleanup.py\ntests/test_other.py\n"
+        # Commit body with no issue ref and no test/source overlap → low score
+        commit_body = "chore: cleanup\n\nRemoved some dead code."
+
+        mock_sources_run.side_effect = _mock_git_remote(
+            "https://github.com/o/r.git\n"
+        )
+
+        def _extractor_side_effect(cmd, **kwargs):
+            if cmd[0] == "gh":
+                return subprocess.CompletedProcess(cmd, 1, "", "")
+            if "log" in cmd:
+                if "--merges" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+                return subprocess.CompletedProcess(cmd, 0, commit_body, "")
+            if "diff" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, diff_files, "")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        mock_extractor_run.side_effect = _extractor_side_effect
+
+        # Default min_quality=0.5 filters this task out
+        default_result = mine_tasks(Path("/fake/repo"), count=5)
+        assert default_result.tasks == []
+
+        # min_quality=0.0 admits it
+        open_result = mine_tasks(Path("/fake/repo"), count=5, min_quality=0.0)
+        assert len(open_result.tasks) == 1
+        assert open_result.tasks[0].id == "aaaa1111"
+
+
+class TestCliMinQualityOption:
+    """The --min-quality CLI flag must be wired through to mine_tasks."""
+
+    @patch("codeprobe.cli.mine_cmd._dispatch_sdlc")
+    @patch("codeprobe.cli.mine_cmd._resolve_repo_path")
+    def test_min_quality_flag_passed_to_dispatch(
+        self, mock_resolve, mock_dispatch, tmp_path: Path
+    ) -> None:
+        """--min-quality 0.2 should reach _dispatch_sdlc as the same value."""
+        from click.testing import CliRunner
+
+        from codeprobe.cli import main
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        mock_resolve.return_value = repo
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "mine",
+                str(repo),
+                "--goal",
+                "quality",
+                "--min-quality",
+                "0.25",
+                "--no-interactive",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert mock_dispatch.called
+        kwargs = mock_dispatch.call_args.kwargs
+        assert kwargs.get("min_quality") == pytest.approx(0.25)
