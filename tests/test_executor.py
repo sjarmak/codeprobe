@@ -218,6 +218,53 @@ def test_execute_task_missing_instruction(tmp_path: Path):
     assert "error" in result.metadata
 
 
+def test_execute_task_adapter_error_with_stdout_short_circuits(tmp_path: Path):
+    """Auth failure: adapter returns output.error + stdout + zero tokens.
+
+    The passing test.sh would score 1.0 if the scorer ran; the short-circuit
+    must prevent that so we never ship vacuous results.
+    """
+    task_dir = _make_task(tmp_path / "task-auth", passing=True)
+    adapter = FakeAdapter(
+        stdout="Failed to authenticate. API Error: 401",
+        exit_code=1,
+        error="Claude API error (401): Invalid authentication credentials",
+    )
+    config = AgentConfig()
+
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+    assert result.status == "error"
+    assert result.automated_score == 0.0
+    assert result.error_category == "agent"
+    assert "401" in result.metadata["error"]
+
+
+def test_execute_task_adapter_error_with_answer_file_still_scored(tmp_path: Path):
+    """max_turns with answer.txt: should still be scored, not short-circuited.
+
+    The scorer must actually run — proven by using a failing test.sh and
+    asserting score == 0.0, since a short-circuit would also produce 0.0
+    but with status='error' instead.
+    """
+    task_dir = _make_task(tmp_path / "task-maxturns", passing=False)
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "answer.txt").write_text("partial result")
+
+    adapter = FakeAdapter(
+        stdout="Maximum turns reached",
+        exit_code=0,
+        error="Maximum turns (30) reached without completion.",
+    )
+    config = AgentConfig()
+
+    result = execute_task(adapter, task_dir, repo_path, config).completed
+    # Scorer ran (status='completed', not 'error') and returned 0 from the
+    # failing test.sh rather than the short-circuit.
+    assert result.status == "completed"
+    assert result.automated_score == 0.0
+
+
 def test_execute_config_forwards_reward_type(tmp_path: Path):
     """reward_type from ExperimentConfig is forwarded to execute_task."""
     task_dir = _make_task(tmp_path / "task-001", passing=True)

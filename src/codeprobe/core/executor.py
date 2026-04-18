@@ -423,7 +423,28 @@ def execute_task(
                     task_id=task_id,
                     automated_score=0.0,
                     status="error",
+                    error_category="agent",
                     metadata={"error": sanitize_secrets(error_msg)},
+                    **_output_fields(),
+                ),
+                agent_stdout=output.stdout,
+                agent_stderr=output.stderr or "",
+            )
+
+        # Adapter-reported structured error (e.g. Claude CLI is_error=true,
+        # auth/API failure, max_turns without artifact). The CLI tucks the
+        # error text inside its JSON envelope, so stdout is non-empty and
+        # the exit-code guard above does not fire.  When no artifact exists
+        # we must short-circuit — scoring a workspace the agent never
+        # actually touched yields vacuous pass/fail rows.
+        if output.error and not has_answer:
+            return TaskResult(
+                completed=CompletedTask(
+                    task_id=task_id,
+                    automated_score=0.0,
+                    status="error",
+                    error_category="agent",
+                    metadata={"error": sanitize_secrets(output.error)},
                     **_output_fields(),
                 ),
                 agent_stdout=output.stdout,

@@ -87,6 +87,42 @@ class TelemetryCollector(Protocol):
     def collect(self, raw_output: str, **context: Any) -> UsageData: ...
 
 
+def _extract_envelope_error(envelope: dict[str, Any]) -> str | None:
+    """Return an error message if the Claude CLI envelope signals failure.
+
+    The CLI produces structured JSON even for failures: auth errors, API
+    errors, and turn-limit hits set ``is_error=true`` and/or populate
+    ``api_error_status`` / ``subtype=error_*``.  Returns a short message
+    drawn from ``result`` when an error is detected, else ``None``.
+    """
+    # `is True` rejects the JSON-decoded `"true"` string and integer `1` —
+    # only a genuine JSON boolean should flip the error flag.
+    is_error = envelope.get("is_error") is True
+    api_error_status = envelope.get("api_error_status")
+    # Only treat api_error_status as an error signal when it is an HTTP error
+    # code (>=400). Some CLI versions emit 0 or null for success, and a future
+    # 2xx sentinel must not trip the error path.
+    api_status_is_error = isinstance(api_error_status, int) and api_error_status >= 400
+    subtype = envelope.get("subtype")
+    subtype_is_error = isinstance(subtype, str) and subtype.startswith("error_")
+
+    if not (is_error or api_status_is_error or subtype_is_error):
+        return None
+
+    result_msg = envelope.get("result")
+    if isinstance(result_msg, str) and result_msg.strip():
+        return result_msg.strip()
+
+    parts: list[str] = []
+    if subtype_is_error:
+        parts.append(f"subtype={subtype}")
+    if api_status_is_error:
+        parts.append(f"api_error_status={api_error_status}")
+    if not parts:
+        parts.append("is_error=true")
+    return "Claude CLI reported error (" + ", ".join(parts) + ")"
+
+
 def _count_tool_use_blocks(envelope: dict[str, Any]) -> int | None:
     """Count ``tool_use`` content blocks in a Claude CLI JSON envelope.
 
@@ -140,11 +176,24 @@ class JsonStdoutCollector:
         cache_read_tokens = usage.get("cache_read_input_tokens")
         cost_usd_raw = envelope.get("total_cost_usd")
 
-        if cost_usd_raw is not None:
+        # Detect error envelopes from the Claude CLI. Auth failures, API errors,
+        # and max_turns hits come back as structured JSON with is_error=true or
+        # a non-null api_error_status, but still include (often zeroed) usage
+        # and cost blocks — so we can't rely on missing fields to signal error.
+        # When a run errors without doing meaningful work (zero tokens), clear
+        # cost fields so downstream never reports a misleading "api_reported /
+        # $0" row for a run that never invoked the model.  max_turns and
+        # similar mid-run failures preserve real cost/token data.
+        envelope_error = _extract_envelope_error(envelope)
+        ran_work = bool((input_tokens or 0) + (output_tokens or 0))
+
+        if cost_usd_raw is not None and (envelope_error is None or ran_work):
             cost_model = "per_token"
             cost_source = "api_reported"
         else:
-            logger.warning("Claude output has usage block but no total_cost_usd")
+            if cost_usd_raw is None:
+                logger.warning("Claude output has usage block but no total_cost_usd")
+            cost_usd_raw = None
             cost_model = "unknown"
             cost_source = "unavailable"
 
@@ -158,6 +207,7 @@ class JsonStdoutCollector:
             cost_model=cost_model,
             cost_source=cost_source,
             tool_call_count=tool_call_count,
+            error=envelope_error,
         )
 
 

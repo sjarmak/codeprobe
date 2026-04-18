@@ -149,6 +149,49 @@ class TestJsonStdoutCollector:
         usage = self.collector.collect(raw)
         assert usage.error is not None
 
+    def test_api_error_envelope_401(self):
+        """is_error=True with api_error_status → propagate error, clear cost."""
+        raw = (FIXTURES / "claude_api_error_401.json").read_text()
+        usage = self.collector.collect(raw)
+        assert usage.error is not None
+        assert "401" in usage.error or "authenticate" in usage.error.lower()
+        assert usage.cost_usd is None
+        assert usage.cost_source == "unavailable"
+        assert usage.cost_model == "unknown"
+
+    def test_max_turns_error_preserves_cost(self):
+        """error_max_turns still reports real token/cost telemetry.
+
+        Unlike an auth error, a max_turns hit represents real work; the
+        executor should still see output.error so it can decide whether
+        to score (if an answer artifact exists) or fail the run.
+        """
+        raw = (FIXTURES / "claude_max_turns_error.json").read_text()
+        usage = self.collector.collect(raw)
+        assert usage.error is not None
+        assert "turns" in usage.error.lower() or "max" in usage.error.lower()
+        # Real cost/token data is preserved for accurate accounting.
+        assert usage.input_tokens == 12000
+        assert usage.output_tokens == 3000
+        assert usage.cost_usd == 0.15
+        assert usage.cost_source == "api_reported"
+
+    def test_is_error_true_without_api_error_status(self):
+        """is_error=true alone is sufficient to populate error."""
+        raw = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+                "result": "Tool execution failed",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "total_cost_usd": 0.001,
+            }
+        )
+        usage = self.collector.collect(raw)
+        assert usage.error is not None
+        assert "Tool execution failed" in usage.error
+
 
 # -- NdjsonStreamCollector tests -----------------------------------------------
 
@@ -403,7 +446,6 @@ class TestCountTokensTiktoken:
             create=True,
         ):
             # Simulate ImportError by patching the import mechanism
-
 
             # The function tries `import tiktoken` internally, so we need to
             # make that import fail.

@@ -37,6 +37,7 @@ class FakeAdapter:
         duration: float = 1.0,
         cost_usd: float | None = None,
         cost_model: str = "unknown",
+        error: str | None = None,
         binary: str | None = "/usr/bin/fake-agent",
     ) -> None:
         self._stdout = stdout
@@ -45,6 +46,7 @@ class FakeAdapter:
         self._duration = duration
         self._cost_usd = cost_usd
         self._cost_model = cost_model
+        self._error = error
         self._binary = binary
         self.run_calls: list[tuple[str, AgentConfig]] = []
 
@@ -77,6 +79,7 @@ class FakeAdapter:
             duration_seconds=self._duration,
             cost_usd=self._cost_usd,
             cost_model=self._cost_model,
+            error=self._error,
         )
 
     def isolate_session(self, slot_id: int) -> dict[str, str]:
