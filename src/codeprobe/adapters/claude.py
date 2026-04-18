@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,6 +24,33 @@ from codeprobe.core.sandbox import is_sandboxed
 # (claude-sonnet-4-6-20250514). Strip the date suffix when present.
 _API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
 
+# Credential files whose presence marks a file-based login.  Used by
+# ``isolate_session`` to decide whether to mirror ~/.claude per slot.
+_FILE_CRED_NAMES: tuple[str, ...] = ("credentials.json", ".credentials.json")
+
+# Per-session mutable state that must NOT be shared across parallel slots.
+# Each slot gets a fresh empty directory or empty file for these names so
+# concurrent workers never race on session-env writes, history rotations,
+# or project-trust state — previously the shared-state racing produced
+# intermittent API 401 errors (codeprobe-nac).
+_MUTABLE_DIR_NAMES: frozenset[str] = frozenset(
+    {
+        "session-env",
+        "sessions",
+        "shell-snapshots",
+        "projects",
+        "file-history",
+        "paste-cache",
+        "statsig",
+        "logs",
+        "tasks",
+        "telemetry",
+        "backups",
+        "cache",
+    }
+)
+_MUTABLE_FILE_NAMES: frozenset[str] = frozenset({"history.jsonl"})
+
 
 def _normalize_model_for_cli(model: str) -> str:
     """Normalize a model identifier for the Claude CLI.
@@ -31,6 +59,74 @@ def _normalize_model_for_cli(model: str) -> str:
     Aliases like 'sonnet' or 'haiku' pass through unchanged.
     """
     return _API_MODEL_DATE_SUFFIX.sub("", model)
+
+
+def _build_mirror_slot_env(real_config: Path, slot_id: int) -> dict[str, str]:
+    """Build a per-slot ``CLAUDE_CONFIG_DIR`` that mirrors ``real_config``.
+
+    Read-mostly entries (credentials file, settings.json, skills/, agents/,
+    hooks/, plugins/, commands/, rules/) are symlinked to the live source
+    so configuration and OAuth-refreshed credentials stay coherent across
+    slots.  Mutable per-session state (``_MUTABLE_DIR_NAMES`` and
+    ``_MUTABLE_FILE_NAMES``) is recreated as fresh empty dirs/files inside
+    the slot to prevent parallel-worker races.
+
+    Stale symlinks from earlier isolation runs are refreshed so that
+    additions, removals, or changes in ``real_config`` propagate to every
+    slot.  Existing slot-local mutable dirs are preserved between tasks
+    running in the same slot so intra-slot session continuity is not
+    broken.
+    """
+    slot_dir = Path(tempfile.gettempdir()) / "codeprobe-claude" / f"slot-{slot_id}"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+
+    seen: set[str] = set()
+    for entry in real_config.iterdir():
+        seen.add(entry.name)
+        target = slot_dir / entry.name
+        is_mutable = entry.name in _MUTABLE_DIR_NAMES or entry.name in _MUTABLE_FILE_NAMES
+
+        if is_mutable:
+            # Preserve existing slot-local state so tasks within the same
+            # slot can keep their own session history; only seed missing
+            # entries so fresh slots start clean.
+            if target.exists() and not target.is_symlink():
+                continue
+            if target.is_symlink():
+                target.unlink()
+            if entry.name in _MUTABLE_DIR_NAMES:
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.touch()
+            continue
+
+        if target.is_symlink() or target.exists():
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+
+        try:
+            target.symlink_to(entry)
+        except OSError:
+            if entry.is_dir():
+                shutil.copytree(entry, target, symlinks=True)
+            else:
+                shutil.copy2(entry, target)
+
+    # Drop stale mirror entries whose source has been removed from the
+    # real config dir (so the slot dir doesn't accumulate broken links
+    # across runs).
+    for stale in slot_dir.iterdir():
+        if stale.name in seen:
+            continue
+        if stale.is_symlink() or not stale.is_dir():
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
+    return {"CLAUDE_CONFIG_DIR": str(slot_dir)}
 
 
 class ClaudeAdapter(BaseAdapter):
@@ -50,6 +146,39 @@ class ClaudeAdapter(BaseAdapter):
                 "(Docker container or CODEPROBE_SANDBOX=1)"
             )
         return issues
+
+    @staticmethod
+    def check_parallel_auth(parallel: int) -> str | None:
+        """Return a warning message when parallel execution cannot be isolated.
+
+        Session isolation via per-slot ``CLAUDE_CONFIG_DIR`` requires
+        either a file-based credential in ``~/.claude/`` or an explicit
+        env-var (``ANTHROPIC_API_KEY`` / ``CLAUDE_CODE_OAUTH_TOKEN``).
+        When none of those are present and ``parallel > 1``, workers
+        share the real ``~/.claude`` state and can race on session-env
+        writes / OAuth refreshes — observed in the wild as every
+        parallel task hitting API 401 (codeprobe-nac).
+
+        Returns ``None`` when parallel is safe; otherwise a user-facing
+        string describing the issue and the recommended remediation.
+        """
+        if parallel <= 1:
+            return None
+
+        real_config = Path.home() / ".claude"
+        has_file_creds = any((real_config / name).is_file() for name in _FILE_CRED_NAMES)
+        has_env_auth = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
+        if has_file_creds or has_env_auth:
+            return None
+
+        return (
+            "Claude CLI has no file-based credentials and no "
+            "ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN env var — parallel "
+            "execution cannot isolate session state and may hit API 401 "
+            "errors (codeprobe-nac). Re-run with --parallel 1, or sign in "
+            "with `claude login` to write ~/.claude/.credentials.json, or "
+            "export ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN."
+        )
 
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
         binary = self._require_binary()
@@ -75,41 +204,30 @@ class ClaudeAdapter(BaseAdapter):
         return cmd
 
     def isolate_session(self, slot_id: int) -> dict[str, str]:
-        """Return a per-slot CLAUDE_CONFIG_DIR for session isolation.
+        """Return a per-slot ``CLAUDE_CONFIG_DIR`` for session isolation.
 
-        Copies authentication credentials from the real ``~/.claude/``
-        directory so the agent subprocess can authenticate.  If no credential
-        files are found (e.g. auth lives in the system keychain), skips
-        isolation and lets the agent use the real config dir.
+        Mirrors the real ``~/.claude`` directory into a slot-specific temp
+        dir via symlinks, with fresh empty directories for mutable
+        per-session state (``session-env/``, ``sessions/``,
+        ``history.jsonl``, etc.).  Symlinking the credentials file keeps
+        OAuth-refresh coherence across slots (all workers see the same live
+        creds) while the fresh mutable subdirs prevent parallel workers
+        from racing on shared state — which under real load manifested as
+        API 401 errors (codeprobe-nac).
+
+        When no credential file is found the CLI is presumed to use the OS
+        keychain; in that case this returns an empty dict so the agent
+        uses the default config dir and keychain reads continue to work.
+        Callers should combine this with a preflight warning for the
+        ``parallel > 1 + no-file-creds`` combination.
         """
         real_config = Path.home() / ".claude"
-        _CRED_NAMES = ("credentials.json", ".credentials.json")  # noqa: N806
+        if any((real_config / name).is_file() for name in _FILE_CRED_NAMES):
+            return _build_mirror_slot_env(real_config, slot_id)
 
-        # Check whether any copyable credential files exist.
-        has_creds = real_config.is_dir() and any(
-            (real_config / name).is_file() for name in _CRED_NAMES
-        )
-        if not has_creds:
-            # No file-based credentials found — don't override config dir
-            # so the CLI can use keychain / default auth.
-            return {}
+        return {}
 
-        config_dir = (
-            Path(tempfile.gettempdir()) / "codeprobe-claude" / f"slot-{slot_id}"
-        )
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-        for name in _CRED_NAMES:
-            src = real_config / name
-            dst = config_dir / name
-            if src.is_file():
-                shutil.copy2(src, dst)
-
-        return {"CLAUDE_CONFIG_DIR": str(config_dir)}
-
-    def parse_output(
-        self, result: subprocess.CompletedProcess[str], duration: float
-    ) -> AgentOutput:
+    def parse_output(self, result: subprocess.CompletedProcess[str], duration: float) -> AgentOutput:
         """Parse Claude CLI JSON envelope into AgentOutput."""
         usage = self._collector.collect(result.stdout)
 

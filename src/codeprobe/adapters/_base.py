@@ -24,14 +24,24 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         # System essentials
         "PATH",
         "HOME",
+        "USER",
+        "LOGNAME",
         "LANG",
         "TERM",
         "TMPDIR",
         "LC_ALL",
+        # XDG / desktop-session env — required for Linux keyring (libsecret)
+        # lookups so OAuth/keychain-auth agents can reach the session bus
+        # when CLAUDE_CONFIG_DIR is overridden for isolation.
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
         # Codeprobe sandbox signal (eval harness sets this)
         "CODEPROBE_SANDBOX",
         # Agent-specific API keys (required by the adapters)
         "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CONFIG_DIR",
         "GITHUB_TOKEN",
         "OPENAI_API_KEY",
@@ -114,9 +124,7 @@ class BaseAdapter:
     @abstractmethod
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]: ...
 
-    def parse_output(
-        self, result: subprocess.CompletedProcess[str], duration: float
-    ) -> AgentOutput:
+    def parse_output(self, result: subprocess.CompletedProcess[str], duration: float) -> AgentOutput:
         """Convert subprocess result to AgentOutput.
 
         Subclasses override to extract tokens, cost, etc. from agent output.
@@ -137,9 +145,7 @@ class BaseAdapter:
         if not config.mcp_config:
             return None
         expanded = json.loads(os.path.expandvars(json.dumps(config.mcp_config)))
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", prefix="codeprobe-mcp-", delete=False
-        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="codeprobe-mcp-", delete=False)
         json.dump(expanded, tmp)
         tmp.close()
         return tmp.name

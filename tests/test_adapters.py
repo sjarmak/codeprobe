@@ -101,9 +101,7 @@ def test_claude_rejects_bypass_permissions():
 
 class TestAgentOutputTokenFields:
     def test_default_token_fields_are_none(self) -> None:
-        output = AgentOutput(
-            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0
-        )
+        output = AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0)
         assert output.input_tokens is None
         assert output.output_tokens is None
         assert output.cache_read_tokens is None
@@ -193,9 +191,7 @@ class TestNarrowedProtocol:
                 return []
 
             def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
-                return AgentOutput(
-                    stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1
-                )
+                return AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1)
 
             def isolate_session(self, slot_id: int) -> dict[str, str]:
                 return {}
@@ -210,9 +206,7 @@ class TestNarrowedProtocol:
 
 class TestAgentOutputErrorField:
     def test_default_is_none(self) -> None:
-        output = AgentOutput(
-            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0
-        )
+        output = AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0)
         assert output.error is None
 
     def test_can_set_error(self) -> None:
@@ -228,9 +222,7 @@ class TestAgentOutputErrorField:
 
 class TestAgentOutputCostSource:
     def test_default_is_unavailable(self) -> None:
-        output = AgentOutput(
-            stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0
-        )
+        output = AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=1.0)
         assert output.cost_source == "unavailable"
 
     @pytest.mark.parametrize("source", sorted(ALLOWED_COST_SOURCES))
@@ -291,9 +283,7 @@ class TestBaseAdapterEnvWhitelist:
         """Without session isolation, subprocess inherits the full parent env."""
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
-        fake_result = subprocess.CompletedProcess(
-            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
-        )
+        fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             adapter.run("test", config)
 
@@ -304,9 +294,7 @@ class TestBaseAdapterEnvWhitelist:
         """With session isolation, subprocess gets a filtered env."""
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
-        fake_result = subprocess.CompletedProcess(
-            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
-        )
+        fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             adapter.run("test", config, session_env=session_env)
@@ -318,9 +306,7 @@ class TestBaseAdapterEnvWhitelist:
     def test_filtered_env_includes_path_and_home(self) -> None:
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
-        fake_result = subprocess.CompletedProcess(
-            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
-        )
+        fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             import os
@@ -338,9 +324,7 @@ class TestBaseAdapterEnvWhitelist:
     def test_filtered_env_excludes_random_secrets(self) -> None:
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
-        fake_result = subprocess.CompletedProcess(
-            args=["fake-agent"], returncode=0, stdout="ok", stderr=""
-        )
+        fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
         import os
 
@@ -383,9 +367,7 @@ class TestBaseAdapterRunErrors:
     def test_file_not_found_raises_setup_error(self) -> None:
         adapter = _StubAdapter()
         config = AgentConfig()
-        with patch(
-            "subprocess.run", side_effect=FileNotFoundError("/usr/bin/fake-agent")
-        ):
+        with patch("subprocess.run", side_effect=FileNotFoundError("/usr/bin/fake-agent")):
             with pytest.raises(AdapterSetupError, match="Binary not found"):
                 adapter.run("test", config)
 
@@ -502,9 +484,7 @@ class TestTimeoutTelemetryExtraction:
             def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
                 return ["exploding", "-p", prompt]
 
-            def parse_output(
-                self, result: subprocess.CompletedProcess[str], duration: float
-            ) -> AgentOutput:
+            def parse_output(self, result: subprocess.CompletedProcess[str], duration: float) -> AgentOutput:
                 raise RuntimeError("parser exploded")
 
         adapter = ExplodingParser()
@@ -524,9 +504,7 @@ class TestTimeoutTelemetryExtraction:
 class TestParseOutput:
     def test_default_maps_fields(self) -> None:
         adapter = _StubAdapter()
-        result = subprocess.CompletedProcess(
-            args=["fake-agent"], returncode=0, stdout="hello", stderr=""
-        )
+        result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="hello", stderr="")
         output = adapter.parse_output(result, duration=2.5)
         assert output.stdout == "hello"
         assert output.stderr is None  # empty string → None
@@ -541,16 +519,12 @@ class TestParseOutput:
             def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
                 return ["broken"]
 
-            def parse_output(
-                self, result: subprocess.CompletedProcess[str], duration: float
-            ) -> AgentOutput:
+            def parse_output(self, result: subprocess.CompletedProcess[str], duration: float) -> AgentOutput:
                 raise ValueError("bad JSON")
 
         adapter = BrokenParser()
         config = AgentConfig()
-        fake_result = subprocess.CompletedProcess(
-            args=["broken"], returncode=0, stdout="raw output", stderr="err"
-        )
+        fake_result = subprocess.CompletedProcess(args=["broken"], returncode=0, stdout="raw output", stderr="err")
         with patch("subprocess.run", return_value=fake_result):
             output = adapter.run("test", config)
         assert "Output parse failed" in output.error
@@ -565,9 +539,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 def _make_result(fixture_name: str) -> subprocess.CompletedProcess[str]:
     """Load a fixture file and wrap it in a CompletedProcess."""
     content = (FIXTURE_DIR / fixture_name).read_text()
-    return subprocess.CompletedProcess(
-        args=["claude", "-p", "test"], returncode=0, stdout=content, stderr=""
-    )
+    return subprocess.CompletedProcess(args=["claude", "-p", "test"], returncode=0, stdout=content, stderr="")
 
 
 class TestClaudeParseOutput:
@@ -656,9 +628,7 @@ class TestCopilotParseOutput:
         return (FIXTURE_DIR / name).read_text()
 
     def _make_copilot_result(self, stdout: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            args=["copilot"], returncode=0, stdout=stdout, stderr=""
-        )
+        return subprocess.CompletedProcess(args=["copilot"], returncode=0, stdout=stdout, stderr="")
 
     def test_ndjson_with_tokens(self) -> None:
         adapter = CopilotAdapter()
@@ -743,9 +713,7 @@ class TestCopilotInputTokens:
         return (FIXTURE_DIR / name).read_text()
 
     def _make_copilot_result(self, stdout: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            args=["copilot"], returncode=0, stdout=stdout, stderr=""
-        )
+        return subprocess.CompletedProcess(args=["copilot"], returncode=0, stdout=stdout, stderr="")
 
     def test_input_tokens_from_ndjson_usage_event(self) -> None:
         """When NDJSON stream contains a usage event with inputTokens, extract it."""
@@ -758,9 +726,7 @@ class TestCopilotInputTokens:
         assert output.output_tokens == 87
         assert output.cost_source in ("estimated", "calculated")
         assert output.cost_model == "per_token"
-        assert output.cost_usd == pytest.approx(
-            1234 * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000
-        )
+        assert output.cost_usd == pytest.approx(1234 * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000)
         assert output.error is None
 
     def test_input_tokens_estimated_from_stream_content(self) -> None:
@@ -799,9 +765,7 @@ class TestCopilotInputTokens:
         assert output.input_tokens == 1500
         assert output.output_tokens == 393
         assert output.cost_source in ("estimated", "calculated")
-        assert output.cost_usd == pytest.approx(
-            1500 * 2.50 / 1_000_000 + 393 * 10.0 / 1_000_000
-        )
+        assert output.cost_usd == pytest.approx(1500 * 2.50 / 1_000_000 + 393 * 10.0 / 1_000_000)
         assert output.error is None
 
     def test_input_tokens_prefers_usage_event_over_result(self) -> None:
@@ -815,9 +779,7 @@ class TestCopilotInputTokens:
         assert output.input_tokens == 1234
         assert output.output_tokens == 87
         assert output.cost_source in ("estimated", "calculated")
-        assert output.cost_usd == pytest.approx(
-            1234 * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000
-        )
+        assert output.cost_usd == pytest.approx(1234 * 2.50 / 1_000_000 + 87 * 10.0 / 1_000_000)
 
     def test_result_event_prompt_tokens_fallback(self) -> None:
         """Result event with prompt_tokens/completion_tokens keys (OpenAI naming)."""
@@ -833,9 +795,7 @@ class TestCopilotInputTokens:
         assert output.input_tokens == 800
         assert output.output_tokens == 200
         assert output.cost_source in ("estimated", "calculated")
-        assert output.cost_usd == pytest.approx(
-            800 * 2.50 / 1_000_000 + 200 * 10.0 / 1_000_000
-        )
+        assert output.cost_usd == pytest.approx(800 * 2.50 / 1_000_000 + 200 * 10.0 / 1_000_000)
 
 
 # -- CodexAdapter --------------------------------------------------------------
@@ -936,9 +896,7 @@ class TestCodexAdapter:
 
         mock_openai = _mock_openai_module()
         mock_client_instance = MagicMock()
-        mock_client_instance.responses.create.side_effect = (
-            mock_openai.AuthenticationError("invalid key")
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.AuthenticationError("invalid key")
         mock_openai.OpenAI.return_value = mock_client_instance
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -952,9 +910,7 @@ class TestCodexAdapter:
 
         mock_openai = _mock_openai_module()
         mock_client_instance = MagicMock()
-        mock_client_instance.responses.create.side_effect = mock_openai.RateLimitError(
-            "too many requests"
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.RateLimitError("too many requests")
         mock_openai.OpenAI.return_value = mock_client_instance
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -968,9 +924,7 @@ class TestCodexAdapter:
 
         mock_openai = _mock_openai_module()
         mock_client_instance = MagicMock()
-        mock_client_instance.responses.create.side_effect = mock_openai.APIError(
-            "server error"
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.APIError("server error")
         mock_openai.OpenAI.return_value = mock_client_instance
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -1056,9 +1010,7 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "model not found"
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("model not found")
         mock_client_instance.chat.completions.create.return_value = mock_chat_response
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -1081,12 +1033,8 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "not found"
-        )
-        mock_client_instance.chat.completions.create.side_effect = (
-            mock_openai.AuthenticationError("bad key")
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("not found")
+        mock_client_instance.chat.completions.create.side_effect = mock_openai.AuthenticationError("bad key")
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
@@ -1100,12 +1048,8 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "not found"
-        )
-        mock_client_instance.chat.completions.create.side_effect = (
-            mock_openai.RateLimitError("too many")
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("not found")
+        mock_client_instance.chat.completions.create.side_effect = mock_openai.RateLimitError("too many")
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
@@ -1119,19 +1063,13 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "not on responses"
-        )
-        mock_client_instance.chat.completions.create.side_effect = (
-            mock_openai.NotFoundError("not on chat either")
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("not on responses")
+        mock_client_instance.chat.completions.create.side_effect = mock_openai.NotFoundError("not on chat either")
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
             config = AgentConfig()
-            with pytest.raises(
-                AdapterExecutionError, match="not available on Responses or"
-            ):
+            with pytest.raises(AdapterExecutionError, match="not available on Responses or"):
                 adapter.run("test", config)
 
     def test_run_chat_fallback_no_usage(self) -> None:
@@ -1150,9 +1088,7 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "model not found"
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("model not found")
         mock_client_instance.chat.completions.create.return_value = mock_chat_response
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -1179,9 +1115,7 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "model not found"
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("model not found")
         mock_client_instance.chat.completions.create.return_value = mock_chat_response
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -1213,9 +1147,7 @@ class TestCodexAdapter:
 
         mock_client_instance = MagicMock()
         mock_openai = _mock_openai_module(client=mock_client_instance)
-        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError(
-            "model not found"
-        )
+        mock_client_instance.responses.create.side_effect = mock_openai.NotFoundError("model not found")
         mock_client_instance.chat.completions.create.return_value = mock_chat_response
 
         with patch.dict("sys.modules", {"openai": mock_openai}):
@@ -1315,7 +1247,13 @@ class TestIsolateSession:
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
         (fake_home / ".claude" / ".credentials.json").write_text("{}")
-        with patch.object(Path, "home", return_value=fake_home):
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
             env = adapter.isolate_session(0)
         assert "CLAUDE_CONFIG_DIR" in env
         assert "slot-0" in env["CLAUDE_CONFIG_DIR"]
@@ -1325,13 +1263,19 @@ class TestIsolateSession:
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
         (fake_home / ".claude" / ".credentials.json").write_text("{}")
-        with patch.object(Path, "home", return_value=fake_home):
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
             env0 = adapter.isolate_session(0)
             env1 = adapter.isolate_session(1)
         assert env0["CLAUDE_CONFIG_DIR"] != env1["CLAUDE_CONFIG_DIR"]
 
     def test_claude_isolate_session_skips_when_no_creds(self, tmp_path: Path) -> None:
-        """When no credential files exist, returns empty dict."""
+        """When no credential files exist, returns empty dict so keychain auth still works."""
         adapter = ClaudeAdapter()
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
@@ -1349,23 +1293,90 @@ class TestIsolateSession:
         env = adapter.isolate_session(0)
         assert env == {}
 
-    def test_claude_isolate_session_refreshes_stale_credentials(
-        self, tmp_path: Path
-    ) -> None:
-        """Credentials are always overwritten so stale tokens don't persist."""
+    def test_claude_isolate_session_symlinks_credentials_live(self, tmp_path: Path) -> None:
+        """Creds file is symlinked so OAuth refreshes propagate across slots."""
         adapter = ClaudeAdapter()
 
         fake_home = tmp_path / "home"
         real_claude = fake_home / ".claude"
         real_claude.mkdir(parents=True)
         cred_file = real_claude / ".credentials.json"
-        cred_file.write_text('{"token": "fresh"}', encoding="utf-8")
+        cred_file.write_text('{"token": "v1"}', encoding="utf-8")
 
-        # Pre-create the slot dir with a stale credential file
-        slot_dir = tmp_path / "tmp" / "codeprobe-claude" / "slot-0"
-        slot_dir.mkdir(parents=True)
-        stale = slot_dir / ".credentials.json"
-        stale.write_text('{"token": "stale"}', encoding="utf-8")
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            adapter.isolate_session(0)
+            adapter.isolate_session(1)
+
+        slot0_cred = tmp_path / "tmp" / "codeprobe-claude" / "slot-0" / ".credentials.json"
+        slot1_cred = tmp_path / "tmp" / "codeprobe-claude" / "slot-1" / ".credentials.json"
+        assert slot0_cred.is_symlink()
+        assert slot1_cred.is_symlink()
+
+        # Refreshing the live creds is visible in every slot — no stale copies.
+        cred_file.write_text('{"token": "v2"}', encoding="utf-8")
+        assert '"v2"' in slot0_cred.read_text()
+        assert '"v2"' in slot1_cred.read_text()
+
+    def test_claude_isolate_session_mutable_dirs_are_fresh(self, tmp_path: Path) -> None:
+        """Per-session mutable state (session-env/, sessions/, history.jsonl)
+        is isolated per slot so parallel workers never race on shared writes.
+        """
+        adapter = ClaudeAdapter()
+
+        fake_home = tmp_path / "home"
+        real_claude = fake_home / ".claude"
+        real_claude.mkdir(parents=True)
+        (real_claude / ".credentials.json").write_text("{}")
+
+        # Seed shared mutable dirs & file in the real config; these MUST NOT
+        # leak into slot dirs (they are per-session, not per-machine).
+        shared_session_env = real_claude / "session-env"
+        shared_session_env.mkdir()
+        (shared_session_env / "parent.json").write_text('{"from": "parent"}')
+        (real_claude / "history.jsonl").write_text("{}\n")
+
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            adapter.isolate_session(0)
+            adapter.isolate_session(1)
+
+        slot0 = tmp_path / "tmp" / "codeprobe-claude" / "slot-0"
+        slot1 = tmp_path / "tmp" / "codeprobe-claude" / "slot-1"
+
+        # Mutable dir exists, is NOT a symlink, and is empty.
+        for slot in (slot0, slot1):
+            se = slot / "session-env"
+            assert se.is_dir()
+            assert not se.is_symlink()
+            assert list(se.iterdir()) == []
+            hist = slot / "history.jsonl"
+            assert hist.is_file()
+            assert not hist.is_symlink()
+            assert hist.read_text() == ""
+
+    def test_claude_isolate_session_mirrors_read_only_entries_as_symlinks(self, tmp_path: Path) -> None:
+        """Settings, skills, and other read-only config are symlinked so
+        CLI configuration stays consistent with the real home directory.
+        """
+        adapter = ClaudeAdapter()
+        fake_home = tmp_path / "home"
+        real_claude = fake_home / ".claude"
+        real_claude.mkdir(parents=True)
+        (real_claude / ".credentials.json").write_text("{}")
+        (real_claude / "settings.json").write_text('{"theme": "dark"}')
+        (real_claude / "skills").mkdir()
+        (real_claude / "skills" / "example.md").write_text("# skill")
 
         with (
             patch.object(Path, "home", return_value=fake_home),
@@ -1376,9 +1387,81 @@ class TestIsolateSession:
         ):
             adapter.isolate_session(0)
 
-        # The stale file should be overwritten with fresh content
-        result = (slot_dir / ".credentials.json").read_text()
-        assert '"fresh"' in result
+        slot0 = tmp_path / "tmp" / "codeprobe-claude" / "slot-0"
+        assert (slot0 / "settings.json").is_symlink()
+        assert '"dark"' in (slot0 / "settings.json").read_text()
+        assert (slot0 / "skills").is_symlink()
+        assert (slot0 / "skills" / "example.md").read_text() == "# skill"
+
+    def test_claude_isolate_session_refreshes_stale_mirror(self, tmp_path: Path) -> None:
+        """Symlinks are re-pointed when the live config entry changes
+        (e.g. settings regenerated, new skill added) so a stale slot dir
+        from a previous run doesn't silently drift out of sync.
+        """
+        adapter = ClaudeAdapter()
+        fake_home = tmp_path / "home"
+        real_claude = fake_home / ".claude"
+        real_claude.mkdir(parents=True)
+        (real_claude / ".credentials.json").write_text("{}")
+        settings = real_claude / "settings.json"
+        settings.write_text('{"v": 1}')
+
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            # Seed a stale symlink pointing to a now-deleted file.
+            adapter.isolate_session(0)
+            slot0 = tmp_path / "tmp" / "codeprobe-claude" / "slot-0"
+            assert (slot0 / "settings.json").is_symlink()
+
+            # Live settings rewritten — mirror should still resolve because
+            # we symlinked to the path, not copied content.
+            settings.write_text('{"v": 2}')
+            assert '"v": 2' in (slot0 / "settings.json").read_text()
+
+            # Re-isolate after live file is deleted — slot dir follows
+            # reality (stale entry cleaned up).
+            settings.unlink()
+            (real_claude / "settings.json").write_text('{"v": 3}')
+            adapter.isolate_session(0)
+            assert '"v": 3' in (slot0 / "settings.json").read_text()
+
+
+class TestCheckParallelAuth:
+    def test_ok_when_parallel_one(self) -> None:
+        assert ClaudeAdapter.check_parallel_auth(1) is None
+
+    def test_ok_with_file_credentials(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        (fake_home / ".claude" / ".credentials.json").write_text("{}")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch.object(Path, "home", return_value=fake_home):
+            assert ClaudeAdapter.check_parallel_auth(3) is None
+
+    def test_ok_with_env_var_auth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch.object(Path, "home", return_value=fake_home):
+            assert ClaudeAdapter.check_parallel_auth(3) is None
+
+    def test_warns_when_parallel_without_any_auth_source(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch.object(Path, "home", return_value=fake_home):
+            warning = ClaudeAdapter.check_parallel_auth(3)
+        assert warning is not None
+        assert "--parallel 1" in warning
+        assert "401" in warning
 
     def test_base_adapter_run_passes_session_env_to_subprocess(self) -> None:
         """session_env passed to run() reaches subprocess.run() via _adapter_safe_env."""
@@ -1413,9 +1496,7 @@ class TestCopilotNdjsonFallback:
     """When NDJSON parsing fails, error field is set and WARNING is logged."""
 
     def _make_copilot_result(self, stdout: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            args=["copilot"], returncode=0, stdout=stdout, stderr=""
-        )
+        return subprocess.CompletedProcess(args=["copilot"], returncode=0, stdout=stdout, stderr="")
 
     def test_ndjson_fallback_sets_error_field(self) -> None:
         """Non-JSON stdout triggers fallback with error containing 'ndjson_parse_fallback'."""
@@ -1429,9 +1510,7 @@ class TestCopilotNdjsonFallback:
         assert output.error is not None
         assert "ndjson_parse_fallback" in output.error
 
-    def test_ndjson_fallback_emits_warning_log(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_ndjson_fallback_emits_warning_log(self, caplog: pytest.LogCaptureFixture) -> None:
         """WARNING log is emitted when NDJSON parsing falls back."""
         import logging
 
@@ -1468,7 +1547,9 @@ class TestSandboxDetection:
     """Tests for is_sandboxed() — checks /.dockerenv, env var, and cgroup."""
 
     def test_sandboxed_via_dockerenv(self) -> None:
-        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+        with (
+            patch("codeprobe.core.sandbox.Path") as mock_path_cls,
+        ):
             dockerenv_path = MagicMock()
             dockerenv_path.exists.return_value = True
 
@@ -1476,11 +1557,7 @@ class TestSandboxDetection:
                 return dockerenv_path
 
             mock_path_cls.side_effect = path_factory
-            env = {
-                k: v
-                for k, v in __import__("os").environ.items()
-                if k != "CODEPROBE_SANDBOX"
-            }
+            env = {k: v for k, v in __import__("os").environ.items() if k != "CODEPROBE_SANDBOX"}
             with patch.dict("os.environ", env, clear=True):
                 assert is_sandboxed() is True
 
@@ -1499,13 +1576,13 @@ class TestSandboxDetection:
             assert is_sandboxed() is True
 
     def test_sandboxed_via_cgroup_docker(self) -> None:
-        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+        with (
+            patch("codeprobe.core.sandbox.Path") as mock_path_cls,
+        ):
             dockerenv_path = MagicMock()
             dockerenv_path.exists.return_value = False
             cgroup_path = MagicMock()
-            cgroup_path.read_text.return_value = (
-                "12:memory:/docker/abc123\n0::/system.slice/docker-abc.scope\n"
-            )
+            cgroup_path.read_text.return_value = "12:memory:/docker/abc123\n0::/system.slice/docker-abc.scope\n"
 
             def path_factory(p: str) -> MagicMock:
                 if p == "/proc/1/cgroup":
@@ -1513,16 +1590,14 @@ class TestSandboxDetection:
                 return dockerenv_path
 
             mock_path_cls.side_effect = path_factory
-            env = {
-                k: v
-                for k, v in __import__("os").environ.items()
-                if k != "CODEPROBE_SANDBOX"
-            }
+            env = {k: v for k, v in __import__("os").environ.items() if k != "CODEPROBE_SANDBOX"}
             with patch.dict("os.environ", env, clear=True):
                 assert is_sandboxed() is True
 
     def test_sandboxed_via_cgroup_containerd(self) -> None:
-        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+        with (
+            patch("codeprobe.core.sandbox.Path") as mock_path_cls,
+        ):
             dockerenv_path = MagicMock()
             dockerenv_path.exists.return_value = False
             cgroup_path = MagicMock()
@@ -1534,16 +1609,14 @@ class TestSandboxDetection:
                 return dockerenv_path
 
             mock_path_cls.side_effect = path_factory
-            env = {
-                k: v
-                for k, v in __import__("os").environ.items()
-                if k != "CODEPROBE_SANDBOX"
-            }
+            env = {k: v for k, v in __import__("os").environ.items() if k != "CODEPROBE_SANDBOX"}
             with patch.dict("os.environ", env, clear=True):
                 assert is_sandboxed() is True
 
     def test_not_sandboxed_bare_host(self) -> None:
-        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+        with (
+            patch("codeprobe.core.sandbox.Path") as mock_path_cls,
+        ):
             dockerenv_path = MagicMock()
             dockerenv_path.exists.return_value = False
             cgroup_path = MagicMock()
@@ -1555,16 +1628,14 @@ class TestSandboxDetection:
                 return dockerenv_path
 
             mock_path_cls.side_effect = path_factory
-            env = {
-                k: v
-                for k, v in __import__("os").environ.items()
-                if k != "CODEPROBE_SANDBOX"
-            }
+            env = {k: v for k, v in __import__("os").environ.items() if k != "CODEPROBE_SANDBOX"}
             with patch.dict("os.environ", env, clear=True):
                 assert is_sandboxed() is False
 
     def test_not_sandboxed_cgroup_unreadable(self) -> None:
-        with (patch("codeprobe.core.sandbox.Path") as mock_path_cls,):
+        with (
+            patch("codeprobe.core.sandbox.Path") as mock_path_cls,
+        ):
             dockerenv_path = MagicMock()
             dockerenv_path.exists.return_value = False
             cgroup_path = MagicMock()
@@ -1576,11 +1647,7 @@ class TestSandboxDetection:
                 return dockerenv_path
 
             mock_path_cls.side_effect = path_factory
-            env = {
-                k: v
-                for k, v in __import__("os").environ.items()
-                if k != "CODEPROBE_SANDBOX"
-            }
+            env = {k: v for k, v in __import__("os").environ.items() if k != "CODEPROBE_SANDBOX"}
             with patch.dict("os.environ", env, clear=True):
                 assert is_sandboxed() is False
 
@@ -1639,14 +1706,9 @@ class TestClaudeModelNormalization:
     def test_strips_date_suffix(self) -> None:
         from codeprobe.adapters.claude import _normalize_model_for_cli
 
-        assert (
-            _normalize_model_for_cli("claude-sonnet-4-6-20250514")
-            == "claude-sonnet-4-6"
-        )
+        assert _normalize_model_for_cli("claude-sonnet-4-6-20250514") == "claude-sonnet-4-6"
         assert _normalize_model_for_cli("claude-opus-4-6-20250514") == "claude-opus-4-6"
-        assert (
-            _normalize_model_for_cli("claude-haiku-4-5-20251001") == "claude-haiku-4-5"
-        )
+        assert _normalize_model_for_cli("claude-haiku-4-5-20251001") == "claude-haiku-4-5"
 
     def test_preserves_aliases(self) -> None:
         from codeprobe.adapters.claude import _normalize_model_for_cli

@@ -79,15 +79,11 @@ class PlainTextListener:
         if isinstance(event, TaskScored):
             status = _format_task_status(event.automated_score)
             dual_suffix = format_dual_suffix(event.scoring_details)
-            click.echo(
-                f"  {event.task_id}: {status} "
-                f"({event.duration_seconds:.1f}s){dual_suffix}"
-            )
+            click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s){dual_suffix}")
         elif isinstance(event, BudgetWarning):
             pct = int(event.threshold_pct * 100)
             sys.stderr.write(
-                f"Cost warning: ${event.cumulative_cost:.2f} of "
-                f"${event.budget:.2f} budget used ({pct}%)\n"
+                f"Cost warning: ${event.cumulative_cost:.2f} of ${event.budget:.2f} budget used ({pct}%)\n"
             )
             sys.stderr.flush()
         elif isinstance(event, RunFinished):
@@ -110,13 +106,9 @@ def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
     if task_ids:
         allowed = set(task_ids)
         return sorted(
-            sd
-            for sd in d.iterdir()
-            if sd.is_dir() and sd.name in allowed and (sd / "instruction.md").exists()
+            sd for sd in d.iterdir() if sd.is_dir() and sd.name in allowed and (sd / "instruction.md").exists()
         )
-    return sorted(
-        sd for sd in d.iterdir() if sd.is_dir() and (sd / "instruction.md").exists()
-    )
+    return sorted(sd for sd in d.iterdir() if sd.is_dir() and (sd / "instruction.md").exists())
 
 
 def _filter_tasks_by_suite(
@@ -131,9 +123,7 @@ def _filter_tasks_by_suite(
     """
     from codeprobe.loaders import load_task
 
-    has_filters = bool(
-        suite.task_types or suite.difficulties or suite.tags or suite.task_ids
-    )
+    has_filters = bool(suite.task_types or suite.difficulties or suite.tags or suite.task_ids)
     if not has_filters:
         return task_dirs
 
@@ -150,11 +140,7 @@ def _filter_tasks_by_suite(
     for td in task_dirs:
         toml_path = td / "task.toml"
         json_path = td / "metadata.json"
-        meta_path = (
-            toml_path
-            if toml_path.exists()
-            else (json_path if json_path.exists() else None)
-        )
+        meta_path = toml_path if toml_path.exists() else (json_path if json_path.exists() else None)
         if meta_path is None:
             continue  # no metadata to filter on
 
@@ -239,9 +225,7 @@ def show_prompt_and_exit(
                 experiment = load_experiment(exp_dir)
             else:
                 candidates = sorted(
-                    d
-                    for d in codeprobe_dir.iterdir()
-                    if d.is_dir() and (d / "experiment.json").is_file()
+                    d for d in codeprobe_dir.iterdir() if d.is_dir() and (d / "experiment.json").is_file()
                 )
                 if len(candidates) == 1:
                     exp_dir = candidates[0]
@@ -348,9 +332,7 @@ def run_eval(
             else:
                 # Fallback: look for named experiment subdirectories
                 candidates = sorted(
-                    d
-                    for d in codeprobe_dir.iterdir()
-                    if d.is_dir() and (d / "experiment.json").is_file()
+                    d for d in codeprobe_dir.iterdir() if d.is_dir() and (d / "experiment.json").is_file()
                 )
                 if len(candidates) == 1:
                     exp_dir = candidates[0]
@@ -417,8 +399,7 @@ def run_eval(
         task_dirs = _filter_tasks_by_suite(task_dirs, suite)
         if not task_dirs:
             click.echo(
-                f"Suite '{suite.name}' matched 0 of {pre_count} tasks. "
-                "Check suite.toml filters.",
+                f"Suite '{suite.name}' matched 0 of {pre_count} tasks. Check suite.toml filters.",
                 err=True,
             )
             raise SystemExit(1)
@@ -486,11 +467,7 @@ def run_eval(
 
         # Layered config resolution: defaults < experiment.json < CLI flags
         resolved_model = model if model is not None else exp_config.model
-        resolved_timeout = (
-            timeout
-            if timeout is not None
-            else exp_config.extra.get("timeout_seconds", 3600)
-        )
+        resolved_timeout = timeout if timeout is not None else exp_config.extra.get("timeout_seconds", 3600)
 
         logger.debug(
             "Config resolution: model=%s (%s), timeout=%ds (%s)",
@@ -513,13 +490,19 @@ def run_eval(
             for issue in issues:
                 click.echo(f"  [{exp_config.label}] Warning: {issue}", err=True)
 
+        # Adapter-specific parallel-mode pre-check (e.g. Claude needs either
+        # file creds or an env-var auth token to isolate per-slot state).
+        parallel_warn = getattr(config_adapter, "check_parallel_auth", None)
+        if callable(parallel_warn):
+            msg = parallel_warn(parallel)
+            if msg:
+                click.echo(f"  [{exp_config.label}] Warning: {msg}", err=True)
+
         config_runs_dir = exp_dir / "runs" / exp_config.label
         config_runs_dir.mkdir(parents=True, exist_ok=True)
         legacy_jsonl = config_runs_dir / "checkpoint.jsonl"
         checkpoint_db = config_runs_dir / "checkpoint.db"
-        checkpoint_store = CheckpointStore.from_legacy_path(
-            legacy_jsonl, checkpoint_db, config_name=exp_config.label
-        )
+        checkpoint_store = CheckpointStore.from_legacy_path(legacy_jsonl, checkpoint_db, config_name=exp_config.label)
 
         click.echo(f"\nRunning config: {exp_config.label} ({len(task_dirs)} tasks)")
 
@@ -573,8 +556,7 @@ def run_eval(
         if interrupted:
             partial = checkpoint_store.load_ids()
             click.echo(
-                f"\nInterrupted — partial results saved "
-                f"({len(partial)} tasks completed)",
+                f"\nInterrupted — partial results saved ({len(partial)} tasks completed)",
                 err=True,
             )
             if owns_sandbox:
