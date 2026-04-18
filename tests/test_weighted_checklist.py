@@ -411,8 +411,106 @@ class TestGeneratedScriptEndToEnd:
             ln for ln in result.stdout.strip().splitlines() if ln.strip()
         ][-1]
         score = float(last_line.split("=", 1)[1])
-        # Loses 0.25 for scope violation → composite = 0.75
-        assert 0.7 <= score <= 0.8
+        # 1 of 2 changed files in scope → scope_score = 0.5; composite =
+        # 0.30 + 0.25 + 0.5*0.25 + 0.20 = 0.875.
+        assert score == pytest.approx(0.875, abs=0.01)
+
+    def test_scope_score_degrades_proportionally(self, tmp_path: Path) -> None:
+        """Two of three changed files out-of-scope → scope_score = 1/3."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "src").mkdir()
+        (repo / "src" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "a.md").write_text("a\n", encoding="utf-8")
+        (repo / "docs" / "b.md").write_text("b\n", encoding="utf-8")
+        _init_git_repo(repo)
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True
+        )
+        # Agent touches 1 in-scope + 2 out-of-scope files.
+        (repo / "src" / "auth.py").write_text("x = 2\n", encoding="utf-8")
+        (repo / "docs" / "a.md").write_text("A\n", encoding="utf-8")
+        (repo / "docs" / "b.md").write_text("B\n", encoding="utf-8")
+
+        gt = _sdlc_gt(source_files=["src/auth.py"])
+        script = _build_weighted_checklist_script(
+            cmd="bash -c true",
+            repo_path=repo,
+            language="python",
+            ground_truth=gt,
+            header="e2e",
+        )
+        script_path = tmp_path / "tests" / "test.sh"
+        script_path.parent.mkdir(parents=True)
+        script_path.write_text(script, encoding="utf-8")
+        script_path.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Pull the per-check breakdown out of validation_result.json so the
+        # scope proportionality is asserted directly, not just via composite.
+        vr_path = script_path.parent.parent / "validation_result.json"
+        vr = json.loads(vr_path.read_text(encoding="utf-8"))
+        scope_check = vr["sub_scores"]["scope_respected"]
+        assert scope_check["score"] == pytest.approx(1 / 3, abs=0.01)
+
+        last_line = [
+            ln for ln in result.stdout.strip().splitlines() if ln.strip()
+        ][-1]
+        score = float(last_line.split("=", 1)[1])
+        # 1/3 * 0.25 = 0.0833; composite = 0.30 + 0.25 + 0.0833 + 0.20 = 0.8333
+        assert score == pytest.approx(0.8333, abs=0.01)
+
+    def test_scope_score_zero_when_all_out_of_scope(
+        self, tmp_path: Path
+    ) -> None:
+        """Every changed file out-of-scope → scope_score = 0.0."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "src").mkdir()
+        (repo / "src" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "a.md").write_text("a\n", encoding="utf-8")
+        _init_git_repo(repo)
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True
+        )
+        # Agent touches only the out-of-scope file.
+        (repo / "docs" / "a.md").write_text("A\n", encoding="utf-8")
+
+        gt = _sdlc_gt(source_files=["src/auth.py"])
+        script = _build_weighted_checklist_script(
+            cmd="bash -c true",
+            repo_path=repo,
+            language="python",
+            ground_truth=gt,
+            header="e2e",
+        )
+        script_path = tmp_path / "tests" / "test.sh"
+        script_path.parent.mkdir(parents=True)
+        script_path.write_text(script, encoding="utf-8")
+        script_path.chmod(0o755)
+
+        subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        vr = json.loads(
+            (script_path.parent.parent / "validation_result.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        scope_check = vr["sub_scores"]["scope_respected"]
+        assert scope_check["score"] == pytest.approx(0.0, abs=0.001)
 
 
 # ---------------------------------------------------------------------------

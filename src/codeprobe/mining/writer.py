@@ -411,8 +411,11 @@ if scope_dirs and changed_set:
         if not any(f == d or f.startswith(d + "/") for d in scope_dirs)
     ]
     if out_of_scope:
-        scope_score = 0.0
-        scope_detail = f"{len(out_of_scope)} file(s) outside {scope_dirs}"
+        in_scope_count = len(changed_set) - len(out_of_scope)
+        scope_score = in_scope_count / len(changed_set)
+        scope_detail = (
+            f"{len(out_of_scope)}/{len(changed_set)} file(s) outside {scope_dirs}"
+        )
     else:
         scope_detail = f"all changes within {scope_dirs}"
 checks.append(
@@ -492,9 +495,11 @@ def _build_weighted_checklist_script(
       agent actually modified
     - ``syntax_valid`` (0.25): expected source files parse without syntax
       errors (language-aware; unknown languages receive full credit)
-    - ``scope_respected`` (0.25): every changed file lives inside the set
-      of scope directories derived from the expected source files (an
-      empty scope or no changes falls through to full credit)
+    - ``scope_respected`` (0.25): fraction of changed files that live
+      inside the set of scope directories derived from the expected
+      source files (proportional — an out-of-scope file only costs its
+      share, not the whole check; empty scope or no changes falls
+      through to full credit)
     - ``test_passed`` (0.20): the mined verification command (``cmd``)
       exits zero
 
