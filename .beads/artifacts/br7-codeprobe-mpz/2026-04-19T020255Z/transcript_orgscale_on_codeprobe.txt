@@ -1,0 +1,33 @@
+Scanning dogfood-codeprobe for org-scale patterns...
+INFO: Family migration-inventory: 9 files matched (69 hits)
+INFO: Family compliance-audit: 3 files matched (9 hits)
+INFO: Family incident-debug: 60 files matched (200 hits)
+INFO: Family platform-knowledge: 8 files matched (35 hits)
+INFO: Family cross-repo-config-trace: 42 files matched (120 hits)
+WARNING: LLM task generation failed for cross-repo-config-trace: Claude CLI timed out after 30s
+
+Scan results:
+  migration-inventory: 9 files matched
+  compliance-audit: 3 files matched
+  incident-debug: 60 files matched
+  platform-knowledge: 8 files matched
+  cross-repo-config-trace: 42 files matched
+
+Generated 5 org-scale tasks:
+
+   #  Task ID        Family                   Difficulty Files
+  ------------------------------------------------------------
+   1  6d551413       migration-inventory      hard           9
+   2  53a8421e       compliance-audit         medium         3
+   3  d3c90224       incident-debug           medium        60
+   4  53af9574       platform-knowledge       medium         8
+   5  b0e58c81       cross-repo-config-trace  medium        42
+
+INFO: Wrote suite manifest → /tmp/dogfood-codeprobe/.codeprobe/suite.toml
+Suite manifest written to /tmp/dogfood-codeprobe/.codeprobe/suite.toml
+Tasks written to /tmp/dogfood-codeprobe/.codeprobe/tasks
+
+Next steps:
+  1. Run eval:     codeprobe run /tmp/dogfood-codeprobe --agent claude
+  2. Check scores: codeprobe oracle-check /tmp/dogfood-codeprobe/.codeprobe/tasks/<task_id>
+

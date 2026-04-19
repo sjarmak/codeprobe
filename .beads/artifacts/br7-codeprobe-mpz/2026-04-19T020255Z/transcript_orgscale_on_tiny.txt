@@ -1,0 +1,12 @@
+
+Suitability warnings for task-type=org_scale_cross_repo:
+  ! task-type=org_scale_cross_repo expects a medium/large codebase but dogfood-tiny has only ~1 source files; org-scale families may produce no hits above their min_hits thresholds.
+
+Scanning dogfood-tiny for org-scale patterns...
+INFO: Family migration-inventory: 0 files (below min_hits=3, skipping)
+INFO: Family compliance-audit: 0 files (below min_hits=3, skipping)
+INFO: Family incident-debug: 0 files (below min_hits=3, skipping)
+INFO: Family platform-knowledge: 0 files (below min_hits=3, skipping)
+INFO: Family cross-repo-config-trace: 0 files (below min_hits=3, skipping)
+INFO: No org-scale tasks generated from [PosixPath('/tmp/dogfood-tiny')]
+No org-scale tasks generated. Repo may not have enough pattern matches.

@@ -1,0 +1,15 @@
+Task type                    CSB suite                    Description
+----------------------------------------------------------------------------------------------------
+architecture_comprehension   csb_org_onboarding           Architecture comprehension tasks: explain module responsibilities, trace request flows, identify extension points.
+                               + csb_org_domain, csb_sdlc_document
+mcp_tool_usage               csb_org_crossrepo_tracing    Harder cross-file / cross-repo tasks biased toward MCP tool benefit (aliased imports, blast radius, type hierarchies).
+                               + csb_org_crossrepo, csb_org_crossorg
+micro_probe                  csb_sdlc_understand          Single-symbol micro-benchmarks that probe an agent's ability to navigate and comprehend code without writing changes.
+mixed                        csb_sdlc_fix                 Balanced mix of SDLC code-change and micro-probe comprehension tasks for a general-purpose benchmark.
+                               + csb_sdlc_understand, csb_sdlc_feature
+org_scale_cross_repo         csb_org_crossrepo            Org-scale comprehension tasks over multi-repo pattern families: compliance audits, migration inventories, incident debug.
+                               + csb_org_compliance, csb_org_migration, csb_org_incident, csb_org_platform, csb_org_security
+sdlc_code_change             csb_sdlc_fix                 Code-change tasks mined from merged PRs: feature work, bug fixes, refactors. Scored via PR-derived test scripts.
+                               + csb_sdlc_feature, csb_sdlc_refactor, csb_sdlc_debug
+
+Use --task-type <TYPE> to mine tasks of a specific type. See --goal for high-level presets.

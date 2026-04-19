@@ -7,6 +7,13 @@ import sys
 import click
 
 from codeprobe import __version__
+from codeprobe.mining.task_types import (
+    TASK_TYPE_REGISTRY as _TASK_TYPE_REGISTRY,
+    list_task_types as _list_task_types,
+    task_type_names as _task_type_names,
+)
+
+_TASK_TYPE_CHOICES = _task_type_names()
 
 
 class MineCommand(click.Command):
@@ -158,6 +165,25 @@ def init(path: str) -> None:
     default=None,
     help="Eval goal: quality, navigation, mcp, general. "
     "Drives task type, defaults, and extras. Skips the interactive prompt.",
+)
+@click.option(
+    "--task-type",
+    "task_type_override",
+    type=click.Choice(_TASK_TYPE_CHOICES, case_sensitive=False),
+    default=None,
+    help="Override the task type (e.g. sdlc_code_change, micro_probe, "
+    "architecture_comprehension, org_scale_cross_repo, mcp_tool_usage, "
+    "mixed). Takes precedence over --goal. "
+    "Run `codeprobe mine --list-task-types` to see descriptions and CSB "
+    "suite mappings.",
+)
+@click.option(
+    "--list-task-types",
+    "list_task_types_flag",
+    is_flag=True,
+    default=False,
+    help="List all registered task types with descriptions and their "
+    "CodeScaleBench suite mappings, then exit.",
 )
 @click.option("--count", default=5, help="Number of tasks to mine (3-20).")
 @click.option(
@@ -346,6 +372,8 @@ def mine(
     path: str,
     preset: str | None,
     goal: str | None,
+    task_type_override: str | None,
+    list_task_types_flag: bool,
     profile_name: str | None,
     save_profile_name: str | None,
     list_profiles_flag: bool,
@@ -408,6 +436,22 @@ def mine(
         run_mine,
         save_profile,
     )
+
+    # --list-task-types: show and exit
+    if list_task_types_flag:
+        click.echo(f"{'Task type':<28s} {'CSB suite':<28s} Description")
+        click.echo("-" * 100)
+        for name, info in _list_task_types():
+            click.echo(f"{name:<28s} {info.csb_suite:<28s} {info.description}")
+            if len(info.csb_suites) > 1:
+                others = ", ".join(info.csb_suites[1:])
+                click.echo(f"{'':<28s} {'  + ' + others}")
+        click.echo()
+        click.echo(
+            "Use --task-type <TYPE> to mine tasks of a specific type. "
+            "See --goal for high-level presets."
+        )
+        return
 
     # --list-profiles: show and exit
     if list_profiles_flag:
@@ -515,6 +559,7 @@ def mine(
         path,
         preset=preset,
         goal=goal,
+        task_type_override=task_type_override,
         count=count,
         cross_repo=cross_repo,
         source=source,

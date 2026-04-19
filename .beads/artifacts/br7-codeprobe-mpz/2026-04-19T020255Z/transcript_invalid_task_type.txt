@@ -1,0 +1,4 @@
+Usage: python -m codeprobe mine [OPTIONS] [PATH]
+Try 'python -m codeprobe mine --help' for help.
+
+Error: Invalid value for '--task-type': 'bogus' is not one of 'architecture_comprehension', 'mcp_tool_usage', 'micro_probe', 'mixed', 'org_scale_cross_repo', 'sdlc_code_change'.

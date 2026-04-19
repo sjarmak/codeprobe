@@ -1,0 +1,29 @@
+INFO: GitHub API unavailable, falling back to git log --merges
+INFO: Collected 2922 symbols (597 classs, 579 functions, 1746 methods) from 191 files
+INFO: Generated 1 count_callers, 1 find_function, 1 return_type probes
+INFO: Probe generation completed in 0.1s
+
+Generated 3 probe tasks:
+
+   1  probe-countcallers-000
+   2  probe-findfunction-001
+   3  probe-returntype-002
+
+INFO: Wrote suite manifest → /tmp/dogfood-codeprobe/.codeprobe/suite.toml
+Suite manifest written to /tmp/dogfood-codeprobe/.codeprobe/suite.toml
+Tasks written to /tmp/dogfood-codeprobe/.codeprobe/tasks
+
+Next steps:
+
+  1. Review and enrich task instructions (recommended):
+     codeprobe mine /tmp/dogfood-codeprobe --enrich
+
+  2. Run the eval:
+     codeprobe run /tmp/dogfood-codeprobe --agent claude
+
+  3. Try a different model:
+     codeprobe run /tmp/dogfood-codeprobe --agent claude --model claude-sonnet-4-6
+
+  4. Set a cost budget:
+     codeprobe run /tmp/dogfood-codeprobe --agent claude --max-cost-usd 5.00
+

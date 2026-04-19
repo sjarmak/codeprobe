@@ -636,6 +636,118 @@ def _comprehension_generator_available() -> bool:
         return False
 
 
+def _suitability_warnings(
+    task_type: str,
+    repo_path: Path,
+) -> list[str]:
+    """Run a lightweight suitability check for *task_type* against *repo_path*.
+
+    Returns a list of non-blocking warnings. An empty list means "no
+    concerns". The check is intentionally cheap: it only inspects file
+    counts, language heuristics, and test-infrastructure presence —
+    sufficient to flag obvious mismatches (e.g. selecting
+    ``org_scale_cross_repo`` on a 5-file demo repo) without slowing down
+    the mining pipeline.
+
+    Callers decide whether to prompt the user or proceed; this function
+    does no I/O beyond ``Path.glob`` / ``Path.is_dir`` lookups.
+    """
+    warnings: list[str] = []
+    if not repo_path.is_dir():
+        return warnings  # handled elsewhere
+
+    # Collect tracked source files (cheap glob — skip VCS + venv detritus).
+    source_exts = {
+        ".py",
+        ".go",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".java",
+        ".kt",
+        ".rs",
+        ".rb",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".h",
+        ".hpp",
+    }
+    skip_dirs = {".git", "node_modules", "vendor", ".venv", "venv", "dist", "build"}
+
+    source_files: list[Path] = []
+    has_tests_dir = False
+    for p in repo_path.rglob("*"):
+        parts = set(p.parts)
+        if parts & skip_dirs:
+            continue
+        if p.is_file() and p.suffix.lower() in source_exts:
+            source_files.append(p)
+        if p.is_dir() and p.name in {"tests", "test", "__tests__", "spec"}:
+            has_tests_dir = True
+        if len(source_files) > 2000:
+            break  # cap — we only need rough signals
+    file_count = len(source_files)
+
+    if task_type in ("org_scale_cross_repo",) and file_count < 50:
+        warnings.append(
+            f"task-type=org_scale_cross_repo expects a medium/large codebase "
+            f"but {repo_path.name} has only ~{file_count} source files; "
+            "org-scale families may produce no hits above their min_hits thresholds."
+        )
+
+    if task_type == "sdlc_code_change" and not has_tests_dir:
+        warnings.append(
+            f"task-type=sdlc_code_change is scored via test scripts, but "
+            f"{repo_path.name} has no tests/ directory — generated tasks "
+            "will likely rely on weak fallback scoring."
+        )
+
+    if task_type == "mcp_tool_usage" and file_count < 100:
+        warnings.append(
+            f"task-type=mcp_tool_usage benefits from cross-file navigation "
+            f"over a medium/large codebase; {repo_path.name} has only "
+            f"~{file_count} source files and may not exercise MCP value."
+        )
+
+    if task_type == "architecture_comprehension" and file_count < 20:
+        warnings.append(
+            f"task-type=architecture_comprehension needs enough modules to "
+            f"form a coherent architecture; {repo_path.name} has only "
+            f"~{file_count} source files."
+        )
+
+    return warnings
+
+
+def _run_suitability_check(
+    task_type: str,
+    repo_path: Path,
+    interactive: bool,
+) -> bool:
+    """Print any suitability warnings and, when interactive, prompt the user.
+
+    Returns True to proceed, False when the user declines.
+    """
+    warnings = _suitability_warnings(task_type, repo_path)
+    if not warnings:
+        return True
+
+    click.echo()
+    click.echo(f"Suitability warnings for task-type={task_type}:")
+    for w in warnings:
+        click.echo(f"  ! {w}")
+    click.echo()
+
+    if not interactive:
+        return True  # non-interactive: log and proceed
+    return click.confirm(
+        "This task type may not produce useful tasks for this repo. Continue?",
+        default=False,
+    )
+
+
 def _resolve_task_type(
     task_type: str,
     repo_path: Path,
@@ -912,69 +1024,70 @@ def _dispatch_by_task_type(
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
-    - ``sdlc_code_change`` / ``mcp_tool_usage`` → PR-based SDLC mining
-    - ``micro_probe`` → probe generation (code-navigation micro-benchmarks)
-    - ``architecture_comprehension`` → comprehension generator
-    - ``mixed`` → SDLC mining + probe generation
-    """
+    The registry in :mod:`codeprobe.mining.task_types` maps each task type
+    to a ``dispatch_key`` (``"sdlc"`` / ``"probe"`` / ``"comprehension"`` /
+    ``"mixed"``). Each key corresponds to an entry in
+    ``_DISPATCH_HANDLERS`` below; adding a new task type that reuses an
+    existing pipeline requires only a registry entry, not a new branch.
 
-    if task_type in ("sdlc_code_change", "mcp_tool_usage"):
-        _dispatch_sdlc(
-            repo_path=repo_path,
-            count=count,
-            source=source,
-            min_files=min_files,
-            min_quality=min_quality,
-            subsystems=subsystems,
-            no_llm=no_llm,
-            enrich=enrich,
-            goal_name=goal_name,
-            bias=bias,
-            dual_verify=dual_verify,
-        )
-    elif task_type == "micro_probe":
+    ``org_scale_cross_repo`` is handled upstream via the ``--org-scale``
+    flag path in :func:`run_mine` (it has a dedicated multi-repo scanning
+    pipeline that doesn't share the single-repo dispatch surface here).
+    """
+    from codeprobe.mining.task_types import TASK_TYPE_REGISTRY
+
+    common_kwargs = dict(
+        repo_path=repo_path,
+        count=count,
+        source=source,
+        min_files=min_files,
+        min_quality=min_quality,
+        subsystems=subsystems,
+        no_llm=no_llm,
+        enrich=enrich,
+        goal_name=goal_name,
+        bias=bias,
+        dual_verify=dual_verify,
+    )
+
+    def _sdlc() -> None:
+        _dispatch_sdlc(**common_kwargs)
+
+    def _probe() -> None:
         _dispatch_probes(
             repo_path=repo_path,
             count=count,
             goal_name=goal_name,
             bias=bias,
         )
-    elif task_type == "architecture_comprehension":
+
+    def _comprehension() -> None:
         _dispatch_comprehension(
             repo_path=repo_path,
             count=count,
             goal_name=goal_name,
             bias=bias,
         )
-    elif task_type == "mixed":
-        _dispatch_mixed(
-            repo_path=repo_path,
-            count=count,
-            source=source,
-            min_files=min_files,
-            min_quality=min_quality,
-            subsystems=subsystems,
-            no_llm=no_llm,
-            enrich=enrich,
-            goal_name=goal_name,
-            bias=bias,
-            dual_verify=dual_verify,
+
+    def _mixed() -> None:
+        _dispatch_mixed(**common_kwargs)
+
+    _DISPATCH_HANDLERS = {  # noqa: N806
+        "sdlc": _sdlc,
+        "probe": _probe,
+        "comprehension": _comprehension,
+        "mixed": _mixed,
+    }
+
+    info = TASK_TYPE_REGISTRY.get(task_type)
+    if info is None or info.dispatch_key not in _DISPATCH_HANDLERS:
+        _log.warning(
+            "Unknown or unroutable task_type '%s'; falling back to SDLC mining",
+            task_type,
         )
-    else:
-        _log.warning("Unknown task_type '%s'; falling back to SDLC mining", task_type)
-        _dispatch_sdlc(
-            repo_path=repo_path,
-            count=count,
-            source=source,
-            min_files=min_files,
-            min_quality=min_quality,
-            subsystems=subsystems,
-            no_llm=no_llm,
-            enrich=enrich,
-            goal_name=goal_name,
-            bias=bias,
-            dual_verify=dual_verify,
-        )
+        _sdlc()
+        return
+    _DISPATCH_HANDLERS[info.dispatch_key]()
 
 
 def _dispatch_cross_repo(
@@ -1455,6 +1568,7 @@ def run_mine(
     path: str,
     preset: str | None = None,
     goal: str | None = None,
+    task_type_override: str | None = None,
     count: int = 5,
     cross_repo: tuple[str, ...] = (),
     source: str = "auto",
@@ -1533,6 +1647,16 @@ def run_mine(
         bias = "balanced"
         task_type = "mixed"
 
+    # --task-type takes precedence over the goal-derived task_type.
+    if task_type_override is not None:
+        task_type = task_type_override
+        goal_name = f"{goal_name} (task-type={task_type})"
+        # org_scale_cross_repo routes through the org-scale pipeline,
+        # which is gated on the separate --org-scale flag path. Auto-
+        # enable it so --task-type alone is enough.
+        if task_type == "org_scale_cross_repo":
+            org_scale = True
+
     # CLI validation: --backends agent --no-llm is incompatible
     if no_llm and "agent" in backends:
         raise click.UsageError(
@@ -1541,6 +1665,19 @@ def run_mine(
         )
 
     repo_path = _resolve_repo_path(path)
+
+    # Non-blocking suitability check applies to every dispatch path
+    # (cross-repo, org-scale, and the single-repo pipelines below).
+    # Runs once here, before any mining happens.
+    if interactive is None:
+        interactive = _is_interactive()
+    if not _run_suitability_check(
+        task_type,
+        repo_path,
+        interactive=bool(interactive),
+    ):
+        click.echo("Aborted.")
+        return
 
     # Cross-repo dispatch: AFTER resolve_effective_config, BEFORE org_scale
     if cross_repo:
@@ -1581,9 +1718,6 @@ def run_mine(
             dual_verify=dual_verify,
         )
         return
-
-    if interactive is None:
-        interactive = _is_interactive()
 
     if interactive and goal is None:
         (
