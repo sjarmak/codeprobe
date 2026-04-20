@@ -177,8 +177,8 @@ class TestMineTypeHierarchyTasks:
         assert task.metadata.org_scale is True
         # Should have oracle_tiers with required and supplementary
         if task.verification.oracle_tiers:
-            tiers = set(task.verification.oracle_tiers.values())
-            assert "required" in tiers or "supplementary" in tiers
+            tier_values = {v for _, v in task.verification.oracle_tiers}
+            assert "required" in tier_values or "supplementary" in tier_values
 
     def test_returns_empty_for_non_python(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path, {"main.go": "package main\nfunc main() {}\n"})
