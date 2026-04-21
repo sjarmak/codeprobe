@@ -1,0 +1,4 @@
+Usage: codeprobe mine [OPTIONS] [PATH]
+Try 'codeprobe mine --help' for help.
+
+Error: URL 'ftp://foo.com/bar' is not a valid git URL: scheme 'ftp' is not one of ['git', 'git+http', 'git+https', 'git+ssh', 'http', 'https', 'ssh']. Pass an https/ssh git URL or a local path.

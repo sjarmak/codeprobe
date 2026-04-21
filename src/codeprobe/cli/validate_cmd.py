@@ -471,6 +471,27 @@ def run_validate(task_dir: Path, *, strict: bool = False) -> list[CheckResult]:
     return results
 
 
+def _looks_like_task_dir(path: Path) -> bool:
+    """Return True iff *path* has the shape of a single task directory.
+
+    A task directory has at least one of ``instruction.md``, ``task.toml``,
+    or ``metadata.json`` at its root. Used to distinguish a single task
+    from a "tasks parent" directory that contains many task subdirectories.
+    """
+    return (
+        (path / "instruction.md").is_file()
+        or (path / "task.toml").is_file()
+        or (path / "metadata.json").is_file()
+    )
+
+
+def _list_child_task_dirs(path: Path) -> list[Path]:
+    """Return immediate child directories of *path* that look like task dirs."""
+    if not path.is_dir():
+        return []
+    return sorted(c for c in path.iterdir() if c.is_dir() and _looks_like_task_dir(c))
+
+
 @click.command("validate")
 @click.argument("task_dir", type=click.Path(exists=True))
 @click.option(
@@ -484,12 +505,46 @@ def validate(task_dir: str, strict: bool) -> None:
 
     Checks that instruction.md, metadata, test scripts, and ground truth
     files are present and well-formed.
+
+    Accepts either a single task directory or a parent directory that
+    contains many task subdirectories (e.g. the ``.codeprobe/tasks``
+    output of ``codeprobe mine``). When passed a parent, each child task
+    is validated and a per-task summary plus overall totals is printed.
     """
     path = Path(task_dir).resolve()
-    results = run_validate(path, strict=strict)
 
     if strict:
         click.echo("NOTE: --strict: LLM spot-check not yet implemented")
+
+    # Parent-of-tasks mode: only trigger when the arg itself is not a task
+    # but its children look like tasks. Keeps legacy single-task semantics
+    # intact for empty dirs and malformed inputs.
+    if not _looks_like_task_dir(path):
+        children = _list_child_task_dirs(path)
+        if children:
+            total = len(children)
+            passed_count = 0
+            for child in children:
+                child_results = run_validate(child, strict=strict)
+                child_ok = all(r.passed for r in child_results)
+                marker = "PASS" if child_ok else "FAIL"
+                click.echo(f"{marker}  {child.name}")
+                if not child_ok:
+                    for r in child_results:
+                        if not r.passed:
+                            click.echo(f"       FAIL  {r.name} ({r.detail})")
+                if child_ok:
+                    passed_count += 1
+            click.echo()
+            click.echo(
+                f"Validated {total} task(s): {passed_count} passed, "
+                f"{total - passed_count} failed."
+            )
+            if passed_count < total:
+                raise SystemExit(1)
+            return
+
+    results = run_validate(path, strict=strict)
 
     any_failed = False
     for r in results:

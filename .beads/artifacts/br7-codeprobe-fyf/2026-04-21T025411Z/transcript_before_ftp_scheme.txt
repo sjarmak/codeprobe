@@ -1,0 +1,1 @@
+Path does not exist: /tmp/ftp:/foo.com/bar

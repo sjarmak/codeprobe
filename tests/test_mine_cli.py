@@ -102,6 +102,58 @@ class TestCrossRepoResolverFallback:
         assert "falling back to ripgrep" in combined.lower()
 
 
+class TestMineUrlValidation:
+    """Pre-clone URL-shape checks emit actionable 'not a valid git URL' errors."""
+
+    def test_rejects_non_git_scheme(self, tmp_path):
+        """ftp:// and similar schemes should be rejected before clone."""
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["mine", "ftp://example.com/repo.git", "--no-interactive"],
+        )
+        assert result.exit_code == 2
+        assert "not a valid git URL" in result.output
+        assert "scheme 'ftp'" in result.output
+        # Must not attempt to clone.
+        assert "Cloning" not in result.output
+
+    def test_rejects_url_without_path(self, tmp_path):
+        """https://host with no repo path should be rejected before clone."""
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["mine", "https://example.com", "--no-interactive"],
+        )
+        assert result.exit_code == 2
+        assert "not a valid git URL" in result.output
+        assert "missing repository path" in result.output
+        assert "Cloning" not in result.output
+
+    def test_accepts_owner_repo_shorthand(self, tmp_path, monkeypatch):
+        """owner/repo shorthand should still route through clone, not URL validator."""
+        from codeprobe.cli import mine_cmd
+
+        called = {}
+
+        def fake_clone(url: str):
+            called["url"] = url
+            raise click.UsageError("stub")  # noqa: F821  # click imported below
+
+        import click
+
+        monkeypatch.setattr(mine_cmd, "_clone_repo", fake_clone)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["mine", "octocat/hello-world", "--no-interactive"]
+        )
+        # We expect the stub clone to be reached (shorthand accepted).
+        assert called.get("url") == "octocat/hello-world"
+        assert result.exit_code == 2  # our stub raised
+        assert "stub" in result.output
+
+
 class TestCrossRepoDispatch:
     """Verify _dispatch_cross_repo is called with correct args."""
 

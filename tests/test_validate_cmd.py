@@ -269,3 +269,68 @@ class TestValidateCLI:
         runner = CliRunner()
         result = runner.invoke(main, ["validate", "/nonexistent/path"])
         assert result.exit_code != 0
+
+
+class TestValidateMultiTaskDir:
+    """`codeprobe validate <parent>` should iterate over child task dirs."""
+
+    def _make_valid_task(self, parent: Path, name: str) -> Path:
+        d = parent / name
+        d.mkdir()
+        (d / "instruction.md").write_text("# Task\nDo a thing.\n")
+        (d / "task.toml").write_text(
+            '[metadata]\nname = "t"\ntask_type = "sdlc_code_change"\n\n'
+            '[verification]\nverification_mode = "test_script"\n'
+        )
+        tests_dir = d / "tests"
+        tests_dir.mkdir()
+        ts = tests_dir / "test.sh"
+        ts.write_text("#!/bin/bash\nexit 0\n")
+        ts.chmod(ts.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        return d
+
+    def test_parent_dir_with_all_valid_tasks_exits_zero(self, tmp_path: Path) -> None:
+        self._make_valid_task(tmp_path, "task-a")
+        self._make_valid_task(tmp_path, "task-b")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "PASS  task-a" in result.output
+        assert "PASS  task-b" in result.output
+        assert "Validated 2 task(s): 2 passed, 0 failed." in result.output
+
+    def test_parent_dir_with_one_broken_task_exits_one(self, tmp_path: Path) -> None:
+        self._make_valid_task(tmp_path, "good")
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        (bad / "instruction.md").write_text("# Bad\n")
+        # Missing task.toml / metadata.json → metadata check fails
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 1, result.output
+        assert "PASS  good" in result.output
+        assert "FAIL  bad" in result.output
+        assert "Validated 2 task(s): 1 passed, 1 failed." in result.output
+
+    def test_single_task_dir_still_works(self, valid_task_dir: Path) -> None:
+        """Passing a single task directly keeps legacy per-check output."""
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(valid_task_dir)])
+        assert result.exit_code == 0, result.output
+        # Per-check markers ("PASS  instruction.md exists ...") are the
+        # legacy single-task output; the multi-task summary line should
+        # NOT appear here.
+        assert "Validated" not in result.output
+
+    def test_parent_with_non_task_children_falls_back(self, tmp_path: Path) -> None:
+        """If children don't look like tasks, fall through to legacy mode."""
+        (tmp_path / "random-dir").mkdir()
+        (tmp_path / "README.md").write_text("just a readme\n")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        # No task-shape anywhere → legacy single-task mode runs and fails
+        assert result.exit_code == 1
+        assert "Validated" not in result.output

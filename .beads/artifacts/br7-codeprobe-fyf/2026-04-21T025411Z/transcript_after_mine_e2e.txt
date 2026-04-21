@@ -1,0 +1,43 @@
+INFO: GitHub API unavailable, falling back to git log --merges
+Analyzing up to 4 merge commits...
+INFO: Detected source: github (sjarmak/codeprobe)
+INFO: GitHub API unavailable, falling back to git log --merges
+INFO: Rejection breakdown (4 PRs): min_files=0, subsystem=0, extraction=0 (no tests/bare metadata/stub cmd), quality=4
+INFO: Mined 0 tasks from 4 merge commits (min_files=0)
+INFO: Collected 3005 symbols (610 classs, 596 functions, 1799 methods) from 200 files
+INFO: Generated 1 find_function, 1 return_type probes
+INFO: Probe generation completed in 0.1s
+Generated 2 probe tasks:
+   1  probe-returntype-000
+   2  probe-findfunction-001
+
+INFO: Wrote suite manifest → /home/ds/projects/codeprobe/.codeprobe/suite.toml
+
+====================================================
+Mining summary
+====================================================
+  Tasks mined:     2
+  Quality gate:    ok
+  Time elapsed:    0.8s
+  Instructions:    regex fallback
+  Output:          /home/ds/projects/codeprobe/.codeprobe/tasks
+  Suite manifest:  /home/ds/projects/codeprobe/.codeprobe/suite.toml
+====================================================
+
+Next steps:
+
+  1. Validate task structure (offline sanity check):
+     codeprobe validate /home/ds/projects/codeprobe/.codeprobe/tasks
+
+  2. Review and enrich task instructions (recommended):
+     codeprobe mine /home/ds/projects/codeprobe --enrich
+
+  3. Run the eval:
+     codeprobe run /home/ds/projects/codeprobe --agent claude
+
+  4. Try a different model:
+     codeprobe run /home/ds/projects/codeprobe --agent claude --model claude-sonnet-4-6
+
+  5. Set a cost budget:
+     codeprobe run /home/ds/projects/codeprobe --agent claude --max-cost-usd 5.00
+

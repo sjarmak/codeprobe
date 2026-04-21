@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -28,6 +29,12 @@ _GIT_URL_PATTERN = re.compile(
     r"|^[\w.-]+/[\w.-]+$"  # owner/repo shorthand
 )
 
+# Schemes we recognize as potentially-cloneable.  Anything else is rejected
+# with a "not a valid git URL" message before we reach git itself.
+_ACCEPTED_GIT_URL_SCHEMES = frozenset(
+    {"http", "https", "git", "ssh", "git+http", "git+https", "git+ssh"}
+)
+
 
 def _is_git_url(path_or_url: str) -> bool:
     """Return True if the argument looks like a git URL or owner/repo shorthand."""
@@ -39,6 +46,48 @@ def _normalize_url(url: str) -> str:
     if "/" in url and not url.startswith(("https://", "http://", "git@")):
         return f"https://github.com/{url}.git"
     return url
+
+
+def _validate_git_url_shape(url: str) -> None:
+    """Reject obvious non-git URLs before we invoke ``git clone``.
+
+    Catches two common first-use mistakes:
+      * Passing a URL with a non-git scheme (``ftp://``, ``file://`` etc.)
+      * Passing a host-only URL (``https://example.com`` with no repo path)
+
+    ``git@host:owner/repo`` shorthand is accepted unchanged — it is not a
+    URL per RFC 3986 and urllib.parse cannot validate it.
+
+    Raises ``click.UsageError`` with an actionable message. SSRF filtering
+    is handled separately in :func:`_validate_clone_url`.
+    """
+    from urllib.parse import urlparse
+
+    if url.startswith("git@"):
+        return  # SCP-like shorthand, not a URL — let git handle it
+
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        return  # No scheme → treated as a local path upstream
+    if parsed.scheme not in _ACCEPTED_GIT_URL_SCHEMES:
+        raise click.UsageError(
+            f"URL {url!r} is not a valid git URL: "
+            f"scheme {parsed.scheme!r} is not one of "
+            f"{sorted(_ACCEPTED_GIT_URL_SCHEMES)}. "
+            "Pass an https/ssh git URL or a local path."
+        )
+    # urlparse keeps the leading slash in .path, so a bare host has path=''
+    # and 'owner/repo' shorthand never reaches this function (see _is_git_url).
+    if not parsed.netloc:
+        raise click.UsageError(
+            f"URL {url!r} is not a valid git URL: missing host."
+        )
+    if parsed.path in ("", "/"):
+        raise click.UsageError(
+            f"URL {url!r} is not a valid git URL: "
+            "missing repository path (expected e.g. "
+            "https://host.example/owner/repo.git)."
+        )
 
 
 def _validate_clone_url(url: str) -> None:
@@ -65,12 +114,13 @@ def _clone_repo(url: str) -> Path:
     persists until the process exits (the user sees the path in output).
     """
     url = _normalize_url(url)
+    _validate_git_url_shape(url)
     _validate_clone_url(url)
     # Derive a directory name from the URL
     repo_name = url.rstrip("/").rstrip(".git").rsplit("/", 1)[-1]
     clone_dir = Path(tempfile.mkdtemp(prefix=f"codeprobe-{repo_name}-"))
 
-    click.echo(f"Cloning {url} → {clone_dir} ...")
+    click.echo(f"Cloning {url} → {clone_dir} ...", err=True)
     try:
         subprocess.run(
             ["git", "clone", "--filter=blob:none", url, str(clone_dir)],
@@ -80,13 +130,23 @@ def _clone_repo(url: str) -> Path:
             timeout=120,
         )
     except subprocess.CalledProcessError as exc:
-        click.echo(f"Clone failed: {(exc.stderr or '').strip()}")
-        raise SystemExit(1) from exc
-    except subprocess.TimeoutExpired:
-        click.echo("Clone timed out after 120s.")
-        raise SystemExit(1)
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        stderr = (exc.stderr or "").strip()
+        raise click.UsageError(
+            f"Could not clone {url}.\n"
+            f"  git error: {stderr or 'unknown failure'}\n"
+            "  Check that the URL is correct, the repository is public, "
+            "or that you have access (try `git clone` manually to verify)."
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        raise click.UsageError(
+            f"Clone of {url} timed out after 120s. "
+            "The repository may be large or the network slow; "
+            "try cloning manually and pass the local path instead."
+        ) from exc
 
-    click.echo(f"Cloned to {clone_dir}")
+    click.echo(f"Cloned to {clone_dir}", err=True)
     return clone_dir
 
 
@@ -359,12 +419,26 @@ def _show_results_table(tasks: list[Task]) -> None:
 
 
 def _show_next_steps(
-    repo_path: Path, min_files: int, *, llm_enriched: bool = False
+    repo_path: Path,
+    min_files: int,
+    *,
+    llm_enriched: bool = False,
+    tasks_dir: Path | None = None,
 ) -> None:
-    """Phase 6: Show next steps."""
+    """Phase 6: Show concrete next-step commands (AC5).
+
+    The first step points at ``codeprobe validate`` so users can verify
+    task-directory structure before running a full eval — a cheap,
+    offline check that catches malformed outputs early.
+    """
     click.echo("Next steps:")
     click.echo()
     step = 1
+    if tasks_dir is not None:
+        click.echo(f"  {step}. Validate task structure (offline sanity check):")
+        click.echo(f"     codeprobe validate {tasks_dir}")
+        click.echo()
+        step += 1
     if not llm_enriched:
         click.echo(f"  {step}. Review and enrich task instructions (recommended):")
         click.echo(f"     codeprobe mine {repo_path} --enrich")
@@ -384,7 +458,7 @@ def _show_next_steps(
     click.echo(f"     codeprobe run {repo_path} --agent claude --max-cost-usd 5.00")
     click.echo()
     if min_files > 0:
-        click.echo("  5. Mine more tasks for better confidence:")
+        click.echo(f"  {step + 1}. Mine more tasks for better confidence:")
         click.echo(
             f"     codeprobe mine {repo_path} --count 15 --min-files {min_files}"
         )
@@ -475,8 +549,15 @@ def _discover_and_select(
 # ---------------------------------------------------------------------------
 
 
+_CURRENT_TASKS_DIR: Path | None = None
+
+
 def _clear_tasks_dir(repo_path: Path) -> Path:
-    """Clear stale tasks and return the tasks directory path."""
+    """Clear stale tasks and return the tasks directory path.
+
+    Records the path in module state so that the top-level ``run_mine``
+    handler can remove a partially-populated directory on Ctrl-C.
+    """
     from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
 
     ensure_codeprobe_excluded(repo_path)
@@ -484,6 +565,8 @@ def _clear_tasks_dir(repo_path: Path) -> Path:
     tasks_dir = repo_path / ".codeprobe" / "tasks"
     if tasks_dir.exists():
         shutil.rmtree(tasks_dir)
+    global _CURRENT_TASKS_DIR
+    _CURRENT_TASKS_DIR = tasks_dir
     return tasks_dir
 
 
@@ -522,14 +605,83 @@ def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None
     save_experiment(exp_dir, updated)
 
 
+def _suggest_path(missing: Path) -> str | None:
+    """Return a close sibling filename for *missing*, if any."""
+    import difflib
+
+    parent = missing.parent
+    try:
+        if not parent.is_dir():
+            return None
+        siblings = [p.name for p in parent.iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    matches = difflib.get_close_matches(missing.name, siblings, n=1, cutoff=0.6)
+    if not matches:
+        return None
+    return str(parent / matches[0])
+
+
+def _validate_git_repo(repo_path: Path) -> None:
+    """Raise click.UsageError if *repo_path* is not a usable git repo.
+
+    Structural check only: the path must be a directory that contains a
+    ``.git`` entry. Corruption (empty .git, detached HEAD, etc.) surfaces
+    later when mining actually invokes git — tests can mock git without
+    installing a real .git database.
+    """
+    if not repo_path.is_dir():
+        raise click.UsageError(
+            f"Path is not a directory: {repo_path}. "
+            "Pass the path to a local git repository."
+        )
+    if not (repo_path / ".git").exists():
+        raise click.UsageError(
+            f"Not a git repository: {repo_path} "
+            "(no .git/ directory found). "
+            "Initialize with `git init` or pass a different path."
+        )
+
+
+def _looks_like_url(path: str) -> bool:
+    """Return True when *path* looks like a URL (any scheme), not a filesystem path.
+
+    Used to route obviously-URL-shaped inputs (e.g. ``ftp://foo``) through
+    URL validation so users get a "not a valid git URL" error rather than
+    a misleading "Path does not exist" error.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(path)
+    # A real URL has both a non-empty scheme and netloc. Drive-letter paths
+    # on Windows (``C:\foo``) parse with scheme='c' but netloc='', so the
+    # netloc check excludes them.
+    return bool(parsed.scheme) and bool(parsed.netloc)
+
+
 def _resolve_repo_path(path: str) -> Path:
-    """Resolve a path or URL to a local repo directory."""
+    """Resolve a path or URL to a local repo directory.
+
+    Raises ``click.UsageError`` (exit 2) with actionable messages when the
+    path does not exist, is not a directory, or is not a git repository.
+    """
     if _is_git_url(path):
         return _clone_repo(path)
+    # URL-shaped inputs that our git-URL regex rejected (wrong scheme, etc.)
+    # are routed through the URL validator so the user gets a URL-appropriate
+    # error, not a confusing "Path does not exist".
+    if _looks_like_url(path):
+        _validate_git_url_shape(path)
+        # _validate_git_url_shape will raise; this is a safety net.
+        raise click.UsageError(f"URL {path!r} is not a valid git URL.")
     repo_path = Path(path).resolve()
     if not repo_path.exists():
-        click.echo(f"Path does not exist: {repo_path}")
-        raise SystemExit(1)
+        suggestion = _suggest_path(repo_path)
+        hint = f" Did you mean: {suggestion}?" if suggestion else ""
+        raise click.UsageError(
+            f"Path does not exist: {repo_path}.{hint}"
+        )
+    _validate_git_repo(repo_path)
     return repo_path
 
 
@@ -609,6 +761,55 @@ def _enrich_sdlc_tasks(
 import logging as _logging  # noqa: E402
 
 _log = _logging.getLogger(__name__)
+
+# Start time of the current `run_mine` invocation, used to print an elapsed
+# time in the end-of-run summary. Set at the top of ``run_mine`` and consumed
+# inside ``_finish_mine_output`` / ``_show_org_scale_results``. Module state is
+# acceptable here because ``run_mine`` is invoked at most once per process.
+_MINE_START_TIME: float | None = None
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format *seconds* as ``Xm Ys`` for the summary block."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    mins, secs = divmod(int(seconds), 60)
+    return f"{mins}m {secs}s"
+
+
+def _print_summary_block(
+    *,
+    task_count: int,
+    quality_warning_count: int,
+    tasks_dir: Path,
+    suite_path: Path | None,
+    llm_enriched: bool | None = None,
+) -> None:
+    """Print the structured end-of-run summary block (AC4).
+
+    Called from both single-repo and org-scale completion paths.
+    """
+    click.echo()
+    click.echo("=" * 52)
+    click.echo("Mining summary")
+    click.echo("=" * 52)
+    click.echo(f"  Tasks mined:     {task_count}")
+    if quality_warning_count > 0:
+        click.echo(f"  Quality gate:    {quality_warning_count} warning(s)")
+    else:
+        click.echo("  Quality gate:    ok")
+    if _MINE_START_TIME is not None:
+        elapsed = time.monotonic() - _MINE_START_TIME
+        click.echo(f"  Time elapsed:    {_format_elapsed(elapsed)}")
+    if llm_enriched is not None:
+        click.echo(
+            f"  Instructions:    {'LLM-enriched' if llm_enriched else 'regex fallback'}"
+        )
+    click.echo(f"  Output:          {tasks_dir}")
+    if suite_path is not None:
+        click.echo(f"  Suite manifest:  {suite_path}")
+    click.echo("=" * 52)
+    click.echo()
 
 
 def _cold_start_check(repo_path: Path, source_hint: str) -> bool:
@@ -1120,8 +1321,11 @@ def _dispatch_cross_repo(
         else:
             rp = Path(entry).resolve()
             if not rp.exists():
-                click.echo(f"Path does not exist: {rp}")
-                raise SystemExit(1)
+                suggestion = _suggest_path(rp)
+                hint = f" Did you mean: {suggestion}?" if suggestion else ""
+                raise click.UsageError(
+                    f"--cross-repo path does not exist: {rp}.{hint}"
+                )
             secondaries.append(rp)
 
     # Select symbol resolver: prefer Sourcegraph, fall back to ripgrep
@@ -1265,6 +1469,57 @@ def _apply_dual_verification(
     return result
 
 
+def _mine_tasks_with_progress(
+    repo_path: Path,
+    *,
+    count: int,
+    source_hint: str,
+    min_files: int,
+    min_quality: float,
+    subsystems: tuple[str, ...],
+) -> "MineResult":
+    """Call :func:`mine_tasks` with a click.progressbar when stderr is a TTY.
+
+    Falls back to a plain call (no bar) in non-interactive environments so
+    CI logs stay clean. The bar length is derived from ``mine_tasks``' own
+    internal search-limit (``count*4`` or ``count*8``), so it only tracks
+    the per-PR scoring loop — the subsequent LLM enrichment and writing
+    phases print their own progress messages.
+    """
+    from codeprobe.mining import mine_tasks
+
+    search_limit = count * 4 if min_files == 0 else count * 8
+    use_bar = sys.stderr.isatty()
+
+    if not use_bar:
+        click.echo(
+            f"Analyzing up to {search_limit} merge commits...", err=True
+        )
+        return mine_tasks(
+            repo_path,
+            count=count,
+            source_hint=source_hint,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+        )
+
+    with click.progressbar(
+        length=search_limit,
+        label="Analyzing merge commits",
+        file=sys.stderr,
+    ) as bar:
+        return mine_tasks(
+            repo_path,
+            count=count,
+            source_hint=source_hint,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+            progress=bar.update,
+        )
+
+
 def _dispatch_sdlc(
     *,
     repo_path: Path,
@@ -1280,9 +1535,9 @@ def _dispatch_sdlc(
     dual_verify: bool = False,
 ) -> None:
     """Run PR-based SDLC mining pipeline."""
-    from codeprobe.mining import mine_tasks, write_task_dir
+    from codeprobe.mining import write_task_dir
 
-    mine_result = mine_tasks(
+    mine_result = _mine_tasks_with_progress(
         repo_path,
         count=count,
         source_hint=source,
@@ -1370,7 +1625,6 @@ def _dispatch_probes(
     click.echo()
     for i, p in enumerate(created, 1):
         click.echo(f"  {i:>2}  {p.name}")
-    click.echo()
     # Emit suite.toml for probe tasks
     from codeprobe.mining.writer import write_suite_manifest
 
@@ -1380,10 +1634,13 @@ def _dispatch_probes(
         task_types=("micro_probe",),
         description=f"Generated by codeprobe mine --goal ({goal_name})",
     )
-    click.echo(f"Suite manifest written to {suite_path}")
-    click.echo(f"Tasks written to {tasks_dir}")
-    click.echo()
-    _show_next_steps(repo_path, 0)
+    _print_summary_block(
+        task_count=len(created),
+        quality_warning_count=0,
+        tasks_dir=tasks_dir,
+        suite_path=suite_path,
+    )
+    _show_next_steps(repo_path, 0, tasks_dir=tasks_dir)
 
 
 def _dispatch_comprehension(
@@ -1439,7 +1696,6 @@ def _dispatch_mixed(
     dual_verify: bool = False,
 ) -> None:
     """Run SDLC mining + probe generation, combining results."""
-    from codeprobe.mining import mine_tasks
     from codeprobe.mining import write_task_dir as write_mining_task
     from codeprobe.probe.adapter import ProbeTaskAdapter
     from codeprobe.probe.generator import generate_probes
@@ -1453,7 +1709,7 @@ def _dispatch_mixed(
     sdlc_tasks: list = []
 
     # SDLC mining (may produce 0 tasks on cold-start repos)
-    mine_result = mine_tasks(
+    mine_result = _mine_tasks_with_progress(
         repo_path,
         count=sdlc_count,
         source_hint=source,
@@ -1510,6 +1766,7 @@ def _dispatch_mixed(
         mixed_types.append("sdlc_code_change")
     if probe_dirs:
         mixed_types.append("micro_probe")
+    suite_path: Path | None = None
     if mixed_types:
         suite_path = write_suite_manifest(
             tasks_dir=tasks_dir,
@@ -1517,13 +1774,22 @@ def _dispatch_mixed(
             task_types=tuple(mixed_types),
             description=f"Generated by codeprobe mine --goal ({goal_name})",
         )
-        click.echo(f"Suite manifest written to {suite_path}")
 
-    click.echo(f"Tasks written to {tasks_dir}")
+    llm_used = _was_llm_used(no_llm)
+    total_count = len(sdlc_tasks) + len(probe_dirs)
+    _print_summary_block(
+        task_count=total_count,
+        quality_warning_count=0,
+        tasks_dir=tasks_dir,
+        suite_path=suite_path,
+        llm_enriched=llm_used,
+    )
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
-    click.echo()
-    _show_next_steps(repo_path, min_files, llm_enriched=_was_llm_used(no_llm))
+        click.echo()
+    _show_next_steps(
+        repo_path, min_files, llm_enriched=llm_used, tasks_dir=tasks_dir
+    )
 
 
 def _finish_mine_output(
@@ -1537,7 +1803,7 @@ def _finish_mine_output(
     *,
     llm_enriched: bool = False,
 ) -> None:
-    """Shared output: quality warnings, path, subsystems, next steps."""
+    """Shared output: quality warnings, summary block, and next steps."""
     from codeprobe.mining.writer import write_suite_manifest
 
     warnings = _quality_review(tasks, goal_name, bias)
@@ -1548,6 +1814,7 @@ def _finish_mine_output(
         click.echo()
 
     # Emit suite.toml alongside the tasks directory
+    suite_path: Path | None = None
     if task_types:
         suite_path = write_suite_manifest(
             tasks_dir=tasks_dir,
@@ -1555,13 +1822,20 @@ def _finish_mine_output(
             task_types=task_types,
             description=f"Generated by codeprobe mine --goal ({goal_name})",
         )
-        click.echo(f"Suite manifest written to {suite_path}")
 
-    click.echo(f"Tasks written to {tasks_dir}")
+    _print_summary_block(
+        task_count=len(tasks),
+        quality_warning_count=len(warnings),
+        tasks_dir=tasks_dir,
+        suite_path=suite_path,
+        llm_enriched=llm_enriched,
+    )
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
-    click.echo()
-    _show_next_steps(repo_path, 0, llm_enriched=llm_enriched)
+        click.echo()
+    _show_next_steps(
+        repo_path, 0, llm_enriched=llm_enriched, tasks_dir=tasks_dir
+    )
 
 
 def run_mine(
@@ -1594,6 +1868,8 @@ def run_mine(
     profile_set: frozenset[str] = frozenset(),
 ) -> None:
     """Mine eval tasks from a repository."""
+    global _MINE_START_TIME
+    _MINE_START_TIME = time.monotonic()
 
     # CLI validation: --cross-repo and --org-scale are mutually exclusive
     if cross_repo and org_scale:
@@ -1664,6 +1940,21 @@ def run_mine(
             "AgentSearchBackend requires an LLM backend."
         )
 
+    # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
+    # for a usable path rather than bailing out with a hard error. This is the
+    # "guided flow for missing inputs" case — the user ran `codeprobe mine`
+    # from a non-repo directory, which is easy to do on first use.
+    if path == "." and _is_interactive():
+        cwd_is_repo = (Path.cwd() / ".git").exists()
+        if not cwd_is_repo:
+            click.echo(
+                f"Current directory ({Path.cwd()}) is not a git repository."
+            )
+            path = click.prompt(
+                "Path to a local git repo (or a git URL to clone)",
+                type=str,
+            )
+
     repo_path = _resolve_repo_path(path)
 
     # Non-blocking suitability check applies to every dispatch path
@@ -1679,94 +1970,111 @@ def run_mine(
         click.echo("Aborted.")
         return
 
-    # Cross-repo dispatch: AFTER resolve_effective_config, BEFORE org_scale
-    if cross_repo:
-        _dispatch_cross_repo(
-            primary=repo_path,
-            cross_repo=cross_repo,
+    try:
+        # Cross-repo dispatch: AFTER resolve_effective_config, BEFORE org_scale
+        if cross_repo:
+            _dispatch_cross_repo(
+                primary=repo_path,
+                cross_repo=cross_repo,
+                count=count,
+                goal_name=goal_name,
+                bias=bias,
+                dual_verify=dual_verify,
+            )
+            return
+
+        if org_scale:
+            # Build repo_paths list: primary path + any --repos entries
+            repo_paths = [repo_path]
+            for r in repos:
+                if _is_git_url(r):
+                    repo_paths.append(_clone_repo(r))
+                else:
+                    rp = Path(r).resolve()
+                    if not rp.exists():
+                        suggestion = _suggest_path(rp)
+                        hint = (
+                            f" Did you mean: {suggestion}?" if suggestion else ""
+                        )
+                        raise click.UsageError(
+                            f"--repos path does not exist: {rp}.{hint}"
+                        )
+                    repo_paths.append(rp)
+            _run_org_scale_mine(
+                repo_paths,
+                count=count,
+                no_llm=no_llm,
+                families=families,
+                scan_timeout=scan_timeout,
+                validate_flag=validate_flag,
+                curate=curate,
+                backends=backends,
+                verify_curation_flag=verify_curation_flag,
+                mcp_families=mcp_families,
+                sg_repo=sg_repo,
+                dual_verify=dual_verify,
+            )
+            return
+
+        if interactive and goal is None:
+            (
+                goal_name,
+                count,
+                source,
+                min_files,
+                bias,
+                task_type,
+                subsystems,
+                discover_subsystems,
+            ) = _interactive_config(
+                count, source, min_files, subsystems, discover_subsystems, repo_path
+            )
+
+        # Apply cold-start and comprehension-availability fallbacks
+        task_type = _resolve_task_type(task_type, repo_path, source)
+
+        if discover_subsystems:
+            subsystems = _discover_and_select(repo_path, source)
+            if not subsystems:
+                return
+
+        subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
+
+        if interactive and not _show_preflight(
+            repo_path, goal_name, count, source, min_files, bias, subsystems
+        ):
+            click.echo("Aborted.")
+            return
+
+        if interactive:
+            click.echo("\nMining tasks...")
+
+        # Dispatch based on resolved task_type
+        _dispatch_by_task_type(
+            task_type=task_type,
+            repo_path=repo_path,
             count=count,
+            source=source,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            enrich=enrich,
             goal_name=goal_name,
             bias=bias,
             dual_verify=dual_verify,
         )
-        return
-
-    if org_scale:
-        # Build repo_paths list: primary path + any --repos entries
-        repo_paths = [repo_path]
-        for r in repos:
-            if _is_git_url(r):
-                repo_paths.append(_clone_repo(r))
-            else:
-                rp = Path(r).resolve()
-                if not rp.exists():
-                    click.echo(f"Path does not exist: {rp}")
-                    raise SystemExit(1)
-                repo_paths.append(rp)
-        _run_org_scale_mine(
-            repo_paths,
-            count=count,
-            no_llm=no_llm,
-            families=families,
-            scan_timeout=scan_timeout,
-            validate_flag=validate_flag,
-            curate=curate,
-            backends=backends,
-            verify_curation_flag=verify_curation_flag,
-            mcp_families=mcp_families,
-            sg_repo=sg_repo,
-            dual_verify=dual_verify,
-        )
-        return
-
-    if interactive and goal is None:
-        (
-            goal_name,
-            count,
-            source,
-            min_files,
-            bias,
-            task_type,
-            subsystems,
-            discover_subsystems,
-        ) = _interactive_config(
-            count, source, min_files, subsystems, discover_subsystems, repo_path
-        )
-
-    # Apply cold-start and comprehension-availability fallbacks
-    task_type = _resolve_task_type(task_type, repo_path, source)
-
-    if discover_subsystems:
-        subsystems = _discover_and_select(repo_path, source)
-        if not subsystems:
-            return
-
-    subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
-
-    if interactive and not _show_preflight(
-        repo_path, goal_name, count, source, min_files, bias, subsystems
-    ):
-        click.echo("Aborted.")
-        return
-
-    if interactive:
-        click.echo("\nMining tasks...")
-
-    # Dispatch based on resolved task_type
-    _dispatch_by_task_type(
-        task_type=task_type,
-        repo_path=repo_path,
-        count=count,
-        source=source,
-        min_files=min_files,
-        min_quality=min_quality,
-        subsystems=subsystems,
-        no_llm=no_llm,
-        enrich=enrich,
-        goal_name=goal_name,
-        bias=bias,
-        dual_verify=dual_verify,
-    )
+    except KeyboardInterrupt:
+        # AC3: clean up partial output and exit with the standard SIGINT code.
+        partial = _CURRENT_TASKS_DIR
+        if partial is not None and partial.exists():
+            shutil.rmtree(partial, ignore_errors=True)
+            click.echo(
+                f"\nInterrupted. Removed partial output at {partial}.", err=True
+            )
+        else:
+            click.echo("\nInterrupted.", err=True)
+        sys.exit(130)
 
 
 # ---------------------------------------------------------------------------
@@ -2144,16 +2452,29 @@ def _show_org_scale_results(
         task_types=("org_scale_cross_repo",),
         description="Generated by codeprobe mine --org-scale",
     )
-    click.echo(f"Suite manifest written to {suite_path}")
 
-    click.echo(f"Tasks written to {tasks_dir}")
-    click.echo()
+    _print_summary_block(
+        task_count=len(tasks),
+        quality_warning_count=0,
+        tasks_dir=tasks_dir,
+        suite_path=suite_path,
+    )
+
     click.echo("Next steps:")
-    click.echo(f"  1. Run eval:     codeprobe run {repo_path} --agent claude")
-    click.echo(f"  2. Check scores: codeprobe oracle-check {tasks_dir}/<task_id>")
+    click.echo()
+    click.echo("  1. Validate task structure (offline sanity check):")
+    click.echo(f"     codeprobe validate {tasks_dir}")
+    click.echo()
+    click.echo("  2. Run eval:")
+    click.echo(f"     codeprobe run {repo_path} --agent claude")
+    click.echo()
+    click.echo("  3. Check individual oracle scores:")
+    click.echo(f"     codeprobe oracle-check {tasks_dir}/<task_id>")
+    click.echo()
     if curated:
+        click.echo("  4. Weighted F1 scoring (curated tasks):")
         click.echo(
-            f"  3. Weighted F1:  codeprobe oracle-check {tasks_dir}/<task_id> "
+            f"     codeprobe oracle-check {tasks_dir}/<task_id> "
             f"--metric weighted_f1"
         )
-    click.echo()
+        click.echo()

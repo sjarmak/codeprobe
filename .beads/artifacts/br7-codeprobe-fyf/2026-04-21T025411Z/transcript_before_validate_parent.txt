@@ -1,0 +1,3 @@
+  FAIL  instruction.md exists (instruction.md not found)
+  FAIL  metadata parses (neither task.toml nor metadata.json found)
+  FAIL  tests/test.sh exists (tests/test.sh not found)

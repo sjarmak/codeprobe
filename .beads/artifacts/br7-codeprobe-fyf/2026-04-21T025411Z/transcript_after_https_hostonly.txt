@@ -1,0 +1,4 @@
+Usage: codeprobe mine [OPTIONS] [PATH]
+Try 'codeprobe mine --help' for help.
+
+Error: URL 'https://example.com' is not a valid git URL: missing repository path (expected e.g. https://host.example/owner/repo.git).
