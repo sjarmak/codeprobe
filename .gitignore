@@ -76,3 +76,6 @@ orders/
 prompts/
 .runtime/
 .gc/
+
+.brainstorm/
+.codex/
