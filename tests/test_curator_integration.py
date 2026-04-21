@@ -206,11 +206,12 @@ class TestCLIValidation:
 
     def test_curate_without_agent_and_no_llm_succeeds_validation(self) -> None:
         """--curate --no-llm --backends grep should not raise on flag validation."""
-        # We only test that validation passes — actual mining would fail
-        # because the path doesn't exist, so we catch SystemExit.
+        # We only test that flag validation passes — actual mining fails at
+        # path resolution because the path doesn't exist, which surfaces as
+        # a click.UsageError (exit code 2) with an actionable message.
         from codeprobe.cli.mine_cmd import run_mine
 
-        with pytest.raises(SystemExit):
+        with pytest.raises(click.UsageError, match="does not exist"):
             run_mine(
                 path="/nonexistent",
                 no_llm=True,

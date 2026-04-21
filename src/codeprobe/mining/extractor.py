@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -1093,6 +1094,7 @@ def _collect_candidates(
     min_files: int,
     min_quality: float,
     subsystems: tuple[str, ...],
+    progress: Callable[[int], None] | None = None,
 ) -> tuple[
     list[tuple[float, int, Task]],
     dict[str, str],
@@ -1102,6 +1104,11 @@ def _collect_candidates(
     """Score and filter PRs into ranked candidates.
 
     Returns (candidates, pr_bodies, changed_files_map, merge_sha_map).
+
+    *progress* is an optional callback invoked once per PR with the number
+    of PRs processed since the previous call (always ``1``). Callers pass
+    a ``click.progressbar.update`` here to render a progress indicator
+    without coupling the mining core to Click.
     """
     candidates: list[tuple[float, int, Task]] = []
     pr_bodies: dict[str, str] = {}
@@ -1115,6 +1122,8 @@ def _collect_candidates(
     rejected_quality = 0
 
     for pr in prs:
+        if progress is not None:
+            progress(1)
         changed_files = _get_changed_files(pr.merge_commit, path)
         if len(changed_files) < min_files:
             rejected_min_files += 1
@@ -1190,6 +1199,7 @@ def mine_tasks(
     min_files: int = 0,
     min_quality: float = _MIN_QUALITY_SCORE,
     subsystems: tuple[str, ...] = (),
+    progress: Callable[[int], None] | None = None,
 ) -> MineResult:
     """Mine eval tasks from a repository.
 
@@ -1222,6 +1232,7 @@ def mine_tasks(
         min_files,
         min_quality,
         subsystems,
+        progress=progress,
     )
 
     # Relax min_files if the threshold filtered out everything

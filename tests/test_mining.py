@@ -1338,6 +1338,9 @@ class TestRunMineClearsStale:
         """Prior task directories are removed before writing new tasks."""
         from codeprobe.cli.mine_cmd import run_mine
 
+        # Make tmp_path look like a git repo so the structural check passes.
+        (tmp_path / ".git").mkdir()
+
         # Create a stale task directory
         stale_dir = tmp_path / ".codeprobe" / "tasks" / "old-stale-task"
         stale_dir.mkdir(parents=True)
