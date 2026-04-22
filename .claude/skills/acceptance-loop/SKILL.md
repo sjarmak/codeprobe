@@ -1,7 +1,7 @@
 ---
 name: acceptance-loop
 description: Orchestrate the continuous Test→Verify→Fix→Release acceptance loop for codeprobe. Spawns a Test Agent to produce a workspace, runs the Verifier to produce verdict.json, feeds verdicts into the convergence controller, spawns a Fix Agent when failures remain, runs the regression gate after every fix, and promotes to the release gate after two consecutive green verdicts. Triggers on acceptance loop, convergence loop, test verify fix, /acceptance-loop.
-user-invocable: true
+user-invocable: false
 ---
 
 # Acceptance Loop: Continuous Test→Verify→Fix→Release

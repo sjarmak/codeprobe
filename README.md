@@ -47,6 +47,8 @@ codeprobe run .         # Run agents against tasks
 codeprobe interpret .   # Get recommendations
 ```
 
+Prefer driving codeprobe through a coding agent instead? See [docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the skills-based workflow (`/experiment`, `/assess-codebase`, `/interpret`).
+
 ## Commands
 
 | Command                    | Purpose                                          |
