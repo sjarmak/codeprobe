@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT = "https://sourcegraph.com"
 ENV_VAR = "SRC_ACCESS_TOKEN"
+# Accept multiple env var names so users aren't forced into one spelling.
+# Canonical (SRC_ACCESS_TOKEN) wins; aliases are for convenience.
+_ACCEPTED_ENV_VARS: tuple[str, ...] = (
+    "SRC_ACCESS_TOKEN",
+    "SOURCEGRAPH_TOKEN",
+    "SOURCEGRAPH_ACCESS_TOKEN",
+)
+
+
+def _resolve_env_token() -> tuple[str, str] | None:
+    """Return (env_var_name, token) for the first accepted env var that is set."""
+    for name in _ACCEPTED_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            return name, value
+    return None
 
 
 class AuthError(RuntimeError):
@@ -265,11 +281,12 @@ def get_valid_token(
     Raises :class:`AuthError` if none of the above yield a usable token.
     Error messages never include token material.
     """
-    env_value = os.environ.get(ENV_VAR)
-    if env_value:
+    resolved = _resolve_env_token()
+    if resolved is not None:
+        env_name, env_value = resolved
         if force_refresh:
             raise AuthError(
-                f"Token from {ENV_VAR} was rejected (401). "
+                f"Token from {env_name} was rejected (401). "
                 f"Rotate the environment variable or run `codeprobe auth sourcegraph`."
             )
         return CachedToken(
@@ -279,11 +296,12 @@ def get_valid_token(
             endpoint=endpoint,
         )
 
+    accepted = ", ".join(_ACCEPTED_ENV_VARS)
     cached = load_cached_token(endpoint)
     if cached is None:
         raise AuthError(
             f"No Sourcegraph credentials found for {endpoint}. "
-            f"Set {ENV_VAR} or run `codeprobe auth sourcegraph`."
+            f"Set one of [{accepted}] or run `codeprobe auth sourcegraph`."
         )
 
     if not force_refresh and not cached.is_expired():
@@ -294,11 +312,13 @@ def get_valid_token(
         if force_refresh:
             raise AuthError(
                 f"Sourcegraph token for {endpoint} was rejected and cannot "
-                f"be refreshed. Set {ENV_VAR} or run `codeprobe auth sourcegraph`."
+                f"be refreshed. Set one of [{accepted}] or run "
+                f"`codeprobe auth sourcegraph`."
             )
         raise AuthError(
             f"Cached Sourcegraph token for {endpoint} is expired and cannot "
-            f"be refreshed. Set {ENV_VAR} or run `codeprobe auth sourcegraph`."
+            f"be refreshed. Set one of [{accepted}] or run "
+            f"`codeprobe auth sourcegraph`."
         )
     save_cached_token(refreshed)
     return refreshed
@@ -309,6 +329,8 @@ __all__ = [
     "CachedToken",
     "DEFAULT_ENDPOINT",
     "ENV_VAR",
+    "_ACCEPTED_ENV_VARS",
+    "_resolve_env_token",
     "clear_cached_token",
     "device_code_flow",
     "get_valid_token",

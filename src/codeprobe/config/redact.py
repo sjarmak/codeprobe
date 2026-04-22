@@ -87,6 +87,11 @@ def redact_mcp_headers(mcp_config: dict | None) -> dict | None:
             for key in list(headers):
                 if key.lower() in _SENSITIVE_HEADER_NAMES:
                     if isinstance(headers[key], str):
+                        # Preserve env-var references (e.g. "token ${VAR}") —
+                        # they aren't secrets themselves, and redacting them
+                        # breaks round-tripping through save/load.
+                        if "${" in headers[key]:
+                            continue
                         headers[key] = "[REDACTED]"
 
         # 2. CLI args list — redact "--header" value args and token-shaped args
@@ -94,6 +99,9 @@ def redact_mcp_headers(mcp_config: dict | None) -> dict | None:
         if isinstance(args, list):
             for i, arg in enumerate(args):
                 if not isinstance(arg, str):
+                    continue
+                if "${" in arg:
+                    # Env-var reference — not a secret; preserve for expansion.
                     continue
                 if _AUTH_HEADER_RE.match(arg):
                     args[i] = _redact_auth_arg(arg)
@@ -104,7 +112,12 @@ def redact_mcp_headers(mcp_config: dict | None) -> dict | None:
         env = server_cfg.get("env")
         if isinstance(env, dict):
             for key in list(env):
-                if isinstance(env[key], str) and _is_secret(env[key]):
+                val = env[key]
+                if not isinstance(val, str):
+                    continue
+                if "${" in val:
+                    continue
+                if _is_secret(val):
                     env[key] = "[REDACTED]"
 
     return result

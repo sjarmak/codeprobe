@@ -78,8 +78,12 @@ class TestCrossRepoResolverFallback:
         (secondary / ".git").mkdir()
         mock_resolve.return_value = repo
 
-        # Ensure no SG token
-        monkeypatch.delenv("SRC_ACCESS_TOKEN", raising=False)
+        # Ensure no SG token in any accepted env var, and isolate the auth cache
+        from codeprobe.mining import sg_auth
+
+        for name in sg_auth._ACCEPTED_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
 
         # Return empty result to avoid further processing
         from codeprobe.mining.multi_repo import MultiRepoMineResult

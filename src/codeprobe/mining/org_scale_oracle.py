@@ -38,6 +38,27 @@ def normalize_path(path: str) -> str:
     return p
 
 
+def strip_repo_prefix(path: str, repo: str) -> str:
+    """Strip leading segments up to and including ``<repo>/`` when present.
+
+    Handles agent answers written with a repo-name prefix — either bare
+    (``kubernetes/pkg/foo.go``) or embedded in an absolute path
+    (``/home/user/kubernetes/pkg/foo.go``, ``github.com/k/kubernetes/pkg/foo.go``).
+    Returns ``path`` unchanged when ``repo`` is empty or the segment is
+    absent; safe to apply to oracle paths that don't contain the repo name.
+    """
+    if not repo:
+        return path
+    seg = "/" + repo + "/"
+    idx = path.rfind(seg)
+    if idx >= 0:
+        return path[idx + len(seg) :]
+    prefix = repo + "/"
+    if path.startswith(prefix):
+        return path[len(prefix) :]
+    return path
+
+
 def _read_answer_raw(task_dir: Path) -> str | None:
     """Read answer.txt and return raw text, or None on failure."""
     answer_file = task_dir / "answer.txt"
@@ -114,7 +135,7 @@ def _normalize_bool(value: str) -> bool | None:
 def oracle_check(
     task_dir: Path,
     *,
-    metric: str = "f1",
+    metric: str = "auto",
 ) -> dict[str, float | str]:
     """Compare agent answer against ground truth.
 
@@ -123,7 +144,11 @@ def oracle_check(
 
     Args:
         task_dir: Task directory containing answer.txt and ground_truth.json.
-        metric: Primary metric (only used for file_list type).
+        metric: Primary metric (only used for file_list type). The default
+            ``"auto"`` picks weighted F1 when ``oracle_tiers`` is present
+            in ground_truth.json and plain F1 otherwise, matching CSB's
+            ``_get_primary_score``. Pass ``"f1"``, ``"weighted_f1"``,
+            ``"precision"``, ``"recall"``, or ``"jaccard"`` to force.
 
     Returns:
         Dict with at least ``score`` and ``error`` keys.
@@ -153,19 +178,44 @@ def _check_file_list(
     task_dir: Path,
     gt_data: dict,
     *,
-    metric: str = "f1",
+    metric: str = "auto",
 ) -> dict[str, float | str]:
-    """File-list oracle: frozenset F1/precision/recall/jaccard scoring."""
+    """File-list oracle: frozenset F1/precision/recall/jaccard scoring.
+
+    When ``metric="auto"`` (default), the primary score is weighted F1
+    if ``oracle_tiers`` is present in ground_truth.json, else plain F1 —
+    matching CSB's ``_get_primary_score`` behavior. Callers can force a
+    specific metric ("f1", "weighted_f1", "precision", "recall", "jaccard").
+
+    Path matching is two-pass: exact normalized, then repo-prefix stripped
+    (uses ``repo`` from ground_truth.json when present) so agents that
+    report paths as ``<repo>/<path>`` still match oracle ``<path>`` entries.
+    """
     expected_raw = gt_data.get("expected", [])
     if not isinstance(expected_raw, list):
         return {"score": 0.0, "error": "ground_truth.json 'expected' is not a list"}
 
-    expected: frozenset[str] = frozenset(normalize_path(p) for p in expected_raw if p)
+    repo = gt_data.get("repo", "") or ""
+    oracle_tiers_raw: dict[str, str] = gt_data.get("oracle_tiers", {}) or {}
+    has_tiers = bool(oracle_tiers_raw)
+
+    def _canon(p: str) -> str:
+        return strip_repo_prefix(normalize_path(p), repo)
+
+    expected: frozenset[str] = frozenset(_canon(p) for p in expected_raw if p)
     if not expected:
         return {"score": 0.0, "error": "Empty ground truth"}
 
+    # Re-key tier map to the canonical (normalized+stripped) paths so tier
+    # lookups survive the same transformation applied to expected/agent.
+    oracle_tiers: dict[str, str] = {
+        _canon(k): v for k, v in oracle_tiers_raw.items()
+    }
+
     agent_paths = extract_answer(task_dir, oracle_type="file_list")
-    agent_answer: frozenset[str] = frozenset(agent_paths)  # type: ignore[arg-type]
+    agent_answer: frozenset[str] = frozenset(
+        strip_repo_prefix(p, repo) for p in (agent_paths or [])  # type: ignore[union-attr]
+    )
     if not agent_answer:
         return {
             "score": 0.0,
@@ -193,11 +243,19 @@ def _check_file_list(
         if not (0.0 <= val <= 1.0):
             return {"score": 0.0, "error": f"{name} out of bounds: {val}"}
 
-    # --- Weighted F1 (additive, never replaces standard f1) ---
+    # Weighted F1 — computed whenever tiers exist OR the caller explicitly
+    # asked for weighted_f1 (in which case missing tiers default every file
+    # to 'required' and the result degenerates to plain F1). Callers always
+    # get weighted_f1 in the payload for inspection; only the primary
+    # ``score`` field depends on metric selection.
     weighted_metrics: dict[str, float] = {}
-    if metric == "weighted_f1":
-        oracle_tiers: dict[str, str] = gt_data.get("oracle_tiers", {})
+    if has_tiers or metric == "weighted_f1":
         weighted_metrics = _weighted_f1(expected, agent_answer, oracle_tiers)
+
+    # Auto-select primary metric: weighted_f1 when tiers present, else f1.
+    effective_metric = metric
+    if metric == "auto":
+        effective_metric = "weighted_f1" if has_tiers else "f1"
 
     metric_map: dict[str, float] = {
         "f1": f1,
@@ -208,7 +266,8 @@ def _check_file_list(
     }
 
     result: dict[str, float | str | int] = {
-        "score": round(metric_map.get(metric, f1), 4),
+        "score": round(metric_map.get(effective_metric, f1), 4),
+        "metric": effective_metric,
         "precision": round(precision, 4),
         "recall": round(recall, 4),
         "f1": round(f1, 4),

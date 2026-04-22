@@ -1863,6 +1863,7 @@ def run_mine(
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
     sg_repo: str = "",
+    sg_discovery: bool = False,
     dual_verify: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
@@ -2012,6 +2013,7 @@ def run_mine(
                 verify_curation_flag=verify_curation_flag,
                 mcp_families=mcp_families,
                 sg_repo=sg_repo,
+                sg_discovery=sg_discovery,
                 dual_verify=dual_verify,
             )
             return
@@ -2095,6 +2097,7 @@ def _run_org_scale_mine(
     verify_curation_flag: bool = False,
     mcp_families: bool = False,
     sg_repo: str = "",
+    sg_discovery: bool = False,
     dual_verify: bool = False,
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification.
@@ -2143,6 +2146,7 @@ def _run_org_scale_mine(
         scan_timeout=scan_timeout,
         include_mcp_families=mcp_families,
         sg_repo=effective_sg_repo,
+        sg_discovery=sg_discovery,
     )
 
     if not result.tasks:

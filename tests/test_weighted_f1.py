@@ -198,8 +198,17 @@ class TestOracleCheckWeightedF1:
         result_f1 = oracle_check(task_dir, metric="f1")
         assert result_wf1["weighted_f1"] == result_f1["f1"]
 
-    def test_f1_path_untouched(self, tmp_path: Path) -> None:
-        """Standard f1 metric still works, no weighted keys in result."""
+    def test_f1_metric_forces_plain_f1_as_primary_score(
+        self, tmp_path: Path
+    ) -> None:
+        """metric='f1' forces plain F1 as primary, even with tiers present.
+
+        Weighted metrics still appear in the result payload (informational)
+        — matches CSB, where all computed scores are always in the result
+        and only the primary metric selection varies. This is a deliberate
+        change from the prior behavior where weighted keys were omitted on
+        the f1 path.
+        """
         task_dir = _setup_task(
             tmp_path,
             expected=["a.go", "b.go"],
@@ -207,8 +216,10 @@ class TestOracleCheckWeightedF1:
             oracle_tiers={"a.go": "required", "b.go": "supplementary"},
         )
         result = oracle_check(task_dir, metric="f1")
-        assert "weighted_f1" not in result
         assert result["score"] == result["f1"]
+        assert result["metric"] == "f1"
+        # Weighted metrics are still available for inspection.
+        assert "weighted_f1" in result
 
     def test_weighted_score_differs_from_standard(self, tmp_path: Path) -> None:
         """When tiers vary, weighted_f1 differs from standard f1."""
@@ -295,3 +306,138 @@ def test_weighted_f1_parametrized(
     task_dir = _setup_task(tmp_path, expected, answer, tiers if tiers else None)
     result = oracle_check(task_dir, metric="weighted_f1")
     assert result["weighted_f1"] == pytest.approx(expected_wf1, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Auto-metric selection + repo-prefix matching (CSB alignment)
+# ---------------------------------------------------------------------------
+
+
+def _setup_task_with_repo(
+    tmp_path: Path,
+    expected: list[str],
+    agent_answer: list[str],
+    oracle_tiers: dict[str, str] | None = None,
+    repo: str = "",
+) -> Path:
+    task_dir = tmp_path / "task_auto"
+    task_dir.mkdir(exist_ok=True)
+    gt: dict = {
+        "oracle_type": "file_list",
+        "expected": expected,
+        "commit": "abc123",
+    }
+    if oracle_tiers is not None:
+        gt["oracle_tiers"] = oracle_tiers
+    if repo:
+        gt["repo"] = repo
+    (task_dir / "ground_truth.json").write_text(json.dumps(gt))
+    (task_dir / "answer.txt").write_text("\n".join(agent_answer) + "\n")
+    return task_dir
+
+
+class TestAutoMetricSelection:
+    """metric='auto' picks weighted_f1 when tiers present, else f1."""
+
+    def test_auto_uses_weighted_f1_when_tiers_present(self, tmp_path: Path) -> None:
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["req.go", "sup.go"],
+            agent_answer=["req.go"],
+            oracle_tiers={"req.go": "required", "sup.go": "supplementary"},
+        )
+        result = oracle_check(task_dir, metric="auto")
+        assert result["metric"] == "weighted_f1"
+        assert result["score"] == result["weighted_f1"]
+
+    def test_auto_uses_plain_f1_without_tiers(self, tmp_path: Path) -> None:
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["a.go", "b.go"],
+            agent_answer=["a.go"],
+            oracle_tiers=None,
+        )
+        result = oracle_check(task_dir, metric="auto")
+        assert result["metric"] == "f1"
+        assert result["score"] == result["f1"]
+
+    def test_auto_is_the_default(self, tmp_path: Path) -> None:
+        """Calling oracle_check() without metric uses auto."""
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["x.go"],
+            agent_answer=["x.go"],
+            oracle_tiers={"x.go": "required"},
+        )
+        result = oracle_check(task_dir)  # no metric arg
+        assert result["metric"] == "weighted_f1"
+
+
+class TestRepoPrefixMatching:
+    """Pass-2 matching strips repo prefix so equivalent paths match."""
+
+    def test_bare_repo_prefix_matches(self, tmp_path: Path) -> None:
+        """Agent writes ``kubernetes/pkg/foo.go``; oracle has ``pkg/foo.go``."""
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["pkg/foo.go"],
+            agent_answer=["kubernetes/pkg/foo.go"],
+            repo="kubernetes",
+        )
+        result = oracle_check(task_dir)
+        assert result["f1"] == 1.0
+        assert result["precision"] == 1.0
+        assert result["recall"] == 1.0
+
+    def test_embedded_repo_in_absolute_path_matches(self, tmp_path: Path) -> None:
+        """Agent writes absolute path like ``/home/u/kubernetes/pkg/foo.go``."""
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["pkg/foo.go"],
+            agent_answer=["/home/u/kubernetes/pkg/foo.go"],
+            repo="kubernetes",
+        )
+        result = oracle_check(task_dir)
+        assert result["recall"] == 1.0
+
+    def test_oracle_paths_without_repo_unchanged(self, tmp_path: Path) -> None:
+        """Oracle paths don't contain repo segment; stripping is a no-op."""
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["pkg/foo.go", "pkg/bar.go"],
+            agent_answer=["pkg/foo.go", "pkg/bar.go"],
+            repo="kubernetes",
+        )
+        result = oracle_check(task_dir)
+        assert result["f1"] == 1.0
+
+    def test_repo_missing_falls_back_to_exact(self, tmp_path: Path) -> None:
+        """No repo field → agent paths with repo prefix don't match."""
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["pkg/foo.go"],
+            agent_answer=["kubernetes/pkg/foo.go"],
+            repo="",
+        )
+        result = oracle_check(task_dir)
+        # Without repo context, these paths differ.
+        assert result["recall"] == 0.0
+
+    def test_tier_map_also_gets_stripped(self, tmp_path: Path) -> None:
+        """oracle_tiers keys are normalized+stripped same as expected."""
+        task_dir = _setup_task_with_repo(
+            tmp_path,
+            expected=["pkg/foo.go", "pkg/bar.go"],
+            agent_answer=["kubernetes/pkg/foo.go"],
+            # Tier keys written with repo prefix — should still resolve.
+            oracle_tiers={
+                "kubernetes/pkg/foo.go": "required",
+                "kubernetes/pkg/bar.go": "supplementary",
+            },
+            repo="kubernetes",
+        )
+        result = oracle_check(task_dir)
+        assert result["metric"] == "weighted_f1"
+        # Matched required (weight 2) out of required(2)+supplementary(1) = 3
+        # weighted_recall = 2/3, precision = 1, wf1 = 2*1*(2/3)/(1+2/3) = 0.8
+        assert result["weighted_f1"] == pytest.approx(0.8, abs=1e-3)

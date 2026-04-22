@@ -721,15 +721,24 @@ _MAX_REFERENCE_TARGETS = 3
 _MAX_REF_GT = 300
 
 
-def discover_reference_targets(
+def _extract_symbol_definitions(
     repo_paths: list[Path],
     tracked_files: frozenset[str],
     language: str,
-) -> list[tuple[str, str, frozenset[str]]]:
-    """Find high-fan-out public symbols suitable for reference-trace tasks.
+    *,
+    extra_exclude_path_fragments: tuple[str, ...] = (),
+    min_symbol_length: int = 0,
+    exported_only: bool = False,
+) -> dict[str, str]:
+    """Phase 1 shared helper: extract symbol-definition map from tracked files.
 
-    Returns ``[(symbol_name, defining_file, referencing_files), ...]`` sorted
-    by reference count descending, capped at ``_MAX_REFERENCE_TARGETS``.
+    Returns ``{symbol_name: defining_file_repo_relative}`` for symbols that
+    pass the filters (exported-ish names, not in vendor/test paths).
+
+    Callers can tighten the filter via ``extra_exclude_path_fragments``,
+    ``min_symbol_length``, and ``exported_only`` (Go/Python convention: first
+    letter uppercase) — used by the SG-driven discovery path to reduce the
+    candidate set before making MCP calls.
     """
     if language == "python":
         patterns = [_DEF_PATTERN_PY, _CLASS_PATTERN]
@@ -741,14 +750,18 @@ def discover_reference_targets(
         patterns = [_DEF_PATTERN_PY, _CLASS_PATTERN]
         exts = _SOURCE_EXTS
 
-    # Phase 1: collect symbol definitions from non-test source files
-    symbol_defs: dict[str, str] = {}  # symbol -> defining_file
+    exclude_fragments = ("/test", "/vendor/") + extra_exclude_path_fragments
+
+    symbol_defs: dict[str, str] = {}
     for rp in repo_paths:
         for file_path in tracked_files:
             if not any(file_path.endswith(e) for e in exts):
                 continue
-            # Skip test files and vendored code — we want public API symbols
-            if "/test" in file_path or "/vendor/" in file_path:
+            # Prepend a slash so top-level paths (e.g. ``staging/src/...``)
+            # match fragments like ``/staging/`` without needing a separate
+            # startswith check.
+            normalized = "/" + file_path
+            if any(frag in normalized for frag in exclude_fragments):
                 continue
             full = rp / file_path
             try:
@@ -758,7 +771,11 @@ def discover_reference_targets(
             for pat in patterns:
                 for m in pat.finditer(content):
                     name = m.group(1)
+                    if len(name) < min_symbol_length:
+                        continue
                     if name.startswith("_") or name.lower() in _SYMBOL_BLOCKLIST:
+                        continue
+                    if exported_only and not name[:1].isupper():
                         continue
                     # Require domain-specific names: has underscore (snake_case)
                     # or mixed case (CamelCase). Rejects single-word names like
@@ -770,8 +787,33 @@ def discover_reference_targets(
                     if name not in symbol_defs:
                         symbol_defs[name] = file_path
 
+    return symbol_defs
+
+
+def discover_reference_targets(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+) -> list[tuple[str, str, frozenset[str]]]:
+    """Find high-fan-out public symbols suitable for reference-trace tasks.
+
+    Returns ``[(symbol_name, defining_file, referencing_files), ...]`` sorted
+    by reference count descending, capped at ``_MAX_REFERENCE_TARGETS``.
+    """
+    # Phase 1: collect symbol definitions from non-test source files
+    symbol_defs = _extract_symbol_definitions(
+        repo_paths, tracked_files, language
+    )
+
     if not symbol_defs:
         return []
+
+    if language == "python":
+        exts = {".py"}
+    elif language == "go":
+        exts = {".go"}
+    else:
+        exts = _SOURCE_EXTS
 
     logger.info(
         "Reference targets: %d candidate symbols from %d files",
@@ -818,6 +860,125 @@ def discover_reference_targets(
         candidates.append((sym, symbol_defs[sym], files))
 
     return candidates[:_MAX_REFERENCE_TARGETS]
+
+
+# ---------------------------------------------------------------------------
+# Sourcegraph-driven reference-target discovery
+# ---------------------------------------------------------------------------
+
+# Path fragments excluded from SG-mode candidate selection. These are
+# structural filters (generated / re-exported / test surfaces), not semantic
+# judgments — they narrow the search space so we don't waste MCP calls on
+# noise like zz_generated.openapi.go or staging/ shadows.
+_SG_MODE_EXTRA_EXCLUDES: tuple[str, ...] = (
+    "/staging/",
+    "/zz_generated",
+    "/applyconfigurations/",
+    "_test.go",
+    "/fuzzer/",
+    "/testdata/",
+    "/internal/",  # Go idiom for package-private APIs with no cross-pkg refs
+)
+
+# Default sample size: how many candidates to rank via Sourcegraph. Keeping
+# this bounded keeps MCP wall-clock predictable (sample_size × ~1s per call).
+_SG_MODE_SAMPLE_SIZE = 100
+
+# Minimum SG reference count for a symbol to be worth considering at all.
+# The local-grep path uses 10 because it counts same-file references; SG
+# counts distinct files and is stricter, so this is lower.
+_SG_MODE_MIN_REFS = 2
+
+
+def discover_reference_targets_via_sg(
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+    language: str,
+    *,
+    repo_sg_name: str,
+    sg_url: str = "https://demo.sourcegraph.com",
+    sample_size: int = _SG_MODE_SAMPLE_SIZE,
+    max_targets: int = _MAX_REFERENCE_TARGETS,
+    max_workers: int = 8,
+    random_seed: int = 42,
+) -> list[tuple[str, str, frozenset[str]]]:
+    """Sourcegraph-driven reference-target discovery.
+
+    Replaces the local grep-based Phase 2 (which scans every source file
+    for every candidate symbol — O(N_files × N_symbols) and can run for
+    hours on a repo like kubernetes) with a bounded number of Sourcegraph
+    ``sg_find_references`` MCP calls.
+
+    Trade-off: we sample candidates rather than exhaustively scoring every
+    symbol Phase 1 finds. The sample is deterministic (seeded) so reruns
+    are reproducible. Sample size × SG wall-clock sets the mining budget.
+
+    Returns the same shape as :func:`discover_reference_targets`:
+    ``[(symbol_name, defining_file, referencing_files), ...]`` sorted by
+    reference count descending, capped at ``max_targets``.
+    """
+    import random
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from codeprobe.mining.sg_ground_truth import _call_find_references
+
+    symbol_defs = _extract_symbol_definitions(
+        repo_paths,
+        tracked_files,
+        language,
+        extra_exclude_path_fragments=_SG_MODE_EXTRA_EXCLUDES,
+        min_symbol_length=6,
+        exported_only=True,
+    )
+
+    if not symbol_defs:
+        return []
+
+    candidates = sorted(symbol_defs.items())  # stable order for seeded sample
+    effective_sample = min(sample_size, len(candidates))
+    rng = random.Random(random_seed)
+    sample = rng.sample(candidates, effective_sample)
+
+    logger.info(
+        "SG discovery: %d candidate symbols after filtering, sampling %d",
+        len(candidates),
+        effective_sample,
+    )
+
+    def _score(
+        sym: str, def_file: str
+    ) -> tuple[int, str, str, frozenset[str]]:
+        refs = _call_find_references(
+            symbol=sym,
+            defining_file=def_file,
+            repo_sg_name=repo_sg_name,
+            sg_url=sg_url,
+        )
+        if refs is None:
+            return (-1, sym, def_file, frozenset())
+        return (len(refs), sym, def_file, refs)
+
+    scored: list[tuple[int, str, str, frozenset[str]]] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_score, sym, def_file) for sym, def_file in sample]
+        for f in as_completed(futures):
+            result = f.result()
+            if result[0] >= _SG_MODE_MIN_REFS:
+                scored.append(result)
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:max_targets]
+
+    logger.info(
+        "SG discovery: %d symbols ranked, returning top %d",
+        len(scored),
+        len(top),
+    )
+
+    return [
+        (sym, def_file, frozenset(sorted(refs)[:_MAX_REF_GT]))
+        for _, sym, def_file, refs in top
+    ]
 
 
 # ---------------------------------------------------------------------------

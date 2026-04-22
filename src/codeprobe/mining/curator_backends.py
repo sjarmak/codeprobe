@@ -126,16 +126,24 @@ _SG_INITIAL_BACKOFF = 1  # seconds; doubles each retry (2^n pattern)
 class SourcegraphBackend:
     """Sourcegraph GraphQL API search backend.
 
-    Requires SOURCEGRAPH_ENDPOINT and SOURCEGRAPH_TOKEN env vars.
+    Requires a Sourcegraph access token (accepts any of SRC_ACCESS_TOKEN,
+    SOURCEGRAPH_TOKEN, or SOURCEGRAPH_ACCESS_TOKEN) plus SOURCEGRAPH_ENDPOINT.
     Retries up to 6 times with exponential backoff on HTTP 429.
     """
+
+    @staticmethod
+    def _resolve_token() -> str:
+        from codeprobe.mining.sg_auth import _resolve_env_token
+
+        resolved = _resolve_env_token()
+        return resolved[1] if resolved else ""
 
     @property
     def name(self) -> str:
         return "sourcegraph"
 
     def available(self) -> bool:
-        return os.environ.get("SOURCEGRAPH_TOKEN") is not None
+        return bool(self._resolve_token())
 
     def search(
         self,
@@ -143,7 +151,7 @@ class SourcegraphBackend:
         family: TaskFamily,
     ) -> list[CuratedFile]:
         endpoint = os.environ.get("SOURCEGRAPH_ENDPOINT", "")
-        token = os.environ.get("SOURCEGRAPH_TOKEN", "")
+        token = self._resolve_token()
         if not endpoint or not token:
             logger.warning("Sourcegraph endpoint or token not configured")
             return []

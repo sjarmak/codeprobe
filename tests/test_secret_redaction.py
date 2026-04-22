@@ -344,3 +344,70 @@ class TestExperimentJsonRedaction:
 
         raw = (exp_dir / "experiment.json").read_text()
         assert "[REDACTED]" not in raw
+
+
+class TestEnvVarReferencesPreserved:
+    """Env-var templates like ``${VAR}`` must round-trip through redaction."""
+
+    def test_header_env_ref_preserved(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "sourcegraph": {
+                    "headers": {"Authorization": "token ${SG_TOKEN}"},
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["sourcegraph"]["headers"]["Authorization"]
+            == "token ${SG_TOKEN}"
+        )
+
+    def test_literal_header_still_redacted(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "sourcegraph": {
+                    "headers": {"Authorization": "token sgp_abc123"},
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["sourcegraph"]["headers"]["Authorization"]
+            == "[REDACTED]"
+        )
+
+    def test_env_arg_preserved(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "srv": {
+                    "args": [
+                        "--header",
+                        "Authorization: token ${SG_TOKEN}",
+                    ],
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert "${SG_TOKEN}" in result["mcpServers"]["srv"]["args"][1]
+
+    def test_env_dict_ref_preserved(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "srv": {
+                    "env": {"SG_TOKEN_VAL": "${SG_TOKEN}"},
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["srv"]["env"]["SG_TOKEN_VAL"] == "${SG_TOKEN}"
+        )

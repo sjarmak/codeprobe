@@ -18,8 +18,10 @@ from codeprobe.mining.sg_auth import CachedToken
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point HOME at a temp directory so cache writes are isolated."""
     monkeypatch.setenv("HOME", str(tmp_path))
-    # Ensure env var fallback doesn't leak between tests
-    monkeypatch.delenv("SRC_ACCESS_TOKEN", raising=False)
+    # Ensure env var fallback doesn't leak between tests — clear all
+    # accepted Sourcegraph token env vars, not just the canonical one.
+    for name in sg_auth._ACCEPTED_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     return tmp_path
 
 

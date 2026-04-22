@@ -139,9 +139,23 @@ Usage: python3 oracle.py <task_dir>
 
 Reads answer.txt and ground_truth.json from task_dir, computes F1,
 writes reward.txt, and exits 0 on success (any score) or 1 on error.
+
+Scoring:
+- When ground_truth.json has an ``oracle_tiers`` map (schema v2), the
+  primary score is weighted F1 using tier weights
+  required=2.0 / supplementary=1.0 / context=0.5. Otherwise plain F1.
+  Matches codeprobe.mining.org_scale_oracle._weighted_f1 and CSB's
+  _get_primary_score behavior.
+- Path matching is two-pass:
+  1. exact normalized match (handles ``./``, ``/workspace/``, etc. prefixes)
+  2. repo-prefix stripped match (handles ``kubernetes/pkg/foo.go`` and
+     ``/home/user/kubernetes/pkg/foo.go`` against oracle ``pkg/foo.go``),
+     requires ``repo`` field in ground_truth.json.
 """
 import json, sys
 from pathlib import Path
+
+TIER_WEIGHTS = {"required": 2.0, "supplementary": 1.0, "context": 0.5}
 
 def normalize(p):
     p = p.replace("\\\\", "/").strip()
@@ -150,13 +164,49 @@ def normalize(p):
             p = p[len(pfx):]
     return p.lstrip("/")
 
+def strip_repo_prefix(p, repo):
+    """Strip leading path up to and including ``/<repo>/`` when present.
+
+    ``kubernetes/pkg/foo.go``                  -> ``pkg/foo.go``
+    ``/home/user/kubernetes/pkg/foo.go``       -> ``pkg/foo.go``
+    ``github.com/k/kubernetes/pkg/foo.go``     -> ``pkg/foo.go``
+
+    Leaves ``p`` unchanged when ``repo`` is empty or the segment is
+    absent. Safe to apply to already-normalized oracle paths: they
+    typically don't contain the repo segment, so this is a no-op on them.
+    """
+    if not repo:
+        return p
+    seg = "/" + repo + "/"
+    # Match both ``a/b/<repo>/rest`` and bare ``<repo>/rest`` leading form.
+    idx = p.rfind(seg)
+    if idx >= 0:
+        return p[idx + len(seg):]
+    if p.startswith(repo + "/"):
+        return p[len(repo) + 1:]
+    return p
+
 def main():
     task_dir = Path(sys.argv[1])
     gt = json.loads((task_dir / "ground_truth.json").read_text())
-    expected = frozenset(normalize(p) for p in gt.get("expected", []) if p)
-    if not expected:
+    repo = gt.get("repo", "") or ""
+    tiers_raw = gt.get("oracle_tiers") or {}
+    has_tiers = bool(tiers_raw)
+
+    expected_set = frozenset(
+        strip_repo_prefix(normalize(p), repo)
+        for p in gt.get("expected", [])
+        if p
+    )
+    if not expected_set:
         print("FAIL: empty ground truth")
         sys.exit(1)
+
+    # Tier map keyed by the same normalized+stripped form as expected_set.
+    tier_map = {
+        strip_repo_prefix(normalize(k), repo): v
+        for k, v in tiers_raw.items()
+    }
 
     answer_file = task_dir / "answer.txt"
     if not answer_file.exists():
@@ -165,20 +215,44 @@ def main():
         sys.exit(0)
 
     lines = answer_file.read_text().splitlines()
-    agent = frozenset(normalize(l) for l in lines if l.strip() and not l.startswith("#"))
-    if not agent:
+    agent_set = frozenset(
+        strip_repo_prefix(normalize(l), repo)
+        for l in lines
+        if l.strip() and not l.startswith("#")
+    )
+    if not agent_set:
         print("FAIL: empty answer")
         (task_dir / "reward.txt").write_text("0.0\\n")
         sys.exit(0)
 
-    intersection = len(expected & agent)
-    precision = intersection / len(agent)
-    recall = intersection / len(expected)
+    matched = expected_set & agent_set
+    intersection = len(matched)
+    precision = intersection / len(agent_set)
+    recall = intersection / len(expected_set)
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
-    (task_dir / "reward.txt").write_text(f"{f1:.4f}\\n")
-    print(f"score={f1:.4f} precision={precision:.4f} recall={recall:.4f} "
-          f"matched={intersection}/{len(expected)} agent_files={len(agent)}")
+    if has_tiers:
+        total_w = sum(TIER_WEIGHTS.get(t, 1.0) for t in tier_map.values()) or 1.0
+        matched_w = sum(
+            TIER_WEIGHTS.get(tier_map.get(p, "required"), 2.0) for p in matched
+        )
+        weighted_recall = matched_w / total_w
+        denom = precision + weighted_recall
+        weighted_f1 = 2 * precision * weighted_recall / denom if denom > 0 else 0.0
+        primary, metric = weighted_f1, "weighted_f1"
+    else:
+        primary, metric = f1, "f1"
+        weighted_recall = None
+
+    (task_dir / "reward.txt").write_text(f"{primary:.4f}\\n")
+    msg = (
+        f"score={primary:.4f} metric={metric} f1={f1:.4f} "
+        f"precision={precision:.4f} recall={recall:.4f} "
+        f"matched={intersection}/{len(expected_set)} agent_files={len(agent_set)}"
+    )
+    if has_tiers:
+        msg += f" weighted_recall={weighted_recall:.4f}"
+    print(msg)
 
 if __name__ == "__main__":
     main()
@@ -1075,6 +1149,10 @@ def _write_oracle_task(
         "expected": list(task.verification.oracle_answer),
         "commit": task.metadata.ground_truth_commit,
         "pattern_used": task.metadata.category,
+        # ``repo`` powers the oracle's pass-2 path matching: agents that
+        # report paths as ``<repo>/<path>`` or ``/abs/.../<repo>/<path>``
+        # should still match oracle entries stored as bare ``<path>``.
+        "repo": task.repo,
     }
     if task.metadata.ground_truth_commits:
         ground_truth["commits"] = {

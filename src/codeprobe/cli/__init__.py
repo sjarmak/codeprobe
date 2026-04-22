@@ -356,7 +356,19 @@ def init(path: str) -> None:
     hidden=True,
     help="Sourcegraph repo identifier for ground truth enrichment "
     "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
-    "when --mcp-families is used. Requires SOURCEGRAPH_TOKEN env var.",
+    "when --mcp-families is used. Requires one of: SRC_ACCESS_TOKEN, "
+    "SOURCEGRAPH_TOKEN, SOURCEGRAPH_ACCESS_TOKEN. With --mcp-families, missing "
+    "auth is a hard error (no silent grep fallback).",
+)
+@click.option(
+    "--sg-discovery",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help="Rank candidate symbols via Sourcegraph sg_find_references MCP calls "
+    "instead of the local grep-based Phase 2 scan. Cuts org-scale mining "
+    "from hours to minutes on large repos. Only takes effect with "
+    "--mcp-families; requires a Sourcegraph token.",
 )
 @click.option(
     "--dual-verify",
@@ -397,6 +409,7 @@ def mine(
     verify_curation_flag: bool,
     mcp_families: bool,
     sg_repo: str,
+    sg_discovery: bool,
     dual_verify: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
@@ -580,6 +593,7 @@ def mine(
         verify_curation_flag=verify_curation_flag,
         mcp_families=mcp_families,
         sg_repo=sg_repo,
+        sg_discovery=sg_discovery,
         dual_verify=dual_verify,
         explicit_set=explicitly_set,
         profile_set=profile_set,
@@ -849,9 +863,12 @@ def assess(path: str) -> None:
 @click.argument("task_dir", type=click.Path(exists=True))
 @click.option(
     "--metric",
-    default="f1",
-    type=click.Choice(["f1", "recall", "precision", "jaccard", "weighted_f1"]),
-    help="Primary scoring metric (default: f1).",
+    default="auto",
+    type=click.Choice(
+        ["auto", "f1", "recall", "precision", "jaccard", "weighted_f1"]
+    ),
+    help="Primary scoring metric (default: auto — weighted_f1 when "
+    "ground_truth.json has oracle_tiers, else f1).",
 )
 @click.option("--write-reward", is_flag=True, default=False, help="Write reward.txt.")
 def oracle_check_cmd(task_dir: str, metric: str, write_reward: bool) -> None:

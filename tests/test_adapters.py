@@ -1242,11 +1242,26 @@ class TestClaudeMcpConfig:
 
 
 class TestIsolateSession:
-    def test_claude_isolate_session_returns_config_dir(self, tmp_path: Path) -> None:
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clear CLAUDE_CONFIG_DIR so Path.home() patches take effect.
+
+        ``_effective_claude_config_dir`` prefers CLAUDE_CONFIG_DIR over
+        ``~/.claude``; when the host env has it set (running inside Claude
+        Code), that would override the test's fake_home.
+        """
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    def test_claude_isolate_session_returns_config_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         adapter = ClaudeAdapter()
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
         (fake_home / ".claude" / ".credentials.json").write_text("{}")
+        # Clear CLAUDE_CONFIG_DIR so the adapter falls back to ~/.claude
+        # (which we've patched via Path.home).
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         with (
             patch.object(Path, "home", return_value=fake_home),
             patch(
@@ -1258,11 +1273,14 @@ class TestIsolateSession:
         assert "CLAUDE_CONFIG_DIR" in env
         assert "slot-0" in env["CLAUDE_CONFIG_DIR"]
 
-    def test_claude_isolate_session_different_slots(self, tmp_path: Path) -> None:
+    def test_claude_isolate_session_different_slots(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         adapter = ClaudeAdapter()
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
         (fake_home / ".claude" / ".credentials.json").write_text("{}")
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         with (
             patch.object(Path, "home", return_value=fake_home),
             patch(
@@ -1274,11 +1292,14 @@ class TestIsolateSession:
             env1 = adapter.isolate_session(1)
         assert env0["CLAUDE_CONFIG_DIR"] != env1["CLAUDE_CONFIG_DIR"]
 
-    def test_claude_isolate_session_skips_when_no_creds(self, tmp_path: Path) -> None:
+    def test_claude_isolate_session_skips_when_no_creds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """When no credential files exist, returns empty dict so keychain auth still works."""
         adapter = ClaudeAdapter()
         fake_home = tmp_path / "home"
         (fake_home / ".claude").mkdir(parents=True)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         with patch.object(Path, "home", return_value=fake_home):
             env = adapter.isolate_session(0)
         assert env == {}
@@ -1432,6 +1453,10 @@ class TestIsolateSession:
 
 
 class TestCheckParallelAuth:
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
     def test_ok_when_parallel_one(self) -> None:
         assert ClaudeAdapter.check_parallel_auth(1) is None
 
@@ -1462,6 +1487,76 @@ class TestCheckParallelAuth:
         assert warning is not None
         assert "--parallel 1" in warning
         assert "401" in warning
+
+    def test_warns_when_credentials_expired(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Expired OAuth token surfaces a distinct, actionable warning."""
+        import time
+
+        fake_home = tmp_path / "home"
+        creds_dir = fake_home / ".claude"
+        creds_dir.mkdir(parents=True)
+        (creds_dir / ".credentials.json").write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "tok",
+                        "refreshToken": "ref",
+                        "expiresAt": int((time.time() - 3600) * 1000),
+                    }
+                }
+            )
+        )
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch.object(Path, "home", return_value=fake_home):
+            warning = ClaudeAdapter.check_parallel_auth(3)
+        assert warning is not None
+        assert "EXPIRED" in warning
+        assert "claude login" in warning
+
+    def test_ok_when_credentials_valid_future_expiry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-expired OAuth token passes the check."""
+        import time
+
+        fake_home = tmp_path / "home"
+        creds_dir = fake_home / ".claude"
+        creds_dir.mkdir(parents=True)
+        (creds_dir / ".credentials.json").write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "tok",
+                        "refreshToken": "ref",
+                        "expiresAt": int((time.time() + 3600) * 1000),
+                    }
+                }
+            )
+        )
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch.object(Path, "home", return_value=fake_home):
+            assert ClaudeAdapter.check_parallel_auth(3) is None
+
+    def test_claude_config_dir_env_var_respected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Credentials under CLAUDE_CONFIG_DIR are used over ~/.claude."""
+        # fake_home/.claude is empty (would fail). The real creds live under
+        # CLAUDE_CONFIG_DIR. Without env-var support, the check would fail.
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        alt_dir = tmp_path / "alt-claude-config"
+        alt_dir.mkdir()
+        (alt_dir / ".credentials.json").write_text("{}")
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(alt_dir))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        with patch.object(Path, "home", return_value=fake_home):
+            assert ClaudeAdapter.check_parallel_auth(3) is None
 
     def test_base_adapter_run_passes_session_env_to_subprocess(self) -> None:
         """session_env passed to run() reaches subprocess.run() via _adapter_safe_env."""

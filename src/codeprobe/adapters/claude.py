@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from codeprobe.adapters._base import BaseAdapter
@@ -59,6 +60,54 @@ def _normalize_model_for_cli(model: str) -> str:
     Aliases like 'sonnet' or 'haiku' pass through unchanged.
     """
     return _API_MODEL_DATE_SUFFIX.sub("", model)
+
+
+def _effective_claude_config_dir() -> Path:
+    """Return the directory the Claude CLI actually uses for credentials.
+
+    Respects the ``CLAUDE_CONFIG_DIR`` env var (Claude Code's own convention
+    for switching between accounts / sandboxed configs); falls back to
+    ``~/.claude``. Without this, codeprobe would check the default location
+    even when the user has an account-specific config elsewhere and miss
+    their real (refreshed) credentials.
+    """
+    override = os.environ.get("CLAUDE_CONFIG_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".claude"
+
+
+def _credentials_file_status(config_dir: Path) -> str:
+    """Return the status of the credentials file in ``config_dir``.
+
+    Returns one of:
+
+    * ``"missing"`` — no recognized credentials file exists.
+    * ``"expired"`` — a credentials file exists but the OAuth token's
+      ``expiresAt`` timestamp is in the past.
+    * ``"valid"`` — a credentials file exists and either has no expiry
+      info or has not yet expired.
+
+    ``"valid"`` is the default when the file is present but its shape
+    is unknown (non-OAuth formats, unreadable JSON): we trust the CLI to
+    handle those cases and let it surface any auth errors natively.
+    """
+    for name in _FILE_CRED_NAMES:
+        path = config_dir / name
+        if not path.is_file():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "valid"
+        oauth = raw.get("claudeAiOauth") if isinstance(raw, dict) else None
+        if not isinstance(oauth, dict):
+            return "valid"
+        expires_at_ms = oauth.get("expiresAt")
+        if not isinstance(expires_at_ms, (int, float)):
+            return "valid"
+        return "expired" if (expires_at_ms / 1000.0) <= time.time() else "valid"
+    return "missing"
 
 
 def _build_mirror_slot_env(real_config: Path, slot_id: int) -> dict[str, str]:
@@ -165,19 +214,31 @@ class ClaudeAdapter(BaseAdapter):
         if parallel <= 1:
             return None
 
-        real_config = Path.home() / ".claude"
-        has_file_creds = any((real_config / name).is_file() for name in _FILE_CRED_NAMES)
-        has_env_auth = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
-        if has_file_creds or has_env_auth:
+        config_dir = _effective_claude_config_dir()
+        creds_status = _credentials_file_status(config_dir)
+        has_env_auth = bool(
+            os.environ.get("ANTHROPIC_API_KEY")
+            or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+        )
+
+        if creds_status == "valid" or has_env_auth:
             return None
 
+        if creds_status == "expired":
+            return (
+                f"Claude CLI credentials at {config_dir} are EXPIRED. "
+                "Every agent run will fail with API 401 until refreshed. "
+                "Run `claude login` to renew the OAuth token, or export "
+                "ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN."
+            )
+
         return (
-            "Claude CLI has no file-based credentials and no "
-            "ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN env var — parallel "
-            "execution cannot isolate session state and may hit API 401 "
-            "errors (codeprobe-nac). Re-run with --parallel 1, or sign in "
-            "with `claude login` to write ~/.claude/.credentials.json, or "
-            "export ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN."
+            f"Claude CLI has no file-based credentials in {config_dir} and "
+            "no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN env var — "
+            "parallel execution cannot isolate session state and may hit "
+            "API 401 errors (codeprobe-nac). Re-run with --parallel 1, or "
+            "sign in with `claude login`, or export ANTHROPIC_API_KEY / "
+            "CLAUDE_CODE_OAUTH_TOKEN."
         )
 
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
@@ -206,14 +267,15 @@ class ClaudeAdapter(BaseAdapter):
     def isolate_session(self, slot_id: int) -> dict[str, str]:
         """Return a per-slot ``CLAUDE_CONFIG_DIR`` for session isolation.
 
-        Mirrors the real ``~/.claude`` directory into a slot-specific temp
-        dir via symlinks, with fresh empty directories for mutable
-        per-session state (``session-env/``, ``sessions/``,
-        ``history.jsonl``, etc.).  Symlinking the credentials file keeps
-        OAuth-refresh coherence across slots (all workers see the same live
-        creds) while the fresh mutable subdirs prevent parallel workers
-        from racing on shared state — which under real load manifested as
-        API 401 errors (codeprobe-nac).
+        Mirrors the real Claude config directory (honoring the
+        ``CLAUDE_CONFIG_DIR`` env var, so account-specific configs are
+        respected) into a slot-specific temp dir via symlinks, with fresh
+        empty directories for mutable per-session state (``session-env/``,
+        ``sessions/``, ``history.jsonl``, etc.). Symlinking the credentials
+        file keeps OAuth-refresh coherence across slots (all workers see
+        the same live creds) while the fresh mutable subdirs prevent
+        parallel workers from racing on shared state — which under real
+        load manifested as API 401 errors (codeprobe-nac).
 
         When no credential file is found the CLI is presumed to use the OS
         keychain; in that case this returns an empty dict so the agent
@@ -221,7 +283,7 @@ class ClaudeAdapter(BaseAdapter):
         Callers should combine this with a preflight warning for the
         ``parallel > 1 + no-file-creds`` combination.
         """
-        real_config = Path.home() / ".claude"
+        real_config = _effective_claude_config_dir()
         if any((real_config / name).is_file() for name in _FILE_CRED_NAMES):
             return _build_mirror_slot_env(real_config, slot_id)
 

@@ -441,24 +441,37 @@ def _mine_dep_trace(
 # ---------------------------------------------------------------------------
 
 
-def _get_sg_config(sg_repo: str) -> tuple[bool]:
+def _get_sg_config(sg_repo: str, *, strict: bool = False) -> tuple[bool]:
     """Check if Sourcegraph enrichment is available.
 
-    Returns ``(is_available,)``.  Auth is resolved internally by
+    Returns ``(is_available,)``. Auth is resolved internally by
     :func:`sg_auth.get_valid_token` when ``enrich_ground_truth`` is called.
+
+    When ``strict`` is True, a missing token raises instead of falling back
+    to grep. Use this when the user has explicitly requested Sourcegraph
+    (e.g. via ``--mcp-families``) — a silent fallback defeats the purpose.
     """
     if not sg_repo:
         return (False,)
 
-    from codeprobe.mining.sg_auth import AuthError, get_valid_token
+    from codeprobe.mining.sg_auth import _ACCEPTED_ENV_VARS, AuthError, get_valid_token
 
     try:
         get_valid_token()
         return (True,)
-    except AuthError:
+    except AuthError as exc:
+        accepted = ", ".join(_ACCEPTED_ENV_VARS)
+        if strict:
+            raise RuntimeError(
+                "Sourcegraph auth is required for MCP-family mining but no "
+                f"token was found. Set one of [{accepted}] or run "
+                "`codeprobe auth sourcegraph`. Falling back to grep would "
+                "produce biased ground truth and defeat the purpose of an "
+                "MCP comparison experiment."
+            ) from exc
         logger.warning(
             "No Sourcegraph auth available — using grep-only ground truth. "
-            "Run `codeprobe auth sourcegraph` or set SRC_ACCESS_TOKEN."
+            f"Set one of [{accepted}] or run `codeprobe auth sourcegraph`."
         )
         return (False,)
 
@@ -498,14 +511,25 @@ def _mine_symbol_reference_tasks(
     *,
     no_llm: bool = False,
     sg_repo: str = "",
+    strict_sg: bool = False,
+    sg_discovery: bool = False,
 ) -> list[Task]:
     """Generate symbol-reference-trace tasks from high-fan-out public symbols."""
-    targets = discover_reference_targets(repo_paths, tracked_files, language)
+    if sg_discovery and sg_repo:
+        from codeprobe.mining.org_scale_scanner import (
+            discover_reference_targets_via_sg,
+        )
+
+        targets = discover_reference_targets_via_sg(
+            repo_paths, tracked_files, language, repo_sg_name=sg_repo
+        )
+    else:
+        targets = discover_reference_targets(repo_paths, tracked_files, language)
     if not targets:
         return []
 
     # Optional Sourcegraph enrichment
-    (sg_available,) = _get_sg_config(sg_repo)
+    (sg_available,) = _get_sg_config(sg_repo, strict=strict_sg)
 
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
@@ -644,18 +668,29 @@ def _mine_change_scope_tasks(
     *,
     no_llm: bool = False,
     sg_repo: str = "",
+    strict_sg: bool = False,
+    sg_discovery: bool = False,
 ) -> list[Task]:
     """Generate change-scope-audit tasks from high-fan-out public symbols.
 
     Reuses ``discover_reference_targets`` to find symbols with many dependents,
     then frames the task as a blast-radius audit rather than a reference trace.
     """
-    targets = discover_reference_targets(repo_paths, tracked_files, language)
+    if sg_discovery and sg_repo:
+        from codeprobe.mining.org_scale_scanner import (
+            discover_reference_targets_via_sg,
+        )
+
+        targets = discover_reference_targets_via_sg(
+            repo_paths, tracked_files, language, repo_sg_name=sg_repo
+        )
+    else:
+        targets = discover_reference_targets(repo_paths, tracked_files, language)
     if not targets:
         return []
 
     # Optional Sourcegraph enrichment
-    (sg_available,) = _get_sg_config(sg_repo)
+    (sg_available,) = _get_sg_config(sg_repo, strict=strict_sg)
 
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
@@ -721,8 +756,25 @@ def _mine_mcp_families(
     count: int,
     no_llm: bool,
     sg_repo: str = "",
+    sg_discovery: bool = False,
 ) -> list[Task]:
-    """Generate tasks from all MCP-advantaged families."""
+    """Generate tasks from all MCP-advantaged families.
+
+    When ``sg_repo`` is provided, Sourcegraph auth is required. Missing auth
+    raises immediately (before the expensive scan) so users don't wait hours
+    for a degraded grep-only result.
+
+    When ``sg_discovery`` is True, candidate symbols are ranked via
+    Sourcegraph ``sg_find_references`` MCP calls instead of the local
+    grep-based Phase 2 scan — cuts wall-clock from hours to minutes on
+    large repos.
+    """
+    # Fail fast on missing auth when the user has declared MCP intent.
+    # This runs before any scanning so we don't burn hours on grep-only
+    # ground truth that will bias the MCP comparison.
+    if sg_repo:
+        _get_sg_config(sg_repo, strict=True)
+
     primary_repo = repo_paths[0]
     commit_sha = get_head_sha(primary_repo)
     language = _guess_repo_language(tracked_files)
@@ -736,10 +788,12 @@ def _mine_mcp_families(
     for miner in miners:
         if len(tasks) >= count:
             break
-        # Pass sg_repo to miners that accept it
+        # Pass sg_repo, strict_sg, and sg_discovery to miners that accept them
         kwargs: dict[str, object] = {"no_llm": no_llm}
         if miner in (_mine_symbol_reference_tasks, _mine_change_scope_tasks):
             kwargs["sg_repo"] = sg_repo
+            kwargs["strict_sg"] = bool(sg_repo)
+            kwargs["sg_discovery"] = sg_discovery
         new_tasks = miner(
             repo_paths, tracked_files, language, commit_sha, **kwargs  # type: ignore[arg-type]
         )
@@ -759,6 +813,7 @@ def mine_org_scale_tasks(
     include_mcp_families: bool = False,
     scan_timeout: int = 60,
     sg_repo: str = "",
+    sg_discovery: bool = False,
 ) -> OrgScaleMineResult:
     """Mine org-scale comprehension tasks from one or more repositories.
 
@@ -773,8 +828,15 @@ def mine_org_scale_tasks(
             (symbol-reference-trace, type-hierarchy-consumers, change-scope-audit).
         scan_timeout: Per-family scan timeout in seconds.
         sg_repo: Sourcegraph repo identifier for ground truth enrichment.
-            When set and ``SOURCEGRAPH_TOKEN`` env var is present, MCP family
-            ground truth is enriched via Sourcegraph ``find_references``.
+            When set and a Sourcegraph token env var is present (any of
+            ``SRC_ACCESS_TOKEN``, ``SOURCEGRAPH_TOKEN``,
+            ``SOURCEGRAPH_ACCESS_TOKEN``), MCP family ground truth is
+            enriched via Sourcegraph ``find_references``.
+        sg_discovery: When True (and ``sg_repo`` is set + auth available),
+            rank candidate symbols via Sourcegraph ``sg_find_references``
+            MCP calls instead of the local grep-based Phase 2 scan. Much
+            faster on large repos (hours → minutes). Only affects the
+            symbol-reference-trace and change-scope-audit families.
     """
     all_families = families or FAMILIES
     non_dep = tuple(f for f in all_families if f.name != "cross-repo-dep-trace")
@@ -807,6 +869,7 @@ def mine_org_scale_tasks(
             count=count,
             no_llm=no_llm,
             sg_repo=sg_repo,
+            sg_discovery=sg_discovery,
         )
         if len(repo_paths) > 1:
             mcp_tasks = [_stamp_multi_repo_commits(t, commits) for t in mcp_tasks]

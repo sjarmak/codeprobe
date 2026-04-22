@@ -489,8 +489,16 @@ class TestInitCliIntegration:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test Goal 1 with Sourcegraph HTTP MCP."""
+        from codeprobe.mining import sg_auth
+
         monkeypatch.setattr("codeprobe.cli.init_cmd.discover_mcp_configs", lambda: [])
-        monkeypatch.delenv("SOURCEGRAPH_TOKEN", raising=False)
+        # Clear all accepted Sourcegraph token env vars so the wizard
+        # prompts for a PAT instead of silently picking one up from the
+        # live test environment.
+        for name in sg_auth._ACCEPTED_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+        # Isolate the auth cache too — sg_auth reads ~/.codeprobe/auth.json
+        monkeypatch.setenv("HOME", str(tmp_path))
 
         runner = CliRunner()
         # Inputs: goal=1, name=default, agent=claude, model=skip,

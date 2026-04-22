@@ -958,3 +958,167 @@ class TestStripLocationHints:
         assert "Find references to AgentConfig" in content
         # Should NOT use generic pattern-based heading
         assert "Find symbol-reference-trace patterns" not in content
+
+
+# ---------------------------------------------------------------------------
+# Sourcegraph-driven reference-target discovery tests
+# ---------------------------------------------------------------------------
+
+
+class TestSgDiscovery:
+    """Tests for ``discover_reference_targets_via_sg`` — the SG-backed path."""
+
+    def _make_repo(self, tmp_path: Path, files: dict[str, str]) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for path, content in files.items():
+            fp = repo / path
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(content)
+        return repo
+
+    def test_ranks_by_sg_reference_count(self, tmp_path: Path) -> None:
+        """Top-scored symbols from SG ref counts are returned first."""
+        from codeprobe.mining.org_scale_scanner import (
+            discover_reference_targets_via_sg,
+        )
+
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "pkg/a.go": "package a\nfunc HandlerAlpha() {}\n",
+                "pkg/b.go": "package a\nfunc HandlerBeta() {}\n",
+                "pkg/c.go": "package a\nfunc HandlerGamma() {}\n",
+            },
+        )
+        tracked = frozenset(["pkg/a.go", "pkg/b.go", "pkg/c.go"])
+
+        ref_map = {
+            "HandlerAlpha": frozenset({"cmd/x.go", "cmd/y.go", "cmd/z.go"}),
+            "HandlerBeta": frozenset({"cmd/x.go"}),
+            "HandlerGamma": frozenset({"cmd/x.go", "cmd/y.go"}),
+        }
+
+        def fake_refs(*, symbol, defining_file, repo_sg_name, sg_url):
+            # Return enough refs to clear the 10-ref threshold for Alpha,
+            # but keep Beta/Gamma below it so they're excluded.
+            base = ref_map[symbol]
+            if symbol == "HandlerAlpha":
+                return frozenset({f"ref/{i}.go" for i in range(20)})
+            if symbol == "HandlerGamma":
+                return frozenset({f"ref/{i}.go" for i in range(12)})
+            return base  # Beta → 1 ref, below threshold
+
+        with patch(
+            "codeprobe.mining.sg_ground_truth._call_find_references",
+            side_effect=fake_refs,
+        ):
+            targets = discover_reference_targets_via_sg(
+                [repo],
+                tracked,
+                language="go",
+                repo_sg_name="github.com/test/repo",
+                sample_size=10,
+                max_targets=2,
+            )
+
+        assert len(targets) == 2
+        names = [t[0] for t in targets]
+        assert names == ["HandlerAlpha", "HandlerGamma"]
+        # Beta excluded because its ref count was below the min threshold
+        assert "HandlerBeta" not in names
+
+    def test_empty_when_no_symbols(self, tmp_path: Path) -> None:
+        from codeprobe.mining.org_scale_scanner import (
+            discover_reference_targets_via_sg,
+        )
+
+        repo = self._make_repo(tmp_path, {"pkg/empty.go": "package a\n"})
+        targets = discover_reference_targets_via_sg(
+            [repo],
+            frozenset(["pkg/empty.go"]),
+            language="go",
+            repo_sg_name="github.com/test/repo",
+        )
+        assert targets == []
+
+    def test_excludes_staging_and_generated(self, tmp_path: Path) -> None:
+        """Symbols in staging/ or zz_generated files are filtered out."""
+        from codeprobe.mining.org_scale_scanner import (
+            discover_reference_targets_via_sg,
+        )
+
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "pkg/core.go": "package a\nfunc CoreHandler() {}\n",
+                "staging/src/client.go": "package a\nfunc StagingHandler() {}\n",
+                "pkg/zz_generated.openapi.go": "package a\nfunc GeneratedHandler() {}\n",
+                "pkg/core_test.go": "package a\nfunc TestHandler() {}\n",
+            },
+        )
+        tracked = frozenset([
+            "pkg/core.go",
+            "staging/src/client.go",
+            "pkg/zz_generated.openapi.go",
+            "pkg/core_test.go",
+        ])
+
+        seen_symbols: list[str] = []
+
+        def fake_refs(*, symbol, defining_file, repo_sg_name, sg_url):
+            seen_symbols.append(symbol)
+            return frozenset({f"ref/{i}.go" for i in range(15)})
+
+        with patch(
+            "codeprobe.mining.sg_ground_truth._call_find_references",
+            side_effect=fake_refs,
+        ):
+            discover_reference_targets_via_sg(
+                [repo],
+                tracked,
+                language="go",
+                repo_sg_name="github.com/test/repo",
+                sample_size=20,
+                max_targets=5,
+            )
+
+        assert "CoreHandler" in seen_symbols
+        assert "StagingHandler" not in seen_symbols
+        assert "GeneratedHandler" not in seen_symbols
+        assert "TestHandler" not in seen_symbols
+
+    def test_handles_sg_failure_gracefully(self, tmp_path: Path) -> None:
+        """When ``_call_find_references`` returns None, symbol is skipped."""
+        from codeprobe.mining.org_scale_scanner import (
+            discover_reference_targets_via_sg,
+        )
+
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "pkg/a.go": "package a\nfunc HandlerAlpha() {}\n",
+                "pkg/b.go": "package a\nfunc HandlerBeta() {}\n",
+            },
+        )
+        tracked = frozenset(["pkg/a.go", "pkg/b.go"])
+
+        def fake_refs(*, symbol, defining_file, repo_sg_name, sg_url):
+            if symbol == "HandlerAlpha":
+                return None  # API failure
+            return frozenset({f"ref/{i}.go" for i in range(15)})
+
+        with patch(
+            "codeprobe.mining.sg_ground_truth._call_find_references",
+            side_effect=fake_refs,
+        ):
+            targets = discover_reference_targets_via_sg(
+                [repo],
+                tracked,
+                language="go",
+                repo_sg_name="github.com/test/repo",
+            )
+
+        names = [t[0] for t in targets]
+        assert "HandlerAlpha" not in names
+        assert "HandlerBeta" in names
