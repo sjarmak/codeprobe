@@ -161,6 +161,45 @@ def _is_binary(scores: Sequence[float]) -> bool:
     return all(s == 0.0 or s == 1.0 for s in scores)
 
 
+def mean_score_ci(scores: Sequence[float], z: float = 1.96) -> tuple[float, float]:
+    """Normal-approximation CI for the sample mean of continuous scores.
+
+    Clamped to [0, 1] because codeprobe scores are bounded. For N < 2 or
+    zero-variance samples the interval collapses to (mean, mean).
+    """
+    n = len(scores)
+    if n == 0:
+        return (0.0, 0.0)
+    mean = statistics.mean(scores)
+    if n < 2:
+        return (max(0.0, mean), min(1.0, mean))
+    try:
+        sd = statistics.stdev(scores)
+    except statistics.StatisticsError:
+        return (max(0.0, mean), min(1.0, mean))
+    se = sd / math.sqrt(n)
+    lo = max(0.0, mean - z * se)
+    hi = min(1.0, mean + z * se)
+    return (lo, hi)
+
+
+def _choose_summary_ci(
+    scores: Sequence[float], passed: int, total: int
+) -> tuple[float, float, str]:
+    """Return (ci_lower, ci_upper, score_type) for a config summary.
+
+    Continuous scorers (any score not in {0.0, 1.0}) get a normal-approx CI
+    on the sample mean. Truly binary scorers get the Wilson CI on pass_rate.
+    """
+    if not scores:
+        return 0.0, 0.0, "binary"
+    if _is_binary(scores):
+        lo, hi = wilson_ci(passed, total)
+        return lo, hi, "binary"
+    lo, hi = mean_score_ci(scores)
+    return lo, hi, "continuous"
+
+
 def _dominant_billing_model(tasks: Sequence[CompletedTask]) -> str:
     """Return the most common cost_model among tasks, or 'unknown'."""
     models = [t.cost_model for t in tasks if t.cost_model != "unknown"]
@@ -217,8 +256,14 @@ class ConfigSummary:
     total_tokens: int | None
     is_partial: bool = False
     tasks_expected: int | None = None
+    # ``ci_lower`` / ``ci_upper`` bound the *primary metric* for this summary.
+    # For binary scorers the primary metric is ``pass_rate`` (Wilson CI);
+    # for continuous scorers it's ``mean_score`` (normal-approximation CI
+    # on the sample mean). ``score_type`` says which. Renderers should read
+    # ``score_type`` to label the interval correctly.
     ci_lower: float = 0.0
     ci_upper: float = 0.0
+    score_type: str = "binary"  # "binary" or "continuous"
     billing_model: str = "unknown"
     sample_size_warning: str | None = None
     # Dual scoring leg stats — populated only when tasks carry dual
@@ -303,7 +348,7 @@ def summarize_config(
     ]
     total_tokens: int | None = sum(tokens) if tokens else None
 
-    ci_lo, ci_hi = wilson_ci(passed, total)
+    ci_lo, ci_hi, score_type = _choose_summary_ci(scores, passed, total)
     warning = (
         f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
     )
@@ -326,6 +371,7 @@ def summarize_config(
         tasks_expected=total_tasks,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
+        score_type=score_type,
         billing_model=billing,
         sample_size_warning=warning,
         dual_task_count=dual_count,
@@ -419,7 +465,7 @@ def summarize_completed_tasks(
     total_duration = sum(durations)
     total_cost: float | None = sum(costs) if costs else None
 
-    ci_lo, ci_hi = wilson_ci(passed, total)
+    ci_lo, ci_hi, score_type = _choose_summary_ci(scores, passed, total)
     warning = (
         f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
     )
@@ -450,6 +496,7 @@ def summarize_completed_tasks(
         tasks_expected=total_tasks,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
+        score_type=score_type,
         billing_model=billing,
         sample_size_warning=warning,
         dual_task_count=dual_count,

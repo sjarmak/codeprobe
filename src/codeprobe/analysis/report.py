@@ -72,18 +72,20 @@ def generate_report(
     summaries = [summarize_config(r, total_tasks=total_tasks) for r in all_results]
     rankings = rank_configs(summaries)
 
-    # Build per-config binary pass/fail scores keyed by task_id so that
-    # paired comparisons use task_passed() instead of raw automated_score.
-    config_binary: dict[str, dict[str, float]] = {}
+    # Build per-config raw scores keyed by task_id. compare_configs
+    # auto-detects binary vs continuous via _is_binary and picks the right
+    # statistical test (McNemar + Cliff's delta for binary, Wilcoxon +
+    # Cohen's d for continuous).
+    config_scores: dict[str, dict[str, float]] = {}
     for cr in all_results:
-        config_binary[cr.config] = {
-            t.task_id: (1.0 if task_passed(t) else 0.0) for t in cr.completed
+        config_scores[cr.config] = {
+            t.task_id: float(t.automated_score) for t in cr.completed
         }
 
     comparisons: list[PairwiseComparison] = []
     for i, a in enumerate(summaries):
         for b in summaries[i + 1 :]:
-            a_scores, b_scores = _paired_binary_scores(config_binary, a.label, b.label)
+            a_scores, b_scores = _paired_task_scores(config_scores, a.label, b.label)
             comparisons.append(
                 compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
             )
@@ -104,29 +106,36 @@ def generate_report(
     )
 
 
-def _tee_binary_scores(
+def _tee_task_scores(
     tasks: Iterator[CompletedTask],
     sink: dict[str, float],
 ) -> Iterator[CompletedTask]:
-    """Yield tasks unchanged while recording binary pass/fail into *sink*."""
+    """Yield tasks unchanged while recording raw scores into *sink*.
+
+    Stores ``automated_score`` (continuous) rather than a binarized pass/fail
+    indicator so pairwise statistical tests can operate on the true score
+    distribution and choose Wilcoxon + Cohen's d for continuous scorers
+    vs McNemar + Cliff's delta for binary ones.
+    """
     for t in tasks:
-        sink[t.task_id] = 1.0 if task_passed(t) else 0.0
+        sink[t.task_id] = float(t.automated_score)
         yield t
 
 
-def _paired_binary_scores(
-    config_binary: dict[str, dict[str, float]],
+def _paired_task_scores(
+    config_scores: dict[str, dict[str, float]],
     label_a: str,
     label_b: str,
 ) -> tuple[list[float] | None, list[float] | None]:
-    """Extract paired binary score lists for two configs.
+    """Extract paired per-task score lists for two configs.
 
     Returns ``(a_scores, b_scores)`` containing only tasks present in both
     configs (paired by task_id), or ``(None, None)`` when there are no
-    shared tasks.
+    shared tasks. Scores are raw ``automated_score`` values; callers
+    downstream decide binary vs continuous handling.
     """
-    a_by_id = config_binary.get(label_a, {})
-    b_by_id = config_binary.get(label_b, {})
+    a_by_id = config_scores.get(label_a, {})
+    b_by_id = config_scores.get(label_b, {})
     shared_ids = sorted(set(a_by_id) & set(b_by_id))
     if not shared_ids:
         return None, None
@@ -152,14 +161,14 @@ def generate_report_streaming(
     When *total_tasks* is provided and exceeds completed tasks, the report
     is flagged as partial with a completion ratio.
     """
-    config_binary: dict[str, dict[str, float]] = {}
+    config_scores: dict[str, dict[str, float]] = {}
     summaries: list[ConfigSummary] = []
     for label, tasks in config_task_pairs:
         sink: dict[str, float] = {}
-        config_binary[label] = sink
+        config_scores[label] = sink
         summaries.append(
             summarize_completed_tasks(
-                label, _tee_binary_scores(tasks, sink), total_tasks=total_tasks
+                label, _tee_task_scores(tasks, sink), total_tasks=total_tasks
             )
         )
 
@@ -168,7 +177,7 @@ def generate_report_streaming(
     comparisons: list[PairwiseComparison] = []
     for i, a in enumerate(summaries):
         for b in summaries[i + 1 :]:
-            a_scores, b_scores = _paired_binary_scores(config_binary, a.label, b.label)
+            a_scores, b_scores = _paired_task_scores(config_scores, a.label, b.label)
             comparisons.append(
                 compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
             )
@@ -206,7 +215,11 @@ def format_text_report(report: Report) -> str:
     # and to annotate the rankings line with per-leg pass rates.
     any_dual_tasks = any((s.dual_task_count or 0) > 0 for s in report.summaries)
 
-    # Rankings
+    # Rankings. Use mean_score as the headline metric for continuous
+    # scorers (F1, partial credit) since pass_rate collapses the signal —
+    # tasks with scores like 0.08 still count as "passed" when the scorer
+    # emits ``passed: true``. For truly binary scorers pass_rate IS the
+    # signal and is shown as-is.
     lines.append("### Rankings")
     for rc in report.rankings:
         s = rc.summary
@@ -221,8 +234,15 @@ def format_text_report(report: Report) -> str:
                 f" (code {s.direct_pass_rate:.0%} / "
                 f"artifact {s.artifact_pass_rate:.0%})"
             )
+        if s.score_type == "continuous":
+            headline = (
+                f"mean={s.mean_score:.2f} "
+                f"[CI {s.ci_lower:.2f}–{s.ci_upper:.2f}]"
+            )
+        else:
+            headline = f"{s.pass_rate:.0%} pass rate"
         lines.append(
-            f"{rc.rank}. {rc.label} — {s.pass_rate:.0%} pass rate{dual_suffix}, "
+            f"{rc.rank}. {rc.label} — {headline}{dual_suffix}, "
             f"{cost_str} — {rc.recommendation}"
         )
     lines.append("")

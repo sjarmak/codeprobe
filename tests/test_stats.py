@@ -167,3 +167,95 @@ class TestMcNemarConsistencyWithTaskPassed:
         assert cmp.effect_size_method == "cliffs_delta"
         # p_value should be 1.0 (2 discordant pairs, perfectly balanced)
         assert cmp.p_value == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Score-type-aware CI + effect size (0.5.2 fix for continuous scorers)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreTypeDetection:
+    """summarize_config infers score_type and picks the right CI."""
+
+    def test_continuous_scores_get_mean_score_ci(self) -> None:
+        """Scores like F1 get a t/normal CI on mean_score, not Wilson."""
+        cr = ConfigResults(
+            config="mcp",
+            completed=[
+                _task("t1", 0.75),
+                _task("t2", 0.40),
+                _task("t3", 0.11),
+                _task("t4", 0.71),
+                _task("t5", 0.14),
+            ],
+        )
+        s = summarize_config(cr)
+        assert s.score_type == "continuous"
+        # Wilson on 5/5 would give ~[0.566, 1.0]. Mean-score CI on these
+        # scores gives something near the mean (~0.42) with spread reflecting
+        # the variance — definitively different from the Wilson output.
+        assert s.ci_lower < 0.5  # mean-score CI is centred near 0.42
+        assert s.ci_upper < 0.9  # not pinned to 1.0 like Wilson
+        assert s.mean_score > s.ci_lower and s.mean_score < s.ci_upper
+
+    def test_binary_scores_keep_wilson_ci(self) -> None:
+        """Pure 0/1 scores get Wilson CI on pass_rate (backwards compat)."""
+        cr = ConfigResults(
+            config="binary",
+            completed=[
+                _task("t1", 1.0),
+                _task("t2", 1.0),
+                _task("t3", 0.0),
+                _task("t4", 1.0),
+            ],
+        )
+        s = summarize_config(cr)
+        assert s.score_type == "binary"
+        # Wilson for 3/4 ≈ [0.30, 0.95]; mean-score CI on [1,1,0,1] would
+        # give a tighter interval. We just assert the Wilson shape.
+        assert 0.25 < s.ci_lower < 0.40
+        assert 0.85 < s.ci_upper < 1.0
+
+
+class TestComparePairwiseContinuousRouting:
+    """compare_configs routes to Wilcoxon+Cohen's d when scores aren't 0/1."""
+
+    def test_continuous_picks_cohens_d(self) -> None:
+        from codeprobe.analysis.stats import compare_configs
+
+        a_cr = ConfigResults(
+            config="a",
+            completed=[_task("t1", 0.8), _task("t2", 0.6), _task("t3", 0.9)],
+        )
+        b_cr = ConfigResults(
+            config="b",
+            completed=[_task("t1", 0.2), _task("t2", 0.3), _task("t3", 0.1)],
+        )
+        a_sum = summarize_config(a_cr)
+        b_sum = summarize_config(b_cr)
+        cmp = compare_configs(
+            a_sum, b_sum,
+            a_scores=[0.8, 0.6, 0.9],
+            b_scores=[0.2, 0.3, 0.1],
+        )
+        assert cmp.effect_size_method == "cohens_d"
+        # Cohen's d should be clearly positive (a much larger than b).
+        assert cmp.effect_size is not None and cmp.effect_size > 1.0
+
+    def test_binary_keeps_cliffs_delta(self) -> None:
+        from codeprobe.analysis.stats import compare_configs
+
+        a_cr = ConfigResults(
+            config="a",
+            completed=[_task("t1", 1.0), _task("t2", 1.0), _task("t3", 0.0)],
+        )
+        b_cr = ConfigResults(
+            config="b",
+            completed=[_task("t1", 0.0), _task("t2", 1.0), _task("t3", 0.0)],
+        )
+        cmp = compare_configs(
+            summarize_config(a_cr), summarize_config(b_cr),
+            a_scores=[1.0, 1.0, 0.0],
+            b_scores=[0.0, 1.0, 0.0],
+        )
+        assert cmp.effect_size_method == "cliffs_delta"
