@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.2 (2026-04-22)
+
+### Fixes
+
+- **`interpret` stats are now score-type-aware.** `codeprobe interpret` and `codeprobe experiment aggregate` previously collapsed continuous F1-style scores to binary pass/fail before computing confidence intervals and effect size. The resulting report declared "100% pass rate" and `effect_size=0.0 cliffs_delta` even when per-task scores ranged 0.08–0.75, hiding the real signal. Three concrete bugs fixed:
+  - `analysis/report.py` pre-binarized scores before calling `compare_configs`, so the `_is_binary()` gate always routed into the McNemar + Cliff's delta branch even for continuous scorers. Now passes raw scores; `_is_binary()` correctly selects Wilcoxon + Cohen's d when any score isn't 0 or 1.
+  - `analysis/stats.compute_config_summary` / `summarize_completed_tasks` computed `ci_lower/upper` via `wilson_ci(passed, total)` regardless of scorer type. For continuous scorers, CIs are now normal-approximation intervals on the sample mean (`mean_score_ci`), clamped to [0, 1].
+  - `ConfigSummary` gains a `score_type: "binary" | "continuous"` field; text rankings show `mean=X.XX [CI a–b]` for continuous and `X% pass rate` for binary.
+- Verified on a real N=5 experiment: effect size went from `0.0` (cliffs_delta, broken) to `0.076` (cohens_d, correct); p-value from `null` to `0.25` (Wilcoxon, honest signal for small N); per-config CIs became distinct instead of identical.
+
 ## 0.5.1 (2026-04-22)
 
 ### Fixes
