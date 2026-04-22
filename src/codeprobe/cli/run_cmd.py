@@ -535,6 +535,20 @@ def run_eval(
 
         interrupted = False
         try:
+            # Preambles in ExperimentConfig require a resolver to compose
+            # into the prompt. Wire up the default layered resolver so the
+            # agent actually sees the preamble content (e.g. the
+            # Sourcegraph MCP instructions).
+            preamble_resolver = None
+            if exp_config.preambles:
+                from codeprobe.core.preamble import DefaultPreambleResolver
+
+                preamble_resolver = DefaultPreambleResolver(
+                    task_dir=task_dirs[0] if task_dirs else repo_root,
+                    project_dir=repo_root,
+                    user_dir=Path.home(),
+                )
+
             results = execute_config(
                 adapter=config_adapter,
                 task_dirs=task_dirs,
@@ -548,6 +562,7 @@ def run_eval(
                 repeats=repeats,
                 clean_excludes=_clean_excludes,
                 event_dispatcher=dispatcher,
+                preamble_resolver=preamble_resolver,
             )
         except KeyboardInterrupt:
             interrupted = True

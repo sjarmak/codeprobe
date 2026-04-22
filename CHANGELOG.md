@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.5 (2026-04-22)
+
+### Fixes
+
+- **Preamble resolver now wired into `codeprobe run`.** `ExperimentConfig.preambles` has been a field for releases, and `--show-prompt` rendered them correctly, but the actual `codeprobe run` path never constructed a `DefaultPreambleResolver` and `execute_config` received `preamble_resolver=None`. As a result, `load_experiment` silently dropped preambles before v0.5.4 (because they were excluded from the dataclass-from-dict mapping), and once 0.5.4's round-trip fix started preserving them, every run with a non-empty `preambles` hit `RuntimeError: preambles=(...) requested but no preamble_resolver provided`. Now wires up a layered resolver (task-local → project → user → built-in) matching the `--show-prompt` code path.
+
+  This is a real behavior change: experiments that declare `preambles: ["sourcegraph"]` or similar now actually compose the preamble into the prompt sent to the agent. On the kubernetes-mcp-comparison task set, that moved `with-mcp` from 0 true MCP calls to 20+ MCP calls per task.
+
 ## 0.5.4 (2026-04-22)
 
 ### Features
