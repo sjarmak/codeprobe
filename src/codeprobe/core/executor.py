@@ -387,6 +387,7 @@ def execute_task(
                 cost_model=output.cost_model,
                 cost_source=output.cost_source,
                 tool_call_count=output.tool_call_count,
+                tool_use_by_name=output.tool_use_by_name,
             )
 
         # For oracle tasks, the agent writes answer.txt / answer.json to the

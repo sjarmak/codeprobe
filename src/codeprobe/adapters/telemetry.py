@@ -66,6 +66,11 @@ class UsageData:
     cost_source: str = "unavailable"
     error: str | None = None
     tool_call_count: int | None = None
+    # Tool-use counts broken down by tool name (e.g. ``{"Read": 5,
+    # "mcp__sourcegraph__keyword_search": 2}``). Populated only when the
+    # adapter captured a streaming transcript. None means "not captured",
+    # not "no tool calls".
+    tool_use_by_name: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:
@@ -145,6 +150,45 @@ def _count_tool_use_blocks(envelope: dict[str, Any]) -> int | None:
     return count
 
 
+def _parse_stream_json(raw_output: str) -> tuple[dict[str, Any] | None, int, dict[str, int]]:
+    """Parse a ``--output-format stream-json --verbose`` transcript.
+
+    Returns ``(result_event, tool_use_count, tool_use_by_name)``.
+    ``result_event`` is the final ``type: "result"`` event (same shape as
+    ``--output-format json`` envelope), or None when the stream is
+    malformed or has no terminal event. ``tool_use_by_name`` aggregates
+    tool-use block counts by tool name (including MCP tools, which appear
+    as ``mcp__<server>__<tool>``), useful for observability.
+    """
+    result_event: dict[str, Any] | None = None
+    tool_use_count = 0
+    by_name: dict[str, int] = {}
+    for line in raw_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") == "assistant":
+            msg = ev.get("message")
+            if isinstance(msg, dict):
+                for block in msg.get("content", []) or []:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        tool_use_count += 1
+                        name = block.get("name", "")
+                        if isinstance(name, str) and name:
+                            by_name[name] = by_name.get(name, 0) + 1
+        if ev.get("type") == "result":
+            result_event = ev
+    return result_event, tool_use_count, by_name
+
+
 class JsonStdoutCollector:
     """Extract telemetry from Claude CLI JSON envelope on stdout.
 
@@ -162,10 +206,40 @@ class JsonStdoutCollector:
     """
 
     def collect(self, raw_output: str, **context: Any) -> UsageData:
-        try:
-            envelope = json.loads(raw_output)
-        except (json.JSONDecodeError, ValueError) as exc:
-            return UsageData(error=f"JSON parse failed: {exc}")
+        # Two accepted shapes:
+        #   1. ``--output-format json`` — a single JSON envelope; no
+        #      per-tool-use trace, so tool_call_count stays None.
+        #   2. ``--output-format stream-json --verbose`` — newline-delimited
+        #      events ending in a ``type: "result"`` event that mirrors
+        #      shape (1). We also count ``tool_use`` blocks across all
+        #      ``assistant`` events for accurate tool_call_count.
+        stream_tool_count: int | None = None
+        stream_tool_by_name: dict[str, int] = {}
+        trimmed = raw_output.lstrip()
+        if trimmed.startswith("{\n") or trimmed.startswith("{"):
+            # Try single-envelope path first — most adapters still use
+            # ``--output-format json``.
+            try:
+                envelope = json.loads(raw_output)
+                if envelope.get("type") == "result" and "\n" in raw_output.rstrip():
+                    # Ambiguous: looks like a single-line event from the
+                    # stream. Fall through to stream parsing below.
+                    raise ValueError("ambiguous envelope — retry as stream")
+            except (json.JSONDecodeError, ValueError):
+                envelope = None
+        else:
+            envelope = None
+        if envelope is None:
+            result_ev, stream_tool_count, stream_tool_by_name = _parse_stream_json(
+                raw_output
+            )
+            if result_ev is None:
+                return UsageData(
+                    error="JSON parse failed: output is neither a valid "
+                    "envelope nor a stream-json transcript ending in a "
+                    "'result' event"
+                )
+            envelope = result_ev
 
         usage = envelope.get("usage")
         if usage is None:
@@ -197,7 +271,13 @@ class JsonStdoutCollector:
             cost_model = "unknown"
             cost_source = "unavailable"
 
-        tool_call_count = _count_tool_use_blocks(envelope)
+        # Prefer stream-json count when the transcript was streamed — it's
+        # always present and accurate. Fall back to the envelope's
+        # ``messages`` array (when some future CLI flag surfaces it), else
+        # stays None.
+        tool_call_count = stream_tool_count
+        if tool_call_count is None:
+            tool_call_count = _count_tool_use_blocks(envelope)
 
         return UsageData(
             input_tokens=input_tokens,
@@ -207,6 +287,7 @@ class JsonStdoutCollector:
             cost_model=cost_model,
             cost_source=cost_source,
             tool_call_count=tool_call_count,
+            tool_use_by_name=stream_tool_by_name or None,
             error=envelope_error,
         )
 

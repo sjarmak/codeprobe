@@ -45,6 +45,9 @@ class AgentOutput:
     error: str | None = None
     cost_source: str = "unavailable"
     tool_call_count: int | None = None
+    # Per-tool usage counts (e.g. {"Read": 5, "mcp__sourcegraph__...": 2}).
+    # None when the adapter couldn't capture a streaming transcript.
+    tool_use_by_name: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:
@@ -63,12 +66,22 @@ class AgentOutput:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    """Configuration passed to an agent adapter."""
+    """Configuration passed to an agent adapter.
+
+    ``allowed_tools`` / ``disallowed_tools`` restrict which tools the agent
+    may call. When both are ``None`` the adapter uses its default tool set.
+    When ``allowed_tools`` is an empty list, the adapter disables all
+    built-in tools (useful for MCP-only experiments: MCP tools are still
+    available because they come from ``mcp_config``, but no built-in
+    ``Read``/``Grep``/``Bash``/etc. are).
+    """
 
     model: str | None = None
     permission_mode: str = "default"
     timeout_seconds: int = 3600
     mcp_config: dict | None = None
+    allowed_tools: list[str] | None = None
+    disallowed_tools: list[str] | None = None
     extra: dict | None = None
     cwd: str | None = None
 

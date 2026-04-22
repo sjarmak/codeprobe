@@ -1824,3 +1824,165 @@ class TestClaudeModelNormalization:
             cmd = adapter.build_command("test", config)
         idx = cmd.index("--model")
         assert cmd[idx + 1] == "claude-sonnet-4-6"
+
+
+# ---------------------------------------------------------------------------
+# 0.5.4: tool-restriction flags + stream-json tool_use capture
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeToolRestrictions:
+    """Claude adapter wires AgentConfig.{allowed,disallowed}_tools to CLI."""
+
+    def test_allowed_tools_empty_list_maps_to_tools_empty(self) -> None:
+        """``allowed_tools=[]`` means MCP-only → ``--tools ""``."""
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(allowed_tools=[])
+        cmd = adapter.build_command("test", config)
+        # Should contain --tools followed immediately by empty string.
+        assert "--tools" in cmd
+        idx = cmd.index("--tools")
+        assert cmd[idx + 1] == ""
+
+    def test_allowed_tools_nonempty_emits_both_flags(self) -> None:
+        """Non-empty allowed_tools = whitelist. Adapter disables built-ins
+        via --tools "" AND auto-approves listed names via --allowedTools,
+        because in claude 2.1.x, --allowedTools alone doesn't restrict
+        the available tool set (it just auto-approves) and without both
+        flags the agent either burns turns on permission prompts or calls
+        unlisted tools."""
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(allowed_tools=["Read", "Grep"])
+        cmd = adapter.build_command("test", config)
+        assert "--tools" in cmd
+        assert cmd[cmd.index("--tools") + 1] == ""
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == "Read,Grep"
+
+    def test_disallowed_tools_maps_to_disallowedTools(self) -> None:
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(disallowed_tools=["Bash", "Write"])
+        cmd = adapter.build_command("test", config)
+        assert "--disallowedTools" in cmd
+        idx = cmd.index("--disallowedTools")
+        assert cmd[idx + 1] == "Bash,Write"
+
+    def test_both_tool_restrictions_coexist(self) -> None:
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(
+            allowed_tools=["Read"], disallowed_tools=["Bash"]
+        )
+        cmd = adapter.build_command("test", config)
+        assert "--allowedTools" in cmd
+        assert "--disallowedTools" in cmd
+
+    def test_none_tool_restrictions_omit_flags(self) -> None:
+        """Default behavior: no --tools / --allowedTools / --disallowedTools."""
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig()
+        cmd = adapter.build_command("test", config)
+        assert "--tools" not in cmd
+        assert "--allowedTools" not in cmd
+        assert "--disallowedTools" not in cmd
+
+    def test_stream_json_is_default_output_format(self) -> None:
+        """Claude adapter switched to stream-json for tool_use capture."""
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        cmd = adapter.build_command("test", AgentConfig())
+        assert "--output-format" in cmd
+        idx = cmd.index("--output-format")
+        assert cmd[idx + 1] == "stream-json"
+        assert "--verbose" in cmd
+
+
+class TestStreamJsonToolUseCapture:
+    """JsonStdoutCollector parses stream-json and counts tool_use blocks."""
+
+    def _make_stream(self, tool_names: list[str]) -> str:
+        """Build a minimal stream-json transcript with given tool_use blocks."""
+        import json as _json
+
+        lines = [
+            _json.dumps({
+                "type": "system", "subtype": "init",
+                "mcp_servers": [{"name": "sourcegraph", "status": "connected"}],
+            })
+        ]
+        for name in tool_names:
+            lines.append(_json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": name}]},
+            }))
+        # Terminal result event carries the envelope-shape fields.
+        lines.append(_json.dumps({
+            "type": "result",
+            "subtype": "success",
+            "result": "Done.",
+            "is_error": False,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 100,
+            },
+            "total_cost_usd": 0.05,
+        }))
+        return "\n".join(lines) + "\n"
+
+    def test_counts_all_tool_use_blocks(self) -> None:
+        from codeprobe.adapters.telemetry import JsonStdoutCollector
+
+        stream = self._make_stream(["Read", "Grep", "Read", "Bash"])
+        u = JsonStdoutCollector().collect(stream)
+        assert u.tool_call_count == 4
+        assert u.tool_use_by_name == {"Read": 2, "Grep": 1, "Bash": 1}
+
+    def test_counts_mcp_tool_names(self) -> None:
+        """MCP tools show up as ``mcp__<server>__<tool>``; counted correctly."""
+        from codeprobe.adapters.telemetry import JsonStdoutCollector
+
+        stream = self._make_stream([
+            "Read", "mcp__sourcegraph__keyword_search",
+            "mcp__sourcegraph__find_references",
+        ])
+        u = JsonStdoutCollector().collect(stream)
+        assert u.tool_call_count == 3
+        assert u.tool_use_by_name["mcp__sourcegraph__keyword_search"] == 1
+        assert u.tool_use_by_name["mcp__sourcegraph__find_references"] == 1
+
+    def test_empty_stream_returns_no_tool_calls(self) -> None:
+        from codeprobe.adapters.telemetry import JsonStdoutCollector
+
+        stream = self._make_stream([])
+        u = JsonStdoutCollector().collect(stream)
+        assert u.tool_call_count == 0
+        assert u.tool_use_by_name is None  # sentinel: nothing captured
+
+    def test_single_envelope_still_works(self) -> None:
+        """Back-compat: legacy --output-format json single envelope parses."""
+        from codeprobe.adapters.telemetry import JsonStdoutCollector
+
+        envelope = {
+            "result": "ok",
+            "usage": {
+                "input_tokens": 5, "output_tokens": 10,
+                "cache_read_input_tokens": 0,
+            },
+            "total_cost_usd": 0.01,
+        }
+        import json as _json
+
+        u = JsonStdoutCollector().collect(_json.dumps(envelope))
+        assert u.input_tokens == 5
+        assert u.tool_call_count is None  # envelope has no messages

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.4 (2026-04-22)
+
+### Features
+
+- **`allowed_tools` / `disallowed_tools` on ExperimentConfig + AgentConfig + `codeprobe experiment add-config`.** Whitelist/blacklist the tools the agent may call, per config. Pass `--allowed-tools ""` (empty string) to disable all built-ins for a true MCP-only comparison; pass a comma-separated list (e.g. `--allowed-tools "mcp__sourcegraph__keyword_search,mcp__sourcegraph__find_references,Write"`) to restrict-and-auto-approve. The adapter emits both `--tools ""` and `--allowedTools <list>` when a whitelist is provided, because in claude 2.1.x `--allowedTools` alone doesn't restrict the tool set — it's the auto-approval list. Verified end-to-end on a kubernetes reference-trace task: a whitelisted MCP-only config produced 15 MCP calls and zero built-in calls, vs. 14/15 built-in calls in the unconstrained baseline.
+- **Per-tool usage capture in `CompletedTask.tool_use_by_name`.** Previously `tool_call_count` was always `None` in stored results because the claude adapter used `--output-format json`, which returns `{result, usage, total_cost_usd}` with no message stream. The adapter now uses `--output-format stream-json --verbose` and parses the newline-delimited events to count tool uses (including `mcp__<server>__<tool>` names) while reconstructing the terminal `result` event for downstream code. `JsonStdoutCollector` auto-detects stream-json vs single envelope and handles both, so any other adapter still using the simple envelope keeps working.
+
+### Fixes
+
+- **`ExperimentConfig.__repr__` now redacts and reports `allowed_tools`/`disallowed_tools`** for completeness.
+
 ## 0.5.3 (2026-04-22)
 
 ### Fixes

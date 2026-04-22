@@ -243,7 +243,13 @@ class ClaudeAdapter(BaseAdapter):
 
     def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
         binary = self._require_binary()
-        cmd = [binary, "-p", prompt, "--output-format", "json"]
+        # stream-json + --verbose emits newline-delimited events including
+        # every assistant message (with tool_use content blocks) and ends
+        # with a ``type: "result"`` event mirroring the ``json`` envelope.
+        # This is what gives us accurate per-run tool_call_count and
+        # per-tool observability; the collector reconstructs the envelope
+        # from the terminal event.
+        cmd = [binary, "-p", prompt, "--output-format", "stream-json", "--verbose"]
 
         if config.model:
             cmd.extend(["--model", _normalize_model_for_cli(config.model)])
@@ -261,6 +267,27 @@ class ClaudeAdapter(BaseAdapter):
         mcp_path = self._write_mcp_config(config)
         if mcp_path:
             cmd.extend(["--mcp-config", mcp_path, "--strict-mcp-config"])
+
+        # Tool restrictions. Claude CLI has three related flags:
+        #   --tools ""            disables all built-in tools
+        #   --allowedTools X,Y    auto-approves these tools (no permission
+        #                         prompt); names may include MCP tools as
+        #                         ``mcp__<server>__<tool>``
+        #   --disallowedTools X,Y blocks these tools outright
+        # We treat ``allowed_tools`` as a whitelist: when set, built-ins
+        # are disabled (``--tools ""``) and listed names are auto-approved
+        # (``--allowedTools``). This yields true MCP-only runs when the
+        # whitelist contains only ``mcp__*`` names — verified against
+        # claude 2.1.x: without auto-approval the agent hits permission
+        # prompts and ends the turn early.
+        if config.allowed_tools is not None:
+            cmd.extend(["--tools", ""])
+            if config.allowed_tools:
+                cmd.extend(["--allowedTools", ",".join(config.allowed_tools)])
+        if config.disallowed_tools:
+            cmd.extend(
+                ["--disallowedTools", ",".join(config.disallowed_tools)]
+            )
 
         return cmd
 
@@ -290,15 +317,35 @@ class ClaudeAdapter(BaseAdapter):
         return {}
 
     def parse_output(self, result: subprocess.CompletedProcess[str], duration: float) -> AgentOutput:
-        """Parse Claude CLI JSON envelope into AgentOutput."""
+        """Parse Claude CLI JSON envelope into AgentOutput.
+
+        Handles both ``--output-format json`` (single envelope) and
+        ``--output-format stream-json --verbose`` (newline-delimited
+        events) — the collector auto-detects. When parsing a stream, the
+        final ``type: "result"`` event carries the same fields as the
+        single-envelope shape, so we reconstruct ``result`` text from it.
+        """
         usage = self._collector.collect(result.stdout)
 
-        # Extract content text from the JSON envelope
+        # Extract content text. For stream-json, the terminal result event
+        # has a ``result`` field; iterate events to find it. For single
+        # envelope, json.loads works directly.
+        stdout_text = result.stdout
         try:
             envelope = json.loads(result.stdout)
             stdout_text = envelope.get("result", result.stdout)
         except (json.JSONDecodeError, ValueError):
-            stdout_text = result.stdout
+            for line in reversed(result.stdout.splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(ev, dict) and ev.get("type") == "result":
+                    stdout_text = ev.get("result", result.stdout)
+                    break
 
         return AgentOutput(
             stdout=stdout_text,
@@ -313,4 +360,5 @@ class ClaudeAdapter(BaseAdapter):
             cost_source=usage.cost_source,
             error=usage.error,
             tool_call_count=usage.tool_call_count,
+            tool_use_by_name=usage.tool_use_by_name,
         )

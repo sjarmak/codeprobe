@@ -482,6 +482,8 @@ def run_eval(
             permission_mode=perm,
             timeout_seconds=resolved_timeout,
             mcp_config=exp_config.mcp_config,
+            allowed_tools=exp_config.allowed_tools,
+            disallowed_tools=exp_config.disallowed_tools,
             cwd=str(repo_root),
         )
 

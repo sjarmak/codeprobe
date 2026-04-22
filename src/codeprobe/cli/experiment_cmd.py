@@ -142,6 +142,8 @@ def experiment_add_config(
     mcp_config_str: str | None,
     instruction_variant: str | None = None,
     preambles: tuple[str, ...] = (),
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> None:
     """Add a configuration to an existing experiment."""
     exp_dir = Path(path)
@@ -191,6 +193,8 @@ def experiment_add_config(
         mcp_config=mcp_config,
         instruction_variant=instruction_variant,
         preambles=preambles,
+        allowed_tools=allowed_tools,
+        disallowed_tools=disallowed_tools,
     )
 
     # Validate the label is a safe path component

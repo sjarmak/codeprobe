@@ -151,6 +151,8 @@ def run_experiment(
             permission_mode=perm,
             timeout_seconds=timeout,
             mcp_config=exp_config.mcp_config,
+            allowed_tools=exp_config.allowed_tools,
+            disallowed_tools=exp_config.disallowed_tools,
             cwd=str(experiment_dir.resolve()),
         )
 

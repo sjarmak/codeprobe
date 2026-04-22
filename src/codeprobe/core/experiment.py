@@ -98,7 +98,11 @@ def load_experiment(exp_dir: Path) -> Experiment:
             model=c.get("model"),
             permission_mode=c.get("permission_mode", "default"),
             mcp_config=c.get("mcp_config"),
+            allowed_tools=c.get("allowed_tools"),
+            disallowed_tools=c.get("disallowed_tools"),
             instruction_variant=c.get("instruction_variant"),
+            preambles=tuple(c.get("preambles", ())),
+            reward_type=c.get("reward_type", "binary"),
             extra=c.get("extra", {}),
         )
         for c in data.get("configs", [])

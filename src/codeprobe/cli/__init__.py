@@ -794,6 +794,23 @@ def init_experiment(
         "Built-ins: sourcegraph, github. Or path to a custom .md file."
     ),
 )
+@click.option(
+    "--allowed-tools",
+    default=None,
+    help=(
+        "Restrict the agent to this comma-separated list of built-in "
+        "tool names (e.g. 'Read,Grep'). Pass an empty string ('') to "
+        "disable all built-in tools for an MCP-only comparison."
+    ),
+)
+@click.option(
+    "--disallowed-tools",
+    default=None,
+    help=(
+        "Block the agent from these comma-separated built-in tool names "
+        "(e.g. 'Bash,Write'). Applies on top of --allowed-tools."
+    ),
+)
 def add_config(
     path: str,
     label: str,
@@ -803,9 +820,18 @@ def add_config(
     mcp_config: str | None,
     instruction_variant: str | None,
     preambles: tuple[str, ...],
+    allowed_tools: str | None,
+    disallowed_tools: str | None,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
+
+    # Parse comma-separated tool lists. An empty string means "MCP-only":
+    # disable all built-in tools. None means "adapter default".
+    def _parse_tools(raw: str | None) -> list[str] | None:
+        if raw is None:
+            return None
+        return [t.strip() for t in raw.split(",") if t.strip()]
 
     experiment_add_config(
         path,
@@ -816,6 +842,8 @@ def add_config(
         mcp_config_str=mcp_config,
         instruction_variant=instruction_variant,
         preambles=preambles,
+        allowed_tools=_parse_tools(allowed_tools),
+        disallowed_tools=_parse_tools(disallowed_tools),
     )
 
 

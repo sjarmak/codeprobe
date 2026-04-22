@@ -8,13 +8,23 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ExperimentConfig:
-    """A single configuration to evaluate (e.g., 'baseline' or 'with-mcp')."""
+    """A single configuration to evaluate (e.g., 'baseline' or 'with-mcp').
+
+    ``allowed_tools`` / ``disallowed_tools`` restrict which tools the
+    agent is allowed to call during this config's runs. Semantics mirror
+    the underlying CLI (Claude's ``--allowedTools`` / ``--disallowedTools``
+    / ``--tools``). Set ``allowed_tools=[]`` to disable all built-in tools
+    for an MCP-only comparison — MCP tools are still reachable because
+    they come from ``mcp_config``.
+    """
 
     label: str
     agent: str = "claude"
     model: str | None = None
     permission_mode: str = "default"
     mcp_config: dict | None = None
+    allowed_tools: list[str] | None = None
+    disallowed_tools: list[str] | None = None
     instruction_variant: str | None = None
     preambles: tuple[str, ...] = ()
     reward_type: str = "binary"
@@ -29,6 +39,8 @@ class ExperimentConfig:
             f"ExperimentConfig(label={self.label!r}, agent={self.agent!r}, "
             f"model={self.model!r}, permission_mode={self.permission_mode!r}, "
             f"mcp_config={redacted_mcp!r}, "
+            f"allowed_tools={self.allowed_tools!r}, "
+            f"disallowed_tools={self.disallowed_tools!r}, "
             f"instruction_variant={self.instruction_variant!r}, "
             f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
             f"extra={self.extra!r})"
@@ -113,6 +125,9 @@ class CompletedTask:
     cost_model: str = "unknown"
     cost_source: str = "unavailable"
     tool_call_count: int | None = None
+    # Per-tool usage breakdown (e.g. {"Read": 5,
+    # "mcp__sourcegraph__keyword_search": 2}). None when not captured.
+    tool_use_by_name: dict[str, int] | None = None
     error_category: str | None = None
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
