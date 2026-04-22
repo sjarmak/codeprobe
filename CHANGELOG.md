@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.5.0 (2026-04-22)
+## 0.5.1 (2026-04-22)
+
+### Fixes
+
+- **CI dev extras** — add `build>=1.0` to `[project.optional-dependencies].dev`. `tests/test_release_gate.py::test_build_and_stage_real_wheel` shells out to `python -m build --wheel` and was failing the publish-workflow test matrix with `No module named build`. Latent bug since the test was introduced in 3d2cb48 after 0.4.1; v0.5.0 was the first release to exercise it, so publish skipped (no PyPI upload happened).
+
+## 0.5.0 (2026-04-22) — yanked; never published
+
+v0.5.0 failed its publish workflow due to the missing `build` dep above and was never uploaded to PyPI. All v0.5.0 changes ship unchanged in 0.5.1; see that entry for the full list.
 
 ### Features
 

@@ -1,6 +1,6 @@
 [project]
 name = "codeprobe"
-version = "0.5.0"
+version = "0.5.1"
 description = "Benchmark AI coding agents against your own codebase. Mine real tasks from repo history, run agents, interpret results."
 readme = "README.md"
 license = "Apache-2.0"
@@ -41,6 +41,10 @@ dev = [
     "mypy>=1.10,<2",
     "types-PyYAML>=6.0,<7",
     "scipy>=1.11,<2",
+    # Needed by tests/test_release_gate.py::test_build_and_stage_real_wheel
+    # which shells out to ``python -m build --wheel`` to verify the wheel
+    # produced at release time is installable and version-consistent.
+    "build>=1.0,<2",
 ]
 
 [project.scripts]
