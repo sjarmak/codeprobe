@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 (2026-04-22)
+
+### Features
+
+- **`--sg-discovery` flag** — when mining with `--mcp-families`, rank candidate symbols via Sourcegraph `sg_find_references` MCP calls instead of the local grep-based Phase 2 scan. Bounded sample (default 100) + parallel MCP calls cut wall-clock from hours to minutes on large repos (kubernetes: 128min → 22s, ~340× faster). Gated on explicit `--sg-discovery` for backward compat.
+- **Tier-weighted F1 by default** — `oracle_check()` now uses `metric="auto"`, which selects `weighted_f1` when `ground_truth.json` has an `oracle_tiers` map and plain `f1` otherwise. Matches CodeScaleBench's `_get_primary_score` behavior. The shipped `tests/oracle.py` template (vendored per task) also reads `oracle_tiers` and produces weighted F1 as the primary reward.
+- **Repo-prefix 2-pass path matching** — oracle scoring now strips `<repo>/` (bare or embedded in absolute paths) from agent answers before set comparison, so `kubernetes/pkg/foo.go` and `/home/u/kubernetes/pkg/foo.go` both match oracle `pkg/foo.go`. Requires a new `repo` field in `ground_truth.json` (auto-populated by mining; absent on older tasks falls back to pass-1 matching).
+
+### Fixes
+
+- **Multi-env-var Sourcegraph auth** — `sg_auth.get_valid_token()` now accepts `SRC_ACCESS_TOKEN`, `SOURCEGRAPH_TOKEN`, or `SOURCEGRAPH_ACCESS_TOKEN` (canonical first, aliases for convenience). `SourcegraphBackend` uses the same unified resolver.
+- **Fail-loud on missing SG auth with `--mcp-families`** — previously codeprobe silently fell back to grep-only ground truth, producing biased results for the exact MCP-vs-baseline comparison the flag implies. Missing auth is now a hard error with a message listing all accepted env vars, raised before the expensive scan begins.
+- **Env-var templates survive MCP config redaction** — `redact_mcp_headers` now preserves values containing `${VAR}` (e.g., `"token ${SG_TOKEN}"`) while still redacting literal secrets. Fixes round-tripping of experiment.json configs that reference secrets via env-var substitution.
+- **`CLAUDE_CONFIG_DIR` respected in Claude adapter** — `check_parallel_auth` and `isolate_session` now honor the `CLAUDE_CONFIG_DIR` env var (Claude Code's own account-switching convention) instead of always reading `~/.claude`. Previously missed credentials on systems running Claude Code with an account-specific config dir.
+- **Detect expired OAuth tokens in pre-flight** — `check_parallel_auth` now parses `claudeAiOauth.expiresAt` from the credentials file and emits a distinct "credentials EXPIRED" warning with a `claude login` prompt, instead of reporting OK and letting every agent run hit API 401 minutes later.
+- **`--sg-repo` help text** — corrected from the misleading `SOURCEGRAPH_TOKEN` reference to list all accepted env var names.
+
+### Behavior notes
+
+- **Scoring change may affect numeric results.** Tasks whose `ground_truth.json` has `oracle_tiers` with mixed tiers (required + supplementary/context) will score differently under the new auto-selected weighted F1. Tasks with all-required tiers are unaffected (weighted F1 ≡ plain F1). Pass `--metric f1` to `codeprobe oracle-check` to force the prior behavior.
+- **Mining tasks without `--sg-discovery` still use the grep-based ranking** — the new flag is opt-in. Existing profiles and pipelines keep working.
+
 ## 0.3.7 (2026-04-09)
 
 ### Features
