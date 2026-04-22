@@ -259,3 +259,60 @@ class TestComparePairwiseContinuousRouting:
             b_scores=[0.0, 1.0, 0.0],
         )
         assert cmp.effect_size_method == "cliffs_delta"
+
+
+class TestVerdictSoftening:
+    """Summary text softens the verdict when the effect is small or p is high."""
+
+    def _run_compare(self, a_scores, b_scores):
+        from codeprobe.analysis.stats import compare_configs
+        from codeprobe.models.experiment import ConfigResults
+
+        a_cr = ConfigResults(
+            config="a",
+            completed=[_task(f"t{i}", s) for i, s in enumerate(a_scores)],
+        )
+        b_cr = ConfigResults(
+            config="b",
+            completed=[_task(f"t{i}", s) for i, s in enumerate(b_scores)],
+        )
+        return compare_configs(
+            summarize_config(a_cr), summarize_config(b_cr),
+            a_scores=list(a_scores), b_scores=list(b_scores),
+        )
+
+    def test_large_effect_with_power_says_wins(self) -> None:
+        """Consistent large gap across enough samples → unqualified winner."""
+        # N=8, unambiguous separation in every paired sample
+        a = [0.90, 0.88, 0.92, 0.85, 0.87, 0.93, 0.89, 0.91]
+        b = [0.10, 0.12, 0.15, 0.08, 0.18, 0.11, 0.14, 0.09]
+        cmp = self._run_compare(a, b)
+        assert "a wins" in cmp.summary
+        assert "nominally" not in cmp.summary
+
+    def test_small_effect_softens_verdict(self) -> None:
+        """Noisy data with a tiny gap → softened verdict.
+
+        The gap (~0.02) clears the 0.01 tied threshold, but high within-
+        config variance keeps Cohen's d < 0.2, which should trigger the
+        "nominally ahead (small effect)" wording.
+        """
+        a = [0.95, 0.10, 0.85, 0.20, 0.75, 0.30]
+        b = [0.93, 0.08, 0.83, 0.18, 0.72, 0.28]
+        cmp = self._run_compare(a, b)
+        assert "nominally ahead" in cmp.summary
+        # Should NOT say "wins" unqualified
+        assert " a wins" not in cmp.summary
+        assert " b wins" not in cmp.summary
+
+    def test_tied_scores_report_tied(self) -> None:
+        cmp = self._run_compare([0.5, 0.5], [0.5, 0.5])
+        assert "effectively tied" in cmp.summary
+
+    def test_real_experiment_numbers_produce_softened_verdict(self) -> None:
+        """Regression: the kubernetes-mcp-comparison scenario (N=5, d=0.076)."""
+        baseline = [0.75, 0.40, 0.11, 0.71, 0.14]
+        with_mcp = [0.71, 0.36, 0.08, 0.71, 0.14]
+        cmp = self._run_compare(baseline, with_mcp)
+        # score_diff ~0.02, small cohen's d, high p → softened verdict
+        assert "nominally ahead" in cmp.summary

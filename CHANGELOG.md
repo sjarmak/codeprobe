@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.3 (2026-04-22)
+
+### Fixes
+
+- **Pairwise verdict wording no longer overclaims on noise.** `interpret`'s per-pair summary previously said `→ <config> wins` whenever one config had a numerically higher mean score, even when the gap was statistically indistinguishable from zero. It now softens to `→ <config> nominally ahead (not significant; small effect)` when Cohen's d is below 0.2 (or Cliff's delta below 0.147) and/or the Wilcoxon/McNemar p-value is above 0.05, and reports `→ effectively tied` when the score gap is below 0.01. Unqualified `<config> wins` is reserved for cases with a real effect size AND statistical power. Thresholds follow Cohen 1988 (d < 0.2 = negligible) and Romano et al. 2006 (|δ| < 0.147 = negligible).
+
 ## 0.5.2 (2026-04-22)
 
 ### Fixes

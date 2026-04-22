@@ -583,7 +583,31 @@ def compare_configs(
     elif speed_diff > 0:
         parts.append(f"{speed_diff:.1f}s slower")
 
-    summary = f"{a.label} vs {b.label}: {', '.join(parts)} " f"\u2192 {winner} wins"
+    # Soften the verdict when the effect is negligible or the test is
+    # underpowered, so we don't confidently declare a "winner" on what may
+    # be noise. Thresholds:
+    #   Cohen's d: |d| < 0.2 is "negligible" (Cohen 1988).
+    #   Cliff's delta: |delta| < 0.147 is "negligible" (Romano et al. 2006).
+    #   p-value > 0.05: not significant at the conventional threshold.
+    scores_tied = abs(score_diff) < 0.01
+    negligible_threshold = 0.2 if eff_method == "cohens_d" else 0.147
+    small_effect = (
+        eff_size is not None and abs(eff_size) < negligible_threshold
+    )
+    not_significant = p_val is not None and p_val > 0.05
+
+    if scores_tied:
+        verdict = "effectively tied"
+    elif small_effect and not_significant:
+        verdict = f"{winner} nominally ahead (not significant; small effect)"
+    elif small_effect:
+        verdict = f"{winner} nominally ahead (small effect size)"
+    elif not_significant:
+        verdict = f"{winner} nominally ahead (not significant at p=0.05)"
+    else:
+        verdict = f"{winner} wins"
+
+    summary = f"{a.label} vs {b.label}: {', '.join(parts)} \u2192 {verdict}"
 
     return PairwiseComparison(
         config_a=a.label,
