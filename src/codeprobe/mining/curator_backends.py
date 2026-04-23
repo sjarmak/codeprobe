@@ -6,6 +6,10 @@ Four implementations of the CurationBackend Protocol:
   3. PRDiffBackend — git log diff-filter for recently modified files
   4. AgentSearchBackend — LLM-based file identification via Haiku
 
+Plus a ``score_tool_benefit`` helper that delegates the tool-benefit judgment
+to a Claude model (ZFC-compliant — the returned categorical label is the
+model's decision, not a hardcoded heuristic).
+
 ZFC compliant: mechanism only (IO, structural validation, arithmetic).
 """
 
@@ -447,3 +451,82 @@ class AgentSearchBackend:
                     )
                 )
         return curated
+
+
+# ---------------------------------------------------------------------------
+# Tool-benefit scorer (ZFC-compliant curator call)
+# ---------------------------------------------------------------------------
+
+_TOOL_BENEFIT_LEVELS: frozenset[str] = frozenset({"", "low", "medium", "high"})
+
+
+def score_tool_benefit(
+    task_description: str,
+    changed_files: tuple[str, ...] | list[str],
+    capabilities: tuple[str, ...],
+    *,
+    timeout_seconds: int = 20,
+) -> tuple[str, str]:
+    """Ask Claude to judge how much an MCP tool-using agent would benefit from
+    these capabilities on this task.
+
+    Returns ``(level, rationale)`` where ``level`` is one of
+    ``"" | "low" | "medium" | "high"`` and ``rationale`` is a short sentence.
+    Falls back to ``("", "")`` when the LLM is unavailable, the call errors,
+    or the response cannot be validated against the allowed level set.
+
+    This is the ZFC-compliant path: the categorical judgment is delegated to
+    the model, the code around it does only IO + structural validation.
+    """
+    if not llm_available():
+        return ("", "")
+
+    files_preview = ", ".join(list(changed_files)[:10]) or "(no files)"
+    caps_preview = ", ".join(capabilities) or "(none)"
+    prompt = (
+        "You are evaluating whether an AI coding agent with MCP tools would "
+        "benefit from those tools on a specific task.\n\n"
+        f"**Task description:** {task_description}\n\n"
+        f"**Changed files:** {files_preview}\n\n"
+        f"**Available MCP capabilities:** {caps_preview}\n\n"
+        "Judge the tool-benefit on this 4-level scale:\n"
+        '  "" — not assessable / no opinion\n'
+        '  "low" — agent likely completes without tools\n'
+        '  "medium" — tools help but are not required\n'
+        '  "high" — tools materially change success probability\n\n'
+        "Return a JSON object exactly of the form:\n"
+        '{"level": "low"|"medium"|"high"|"", "rationale": "<one sentence>"}\n'
+        "No markdown, no code fences, no commentary outside the JSON."
+    )
+
+    try:
+        response = call_claude(
+            LLMRequest(
+                prompt=prompt, model="haiku", timeout_seconds=timeout_seconds
+            )
+        )
+    except LLMError as exc:
+        logger.warning("score_tool_benefit: LLM call failed: %s", exc)
+        return ("", "")
+
+    text = response.text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(
+            line for line in lines if not line.strip().startswith("```")
+        )
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("score_tool_benefit: non-JSON response, dropping")
+        return ("", "")
+
+    if not isinstance(parsed, dict):
+        return ("", "")
+    level = parsed.get("level", "")
+    rationale = parsed.get("rationale", "")
+    if not isinstance(level, str) or level not in _TOOL_BENEFIT_LEVELS:
+        return ("", "")
+    if not isinstance(rationale, str):
+        rationale = ""
+    return (level, rationale)

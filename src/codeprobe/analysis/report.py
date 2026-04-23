@@ -327,6 +327,77 @@ def format_text_report(report: Report) -> str:
     return "\n".join(lines)
 
 
+def _bucket_tool_call_count(count: int | None) -> str:
+    """Bucket an observed tool_call_count into low/medium/high.
+
+    Thresholds are explicit, documented, and deterministic — this is
+    structural arithmetic, not semantic judgment, so it is ZFC-compliant
+    (see rules/common/patterns.md "deterministic ranking with explicit
+    tiebreaker rules" carve-out).
+
+    Buckets:
+      count is None or < 0 → ""    (unknown — no data)
+      count <= 2          → "low"
+      count <= 10         → "medium"
+      count > 10          → "high"
+    """
+    if count is None or count < 0:
+        return ""
+    if count <= 2:
+        return "low"
+    if count <= 10:
+        return "medium"
+    return "high"
+
+
+_TOOL_BENEFIT_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+
+
+def _tool_delta_vs_expected(
+    expected: str, observed_count: int | None
+) -> str:
+    """Compute the per-task tool-delta label.
+
+    Returns one of:
+      ""       — expected is blank (not assessed) OR observed is unknown
+      "match"  — observed bucket == expected
+      "under"  — observed bucket strictly below expected
+      "over"   — observed bucket strictly above expected
+    """
+    if expected not in _TOOL_BENEFIT_ORDER:
+        return ""
+    observed = _bucket_tool_call_count(observed_count)
+    if observed == "":
+        return ""
+    exp_idx = _TOOL_BENEFIT_ORDER[expected]
+    obs_idx = _TOOL_BENEFIT_ORDER[observed]
+    if obs_idx == exp_idx:
+        return "match"
+    if obs_idx < exp_idx:
+        return "under"
+    return "over"
+
+
+def _extract_expected_tool_benefit(task: CompletedTask) -> str:
+    """Read the task's mine-time ``expected_tool_benefit`` if carried.
+
+    Looks in ``task.metadata`` and ``task.scoring_details`` (runners may
+    forward the value through either channel). Returns "" when absent so the
+    interpret column is blank rather than guessed.
+    """
+    meta = task.metadata or {}
+    if isinstance(meta, dict):
+        value = meta.get("expected_tool_benefit", "")
+        if isinstance(value, str) and value:
+            return value
+    details = task.scoring_details or {}
+    if isinstance(details, dict):
+        value = details.get("expected_tool_benefit", "")
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def _build_task_rows(report: Report) -> list[dict]:
     """Build per-task row dicts from report config_results and summaries."""
     summary_map = {s.label: s for s in report.summaries}
@@ -338,6 +409,10 @@ def _build_task_rows(report: Report) -> list[dict]:
         for task in cr.completed:
             details = task.scoring_details or {}
             has_dual = has_dual_scoring(task)
+            expected_tool_benefit = _extract_expected_tool_benefit(task)
+            tool_delta = _tool_delta_vs_expected(
+                expected_tool_benefit, task.tool_call_count
+            )
             rows.append(
                 {
                     "config": cr.config,
@@ -354,6 +429,9 @@ def _build_task_rows(report: Report) -> list[dict]:
                     "cost_model": task.cost_model,
                     "ci_lower": ci_lower,
                     "ci_upper": ci_upper,
+                    "expected_tool_benefit": expected_tool_benefit,
+                    "tool_call_count": task.tool_call_count,
+                    "tool_delta_vs_expected": tool_delta,
                     # Dual scoring leg columns — populated when the task has
                     # dual scoring_details, otherwise None/empty so CSV
                     # still emits a uniform schema.
@@ -450,6 +528,12 @@ _CSV_COLUMNS = [
     "passed_direct",
     "passed_artifact",
     "scoring_policy",
+    # Tool-benefit delta — expected level (from metadata.json at mine time)
+    # vs the bucketed observed tool_call_count. Empty string when either
+    # side is unknown.
+    "expected_tool_benefit",
+    "tool_call_count",
+    "tool_delta_vs_expected",
 ]
 
 

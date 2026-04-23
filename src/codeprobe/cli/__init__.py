@@ -963,3 +963,8 @@ main.add_command(auth)
 from codeprobe.cli.trace_cmd import trace  # noqa: E402
 
 main.add_command(trace)
+
+# Register the check-infra command group (capability drift diagnostics)
+from codeprobe.cli.check_infra import check_infra  # noqa: E402
+
+main.add_command(check_infra)

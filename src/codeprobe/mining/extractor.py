@@ -1038,6 +1038,20 @@ def extract_task_from_merge(
 
     description = _format_task_description(pr_meta)
 
+    # Snapshot live MCP capability set + delegate tool-benefit judgment to a
+    # curator model call. The call must happen BEFORE the TaskMetadata(...)
+    # constructor so the ZFC lint rule (scripts/lint_zfc.py) sees a model
+    # invocation in scope when ``expected_tool_benefit`` is populated.
+    from codeprobe.mcp.capabilities import CAPABILITIES
+    from codeprobe.mining.curator_backends import score_tool_benefit
+
+    capability_snapshot = tuple(sorted(CAPABILITIES.keys()))
+    expected_tool_benefit, tool_benefit_rationale = score_tool_benefit(
+        description,
+        tuple(changed_files),
+        capability_snapshot,
+    )
+
     metadata = TaskMetadata(
         name=f"merge-{short_sha}",
         difficulty=difficulty,
@@ -1047,6 +1061,9 @@ def extract_task_from_merge(
         issue_title=pr_meta.issue_title,
         issue_body=pr_meta.issue_body,
         ground_truth_commit=merge_sha,
+        expected_tool_benefit=expected_tool_benefit,
+        tool_benefit_rationale=tool_benefit_rationale,
+        mcp_capabilities_at_mine_time=capability_snapshot,
     )
 
     verification = TaskVerification(

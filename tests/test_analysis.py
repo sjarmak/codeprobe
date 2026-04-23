@@ -1139,6 +1139,11 @@ class TestFormatCsvReport:
             "passed_direct",
             "passed_artifact",
             "scoring_policy",
+            # Tool-benefit delta columns (always present in schema; blank
+            # for tasks without a mine-time expected_tool_benefit).
+            "expected_tool_benefit",
+            "tool_call_count",
+            "tool_delta_vs_expected",
         }
         assert reader.fieldnames is not None
         assert set(reader.fieldnames) == expected_cols
