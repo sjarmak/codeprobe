@@ -549,6 +549,27 @@ def run_eval(
                     user_dir=Path.home(),
                 )
 
+            # R6: persist resolved instruction per task before adapter runs.
+            # Write is fail-loud (INV1) — any OSError aborts the run.
+            from codeprobe.core.executor import load_instruction
+            from codeprobe.core.preamble import _base_prompt, compose_instruction
+
+            for _td in task_dirs:
+                _instr = load_instruction(_td, variant=exp_config.instruction_variant)
+                if exp_config.preambles and preamble_resolver is not None:
+                    _prompt, _ = compose_instruction(
+                        _instr,
+                        repo_root,
+                        preamble_names=list(exp_config.preambles),
+                        resolver=preamble_resolver,
+                        task_id=_td.name,
+                    )
+                else:
+                    _prompt = _base_prompt(_instr, repo_root)
+                _out = config_runs_dir / _td.name / "instruction.resolved.md"
+                _out.parent.mkdir(parents=True, exist_ok=True)
+                _out.write_text(_prompt, encoding="utf-8")
+
             results = execute_config(
                 adapter=config_adapter,
                 task_dirs=task_dirs,
