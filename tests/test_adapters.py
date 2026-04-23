@@ -1847,19 +1847,25 @@ class TestClaudeToolRestrictions:
         assert cmd[idx + 1] == ""
 
     def test_allowed_tools_nonempty_emits_both_flags(self) -> None:
-        """Non-empty allowed_tools = whitelist. Adapter disables built-ins
-        via --tools "" AND auto-approves listed names via --allowedTools,
-        because in claude 2.1.x, --allowedTools alone doesn't restrict
-        the available tool set (it just auto-approves) and without both
-        flags the agent either burns turns on permission prompts or calls
-        unlisted tools."""
+        """Non-empty allowed_tools = whitelist. Adapter restricts the
+        built-in allowlist via ``--tools <builtins>`` and auto-approves
+        the full list (built-in + MCP) via ``--allowedTools`` so no
+        permission prompts fire mid-run.
+
+        Regression (r7): previously the adapter passed ``--tools ""``
+        unconditionally, which stripped every listed built-in — including
+        ``Write`` — so MCP-plus-Write whitelists silently lost the Write
+        tool and structured-retrieval tasks fell back to the
+        ``$AGENT_OUTPUT`` transcript instead of producing ``answer.json``.
+        """
         adapter = ClaudeAdapter()
         if not adapter.find_binary():
             pytest.skip("claude binary not available")
         config = AgentConfig(allowed_tools=["Read", "Grep"])
         cmd = adapter.build_command("test", config)
         assert "--tools" in cmd
-        assert cmd[cmd.index("--tools") + 1] == ""
+        # All built-ins are listed → --tools gets the built-in subset.
+        assert cmd[cmd.index("--tools") + 1] == "Read,Grep"
         assert "--allowedTools" in cmd
         assert cmd[cmd.index("--allowedTools") + 1] == "Read,Grep"
 

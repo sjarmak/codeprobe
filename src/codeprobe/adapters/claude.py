@@ -307,19 +307,37 @@ class ClaudeAdapter(BaseAdapter):
             cmd.extend(["--mcp-config", mcp_path, "--strict-mcp-config"])
 
         # Tool restrictions. Claude CLI has three related flags:
-        #   --tools ""            disables all built-in tools
+        #   --tools A,B           restricts the *built-in* tool allowlist
+        #                         to these names; ``--tools ""`` disables
+        #                         all built-ins. MCP tools come from
+        #                         ``mcp_config`` and are NOT valid entries
+        #                         here.
         #   --allowedTools X,Y    auto-approves these tools (no permission
         #                         prompt); names may include MCP tools as
-        #                         ``mcp__<server>__<tool>``
-        #   --disallowedTools X,Y blocks these tools outright
-        # We treat ``allowed_tools`` as a whitelist: when set, built-ins
-        # are disabled (``--tools ""``) and listed names are auto-approved
-        # (``--allowedTools``). This yields true MCP-only runs when the
-        # whitelist contains only ``mcp__*`` names — verified against
-        # claude 2.1.x: without auto-approval the agent hits permission
-        # prompts and ends the turn early.
+        #                         ``mcp__<server>__<tool>``.
+        #   --disallowedTools X,Y blocks these tools outright.
+        #
+        # We treat ``allowed_tools`` as a whitelist. Regression (r7): prior
+        # to this fix the adapter passed ``--tools ""`` unconditionally,
+        # which stripped every built-in including listed ones like
+        # ``Write`` — so a whitelist like
+        # ``["Write", "mcp__sourcegraph__keyword_search"]`` silently lost
+        # ``Write``. The agent then could not persist ``answer.json`` for
+        # structured-retrieval tasks and scoring fell back to the
+        # ``$AGENT_OUTPUT`` stdout transcript. ``--allowedTools`` only
+        # auto-approves; it does not re-enable a stripped built-in.
+        #
+        # Fix: partition ``allowed_tools`` into built-in vs MCP names
+        # (``mcp__<server>__<tool>`` is the canonical MCP prefix). Pass
+        # the built-in subset to ``--tools`` so listed built-ins stay
+        # available while unlisted built-ins are still disabled. Pass the
+        # full list to ``--allowedTools`` so both built-ins and MCP calls
+        # are auto-approved.
         if config.allowed_tools is not None:
-            cmd.extend(["--tools", ""])
+            builtin_tools = [
+                t for t in config.allowed_tools if not t.startswith("mcp__")
+            ]
+            cmd.extend(["--tools", ",".join(builtin_tools)])
             if config.allowed_tools:
                 cmd.extend(["--allowedTools", ",".join(config.allowed_tools)])
         if config.disallowed_tools:
