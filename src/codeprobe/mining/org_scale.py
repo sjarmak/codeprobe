@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from codeprobe.analysis.stats import PASS_THRESHOLD
 from codeprobe.mining.curator import CurationResult
 from codeprobe.mining.org_scale_families import (
     CROSS_REPO_DEP_TRACE,
@@ -68,6 +69,9 @@ CHANGE_SCOPE_CHECKPOINT_SCRIPTS: dict[str, str] = {
         '# R17 checkpoint: reuse the mined oracle to score F1 of the\n'
         '# agent answer against ground_truth.json. Emits JSON on stdout so\n'
         '# CheckpointScorer gets a continuous score in [0, 1].\n'
+        '# Threshold pinned at mine time to ``PASS_THRESHOLD`` from\n'
+        '# codeprobe.analysis.stats so score/pass stay consistent between\n'
+        '# the scorer and this checkpoint.\n'
         'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
         'TASK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"\n'
         'REWARD="$TASK_DIR/reward.txt"\n'
@@ -77,7 +81,7 @@ CHANGE_SCOPE_CHECKPOINT_SCRIPTS: dict[str, str] = {
         '    if [ -z "$SCORE" ]; then SCORE="0.0"; fi\n'
         "    # F1 is already in [0, 1]; pass flag is a simple threshold.\n"
         "    PASSED=false\n"
-        '    awk -v s="$SCORE" \'BEGIN { exit (s+0 >= 0.5) ? 0 : 1 }\' && PASSED=true\n'
+        f'    awk -v s="$SCORE" \'BEGIN {{ exit (s+0 >= {PASS_THRESHOLD}) ? 0 : 1 }}\' && PASSED=true\n'
         '    printf \'{"score": %s, "passed": %s}\\n\' "$SCORE" "$PASSED"\n'
         "    exit 0\n"
         "fi\n"

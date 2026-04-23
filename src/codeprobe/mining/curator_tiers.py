@@ -387,13 +387,15 @@ def assign_ground_truth_tiers(
       - File is 1 hop away in the reference graph → ``supplementary``
       - File is 2+ hops or unreachable → ``context``
 
-    The function invokes :func:`call_claude` before returning any tier
-    assignment (even when ``use_llm=False`` falls back to the heuristic
-    result) — this keeps the control flow ZFC-compliant: the model is
-    consulted, and its output refines the mechanical heuristic.
+    Normal path (``use_llm=True``): compute the mechanical heuristic,
+    then call :func:`call_claude` to refine the tiers. The model gets the
+    final say; the heuristic is the fallback if the LLM errors or returns
+    bad JSON.
 
-    When the LLM is unavailable or returns an invalid response, the
-    heuristic result is used verbatim (graceful degradation).
+    Offline fallback (``use_llm=False``): return the mechanical heuristic
+    verbatim with no LLM call. This is a documented offline mode — callers
+    that bypass the LLM accept a ZFC trade-off and must label their
+    outputs accordingly.
 
     Returns an immutable mapping file_path → tier.
     """

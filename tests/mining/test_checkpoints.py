@@ -231,6 +231,24 @@ class TestComprehensionCheckpoints:
                 "#!/usr/bin/env bash"
             )
 
+    def test_step2_scope_correct_pins_pass_threshold(self) -> None:
+        """Regression: ``step2_scope_correct.sh`` must embed the live
+        ``PASS_THRESHOLD`` from :mod:`codeprobe.analysis.stats`.
+
+        Previously the shell script baked in a literal ``0.5``. That
+        coincidentally matches the current threshold but would silently
+        drift if ``PASS_THRESHOLD`` changed — emitted checkpoints would
+        disagree with the runtime scorer.
+        """
+        from codeprobe.analysis.stats import PASS_THRESHOLD
+
+        script = CHANGE_SCOPE_CHECKPOINT_SCRIPTS["step2_scope_correct.sh"]
+        # The pinned value must appear as the awk threshold comparison.
+        assert f">= {PASS_THRESHOLD}" in script, (
+            "step2_scope_correct.sh should embed the current PASS_THRESHOLD "
+            "so the emitted script tracks the mine-time threshold."
+        )
+
 
 class TestResolveCheckpointScripts:
     def test_returns_none_for_empty_checkpoints(self) -> None:

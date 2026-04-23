@@ -7,15 +7,13 @@ HTTP 401/403 → :class:`AuthFailure` (fail-loud, no fallback).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from codeprobe.mining.trackers.base import Ticket
+from codeprobe.mining.vcs._http import stdlib_get
 from codeprobe.mining.vcs.base import (
     AuthFailure,
     AuthMode,
@@ -36,25 +34,9 @@ _TOKEN_ENV_VARS = (
 logger = logging.getLogger(__name__)
 
 
-def _http_get(
-    url: str, headers: dict[str, str], timeout: float = 15.0
-) -> tuple[int, Any, dict[str, str]]:
-    """Stdlib GET seam — mirrored shape with gitlab._http_get for test symmetry."""
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-            raw = resp.read()
-            status = resp.getcode()
-            resp_headers = {k: v for k, v in resp.headers.items()}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read() if hasattr(exc, "read") else b""
-        status = exc.code
-        resp_headers = {k: v for k, v in (exc.headers.items() if exc.headers else [])}
-    try:
-        body: Any = json.loads(raw.decode("utf-8")) if raw else {}
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        body = {"_raw": raw[:2048].decode("utf-8", errors="replace")}
-    return status, body, resp_headers
+# Module-level alias kept so tests can monkeypatch ``jira_module._http_get``.
+# The canonical implementation lives in :mod:`codeprobe.mining.vcs._http`.
+_http_get = stdlib_get
 
 
 class JiraAdapter(RedactingLoggerMixin):

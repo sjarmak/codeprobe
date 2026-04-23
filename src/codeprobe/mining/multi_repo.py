@@ -34,7 +34,7 @@ from typing import Literal, Protocol, runtime_checkable
 
 from codeprobe.mining.ast_scan import count_references_in_tree
 from codeprobe.mining.extractor import (
-    _get_changed_files,
+    get_changed_files,
     list_merged_prs,
 )
 from codeprobe.mining.retry import RetryTracker, retry_call
@@ -380,7 +380,7 @@ def _mine_callers(
         if state is not None:
             state.record_running(sha)
         try:
-            changed = _get_changed_files(sha, primary)
+            changed = get_changed_files(sha, primary)
             symbols = (
                 _extract_modified_symbols(primary, sha, changed) if changed else []
             )

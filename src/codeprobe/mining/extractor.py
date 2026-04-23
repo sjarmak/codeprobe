@@ -207,8 +207,14 @@ def _is_safe_relative_path(p: str) -> bool:
         return False
 
 
-def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
-    """Get the list of changed files for a merge commit."""
+def get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
+    """Get the list of changed files for a merge commit.
+
+    Public API — cross-module consumers (e.g.
+    :mod:`codeprobe.mining.multi_repo`) should import this name instead of
+    the legacy ``_get_changed_files`` alias, which is kept for one release
+    cycle and will be removed in a subsequent version.
+    """
     _validate_sha(merge_sha)
     try:
         result = subprocess.run(
@@ -232,6 +238,12 @@ def _get_changed_files(merge_sha: str, repo_path: Path) -> list[str]:
         for f in result.stdout.strip().splitlines()
         if f.strip() and _is_safe_relative_path(f.strip())
     ]
+
+
+# Deprecated alias — retained for one release cycle so internal call sites
+# inside this module (and any external consumers we missed) keep working.
+# New code should import :func:`get_changed_files` directly.
+_get_changed_files = get_changed_files
 
 
 def _get_deleted_dirs(merge_sha: str, repo_path: Path) -> set[str]:

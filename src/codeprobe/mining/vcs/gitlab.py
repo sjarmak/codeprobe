@@ -7,15 +7,13 @@ event emitter. HTTP 401/403 → :class:`AuthFailure` (fail-loud, no fallback).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Iterator
 from typing import Any
 
+from codeprobe.mining.vcs._http import stdlib_get
 from codeprobe.mining.vcs.base import (
     AuthFailure,
     AuthMode,
@@ -33,30 +31,9 @@ _TOKEN_ENV_VARS = ("CODEPROBE_TEST_TOKEN", "GITLAB_TOKEN", "GITLAB_PAT", "GITLAB
 logger = logging.getLogger(__name__)
 
 
-def _http_get(
-    url: str, headers: dict[str, str], timeout: float = 15.0
-) -> tuple[int, Any, dict[str, str]]:
-    """Thin stdlib GET seam — module-level so tests can monkeypatch easily.
-
-    Returns ``(status, parsed_body, response_headers)``. On a non-2xx HTTP
-    response the ``HTTPError`` is caught and its body parsed so that the
-    adapter can raise :class:`AuthFailure` with the real status code.
-    """
-    req = urllib.request.Request(url, headers=headers, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (validated URL)
-            raw = resp.read()
-            status = resp.getcode()
-            resp_headers = {k: v for k, v in resp.headers.items()}
-    except urllib.error.HTTPError as exc:
-        raw = exc.read() if hasattr(exc, "read") else b""
-        status = exc.code
-        resp_headers = {k: v for k, v in (exc.headers.items() if exc.headers else [])}
-    try:
-        body: Any = json.loads(raw.decode("utf-8")) if raw else {}
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        body = {"_raw": raw[:2048].decode("utf-8", errors="replace")}
-    return status, body, resp_headers
+# Module-level alias kept so tests can monkeypatch ``gitlab_module._http_get``.
+# The canonical implementation lives in :mod:`codeprobe.mining.vcs._http`.
+_http_get = stdlib_get
 
 
 class GitLabAdapter(RedactingLoggerMixin):
@@ -156,11 +133,15 @@ class GitLabAdapter(RedactingLoggerMixin):
             raise RuntimeError(f"GitLab returned non-dict MR payload: {type(mr).__name__}")
 
         # Related commits (best effort — if this sub-call fails on auth we
-        # still fail loud because it shares _check_auth).
+        # still fail loud because AuthFailure is re-raised explicitly.
+        # Any other RuntimeError (e.g. HTTP 500 on the sub-call) is treated
+        # as a best-effort miss and yields an empty commit list.
         try:
             commits = self._get(
                 f"/api/v4/projects/{project_ref}/merge_requests/{int(mr_iid)}/commits"
             )
+        except AuthFailure:
+            raise
         except RuntimeError:
             commits = []
 

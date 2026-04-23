@@ -58,6 +58,7 @@ This project is AI-orchestration code — ZFC applies at two levels:
 - `assess/heuristics.py:_detect_test_frameworks()` — regex framework detection. Structural file-glob part is OK, but "does this repo have good test coverage?" is semantic — delegate to model
 - `cli/mine_cmd.py:_quality_review()` — three heuristics: length+keyword check for "thin instructions" (desc < 50 chars), hardcoded 0.7 threshold for "low diversity", stub command keyword match. These are UI warnings, not scoring judgments, so lower priority for refactoring
 - `mining/org_scale_families.py` — `min_hits` thresholds (3-5) are hardcoded. Structural file-counting is OK per ZFC, but the thresholds are arbitrary. Acceptable as tunable parameters
+- `mining/curator_tiers.py:assign_ground_truth_tiers()` — the `use_llm=False` branch (line ~410) returns the pure mechanical heuristic tiers without any LLM call. This is a documented offline fallback mode; callers that opt in accept the ZFC trade-off. Not a drift bug — refactor would instead tighten the docstring/labeling so consumers know when they're seeing heuristic-only tiers
 
 ### Justified exceptions
 

@@ -131,6 +131,22 @@ class TestJaccardAndDiff:
         assert diff.churn > CHURN_THRESHOLD
         assert diff.is_structural_mismatch
 
+    def test_as_report_without_task_dir_uses_placeholder(self) -> None:
+        old = StructuralSignature("file_list", ("a", "b"))
+        new = StructuralSignature("count", ("a", "b"))
+        report = compute_diff(old, new).as_report()
+        assert "codeprobe mine --refresh" in report
+        assert "--accept-structural-change" in report
+        # Without a concrete task_dir, the report uses a placeholder.
+        assert "<task_dir>" in report
+
+    def test_as_report_with_task_dir_names_exact_command(self) -> None:
+        old = StructuralSignature("file_list", ("a", "b"))
+        new = StructuralSignature("count", ("a", "b"))
+        report = compute_diff(old, new).as_report("/path/to/tasks/tsk-0001")
+        assert "/path/to/tasks/tsk-0001" in report
+        assert "codeprobe mine --refresh /path/to/tasks/tsk-0001 --accept-structural-change" in report
+
 
 # ---------------------------------------------------------------------------
 # Signature extraction from disk
@@ -201,6 +217,33 @@ class TestSignatureFromTask:
         assert sig.oracle_type == "file_list"
         assert sig.oracle_files == ("a", "b")
 
+    def test_signature_from_legacy_dual_task_without_oracle_type(self) -> None:
+        """Legacy dual tasks lack ``oracle_type`` but still carry a file list.
+
+        Regression guard: the second branch in :func:`signature_from_task`
+        used to be an unreachable ``elif`` because it repeated the
+        oracle_type check. A legacy dual task with empty ``oracle_type``
+        must still classify as ``file_list`` so refresh-time diffs work.
+        """
+        task = Task(
+            id="legacy-dual",
+            repo="example/repo",
+            metadata=TaskMetadata(
+                name="legacy-dual",
+                description="legacy dual task",
+                task_type="dual",
+            ),
+            verification=TaskVerification(
+                type="dual",
+                verification_mode="dual",
+                oracle_type="",  # legacy: no explicit oracle_type
+                oracle_answer=("src/legacy_a.py", "src/legacy_b.py"),
+            ),
+        )
+        sig = signature_from_task(task)
+        assert sig.oracle_type == "file_list"
+        assert sig.oracle_files == ("src/legacy_a.py", "src/legacy_b.py")
+
 
 # ---------------------------------------------------------------------------
 # refresh_task
@@ -248,6 +291,10 @@ class TestRefreshTask:
         assert "oracle_type" in report
         assert "file_list" in report
         assert "count" in report
+        # Remediation must name the exact CLI invocation, not just the flag.
+        assert "codeprobe mine --refresh" in report
+        assert "--accept-structural-change" in report
+        assert str(task_dir) in report
 
     def test_fails_loud_on_file_churn_above_threshold(
         self, tmp_path: Path

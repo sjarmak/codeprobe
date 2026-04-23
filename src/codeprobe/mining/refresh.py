@@ -91,8 +91,14 @@ class RefreshDiff:
         """
         return self.oracle_type_changed or self.churn > CHURN_THRESHOLD
 
-    def as_report(self) -> str:
-        """Human-readable diff used in CLI failure messages and tests."""
+    def as_report(self, task_dir: Path | str | None = None) -> str:
+        """Human-readable diff used in CLI failure messages and tests.
+
+        When ``task_dir`` is provided, the remediation section names the
+        exact ``codeprobe mine --refresh <task_dir> --accept-structural-change``
+        invocation so agents can copy/paste the fix instead of hunting for
+        the flag. Without ``task_dir`` we fall back to a generic form.
+        """
         lines = [
             "Structural mismatch detected between old and new ground truth:",
             f"  oracle_type: {self.old.oracle_type!r} -> {self.new.oracle_type!r}"
@@ -106,9 +112,11 @@ class RefreshDiff:
         lines.append(f"  removed files ({len(self.removed_files)}):")
         for f in self.removed_files:
             lines.append(f"    - {f}")
+        dir_token = str(task_dir) if task_dir is not None else "<task_dir>"
         lines.append(
-            "Pass --accept-structural-change to renumber/update the task, "
-            "or revert the repo to a commit within the allowed churn window."
+            "To accept the change and renumber/update the task, run:\n"
+            f"  codeprobe mine --refresh {dir_token} --accept-structural-change\n"
+            "Or revert the repo to a commit within the allowed churn window."
         )
         return "\n".join(lines)
 
@@ -127,12 +135,18 @@ class StructuralMismatchError(Exception):
     """Raised when a refresh would materially change a task's ground truth.
 
     Carries the :class:`RefreshDiff` so the CLI can render a diff report
-    and exit non-zero without ever silently overwriting the task.
+    and exit non-zero without ever silently overwriting the task. The
+    optional ``task_dir`` is threaded through so :meth:`RefreshDiff.as_report`
+    can emit the exact ``codeprobe mine --refresh <task_dir>
+    --accept-structural-change`` invocation.
     """
 
-    def __init__(self, diff: RefreshDiff) -> None:
-        super().__init__(diff.as_report())
+    def __init__(
+        self, diff: RefreshDiff, task_dir: Path | str | None = None
+    ) -> None:
+        super().__init__(diff.as_report(task_dir))
         self.diff = diff
+        self.task_dir = task_dir
 
 
 # ---------------------------------------------------------------------------
@@ -252,8 +266,11 @@ def signature_from_task(task: Task) -> StructuralSignature:
     if v.oracle_type:
         oracle_type = v.oracle_type
         raw_files: Any = v.oracle_answer
-    elif v.verification_mode == "dual" and v.oracle_type == "file_list":
-        oracle_type = v.oracle_type
+    elif v.verification_mode == "dual":
+        # Legacy dual tasks may carry ``oracle_answer`` without an explicit
+        # ``oracle_type``. The dual schema pins the answer shape to a
+        # file list, so we recover it mechanically.
+        oracle_type = "file_list"
         raw_files = v.oracle_answer
     else:
         # No explicit oracle_type on the in-memory model — treat as
@@ -378,7 +395,7 @@ def refresh_task(
 
     if diff.is_structural_mismatch and not accept_structural_change:
         # Fail loud — never silently renumber.
-        raise StructuralMismatchError(diff)
+        raise StructuralMismatchError(diff, task_dir=existing_task_dir)
 
     old_task_id = old_meta_json.get("id")
     if not isinstance(old_task_id, str) or not old_task_id:

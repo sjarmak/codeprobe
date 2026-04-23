@@ -68,6 +68,22 @@ class PRAdapter:
         if not isinstance(items, list) or not items:
             return None
 
+        if len(items) > 1:
+            # Selection behavior is unchanged (first match wins), but surface
+            # the ambiguity so callers can see which PRs matched the SHA.
+            numbers = [
+                item.get("number", "?")
+                for item in items
+                if isinstance(item, dict)
+            ]
+            logger.warning(
+                "PRAdapter: %d PRs matched sha %s (selecting first); "
+                "matched PR numbers=%s",
+                len(items),
+                commit_sha[:8],
+                numbers,
+            )
+
         pr = items[0]
         body = (pr.get("body") or "").strip()
         if not body:

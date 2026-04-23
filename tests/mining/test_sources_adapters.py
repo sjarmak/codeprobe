@@ -355,6 +355,48 @@ def test_pr_adapter_returns_none_on_gh_failure(tmp_path: Path) -> None:
         assert PRAdapter().fetch(tmp_path, "abc123") is None
 
 
+def test_pr_adapter_logs_warning_on_multi_match(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When ``gh pr list --search <sha>`` returns >1 PR, the adapter
+    still selects the first match (unchanged behaviour) but emits a
+    warning with the matched PR numbers so the ambiguity is visible.
+    """
+    payload = json.dumps(
+        [
+            {
+                "number": 101,
+                "title": "first match",
+                "body": "first body",
+                "labels": [],
+            },
+            {
+                "number": 202,
+                "title": "second match",
+                "body": "second body",
+                "labels": [],
+            },
+        ]
+    )
+    with patch(
+        "codeprobe.mining.adapters.pr.subprocess.run",
+        side_effect=_fake_subprocess_run(payload),
+    ):
+        with caplog.at_level("WARNING", logger="codeprobe.mining.adapters.pr"):
+            bundle = PRAdapter().fetch(tmp_path, "abc123def456")
+
+    # Selection unchanged: first match wins.
+    assert bundle is not None
+    assert bundle.metadata["pr_number"] == "101"
+    # Warning must mention the ambiguity and list the matched PR numbers.
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 1
+    msg = warning_records[0].getMessage()
+    assert "2 PRs matched" in msg
+    assert "101" in msg
+    assert "202" in msg
+
+
 # ---------------------------------------------------------------------------
 # has_pr_narratives
 # ---------------------------------------------------------------------------

@@ -138,3 +138,49 @@ def test_unsupported_auth_mode_rejected(monkeypatch: pytest.MonkeyPatch) -> None
     adapter._auth_mode = "bogus"  # type: ignore[assignment]
     with pytest.raises(ValueError, match="Unsupported auth mode"):
         adapter._auth_headers()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_pr_context_commits_sub_call_auth_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    """Regression: a revoked token on the commits sub-call must raise
+    ``AuthFailure`` instead of silently returning an empty commit list.
+    """
+    stub = _HttpStub(
+        [
+            (200, _MR_JSON, {}),
+            (status, {"message": "forbidden"}, {}),
+        ]
+    )
+    monkeypatch.setattr(gitlab_module, "_http_get", stub)
+
+    adapter = GitLabAdapter("tok_abc", auth_mode=AuthMode.PAT)
+    with pytest.raises(AuthFailure) as exc_info:
+        adapter.pr_context("acme/proj", 42)
+    assert exc_info.value.status == status
+    assert exc_info.value.adapter == "gitlab"
+
+
+def test_pr_context_commits_sub_call_non_auth_error_is_best_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-auth error on the commits sub-call still yields a context dict.
+
+    Only auth failures are fatal on the sub-call; other transient errors
+    (HTTP 500, invalid payload) are absorbed so the primary MR payload is
+    still returned with an empty ``commit_shas`` tuple.
+    """
+    stub = _HttpStub(
+        [
+            (200, _MR_JSON, {}),
+            (500, {"message": "boom"}, {}),
+        ]
+    )
+    monkeypatch.setattr(gitlab_module, "_http_get", stub)
+
+    adapter = GitLabAdapter("tok_abc", auth_mode=AuthMode.PAT)
+    ctx = adapter.pr_context("acme/proj", 42)
+    assert ctx["commit_shas"] == ()
+    # Main MR payload still populated.
+    assert ctx["title"] == "Fix widget alignment"
