@@ -28,6 +28,12 @@ from codeprobe.snapshot.create import (
     SymlinkEscapeError,
     create_snapshot,
 )
+from codeprobe.snapshot.exporters import (
+    export_browse,
+    export_datadog,
+    export_sheets,
+    export_sigma,
+)
 from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
     RedactionMode,
@@ -253,3 +259,72 @@ def verify_cmd(snapshot_dir: Path, signing_key: str | None) -> None:
     )
     if not result.ok:
         sys.exit(1)
+
+
+_EXPORT_FORMATS: tuple[str, ...] = ("datadog", "sigma", "sheets", "browse")
+
+
+@snapshot.command("export")
+@click.argument(
+    "snapshot_dir",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(list(_EXPORT_FORMATS), case_sensitive=False),
+    required=True,
+    help="Export format: datadog, sigma, sheets, or browse.",
+)
+@click.option(
+    "--out",
+    "out_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Output path. Defaults: datadog -> <snapshot>/datadog.json, "
+        "sigma -> <snapshot>/ (emits sigma_results.csv + sigma_schema.json), "
+        "sheets -> <snapshot>/sheets.tsv, browse -> <snapshot>/browse.html."
+    ),
+)
+def export_cmd(snapshot_dir: Path, fmt: str, out_path: Path | None) -> None:
+    """Export SNAPSHOT_DIR into an observability artefact.
+
+    The export subcommand is a pure local transform — no network calls are
+    issued. Callers ship the generated artefact to the downstream system
+    (Datadog intake, Sigma/dbt, Google Sheets, or a browser) themselves.
+    """
+
+    fmt_normalised = fmt.lower()
+
+    try:
+        if fmt_normalised == "datadog":
+            target = out_path if out_path is not None else snapshot_dir / "datadog.json"
+            written = export_datadog(snapshot_dir, target)
+            click.echo(json.dumps({"format": "datadog", "out": str(written)}, indent=2))
+        elif fmt_normalised == "sigma":
+            target_dir = out_path if out_path is not None else snapshot_dir
+            csv_path, schema_path = export_sigma(snapshot_dir, target_dir)
+            click.echo(
+                json.dumps(
+                    {
+                        "format": "sigma",
+                        "csv": str(csv_path),
+                        "schema": str(schema_path),
+                    },
+                    indent=2,
+                )
+            )
+        elif fmt_normalised == "sheets":
+            target = out_path if out_path is not None else snapshot_dir / "sheets.tsv"
+            written = export_sheets(snapshot_dir, target)
+            click.echo(json.dumps({"format": "sheets", "out": str(written)}, indent=2))
+        elif fmt_normalised == "browse":
+            target = out_path if out_path is not None else snapshot_dir / "browse.html"
+            written = export_browse(snapshot_dir, target)
+            click.echo(json.dumps({"format": "browse", "out": str(written)}, indent=2))
+        else:  # pragma: no cover — Click choice guards this branch.
+            raise click.UsageError(f"unknown --format {fmt!r}")
+    except FileNotFoundError as e:
+        click.echo(f"Export failed: {e}", err=True)
+        sys.exit(8)
