@@ -280,10 +280,17 @@ def test_builtin_preamble_renders_variables():
 
 
 def test_builtin_github_preamble_exists():
-    """The github preamble ships as a built-in."""
+    """The github preamble ships as a built-in.
+
+    r12-capability-preambles hardened this preamble to be capability-first
+    rather than naming specific MCP tool names (which vary by server). The
+    preamble now references capability IDs that must map to the registry.
+    """
     block = get_builtin("github")
     assert block.name == "github"
-    assert "search_code" in block.template
+    # Capability-first content (see src/codeprobe/mcp/capabilities.py).
+    assert "KEYWORD_SEARCH" in block.template
+    assert "FILE_READ" in block.template
 
 
 def test_builtin_nonexistent_raises():
