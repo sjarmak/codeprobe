@@ -21,6 +21,15 @@ from codeprobe.llm.backends.base import (
 __all__ = ["BedrockBackend"]
 
 
+# Sentinels that indicate an un-customized registry entry. If present in a
+# resolved ARN we raise loudly rather than letting boto3 fail deep inside
+# an AWS call with a much less actionable error.
+_PLACEHOLDER_ACCOUNT_SENTINELS: tuple[str, ...] = (
+    "REPLACE_WITH_YOUR_AWS_ACCOUNT_ID",
+    ":000000000000:",
+)
+
+
 class BedrockBackend:
     """Thin adapter over ``boto3.client('bedrock-runtime')``."""
 
@@ -43,6 +52,15 @@ class BedrockBackend:
                 f"Registry entry for bedrock/{logical_name} must be a "
                 f"non-empty ARN string, got {type(value).__name__}"
             )
+        for sentinel in _PLACEHOLDER_ACCOUNT_SENTINELS:
+            if sentinel in value:
+                raise BackendExecutionError(
+                    f"Bedrock ARN for {logical_name!r} still contains "
+                    f"placeholder account ID ({sentinel!r}). Edit "
+                    "src/codeprobe/llm/model_registry.yaml and replace "
+                    "REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit "
+                    "AWS account number before calling the Bedrock backend."
+                )
         return value
 
     def complete(

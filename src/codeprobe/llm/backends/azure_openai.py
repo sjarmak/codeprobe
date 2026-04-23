@@ -81,10 +81,12 @@ class AzureOpenAIBackend:
             api_version=api_version,
             azure_endpoint=endpoint,
         )
+        max_tokens = int(kwargs.pop("max_tokens", 1024))
         try:
             response = client.chat.completions.create(
                 model=deployment,
                 messages=messages,
+                max_tokens=max_tokens,
                 **kwargs,
             )
         except Exception as exc:  # pragma: no cover - network path

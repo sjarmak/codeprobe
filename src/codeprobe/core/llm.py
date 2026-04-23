@@ -50,11 +50,25 @@ class LLMParseError(LLMError):
 # Dataclasses
 # ---------------------------------------------------------------------------
 
-# Model aliases → canonical model IDs per backend
+# Model aliases → canonical model IDs per backend.
+#
+# NOTE: These values must agree with ``src/codeprobe/llm/model_registry.yaml``
+# which is the long-term source of truth for logical → backend id mapping.
+# The ``opus``, ``sonnet`` and ``haiku`` short aliases exist in both stacks
+# so legacy callers keep working; the registry holds date-less base slugs
+# while this table keeps the dated variants for backwards compatibility
+# with existing Anthropic deployments.
+# Invariant enforced in tests/llm/test_registry.py:
+# ``test_registry_opus_alias_matches_core_llm_constant``.
 _ANTHROPIC_MODELS: dict[str, str] = {
     "haiku": "claude-haiku-4-5-20251001",
     "sonnet": "claude-sonnet-4-6-20250514",
-    "opus": "claude-opus-4-6-20250514",
+    # Opus 4.7 is the current production model. Unlike the other two
+    # entries we use the base slug (no date suffix) because the dated
+    # variant is not yet fixed in the Anthropic catalogue. Alias matches
+    # the registry under tests/llm/test_registry.py::
+    # test_registry_opus_alias_matches_core_llm_constant.
+    "opus": "claude-opus-4-7",
 }
 
 _OPENAI_MODELS: dict[str, str] = {

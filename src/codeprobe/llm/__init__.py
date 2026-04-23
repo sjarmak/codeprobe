@@ -12,6 +12,7 @@ change — callers always ask the registry at runtime.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -159,13 +160,20 @@ def _load(path: Path) -> _RegistryData:
 
 
 _DEFAULT: ModelRegistry | None = None
+_DEFAULT_LOCK = threading.Lock()
 
 
 def get_registry() -> ModelRegistry:
-    """Return a process-wide default registry (lazily initialised)."""
+    """Return a process-wide default registry (lazily initialised).
+
+    Thread-safe via double-checked locking so concurrent callers see the
+    same instance without paying for a lock on every access after init.
+    """
     global _DEFAULT
     if _DEFAULT is None:
-        _DEFAULT = ModelRegistry()
+        with _DEFAULT_LOCK:
+            if _DEFAULT is None:
+                _DEFAULT = ModelRegistry()
     return _DEFAULT
 
 

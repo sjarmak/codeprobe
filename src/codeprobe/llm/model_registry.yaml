@@ -13,29 +13,88 @@
 #       vertex:        <publisher-qualified model path>     # str
 #       azure_openai:  {deployment, api_version}            # dict
 #       openai_compat: <model slug accepted by gateway>     # str
+#
+# REQUIRED SUBSTITUTION — Bedrock ARNs:
+#   Each Bedrock entry below contains the sentinel
+#   ``REPLACE_WITH_YOUR_AWS_ACCOUNT_ID`` where the 12-digit AWS account
+#   number belongs. The sentinel is intentionally malformed so that any
+#   attempt to use an un-customized registry fails loudly at both
+#   boto3/AWS validation and inside ``BedrockBackend.resolve_model_id``
+#   (which rejects the sentinel with a prescriptive error). Edit this
+#   file per deployment — do NOT code around the check.
+#
+# Azure OpenAI api_version:
+#   ``2024-10-21`` is pinned per Microsoft's GA API surface. Microsoft
+#   deprecates API versions ~12 months after release; review and bump
+#   this value on the next dependency-review cycle to avoid silent
+#   breakage when an old version is retired.
 
 models:
   opus-4.7:
     anthropic: claude-opus-4-7
-    bedrock: arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-opus-4-7-v1:0
+    # Replace REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit AWS account ID.
+    bedrock: arn:aws:bedrock:us-east-1:REPLACE_WITH_YOUR_AWS_ACCOUNT_ID:inference-profile/us.anthropic.claude-opus-4-7-v1:0
+    vertex: publishers/anthropic/models/claude-opus-4-7
+    azure_openai:
+      deployment: opus-4-7-prod
+      # Review on next dependency cycle — Azure deprecates ~12mo after GA.
+      api_version: '2024-10-21'
+    openai_compat: claude-opus-4-7
+
+  sonnet-4.6:
+    anthropic: claude-sonnet-4-6
+    # Replace REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit AWS account ID.
+    bedrock: arn:aws:bedrock:us-east-1:REPLACE_WITH_YOUR_AWS_ACCOUNT_ID:inference-profile/us.anthropic.claude-sonnet-4-6-v1:0
+    vertex: publishers/anthropic/models/claude-sonnet-4-6
+    azure_openai:
+      deployment: sonnet-4-6-prod
+      # Review on next dependency cycle — Azure deprecates ~12mo after GA.
+      api_version: '2024-10-21'
+    openai_compat: claude-sonnet-4-6
+
+  haiku-4.5:
+    anthropic: claude-haiku-4-5
+    # Replace REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit AWS account ID.
+    bedrock: arn:aws:bedrock:us-east-1:REPLACE_WITH_YOUR_AWS_ACCOUNT_ID:inference-profile/us.anthropic.claude-haiku-4-5-v1:0
+    vertex: publishers/anthropic/models/claude-haiku-4-5
+    azure_openai:
+      deployment: haiku-4-5-prod
+      # Review on next dependency cycle — Azure deprecates ~12mo after GA.
+      api_version: '2024-10-21'
+    openai_compat: claude-haiku-4-5
+
+# ---------------------------------------------------------------------------
+# Aliases — short forms used by legacy callers (e.g. codeprobe.core.llm).
+# The registry treats these as independent logical names whose values
+# mirror the versioned entries above. See tests/llm/test_registry.py for
+# the invariant that short aliases resolve to the same Anthropic slug
+# as their versioned counterparts.
+# ---------------------------------------------------------------------------
+
+  opus:
+    anthropic: claude-opus-4-7
+    # Replace REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit AWS account ID.
+    bedrock: arn:aws:bedrock:us-east-1:REPLACE_WITH_YOUR_AWS_ACCOUNT_ID:inference-profile/us.anthropic.claude-opus-4-7-v1:0
     vertex: publishers/anthropic/models/claude-opus-4-7
     azure_openai:
       deployment: opus-4-7-prod
       api_version: '2024-10-21'
     openai_compat: claude-opus-4-7
 
-  sonnet-4.6:
+  sonnet:
     anthropic: claude-sonnet-4-6
-    bedrock: arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-sonnet-4-6-v1:0
+    # Replace REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit AWS account ID.
+    bedrock: arn:aws:bedrock:us-east-1:REPLACE_WITH_YOUR_AWS_ACCOUNT_ID:inference-profile/us.anthropic.claude-sonnet-4-6-v1:0
     vertex: publishers/anthropic/models/claude-sonnet-4-6
     azure_openai:
       deployment: sonnet-4-6-prod
       api_version: '2024-10-21'
     openai_compat: claude-sonnet-4-6
 
-  haiku-4.5:
+  haiku:
     anthropic: claude-haiku-4-5
-    bedrock: arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-haiku-4-5-v1:0
+    # Replace REPLACE_WITH_YOUR_AWS_ACCOUNT_ID with your 12-digit AWS account ID.
+    bedrock: arn:aws:bedrock:us-east-1:REPLACE_WITH_YOUR_AWS_ACCOUNT_ID:inference-profile/us.anthropic.claude-haiku-4-5-v1:0
     vertex: publishers/anthropic/models/claude-haiku-4-5
     azure_openai:
       deployment: haiku-4-5-prod

@@ -79,10 +79,12 @@ class OpenAICompatBackend:
             )
 
         client = OpenAI(api_key=api_key, base_url=base_url)
+        max_tokens = int(kwargs.pop("max_tokens", 1024))
         try:
             response = client.chat.completions.create(
                 model=model_id,
                 messages=messages,
+                max_tokens=max_tokens,
                 **kwargs,
             )
         except Exception as exc:  # pragma: no cover - network path
