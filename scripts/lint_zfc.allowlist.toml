@@ -1,0 +1,80 @@
+# ZFC boundary lint allowlist.
+#
+# One [[entry]] table per pre-existing violation. The linter suppresses
+# findings whose (file, line) fall inside an allowlisted region.
+#
+# Source: CLAUDE.md -> "ZFC Compliance" -> "Known violations". When a
+# violation is refactored to delegate to a model, delete its entry here
+# AND update CLAUDE.md in the same commit.
+#
+# Fields:
+#   file       — repo-relative path (POSIX separators).
+#   line_start — first line of the allowlisted region (inclusive).
+#   line_end   — last line of the allowlisted region (inclusive).
+#                Use the same value as line_start for a single line.
+#   reason     — one-line human explanation; points back to CLAUDE.md.
+
+[[entry]]
+file = "src/codeprobe/mining/extractor.py"
+line_start = 80
+line_end = 87
+reason = "Known violation: file-count difficulty estimation (<=3 easy, >10 hard). CLAUDE.md ZFC section."
+
+[[entry]]
+file = "src/codeprobe/assess/heuristics.py"
+line_start = 1
+line_end = 100000
+reason = "Known violation: _detect_test_frameworks() regex framework detection. CLAUDE.md ZFC section."
+
+[[entry]]
+file = "src/codeprobe/cli/mine_cmd.py"
+line_start = 1
+line_end = 100000
+reason = "Known violation: _quality_review() thin-instruction / 0.7 diversity threshold / stub-command heuristics. CLAUDE.md ZFC section."
+
+[[entry]]
+file = "src/codeprobe/mining/org_scale_families.py"
+line_start = 1
+line_end = 100000
+reason = "Known violation: hardcoded min_hits thresholds (3-5). CLAUDE.md ZFC section — tunable, but out of scope for this linter."
+
+# ---------------------------------------------------------------------------
+# Pre-existing hardcoded TaskMetadata(difficulty=...) call sites.
+#
+# These predate the lint rule. They are tracked here so the first clean
+# run establishes a baseline — new hardcoded assignments will show up
+# as new findings. Each should be refactored to either:
+#   (a) accept difficulty as a parameter from caller, or
+#   (b) delegate the judgment to a model via call_claude().
+# Remove the entry from this allowlist when that refactor lands.
+# ---------------------------------------------------------------------------
+
+[[entry]]
+file = "src/codeprobe/mining/comprehension.py"
+line_start = 425
+line_end = 435
+reason = "Pre-existing: _spec_to_task hardcodes difficulty='hard'. Out of scope for INV3."
+
+[[entry]]
+file = "src/codeprobe/mining/org_scale.py"
+line_start = 313
+line_end = 320
+reason = "Pre-existing: cross-repo-dep-trace task hardcodes difficulty='medium'."
+
+[[entry]]
+file = "src/codeprobe/mining/org_scale.py"
+line_start = 555
+line_end = 565
+reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~558)."
+
+[[entry]]
+file = "src/codeprobe/mining/org_scale.py"
+line_start = 625
+line_end = 635
+reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~630)."
+
+[[entry]]
+file = "src/codeprobe/mining/org_scale.py"
+line_start = 715
+line_end = 725
+reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~719)."
