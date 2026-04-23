@@ -76,6 +76,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "codeprobe.preambles" = ["*.md"]
 "codeprobe.templates" = ["*.yaml"]
+"codeprobe.llm" = ["*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

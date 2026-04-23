@@ -1,0 +1,43 @@
+# Logical -> per-backend model identifier registry.
+#
+# Logical names are stable across codeprobe (opus-4.7, sonnet-4.6, haiku-4.5).
+# Per-backend values are the actual identifiers the vendor SDK expects.
+# Swap a value (e.g. a Bedrock ARN) here and no code change is required —
+# backends resolve at call time via ModelRegistry.resolve().
+#
+# Schema:
+#   models:
+#     <logical-name>:
+#       anthropic:     <public Anthropic model slug>        # str
+#       bedrock:       <inference profile ARN>              # str
+#       vertex:        <publisher-qualified model path>     # str
+#       azure_openai:  {deployment, api_version}            # dict
+#       openai_compat: <model slug accepted by gateway>     # str
+
+models:
+  opus-4.7:
+    anthropic: claude-opus-4-7
+    bedrock: arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-opus-4-7-v1:0
+    vertex: publishers/anthropic/models/claude-opus-4-7
+    azure_openai:
+      deployment: opus-4-7-prod
+      api_version: '2024-10-21'
+    openai_compat: claude-opus-4-7
+
+  sonnet-4.6:
+    anthropic: claude-sonnet-4-6
+    bedrock: arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-sonnet-4-6-v1:0
+    vertex: publishers/anthropic/models/claude-sonnet-4-6
+    azure_openai:
+      deployment: sonnet-4-6-prod
+      api_version: '2024-10-21'
+    openai_compat: claude-sonnet-4-6
+
+  haiku-4.5:
+    anthropic: claude-haiku-4-5
+    bedrock: arn:aws:bedrock:us-east-1:000000000000:inference-profile/us.anthropic.claude-haiku-4-5-v1:0
+    vertex: publishers/anthropic/models/claude-haiku-4-5
+    azure_openai:
+      deployment: haiku-4-5-prod
+      api_version: '2024-10-21'
+    openai_compat: claude-haiku-4-5
