@@ -259,6 +259,291 @@ if __name__ == "__main__":
 '''
 
 
+# ---------------------------------------------------------------------------
+# Structured-retrieval oracle (oracle_type='structured_retrieval')
+# ---------------------------------------------------------------------------
+#
+# The structured oracle reads ``answer.json`` (INV1: no $AGENT_OUTPUT
+# fallback — malformed or missing answers score 0.0 with an explicit
+# ``error`` entry in ``scoring.json``). The schema is four independent
+# fields that are scored separately and averaged:
+#
+#     {
+#       "files":   [{"repo": str, "path": str}, ...],
+#       "symbols": [{"repo": str, "path": str, "symbol": str}, ...],
+#       "chain":   [{"repo": str, "path": str, "symbol": str}, ...],
+#       "text":    str,
+#     }
+#
+# Each non-empty-ground-truth field contributes equally to the combined
+# score. Missing fields in ``ground_truth.json`` are skipped.
+# ---------------------------------------------------------------------------
+_ORACLE_STRUCTURED = '''\
+#!/usr/bin/env python3
+"""Self-contained structured-retrieval oracle.
+
+Usage: python3 oracle.py <task_dir>
+
+Reads ``answer.json`` and ``ground_truth.json`` from <task_dir>, scores
+each field (``files``, ``symbols``, ``chain``, ``text``) independently,
+combines them with an arithmetic mean across fields that have non-empty
+ground truth, writes ``reward.txt`` + ``scoring.json`` into <task_dir>,
+and always exits 0 (score represents the verdict).
+
+Missing or malformed ``answer.json`` is scored 0.0 with a populated
+``scoring.json["error"]`` — there is NO stdout-capture fallback here by
+design (INV1).
+"""
+import json, sys, re
+from pathlib import Path
+
+
+def _write_scoring(task_dir, score, scoring):
+    scoring["score"] = float(score)
+    (task_dir / "scoring.json").write_text(
+        json.dumps(scoring, indent=2, sort_keys=True) + "\\n",
+        encoding="utf-8",
+    )
+    (task_dir / "reward.txt").write_text(f"{float(score):.4f}\\n", encoding="utf-8")
+
+
+def _tuple_set(items, keys):
+    out = set()
+    if not isinstance(items, list):
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            key = tuple(str(it[k]).strip() for k in keys)
+        except KeyError:
+            continue
+        if all(part for part in key):
+            out.add(key)
+    return out
+
+
+def _f1(expected, actual):
+    if not expected and not actual:
+        return 1.0, {"precision": 1.0, "recall": 1.0, "tp": 0, "fp": 0, "fn": 0}
+    if not expected:
+        return 0.0, {"precision": 0.0, "recall": 0.0, "tp": 0,
+                     "fp": len(actual), "fn": 0}
+    if not actual:
+        return 0.0, {"precision": 0.0, "recall": 0.0, "tp": 0,
+                     "fp": 0, "fn": len(expected)}
+    matched = expected & actual
+    precision = len(matched) / len(actual)
+    recall = len(matched) / len(expected)
+    f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
+    return f1, {
+        "precision": precision,
+        "recall": recall,
+        "tp": len(matched),
+        "fp": len(actual - expected),
+        "fn": len(expected - actual),
+    }
+
+
+_TOKEN_RE = re.compile(r"\\w+")
+
+
+def _tokenize(text):
+    return frozenset(m.group(0).lower() for m in _TOKEN_RE.finditer(text or ""))
+
+
+def _text_score(expected, actual):
+    e = _tokenize(expected)
+    a = _tokenize(actual)
+    if not e and not a:
+        return 1.0, {"jaccard": 1.0, "expected_tokens": 0, "actual_tokens": 0}
+    union = e | a
+    inter = e & a
+    jacc = len(inter) / len(union) if union else 0.0
+    return jacc, {
+        "jaccard": jacc,
+        "expected_tokens": len(e),
+        "actual_tokens": len(a),
+    }
+
+
+def main():
+    task_dir = Path(sys.argv[1])
+    scoring = {"schema": "structured_retrieval.v1", "fields": {}, "error": None}
+
+    answer_path = task_dir / "answer.json"
+    if not answer_path.exists():
+        scoring["error"] = "missing answer.json"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    try:
+        answer = json.loads(answer_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        scoring["error"] = f"malformed answer.json: {exc}"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    if not isinstance(answer, dict):
+        scoring["error"] = "answer.json must be a JSON object"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    gt_path = task_dir / "ground_truth.json"
+    if not gt_path.exists():
+        scoring["error"] = "missing ground_truth.json"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    try:
+        gt = json.loads(gt_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        scoring["error"] = f"malformed ground_truth.json: {exc}"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    # Ground truth may be wrapped under "expected" or live at the top level.
+    gt_payload = gt.get("expected", gt) if isinstance(gt, dict) else {}
+    if not isinstance(gt_payload, dict):
+        scoring["error"] = "ground_truth.json expected payload is not an object"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    per_field_scores = []
+
+    # files — (repo, path) tuples
+    if "files" in gt_payload:
+        exp = _tuple_set(gt_payload.get("files") or [], ("repo", "path"))
+        act = _tuple_set(answer.get("files") or [], ("repo", "path"))
+        s, detail = _f1(exp, act)
+        scoring["fields"]["files"] = {"score": s, **detail,
+                                       "expected": len(exp), "actual": len(act)}
+        if exp:
+            per_field_scores.append(s)
+
+    # symbols — (repo, path, symbol) tuples
+    if "symbols" in gt_payload:
+        exp = _tuple_set(gt_payload.get("symbols") or [], ("repo", "path", "symbol"))
+        act = _tuple_set(answer.get("symbols") or [], ("repo", "path", "symbol"))
+        s, detail = _f1(exp, act)
+        scoring["fields"]["symbols"] = {"score": s, **detail,
+                                         "expected": len(exp), "actual": len(act)}
+        if exp:
+            per_field_scores.append(s)
+
+    # chain — (repo, path, symbol) tuples, scored as a set like symbols
+    if "chain" in gt_payload:
+        exp = _tuple_set(gt_payload.get("chain") or [], ("repo", "path", "symbol"))
+        act = _tuple_set(answer.get("chain") or [], ("repo", "path", "symbol"))
+        s, detail = _f1(exp, act)
+        scoring["fields"]["chain"] = {"score": s, **detail,
+                                       "expected": len(exp), "actual": len(act)}
+        if exp:
+            per_field_scores.append(s)
+
+    # text — Jaccard on tokenized word bag
+    if "text" in gt_payload:
+        exp = gt_payload.get("text") or ""
+        act = answer.get("text") or ""
+        if not isinstance(exp, str):
+            exp = ""
+        if not isinstance(act, str):
+            act = ""
+        s, detail = _text_score(exp, act)
+        scoring["fields"]["text"] = {"score": s, **detail}
+        if exp.strip():
+            per_field_scores.append(s)
+
+    if not per_field_scores:
+        # No scored fields — ground truth was entirely empty. Treat as 0.0
+        # with an explicit error so the caller notices the malformed GT.
+        scoring["error"] = "ground truth had no scorable fields"
+        _write_scoring(task_dir, 0.0, scoring)
+        return
+
+    combined = sum(per_field_scores) / len(per_field_scores)
+    scoring["num_fields_scored"] = len(per_field_scores)
+    _write_scoring(task_dir, combined, scoring)
+    print(
+        f"score={combined:.4f} fields_scored={len(per_field_scores)} "
+        f"per_field={per_field_scores}"
+    )
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+# Section appended to ``instruction.md`` for structured-retrieval tasks.
+# Agents write ``answer.json`` in the repo root; the oracle scores each
+# field independently.
+_STRUCTURED_ANSWER_SCHEMA_SECTION = """\
+## Expected answer.json
+
+Write your answer to `answer.json` in the repository root (no other
+output channel is scored — stdout/AGENT_OUTPUT is NOT a fallback). The
+file must be a single JSON object with any subset of these four fields.
+Each field is scored independently and combined into a single score:
+
+- `files` — array of `{"repo": str, "path": str}` objects for files
+  relevant to the task.
+- `symbols` — array of `{"repo": str, "path": str, "symbol": str}`
+  objects naming the specific symbol(s) (functions, classes, etc.) you
+  found.
+- `chain` — array of `{"repo": str, "path": str, "symbol": str}` objects
+  representing the ordered dependency or call chain.
+- `text` — string summary of your findings; scored by token overlap.
+
+Example:
+
+```json
+{
+  "files": [{"repo": "kubernetes", "path": "pkg/scheduler.go"}],
+  "symbols": [{"repo": "kubernetes", "path": "pkg/scheduler.go",
+                "symbol": "Scheduler.Run"}],
+  "chain":  [{"repo": "kubernetes", "path": "pkg/scheduler.go",
+                "symbol": "Scheduler.Run"}],
+  "text":   "Run is the top-level scheduling loop."
+}
+```
+
+Missing or malformed `answer.json` scores 0.0 with an explicit error in
+`scoring.json`.
+"""
+
+
+def _coerce_structured_expected(oracle_answer: object) -> dict[str, object]:
+    """Coerce ``TaskVerification.oracle_answer`` to the structured schema.
+
+    ``oracle_answer`` is typed as ``tuple[str, ...]`` but the structured
+    retrieval flow needs a four-field dict. Supported input shapes:
+
+      1. A dict — already the right shape.
+      2. A tuple containing a single dict — stored via object-tuple.
+      3. A tuple whose first element is a JSON string encoding the dict
+         — the canonical storage format given the hashable-tuple
+         constraint on the dataclass.
+
+    Returns an empty dict when the shape doesn't match, so the oracle
+    reports "no scorable fields" rather than silently passing.
+    """
+    if isinstance(oracle_answer, dict):
+        return dict(oracle_answer)
+    if isinstance(oracle_answer, tuple) and oracle_answer:
+        first = oracle_answer[0]
+        if isinstance(first, dict):
+            return dict(first)
+        if isinstance(first, str):
+            try:
+                decoded = json.loads(first)
+            except (json.JSONDecodeError, ValueError):
+                return {}
+            if isinstance(decoded, dict):
+                return decoded
+    return {}
+
+
 def _strip_pr_template(text: str) -> str:
     """Remove common PR template sections and label lines from text.
 
@@ -776,8 +1061,10 @@ def write_task_dir(
     instruction_path = task_dir / "instruction.md"
     instruction_path.write_text(instruction, encoding="utf-8")
 
-    # Write instruction_mcp.md variant for MCP tasks
-    if task.metadata.task_type == "mcp_tool_usage":
+    # Write instruction_mcp.md variant for MCP / org-scale / SG-enriched tasks.
+    # Trigger widened per PRD: task_type in mcp_tool_usage / org_scale_cross_repo,
+    # or org_scale=True, or sg_repo set.
+    if _mcp_variant_triggered(task):
         _write_mcp_instruction_variant(task, task_dir, instruction)
 
     # Write tests/test.sh — weighted checklist for sdlc-schema ground truth,
@@ -985,24 +1272,46 @@ def _write_dual_task(
 # MCP instruction variant
 # ---------------------------------------------------------------------------
 
-_MCP_TOOLS_SECTION = """\
-## Available MCP Tools
+# Task-type values that trigger the instruction_mcp.md variant when the task
+# does not already carry an explicit org_scale or sg_repo marker.
+_MCP_VARIANT_TASK_TYPES: frozenset[str] = frozenset(
+    {"mcp_tool_usage", "org_scale_cross_repo"}
+)
 
-You have access to the following MCP tools for code navigation and comprehension:
 
-| Tool | Description |
-|------|-------------|
-| `keyword_search` | Search for keywords or patterns across the repository |
-| `read_file` | Read the contents of a specific file |
-| `find_references` | Find all references to a symbol across the codebase |
-| `go_to_definition` | Navigate to the definition of a symbol |
-| `list_files` | List files in a directory or matching a pattern |
-| `nls_search` | Natural language search across the codebase |
+def _mcp_variant_triggered(task: Task) -> bool:
+    """Return True when this task should receive an ``instruction_mcp.md``.
 
-Use these tools to navigate the codebase, understand dependencies, and locate
-the files that need changes. Start by searching for relevant symbols and
-reading the key files before making modifications.
-"""
+    Triggers on any of:
+      - ``task.metadata.task_type`` in the MCP/org-scale task-type set
+      - ``task.metadata.org_scale`` is truthy
+      - ``task.metadata.sg_repo`` is a non-empty string
+
+    This widens the original ``task_type == "mcp_tool_usage"`` check so
+    org-scale and Sourcegraph-enriched tasks also get an MCP variant
+    rendered from the capability registry.
+    """
+    meta = task.metadata
+    if meta.task_type in _MCP_VARIANT_TASK_TYPES:
+        return True
+    if meta.org_scale:
+        return True
+    return bool(meta.sg_repo)
+
+
+def _render_mcp_section() -> str:
+    """Render the MCP capability section from the Jinja capability template.
+
+    Resolves the tool surface from :mod:`codeprobe.mcp.capabilities` rather
+    than a hand-rolled Sourcegraph-flavored string table, so preambles,
+    fixtures, and evaluations share a single source of truth.
+    """
+    # Deferred import: keeps ``writer`` importable in environments where
+    # the preamble renderer's transitive deps (jinja2) are not present,
+    # and only pays the import cost for MCP-variant tasks.
+    from codeprobe.preambles.templates import render
+
+    return render("mcp_base.md.j2")
 
 
 def _write_mcp_instruction_variant(
@@ -1012,15 +1321,18 @@ def _write_mcp_instruction_variant(
 ) -> None:
     """Write instruction_mcp.md alongside instruction.md for MCP tasks.
 
-    Appends MCP tool references to the base instruction so agents with
-    MCP access know which tools are available for code navigation.
+    Appends the capability-rendered MCP section to the base instruction
+    so agents with MCP access know which capabilities are available. The
+    body is sourced from :mod:`codeprobe.mcp.capabilities` via the
+    ``mcp_base.md.j2`` template — NOT from any preamble string table.
     """
     mcp_suite = task.metadata.mcp_suite or "sourcegraph"
+    mcp_section = _render_mcp_section()
     mcp_instruction = (
         base_instruction.rstrip()
         + "\n\n"
-        + _MCP_TOOLS_SECTION
-        + f"\n**MCP Suite:** {mcp_suite}\n"
+        + mcp_section.rstrip()
+        + f"\n\n**MCP Suite:** {mcp_suite}\n"
     )
     mcp_path = task_dir / "instruction_mcp.md"
     mcp_path.write_text(mcp_instruction, encoding="utf-8")
@@ -1106,12 +1418,22 @@ def _write_oracle_task(
     language = task.metadata.language or "unknown"
     question = task.metadata.issue_body or task.metadata.description
 
+    # Structured-retrieval tasks ship a four-field answer.json schema and
+    # a dedicated vendored oracle. They bypass the "find files matching
+    # these patterns" discovery framing used by file_list tasks.
+    is_structured = task.verification.oracle_type == "structured_retrieval"
+
     # MCP-advantaged families embed the symbol name and definition file
     # as essential task information — stripping them makes the task ambiguous.
     # Pattern-based families strip regex hints so the agent must discover them.
     is_mcp_family = task.metadata.category in _MCP_CATEGORIES
 
-    if is_mcp_family:
+    if is_structured:
+        discovery_question = question
+        discovery_title = task.metadata.issue_title or (
+            f"Structured retrieval task — {task.metadata.category or repo_name}"
+        )
+    elif is_mcp_family:
         discovery_question = question
         discovery_title = task.metadata.issue_title or (
             f"Find {task.metadata.category} patterns in {repo_name}"
@@ -1122,6 +1444,18 @@ def _write_oracle_task(
         discovery_title = f"Find {task.metadata.category} patterns in {repo_name}"
 
     def _build_instruction(q: str, extra_sections: str = "") -> str:
+        if is_structured:
+            return (
+                f"# {discovery_title}\n\n"
+                f"**Repository:** {repo_name}\n"
+                f"**Language:** {language}\n\n"
+                "## Question\n\n"
+                f"{q}\n\n"
+                f"{extra_sections}"
+                f"{_STRUCTURED_ANSWER_SCHEMA_SECTION}\n"
+                "## Task Contract\n\n"
+                f"- `TASK_REPO_ROOT={repo_path}`\n"
+            )
         return (
             f"# {discovery_title}\n\n"
             f"**Repository:** {repo_name}\n"
@@ -1137,23 +1471,43 @@ def _write_oracle_task(
             f"- `TASK_REPO_ROOT={repo_path}`\n"
         )
 
-    (task_dir / "instruction.md").write_text(
-        _build_instruction(discovery_question), encoding="utf-8"
-    )
+    base_instruction = _build_instruction(discovery_question)
+    (task_dir / "instruction.md").write_text(base_instruction, encoding="utf-8")
+
+    # Emit the MCP instruction variant for org-scale / SG / MCP tasks so the
+    # widened R1 trigger also covers oracle-typed tasks (the main writer path
+    # short-circuits for oracle tasks and never reaches the MCP trigger).
+    if _mcp_variant_triggered(task):
+        _write_mcp_instruction_variant(task, task_dir, base_instruction)
 
     # ground_truth.json — oracle answer + commit + pattern provenance
     has_curation = bool(task.verification.oracle_tiers)
-    ground_truth: dict[str, object] = {
-        "schema_version": 2 if has_curation else 1,
-        "oracle_type": task.verification.oracle_type,
-        "expected": list(task.verification.oracle_answer),
-        "commit": task.metadata.ground_truth_commit,
-        "pattern_used": task.metadata.category,
-        # ``repo`` powers the oracle's pass-2 path matching: agents that
-        # report paths as ``<repo>/<path>`` or ``/abs/.../<repo>/<path>``
-        # should still match oracle entries stored as bare ``<path>``.
-        "repo": task.repo,
-    }
+    if is_structured:
+        # Structured retrieval stores the full four-field schema under
+        # ``expected`` so the vendored oracle can read it uniformly.
+        structured_expected = _coerce_structured_expected(
+            task.verification.oracle_answer
+        )
+        ground_truth: dict[str, object] = {
+            "schema_version": "structured_retrieval.v1",
+            "oracle_type": "structured_retrieval",
+            "expected": structured_expected,
+            "commit": task.metadata.ground_truth_commit,
+            "pattern_used": task.metadata.category,
+            "repo": task.repo,
+        }
+    else:
+        ground_truth = {
+            "schema_version": 2 if has_curation else 1,
+            "oracle_type": task.verification.oracle_type,
+            "expected": list(task.verification.oracle_answer),
+            "commit": task.metadata.ground_truth_commit,
+            "pattern_used": task.metadata.category,
+            # ``repo`` powers the oracle's pass-2 path matching: agents that
+            # report paths as ``<repo>/<path>`` or ``/abs/.../<repo>/<path>``
+            # should still match oracle entries stored as bare ``<path>``.
+            "repo": task.repo,
+        }
     if task.metadata.ground_truth_commits:
         ground_truth["commits"] = {
             repo_name: sha for repo_name, sha in task.metadata.ground_truth_commits
@@ -1172,23 +1526,46 @@ def _write_oracle_task(
         encoding="utf-8",
     )
 
-    # tests/oracle.py — self-contained F1 scorer (no codeprobe dependency)
-    (tests_dir / "oracle.py").write_text(_ORACLE_PY, encoding="utf-8")
+    # tests/oracle.py — self-contained scorer. Structured-retrieval tasks
+    # get the four-field JSON oracle; legacy file-list tasks get the F1
+    # file-list oracle (preserved path per R2 acceptance criterion).
+    if is_structured:
+        (tests_dir / "oracle.py").write_text(_ORACLE_STRUCTURED, encoding="utf-8")
+    else:
+        (tests_dir / "oracle.py").write_text(_ORACLE_PY, encoding="utf-8")
 
     # tests/test.sh — calls oracle.py, writes reward.txt
-    test_script = (
-        "#!/usr/bin/env bash\n"
-        "set -euo pipefail\n\n"
-        f"# Oracle verification for org-scale task {safe_id}\n"
-        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
-        'TASK_DIR="$(dirname "$SCRIPT_DIR")"\n\n'
-        "# Fallback: if agent wrote to stdout instead of answer.txt, use $AGENT_OUTPUT\n"
-        'if [ ! -f "$TASK_DIR/answer.txt" ] && [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then\n'
-        '    cp "$AGENT_OUTPUT" "$TASK_DIR/answer.txt"\n'
-        "fi\n\n"
-        "# Self-contained oracle check — no codeprobe install required\n"
-        'python3 "$SCRIPT_DIR/oracle.py" "$TASK_DIR"\n'
-    )
+    if is_structured:
+        # INV1: structured_retrieval does NOT fall back to $AGENT_OUTPUT.
+        # Missing / malformed answer.json is an honest 0.0 with an error.
+        test_script = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n\n"
+            f"# Structured-retrieval oracle for task {safe_id}\n"
+            'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+            'TASK_DIR="$(dirname "$SCRIPT_DIR")"\n'
+            '_CP_REPO_DEFAULT="$(cd "$TASK_DIR/.." && pwd)"\n'
+            'cd "${TASK_REPO_ROOT:-$_CP_REPO_DEFAULT}"\n\n'
+            "# Stage the agent-authored answer.json for the oracle — no stdout fallback.\n"
+            'if [ -f answer.json ]; then\n'
+            '    cp answer.json "$TASK_DIR/answer.json"\n'
+            "fi\n\n"
+            'python3 "$SCRIPT_DIR/oracle.py" "$TASK_DIR"\n'
+        )
+    else:
+        test_script = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n\n"
+            f"# Oracle verification for org-scale task {safe_id}\n"
+            'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+            'TASK_DIR="$(dirname "$SCRIPT_DIR")"\n\n'
+            "# Fallback: if agent wrote to stdout instead of answer.txt, use $AGENT_OUTPUT\n"
+            'if [ ! -f "$TASK_DIR/answer.txt" ] && [ -n "${AGENT_OUTPUT:-}" ] && [ -f "$AGENT_OUTPUT" ]; then\n'
+            '    cp "$AGENT_OUTPUT" "$TASK_DIR/answer.txt"\n'
+            "fi\n\n"
+            "# Self-contained oracle check — no codeprobe install required\n"
+            'python3 "$SCRIPT_DIR/oracle.py" "$TASK_DIR"\n'
+        )
     test_sh_path = tests_dir / "test.sh"
     test_sh_path.write_text(test_script, encoding="utf-8")
     test_sh_path.chmod(0o755)

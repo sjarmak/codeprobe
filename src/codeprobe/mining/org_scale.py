@@ -615,10 +615,15 @@ def _mine_type_hierarchy_tasks(
             f"that use those implementations."
         )
 
-        # Tier assignment: subclass_files → required, usage_files → supplementary
-        oracle_tiers: tuple[tuple[str, str], ...] = tuple(
-            [(f, "required") for f in subclass_files]
-            + [(f, "supplementary") for f in usage_files]
+        # Tier assignment: route subclass/usage file sets through the
+        # ZFC-compliant tier assigner (invokes call_claude before any
+        # string-literal tier emission — see curator_tiers.py).
+        from codeprobe.mining.curator_tiers import assign_mcp_family_tiers
+
+        oracle_tiers: tuple[tuple[str, str], ...] = assign_mcp_family_tiers(
+            required_files=subclass_files,
+            supplementary_files=usage_files,
+            family=None,
         )
 
         tasks.append(

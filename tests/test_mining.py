@@ -2221,10 +2221,11 @@ class TestMCPInstructionVariant:
         assert mcp_instruction.is_file()
 
         content = mcp_instruction.read_text(encoding="utf-8")
-        # Must reference MCP tools
+        # Must reference MCP capabilities rendered from capabilities.py
+        # (not the legacy static tool table).
         assert "MCP" in content or "mcp" in content.lower()
         assert "keyword_search" in content
-        assert "read_file" in content
+        assert "file_read" in content
 
     def test_non_mcp_task_no_instruction_mcp_md(self, tmp_path: Path) -> None:
         """Non-MCP tasks do NOT produce instruction_mcp.md."""
