@@ -21,6 +21,7 @@ path and ZFC forbids model calls here.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -135,10 +136,8 @@ class PatternScanner:
 
 def _safe_preview(secret: bytes, head: int = 4, tail: int = 2) -> str:
     """Short, redacted preview of a matched secret. Never log the raw value."""
-    try:
-        s = secret.decode("utf-8", errors="replace")
-    except Exception:  # pragma: no cover - decode with errors='replace' can't raise
-        return "[unprintable]"
+    # ``errors='replace'`` cannot raise — no except clause needed here.
+    s = secret.decode("utf-8", errors="replace")
     if len(s) <= head + tail:
         return "*" * len(s)
     return f"{s[:head]}...{s[-tail:]}"
@@ -190,10 +189,8 @@ class GitleaksScanner:
             )
             if not report.exists():
                 return []
-            import json as _json
-
             try:
-                raw = _json.loads(report.read_text())
+                raw = json.loads(report.read_text())
             except Exception:  # pragma: no cover - malformed report
                 return []
         findings: list[Finding] = []
@@ -248,14 +245,12 @@ class TrufflehogScanner:
                 check=False,
             )
         findings: list[Finding] = []
-        import json as _json
-
         for line in proc.stdout.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                entry = _json.loads(line)
+                entry = json.loads(line)
             except Exception:
                 continue
             findings.append(

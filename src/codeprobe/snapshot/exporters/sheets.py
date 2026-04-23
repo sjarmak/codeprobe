@@ -19,13 +19,22 @@ from codeprobe.snapshot.exporters._common import (
     load_entries,
     load_manifest,
     project_row,
+    sanitize_formula,
 )
 
 __all__ = ["export_sheets"]
 
 
 def _cell(value: Any) -> str:
-    """Return ``value`` rendered as a single-line TSV cell."""
+    """Return ``value`` rendered as a single-line TSV cell.
+
+    The output is guarded against spreadsheet-formula injection: cells whose
+    first character is one of ``= + - @ \\t \\r`` are prefixed with a single
+    quote so Google Sheets / Excel render them as literal text. The guard is
+    applied *before* tab/newline stripping so a leading tab or CR still
+    triggers the quote-prefix even though the whitespace itself is then
+    normalised to a space.
+    """
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -36,6 +45,9 @@ def _cell(value: Any) -> str:
         rendered = value
     else:
         rendered = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    # Formula-guard first so leading tab/CR is detected before we normalise
+    # whitespace into spaces (which would otherwise drop the leading trigger).
+    rendered = sanitize_formula(rendered)
     # Strip embedded tabs/newlines so the TSV row/col grid stays intact.
     return rendered.replace("\t", " ").replace("\n", " ").replace("\r", " ")
 

@@ -29,6 +29,15 @@ class CanaryFailed(RuntimeError):
     """Raised when the scanner fails to detect the planted canary."""
 
 
+class CanaryProofInvalid(RuntimeError):
+    """Raised when a loaded canary proof fails validation (e.g. passed=False).
+
+    Distinct from :class:`CanaryFailed` so CLI callers can surface a
+    different message for "proof file is malformed / marked as failing"
+    versus "scanner actually missed the canary during a live run".
+    """
+
+
 @dataclass(frozen=True)
 class CanaryResult:
     """Outcome of a single canary-gate run.
@@ -113,7 +122,13 @@ def _canary_overlaps(finding: Finding, canary: str, blob: bytes) -> bool:
 
 
 def load_canary_proof(path: Path) -> CanaryResult:
-    """Load a previously-recorded canary proof from disk."""
+    """Load a previously-recorded canary proof from disk.
+
+    The loaded proof is validated eagerly: if ``passed`` is not ``True``,
+    :class:`CanaryProofInvalid` is raised so callers cannot accidentally
+    feed a failed proof into :func:`codeprobe.snapshot.redact.redact`. The
+    CLI performs its own belt-and-suspenders check on top of this.
+    """
     raw = json.loads(Path(path).read_text())
     findings = [
         Finding(
@@ -125,10 +140,17 @@ def load_canary_proof(path: Path) -> CanaryResult:
         )
         for f in raw.get("findings", [])
     ]
-    return CanaryResult(
+    result = CanaryResult(
         passed=bool(raw.get("passed", False)),
         canary=str(raw.get("canary", CANARY_DEFAULT)),
         scanner_name=str(raw.get("scanner_name", "unknown")),
         findings=findings,
         timestamp=str(raw.get("timestamp", "")),
     )
+    if not result.passed:
+        raise CanaryProofInvalid(
+            f"canary proof at {path} has passed=False (scanner="
+            f"{result.scanner_name!r}); refusing to load it as a passing "
+            f"proof."
+        )
+    return result

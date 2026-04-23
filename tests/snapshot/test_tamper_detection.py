@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from codeprobe.snapshot import (
+    CANARY_DEFAULT,
     MockScanner,
     create_snapshot,
     verify_snapshot_extended,
@@ -69,8 +70,12 @@ def test_redacted_body_single_byte_tamper_is_detected(tmp_path: Path) -> None:
     exp = _make_experiment(tmp_path)
     out = tmp_path / "snap"
 
-    # Passthrough scanner: redact() leaves bytes intact.
-    scanner = MockScanner(hit_substrings=[])
+    # Scanner that catches the canary (required to clear the gate) but
+    # whose redact() is effectively a pass-through on our experiment files
+    # because none of them contain the canary substring. This keeps the
+    # on-disk redacted bytes equal to the source bytes, which is what this
+    # tamper test needs.
+    scanner = MockScanner(hit_substrings=[CANARY_DEFAULT])
     os.environ.pop("CODEPROBE_SIGNING_KEY", None)
     create_snapshot(
         exp,

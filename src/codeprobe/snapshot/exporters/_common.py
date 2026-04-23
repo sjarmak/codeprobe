@@ -20,7 +20,32 @@ __all__ = [
     "load_entries",
     "entry_columns",
     "project_row",
+    "sanitize_formula",
 ]
+
+
+# Characters that spreadsheet engines (Excel, Google Sheets, LibreOffice,
+# Sigma, Looker) interpret as starting a formula or command when they appear
+# as the first character of a cell. Writing a value like ``=HYPERLINK(...)``
+# into a CSV/TSV leads to formula execution on the recipient's machine when
+# the file is opened — a classic CSV-injection / spreadsheet-injection
+# vector. See OWASP "CSV Injection".
+_FORMULA_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@", "\t", "\r")
+
+
+def sanitize_formula(text: str) -> str:
+    """Return ``text`` with a leading ``'`` prepended if it would be a formula.
+
+    Any cell value whose first character is in :data:`_FORMULA_PREFIXES` is
+    prefixed with a single quote so spreadsheet engines treat it as literal
+    text rather than a formula. Non-string input is returned unchanged (the
+    caller is expected to have stringified before calling).
+    """
+    if not text:
+        return text
+    if text[0] in _FORMULA_PREFIXES:
+        return "'" + text
+    return text
 
 
 def load_manifest(snapshot_dir: Path) -> dict[str, Any]:

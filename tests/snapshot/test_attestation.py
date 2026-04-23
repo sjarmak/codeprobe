@@ -147,7 +147,7 @@ def test_attestation_records_mode_for_every_supported_mode(
 ) -> None:
     """Both hashes-only and contents modes must name their mode in the
     attestation block."""
-    from codeprobe.snapshot import MockScanner
+    from codeprobe.snapshot import CANARY_DEFAULT, MockScanner
 
     # hashes-only via library call.
     src = _create_src(tmp_path)
@@ -156,9 +156,11 @@ def test_attestation_records_mode_for_every_supported_mode(
     assert m1.attestation is not None
     assert m1.attestation.redaction_mode == "hashes-only"
 
-    # contents via library (allow_source_in_export must be True).
+    # contents via library (allow_source_in_export must be True, and a
+    # scanner that catches the planted canary is required to clear the
+    # pre-publish canary gate — same protection as secrets mode).
     out2 = tmp_path / "snap_contents"
-    scanner = MockScanner(hit_substrings=["alpha"])
+    scanner = MockScanner(hit_substrings=["alpha", CANARY_DEFAULT])
     m2 = redact(
         src,
         "contents",

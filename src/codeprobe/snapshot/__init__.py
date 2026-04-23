@@ -26,6 +26,7 @@ from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
     CanaryFailed,
     CanaryGate,
+    CanaryProofInvalid,
     CanaryResult,
     load_canary_proof,
 )
@@ -75,6 +76,7 @@ __all__ = [
     "CANARY_DEFAULT",
     "CanaryFailed",
     "CanaryGate",
+    "CanaryProofInvalid",
     "CanaryResult",
     "CsbLayout",
     "DEFAULT_PATTERNS",

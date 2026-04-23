@@ -41,7 +41,7 @@ from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
     RedactionMode,
     SnapshotManifest,
-    redact,
+    _redact_to_manifest,
 )
 from codeprobe.snapshot.scanners import Scanner
 
@@ -170,12 +170,19 @@ def _iter_trial_dirs(experiment_dir: Path) -> list[tuple[str, str, Path]]:
     grandparent is ``experiment_dir`` as a trial; that keeps us tolerant to
     differing layouts (best effort; empty results are fine).
     """
+    # Skip any top-level name we may have emitted into this directory so an
+    # in-place snapshot (experiment_dir == out_dir) does not recursively
+    # re-ingest its own output. Derived from _LAYOUT_SUBDIRS so any future
+    # addition to the CSB layout is picked up automatically.
+    skip_names = {"SNAPSHOT.json", "files"} | {
+        sub.split("/", 1)[0] for sub in _LAYOUT_SUBDIRS
+    }
+
     trials: list[tuple[str, str, Path]] = []
     for config_dir in sorted(experiment_dir.iterdir()):
         if not config_dir.is_dir():
             continue
-        # Skip our own output if the user passed out_dir under experiment_dir.
-        if config_dir.name in {"SNAPSHOT.json", *_LAYOUT_SUBDIRS, "files"}:
+        if config_dir.name in skip_names:
             continue
         for task_dir in sorted(config_dir.iterdir()):
             if task_dir.is_dir():
@@ -286,8 +293,11 @@ def create_snapshot(
 
     layout = _ensure_layout(out_dir)
 
-    # r14 redaction produces SNAPSHOT.json + (for content modes) files/.
-    base_manifest: SnapshotManifest = redact(
+    # r14 redaction produces the in-memory manifest plus (for content modes)
+    # the ``files/`` subtree on disk. We intentionally use the internal
+    # "no write" variant so the r18 extension layer can compose the full
+    # manifest and serialize ``SNAPSHOT.json`` exactly once.
+    base_manifest: SnapshotManifest = _redact_to_manifest(
         source_dir=experiment_dir,
         mode=mode,
         out_dir=out_dir,
@@ -297,9 +307,10 @@ def create_snapshot(
         allow_source_in_export=allow_source_in_export,
     )
 
-    # Extend with R18 schema_version + created_at + dependencies. This
-    # rewrites SNAPSHOT.json with the r14 keys preserved verbatim so the
-    # r14 attestation remains valid.
+    # Extend with R18 schema_version + created_at + dependencies and write
+    # the combined manifest to disk. The r14 attestation body is built from
+    # the base manifest's canonical payload (excluding R18 fields), so the
+    # attestation signature remains valid alongside the extended block.
     deps = collect_dependencies()
     extended = build_extended_manifest(base_manifest, dependencies=deps)
     write_extended_manifest(extended, out_dir)

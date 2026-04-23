@@ -130,14 +130,19 @@ def _collect_llm_backends() -> list[dict[str, Any]]:
     return out
 
 
-def _collect_issue_trackers() -> list[dict[str, Any]]:
-    """Return the issue-tracker API versions codeprobe integrates with.
+def _default_issue_tracker_versions() -> list[dict[str, Any]]:
+    """Return the baseline issue-tracker API-version spec codeprobe targets.
 
-    The versions are derived structurally from the URL templates baked into
-    the corresponding adapters — e.g. ``jira.py`` targets ``/rest/api/3/``
-    and ``gitlab.py`` targets ``/api/v4/``. If an adapter later moves to a
-    new major version, that adapter's URL template bumps and this list bumps
-    with it.
+    This is a *static baseline*, not runtime observation — it names each
+    tracker codeprobe's adapters are written against and the API major
+    version baked into their URL templates (``jira.py`` → ``/rest/api/3/``,
+    ``github.py`` → ``/v3/``, ``gitlab.py`` → ``/api/v4/``).
+
+    When a tracker adapter is upgraded to a new API major version, bump the
+    corresponding entry here so downstream snapshot consumers can detect
+    the shift. Runtime discovery (polling the live server for its actual
+    version) is intentionally not done here because it would couple snapshot
+    creation to network availability.
     """
     return [
         {"name": "jira", "api_version": "v3"},
@@ -164,7 +169,7 @@ def collect_dependencies() -> Dependencies:
     return Dependencies(
         mcp_tools=_collect_mcp_tools(),
         llm_backends=_collect_llm_backends(),
-        issue_trackers=_collect_issue_trackers(),
+        issue_trackers=_default_issue_tracker_versions(),
         build_manifest_parsers=_collect_build_manifest_parsers(),
     )
 

@@ -33,7 +33,6 @@ import hashlib
 import hmac
 import json
 import os
-import shutil
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +60,11 @@ class FileEntry:
     sha256: str
     size: int
     redacted_body: str | None = None  # relative path under out_dir/files/ if present
+    # sha256 of the bytes actually written to ``redacted_body`` (post-scanner).
+    # Only populated in content-bearing modes; absent / None in hashes-only
+    # mode or when the file body was not materialised on disk. Verifiers use
+    # this to distinguish legitimate redaction diffs from post-write tampering.
+    redacted_body_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +154,40 @@ def redact(
         The manifest also written to disk as ``SNAPSHOT.json``.
     """
 
+    manifest = _redact_to_manifest(
+        source_dir=source_dir,
+        mode=mode,
+        out_dir=out_dir,
+        scanner=scanner,
+        signing_key=signing_key,
+        canary_proof=canary_proof,
+        allow_source_in_export=allow_source_in_export,
+    )
+    write_snapshot(manifest, Path(out_dir))
+    return manifest
+
+
+def _redact_to_manifest(
+    source_dir: Path,
+    mode: RedactionMode,
+    out_dir: Path,
+    scanner: Scanner | None = None,
+    signing_key: str | None = None,
+    canary_proof: CanaryResult | None = None,
+    allow_source_in_export: bool = False,
+) -> SnapshotManifest:
+    """Produce a :class:`SnapshotManifest` without writing ``SNAPSHOT.json``.
+
+    This is the internal variant used by :func:`create_snapshot` so a single
+    ``write_extended_manifest`` call can serialise the fully-composed manifest
+    (r14 base + R18 extension) exactly once. External callers should continue
+    to use :func:`redact` which preserves the historical
+    "redact + write SNAPSHOT.json" contract.
+
+    The ``files/`` subtree (in content modes) is still written here because
+    the redacted-body hashes need to be computed from the bytes that were
+    actually materialised on disk.
+    """
     source_dir = Path(source_dir)
     out_dir = Path(out_dir)
     if not source_dir.exists() or not source_dir.is_dir():
@@ -169,20 +207,24 @@ def redact(
         PatternScanner() if need_scanner else None
     )
 
-    # secrets mode requires a proven canary gate.
+    # contents/secrets modes both copy source-derived bodies into the
+    # snapshot, so both must prove that the configured scanner can actually
+    # detect secrets before any body is written. BC-H-04: prior to this
+    # gate being extended, ``mode="contents"`` could produce a redacted-body
+    # snapshot with a silently-broken scanner.
     canary_record: CanaryResult | None = None
-    if mode == "secrets":
+    if mode in ("contents", "secrets"):
         if canary_proof is not None:
             if not canary_proof.passed:
                 raise PermissionError(
-                    "mode='secrets' requires a passing canary_proof; "
+                    f"mode={mode!r} requires a passing canary_proof; "
                     f"received failed proof from scanner {canary_proof.scanner_name!r}"
                 )
             canary_record = canary_proof
         else:
             if effective_scanner is None:
                 raise PermissionError(
-                    "mode='secrets' requires either a canary_proof or a scanner "
+                    f"mode={mode!r} requires either a canary_proof or a scanner "
                     "to run the inline canary gate."
                 )
             canary_record = CanaryGate(effective_scanner).require_pass_or_raise()
@@ -213,11 +255,13 @@ def redact(
             target = files_out / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(redacted)
+            redacted_sha = hashlib.sha256(redacted).hexdigest()
             entry = FileEntry(
                 path=rel,
                 sha256=sha,
                 size=len(body),
                 redacted_body=(Path(_FILES_SUBDIR) / rel).as_posix(),
+                redacted_body_sha256=redacted_sha,
             )
         files.append(entry)
 
@@ -237,7 +281,6 @@ def redact(
     )
     manifest.attestation = attestation
 
-    write_snapshot(manifest, out_dir)
     return manifest
 
 
@@ -354,6 +397,11 @@ def verify_snapshot(
             redacted_body=(
                 str(f["redacted_body"]) if f.get("redacted_body") is not None else None
             ),
+            redacted_body_sha256=(
+                str(f["redacted_body_sha256"])
+                if f.get("redacted_body_sha256") is not None
+                else None
+            ),
         )
         for f in raw.get("files", [])
     ]
@@ -415,9 +463,3 @@ __all__ = [
     "verify_snapshot",
     "write_snapshot",
 ]
-
-
-# shutil is imported to keep the redact() public surface future-proof for
-# callers that may want to chain into shutil.copytree for a raw (no-scanner)
-# copy. Without this reference, mypy/ruff flag the import as unused.
-_ = shutil

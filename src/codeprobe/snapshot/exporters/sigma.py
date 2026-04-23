@@ -21,6 +21,7 @@ from codeprobe.snapshot.exporters._common import (
     load_entries,
     load_manifest,
     project_row,
+    sanitize_formula,
 )
 
 __all__ = ["export_sigma"]
@@ -66,7 +67,13 @@ def _build_schema(
 
 
 def _stringify(value: Any) -> str:
-    """Return a CSV-safe string representation of ``value``."""
+    """Return a CSV-safe string representation of ``value``.
+
+    The returned string is guarded against spreadsheet-formula injection:
+    cells whose first character is one of ``= + - @ \\t \\r`` are prefixed
+    with a single quote so the consuming spreadsheet (Sigma, Looker, Excel,
+    Google Sheets) renders them as literal text.
+    """
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -74,10 +81,10 @@ def _stringify(value: Any) -> str:
     if isinstance(value, (int, float)):
         return str(value)
     if isinstance(value, str):
-        return value
+        return sanitize_formula(value)
     # Dict/list values are rendered as compact JSON so downstream SQL can
     # still parse them via json_extract if needed.
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return sanitize_formula(json.dumps(value, sort_keys=True, separators=(",", ":")))
 
 
 def export_sigma(snapshot_dir: Path, out_dir: Path) -> tuple[Path, Path]:

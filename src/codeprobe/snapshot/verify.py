@@ -117,14 +117,23 @@ def _verify_file_hashes(snapshot_dir: Path) -> tuple[bool, list[str]]:
 
     The manifest's ``files[].path`` is always relative to the snapshot's
     source directory. The on-disk body (when present) lives under
-    ``snapshot_dir/files/<path>`` in content modes, or inside
-    ``snapshot_dir/export/traces/...`` after the R18 CSB layout is populated.
+    ``snapshot_dir/files/<path>``.
 
-    For R18 we check the r14 ``files/`` mirror when it exists, which is the
-    canonical location for redacted bodies. Bodies copied into
-    ``export/traces/`` are sanitised copies intended for publishing and may
-    intentionally differ (headers stripped, etc.) — they are not tamper-
-    checked against the manifest.
+    Tamper detection strategy:
+
+    - When the manifest entry carries a ``redacted_body_sha256`` field
+      (written by ``redact()`` at snapshot-creation time for ``contents`` and
+      ``secrets`` modes), the on-disk body is hashed and compared against
+      that field. A mismatch indicates the body was modified after the
+      snapshot was produced.
+    - When the field is absent (legacy snapshots, or a modality where no
+      redaction transformation is applied), fall back to comparing the
+      on-disk body against the source ``sha256``. This preserves backwards
+      compatibility for snapshots produced before the field existed.
+
+    Bodies copied into ``export/traces/`` are sanitised copies intended for
+    publishing and may intentionally differ from the manifest entries —
+    they are not tamper-checked here.
     """
     manifest_path = snapshot_dir / "SNAPSHOT.json"
     if not manifest_path.exists():
@@ -140,40 +149,34 @@ def _verify_file_hashes(snapshot_dir: Path) -> tuple[bool, list[str]]:
     offenders: list[str] = []
     for entry in manifest.get("files", []):
         rel = entry.get("path")
-        expected = entry.get("sha256")
-        if not isinstance(rel, str) or not isinstance(expected, str):
+        expected_src = entry.get("sha256")
+        expected_redacted = entry.get("redacted_body_sha256")
+        if not isinstance(rel, str) or not isinstance(expected_src, str):
             offenders.append(str(rel))
             continue
         candidate = files_dir / rel
         if not candidate.is_file():
-            # The r14 manifest records *source* sha256, not the redacted body
-            # sha. In content modes, the body written to files/ has been
-            # transformed by the scanner, so its hash will not equal the
-            # manifest entry. R18's tamper-detection responsibility is:
-            # (a) detect manifest mutation (handled by r14 body_sha256),
-            # (b) detect post-write mutation of a redacted body file.
-            # For (b) we hash the redacted body bytes directly and compare
-            # to a secondary manifest hash if present; when absent we fall
-            # back to the original sha256 so single-byte flips are still
-            # caught relative to the pre-redaction source.
+            # The manifest references a file that no on-disk body exists
+            # for. In content modes this is a genuine problem, but because
+            # legacy hashes-only and partial snapshots can reach this path,
+            # we treat a missing-body as "not a tamper signal" and let the
+            # attestation-level body_sha256 catch manifest-level corruption.
             continue
         actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        # For redacted bodies the body on disk has been transformed by the
-        # scanner. We compare the body hash against the manifest's per-file
-        # sha256 ONLY when the scanner is a pass-through (MockScanner with
-        # no hit_substrings, or when the transformation is a no-op). The
-        # manifest stores the source sha; a tampered redacted file will
-        # produce a different sha regardless, so a mismatch is a signal
-        # worth surfacing even though it can occur legitimately.
-        if actual != expected:
-            # Record as an offender only if the redacted body equals the
-            # source body (i.e. redaction was a no-op). Otherwise the hash
-            # diff is expected and not a tamper signal.
-            offenders.append(str(candidate))
+        if isinstance(expected_redacted, str) and expected_redacted:
+            # Preferred path: we have a hash of the bytes actually written
+            # to disk after scanner redaction, so any single-byte tamper is
+            # detectable regardless of what the redaction did.
+            if actual != expected_redacted:
+                offenders.append(str(candidate))
+        else:
+            # Legacy fallback: compare against the source sha. This is only
+            # correct when redaction was a byte-for-byte passthrough (e.g.
+            # a MockScanner with no hits); for real scanners the hashes
+            # legitimately differ and we cannot distinguish tampering.
+            if actual != expected_src:
+                offenders.append(str(candidate))
 
-    # Any remaining offenders indicate tampering; if the hash diff is
-    # solely from redaction the test can use a MockScanner with no hits so
-    # redaction is a byte-for-byte copy.
     return len(offenders) == 0, offenders
 
 
