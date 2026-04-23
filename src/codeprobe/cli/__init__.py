@@ -394,6 +394,29 @@ def init(path: str) -> None:
     "history) and this flag is omitted, mining fails loudly and asks you "
     "to pass `--narrative-source commits+rfcs` (or a subset).",
 )
+@click.option(
+    "--refresh",
+    "refresh_dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Re-mine against a new commit for an existing task directory. "
+        "Preserves task IDs where structural identity holds (oracle type "
+        "unchanged AND oracle file churn <= 20%). Fails loudly with a diff "
+        "report on structural mismatch unless --accept-structural-change is set."
+    ),
+)
+@click.option(
+    "--accept-structural-change",
+    "accept_structural_change",
+    is_flag=True,
+    default=False,
+    help=(
+        "Allow --refresh to proceed even when the oracle file set changes by "
+        ">20% or the oracle type changes. Task ID is preserved but the commit "
+        "history is reset to root at the new commit."
+    ),
+)
 @click.pass_context
 def mine(
     ctx: click.Context,
@@ -428,6 +451,8 @@ def mine(
     sg_discovery: bool,
     dual_verify: bool,
     narrative_source: tuple[str, ...],
+    refresh_dir: str | None,
+    accept_structural_change: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -620,6 +645,8 @@ def mine(
         sg_discovery=sg_discovery,
         dual_verify=dual_verify,
         narrative_source=narrative_source,
+        refresh_dir=refresh_dir,
+        accept_structural_change=accept_structural_change,
         explicit_set=explicitly_set,
         profile_set=profile_set,
     )
@@ -769,12 +796,45 @@ def run(
 @main.command()
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--format", "fmt", default="text", help="Output format: text, json, csv.")
-def interpret(path: str, fmt: str) -> None:
+@click.option(
+    "--regression",
+    "regression",
+    is_flag=True,
+    default=False,
+    help=(
+        "Plot per-task score over commit history using the "
+        "ground_truth_commit_history recorded by `codeprobe mine --refresh`. "
+        "PATH should point to a mined tasks directory (or an experiment root)."
+    ),
+)
+@click.option(
+    "--results",
+    "results_path",
+    default=None,
+    type=click.Path(exists=True),
+    help=(
+        "Optional results directory for --regression. When supplied, "
+        "scores are aligned to each commit in the task's history."
+    ),
+)
+def interpret(
+    path: str, fmt: str, regression: bool, results_path: str | None
+) -> None:
     """Analyze eval results and get recommendations.
 
     Compares configurations statistically, ranks by score and cost-efficiency,
     and produces actionable recommendations.
+
+    With --regression, instead plots per-task score over commit history using
+    the ground_truth_commit_history field populated by
+    ``codeprobe mine --refresh``.
     """
+    if regression:
+        from codeprobe.cli.interpret_cmd import run_regression
+
+        run_regression(path, results_path=results_path)
+        return
+
     from codeprobe.cli.interpret_cmd import run_interpret
 
     run_interpret(path, fmt=fmt)

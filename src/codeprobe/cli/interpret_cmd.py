@@ -24,6 +24,35 @@ def _count_expected_tasks(tasks_dir: Path) -> int | None:
     return count if count > 0 else None
 
 
+def run_regression(path: str, results_path: str | None = None) -> None:
+    """Print a per-task score-over-commits regression report.
+
+    Walks ``path`` looking for a tasks directory (``<path>/tasks`` or
+    ``<path>`` itself if it contains metadata.json files) and renders a
+    rich table grouped by ``task.id``. Scores are read from
+    ``results_path`` when provided (see
+    :func:`codeprobe.analysis.interpret.collect_task_regressions` for the
+    accepted layouts).
+
+    This path intentionally does NOT require a full experiment.json —
+    regression plotting works on a mined task directory alone, which is
+    the common shape users interact with after ``codeprobe mine --refresh``.
+    """
+    from codeprobe.analysis.interpret import regression_report
+
+    root = Path(path).resolve()
+
+    # Accept either a tasks/ directory directly, or an experiment root
+    # whose tasks live under ./tasks/.
+    candidate = root / "tasks"
+    tasks_dir = candidate if candidate.is_dir() else root
+
+    results_dir = Path(results_path).resolve() if results_path else None
+
+    report = regression_report(tasks_dir, results_dir=results_dir)
+    click.echo(report)
+
+
 def run_interpret(path: str, fmt: str = "text") -> None:
     """Analyze eval results and generate report."""
     from codeprobe.analysis import (

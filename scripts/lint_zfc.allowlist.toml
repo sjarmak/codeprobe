@@ -51,30 +51,30 @@ reason = "Known violation: hardcoded min_hits thresholds (3-5). CLAUDE.md ZFC se
 
 [[entry]]
 file = "src/codeprobe/mining/comprehension.py"
-line_start = 425
-line_end = 435
+line_start = 485
+line_end = 495
 reason = "Pre-existing: _spec_to_task hardcodes difficulty='hard'. Out of scope for INV3."
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 313
-line_end = 320
+line_start = 370
+line_end = 380
 reason = "Pre-existing: cross-repo-dep-trace task hardcodes difficulty='medium'."
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 555
-line_end = 565
-reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~558)."
+line_start = 613
+line_end = 623
+reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~618)."
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 625
-line_end = 635
-reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~630)."
+line_start = 685
+line_end = 695
+reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~690)."
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 715
-line_end = 725
-reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~719)."
+line_start = 774
+line_end = 784
+reason = "Pre-existing: org_scale task hardcodes difficulty='hard' (line ~779)."

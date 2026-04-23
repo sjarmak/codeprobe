@@ -98,6 +98,10 @@ class TaskMetadata:
     ground_truth_commits: tuple[
         tuple[str, str], ...
     ] = ()  # (repo_name, sha) pairs for multi-repo
+    # Chronological commit SHAs this task has been mined against.
+    # Order: [oldest, ..., newest]. Single element on first mine; grows when
+    # ``codeprobe mine --refresh`` preserves the task across subsequent commits.
+    ground_truth_commit_history: tuple[str, ...] = ()
     sg_repo: str = ""  # Sourcegraph repo identifier for MCP instruction variant
     # Secondary repos required to complete the task (cross-repo mining).
     # Empty tuple for single-repo tasks (backwards compatible).

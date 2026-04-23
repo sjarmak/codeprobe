@@ -1994,12 +1994,25 @@ def run_mine(
     sg_discovery: bool = False,
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
+    refresh_dir: str | None = None,
+    accept_structural_change: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
 ) -> None:
     """Mine eval tasks from a repository."""
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
+
+    # Refresh dispatch: runs before any other mining path so users don't
+    # accidentally re-mine a whole tasks dir when they only meant to
+    # refresh a single task.
+    if refresh_dir is not None:
+        _run_refresh(
+            Path(refresh_dir).resolve(),
+            repo_path_arg=path,
+            accept_structural_change=accept_structural_change,
+        )
+        return
 
     # CLI validation: --cross-repo and --org-scale are mutually exclusive
     if cross_repo and org_scale:
@@ -2619,3 +2632,153 @@ def _show_org_scale_results(
             f"--metric weighted_f1"
         )
         click.echo()
+
+
+# ---------------------------------------------------------------------------
+# Refresh-mode dispatch — re-mines a single task dir against a new commit.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_refresh_commit(repo_path: Path) -> str:
+    """Return the current HEAD SHA for ``repo_path``.
+
+    Falls back to an empty string when the path isn't a git repo; the
+    refresh flow itself will surface a clearer error in that case.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return ""
+
+
+def _run_refresh(
+    existing_task_dir: Path,
+    *,
+    repo_path_arg: str,
+    accept_structural_change: bool,
+) -> None:
+    """Re-mine ``existing_task_dir`` against a new commit.
+
+    The CLI wiring is intentionally thin. We:
+
+    1. Read metadata.json + ground_truth.json from the existing task dir.
+    2. Resolve the "new commit" from the repo path (HEAD).
+    3. Build a fresh :class:`Task` from the on-disk ground truth (no
+       live git mining — we only refresh the commit pointer and any
+       file-set changes the user has already committed).
+    4. Delegate fail-loud structural-mismatch handling to
+       :func:`codeprobe.mining.refresh.refresh_task`.
+    5. Write the refreshed task back with :func:`write_task_dir`.
+
+    This is sufficient for the R20 contract (preserve-or-fail). More
+    sophisticated flows — re-mining PR metadata, re-enriching via LLM —
+    will layer on top of this primitive.
+    """
+    from codeprobe.mining.refresh import (
+        StructuralMismatchError,
+        read_structural_signature,
+        read_task_metadata_json,
+        refresh_task,
+    )
+    from codeprobe.mining.writer import write_task_dir
+    from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+
+    existing_task_dir = Path(existing_task_dir).resolve()
+    if not existing_task_dir.is_dir():
+        raise click.UsageError(
+            f"--refresh target is not a directory: {existing_task_dir}"
+        )
+
+    # 1. Read existing state. Missing metadata.json is a hard error — we
+    #    refuse to refresh a task we can't identify.
+    try:
+        old_meta = read_task_metadata_json(existing_task_dir)
+    except FileNotFoundError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    try:
+        new_signature = read_structural_signature(existing_task_dir)
+    except FileNotFoundError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # 2. Resolve new commit.
+    repo_path = _resolve_repo_path(repo_path_arg)
+    new_commit = _resolve_refresh_commit(repo_path)
+    if not new_commit:
+        raise click.UsageError(
+            f"Could not resolve HEAD commit in {repo_path}. "
+            "Ensure --refresh is run against a git repository."
+        )
+
+    # 3. Build a new_task from the on-disk ground truth. The miner would
+    #    normally supply a fresh Task, but for the primitive refresh case
+    #    we pass through the existing structure and let refresh_task
+    #    update the commit + history fields.
+    old_metadata_section = old_meta.get("metadata") or {}
+    old_verification = old_meta.get("verification") or {}
+    language = old_metadata_section.get("language", "") or ""
+
+    new_task = Task(
+        id=str(old_meta.get("id", "")),
+        repo=str(old_meta.get("repo", "")),
+        metadata=TaskMetadata(
+            name=str(old_metadata_section.get("name", "")),
+            description=str(old_metadata_section.get("description", "")),
+            language=language,
+            category=str(old_metadata_section.get("category", "sdlc")),
+            task_type=str(
+                old_metadata_section.get("task_type", "sdlc_code_change")
+            ),
+            ground_truth_commit=new_commit,
+            ground_truth_commit_history=tuple(
+                old_metadata_section.get("ground_truth_commit_history") or ()
+            ),
+        ),
+        verification=TaskVerification(
+            type=str(old_verification.get("type", "test_script")),
+            command=str(old_verification.get("command", "bash tests/test.sh")),
+            verification_mode=str(
+                old_verification.get("verification_mode", "test_script")
+            ),
+            oracle_type=new_signature.oracle_type,
+            oracle_answer=new_signature.oracle_files,
+        ),
+    )
+
+    # 4. Delegate to the pure function.
+    try:
+        result = refresh_task(
+            existing_task_dir,
+            new_task,
+            new_commit,
+            accept_structural_change=accept_structural_change,
+        )
+    except StructuralMismatchError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(2)
+
+    # 5. Write the refreshed task back. write_task_dir uses the task.id
+    #    (preserved) as the directory name, so this rewrites in place.
+    base_dir = existing_task_dir.parent
+    write_task_dir(result.task, base_dir, repo_path)
+
+    if result.renumbered:
+        click.echo(
+            f"Refreshed (accepted structural change): {result.task.id} "
+            f"-> history rooted at {new_commit[:7]}"
+        )
+    else:
+        history = result.task.metadata.ground_truth_commit_history
+        click.echo(
+            f"Refreshed: {result.task.id} -> commit history "
+            f"[{' -> '.join(c[:7] for c in history)}]"
+        )
