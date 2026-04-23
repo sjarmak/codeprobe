@@ -49,7 +49,14 @@ def _codeprobe_root() -> Path:
     """
     env_root = os.environ.get("CODEPROBE_STATE_ROOT")
     if env_root:
-        # CODEPROBE_STATE_ROOT is the *state* directory itself.
+        # CODEPROBE_STATE_ROOT points at the *state* directory itself
+        # (e.g. ``/tmp/xyz/state`` or ``~/.codeprobe/state``). This helper
+        # must return the directory ONE LEVEL UP, because ``tenant_root``
+        # (below) re-appends the literal ``"state"`` segment. So:
+        #   env value:   <root>/state           -> .parent = <root>
+        #   tenant_root: <root> / "state" / <tenant>  (correct final shape)
+        # When the env value has no trailing name component (e.g. ``"/"``),
+        # treat it as already-the-root and skip the .parent trick.
         return Path(env_root).parent if Path(env_root).name else Path(env_root)
     return Path.home() / ".codeprobe"
 

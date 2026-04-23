@@ -179,10 +179,16 @@ def is_suppressed(
     """Return True when ``finding`` falls inside an allowlist region.
 
     Matching is done on normalized POSIX-style paths — the finding path
-    is checked for a suffix match against the allowlist file path. This
-    lets the allowlist use repo-relative paths (e.g.
-    ``src/codeprobe/mining/extractor.py``) regardless of whether the
-    linter was run from repo root or elsewhere.
+    must equal the allowlist file path exactly, or end with it (so the
+    allowlist entry is the shorter, anchored suffix — e.g.
+    ``src/codeprobe/mining/extractor.py`` matches a finding at
+    ``/abs/path/to/src/codeprobe/mining/extractor.py``).
+
+    The inverse direction — allowlist entry being a superset of the
+    finding path — is intentionally NOT accepted. That would let a
+    longer allowlist entry silently suppress findings from an unrelated
+    shorter-path source file that happens to share a basename/suffix
+    (see v0.6.0-batch-a review).
     """
     finding_posix = finding.file.replace("\\", "/")
     for entry in allowlist:
@@ -190,7 +196,6 @@ def is_suppressed(
         if not (
             finding_posix == entry_posix
             or finding_posix.endswith("/" + entry_posix)
-            or entry_posix.endswith("/" + finding_posix)
         ):
             continue
         if entry.line_start <= finding.line <= entry.line_end:

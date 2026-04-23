@@ -79,3 +79,44 @@ class TestCachePurge:
             result.stderr if result.stderr_bytes is not None else ""
         )
         assert "--tenant" in combined or "tenant" in combined.lower()
+
+    def test_purge_refuses_cross_tenant_derived_path(
+        self, tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Simulate a cross-tenant leak: a mock ``tenant_root`` returns a
+        path outside the requested tenant's root. The ``assert_tenant_owned``
+        guard at the write boundary must fail closed with
+        :class:`CrossTenantAccessError` rather than ``rmtree``-ing the wrong
+        directory (INV2).
+        """
+        from codeprobe.cli import cache_cmd as cache_cmd_mod
+        from codeprobe.paths import CrossTenantAccessError
+
+        # Seed BOTH tenants so we have something to (attempt to) delete.
+        acme_root = _seed_tenant("acme")
+        globex_root = _seed_tenant("globex")
+
+        # Patch tenant_root only inside cache_cmd so the purge command sees
+        # globex's path when asked for acme's. The paths-module function
+        # keeps normal semantics so assert_tenant_owned evaluates against
+        # the correct acme root.
+        original_tenant_root = cache_cmd_mod.tenant_root
+
+        def malicious_tenant_root(tenant_id: str) -> Path:
+            if tenant_id == "acme":
+                # Return globex's directory — a cross-tenant leak.
+                return original_tenant_root("globex")
+            return original_tenant_root(tenant_id)
+
+        monkeypatch.setattr(cache_cmd_mod, "tenant_root", malicious_tenant_root)
+
+        runner = CliRunner()
+        result = runner.invoke(cache, ["purge", "--tenant", "acme"])
+
+        # The guard should have raised CrossTenantAccessError; Click reports
+        # it as a non-zero exit with the exception attached.
+        assert result.exit_code != 0, result.output
+        assert isinstance(result.exception, CrossTenantAccessError)
+        # Neither tenant was actually purged.
+        assert acme_root.exists(), "acme dir must remain intact"
+        assert globex_root.exists(), "globex dir must not be cross-deleted"

@@ -117,6 +117,49 @@ def test_build_run_command_includes_workdir_and_env() -> None:
     assert "FOO=bar" in argv
 
 
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "",
+        "A=B",
+        "NAME WITH SPACE",
+        "NEWLINE\nKEY",
+    ],
+)
+def test_build_run_command_rejects_invalid_env_keys(bad_key: str) -> None:
+    """Env var keys with '=', whitespace, newlines, or empty strings raise ValueError.
+
+    Regression test for v0.6.0-batch-a finding: an unvalidated key like
+    ``"A=B"`` silently produces ``-e A=B=VALUE`` which Docker parses as
+    ``A -> B=VALUE``, which is not what the caller intended.
+    """
+    with pytest.raises(ValueError, match="Invalid env var key"):
+        _build_run_command(
+            "docker",
+            ["true"],
+            {},
+            allow_writes=False,
+            image="img",
+            workdir=None,
+            env={bad_key: "value"},
+        )
+
+
+def test_build_run_command_accepts_valid_env_keys() -> None:
+    """Sanity: well-formed env keys pass validation."""
+    argv = _build_run_command(
+        "docker",
+        ["true"],
+        {},
+        allow_writes=False,
+        image="img",
+        workdir=None,
+        env={"FOO_BAR": "value", "BAZ123": "q"},
+    )
+    assert "FOO_BAR=value" in argv
+    assert "BAZ123=q" in argv
+
+
 def test_build_run_command_includes_multiple_mounts() -> None:
     argv = _build_run_command(
         "docker",

@@ -103,6 +103,12 @@ def _build_run_command(
         argv += ["-w", workdir]
 
     if env:
+        # Validate keys before constructing the -e KEY=VALUE argv so a
+        # malformed key (empty, embedded '=', newline, or whitespace)
+        # cannot silently produce a wrong env var inside the container.
+        for key in env:
+            if not key or "=" in key or "\n" in key or " " in key:
+                raise ValueError(f"Invalid env var key: {key!r}")
         for key, value in env.items():
             argv += ["-e", f"{key}={value}"]
 

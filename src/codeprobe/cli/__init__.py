@@ -737,6 +737,26 @@ def mine(
         "Repeat for multiple patterns."
     ),
 )
+@click.option(
+    "--offline",
+    is_flag=True,
+    default=False,
+    help=(
+        "Runs credential-TTL preflight and sets CODEPROBE_OFFLINE=1. "
+        "Network-blocking is currently opt-in per subsystem; see "
+        "docs/reviews/v0.6.0-batch-c.md."
+    ),
+)
+@click.option(
+    "--offline-expected-run-duration",
+    "offline_expected_run_duration",
+    default="1h",
+    show_default=True,
+    help=(
+        "Minimum credential TTL required when --offline is set. "
+        "Accepts <N>s, <N>m, <N>h, <N>d."
+    ),
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -755,6 +775,8 @@ def run(
     suite_path: str | None,
     trace_overflow: str,
     trace_deny: tuple[str, ...],
+    offline: bool,
+    offline_expected_run_duration: str,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -790,6 +812,8 @@ def run(
         suite_path=suite_path,
         trace_overflow=trace_overflow,
         trace_deny=tuple(trace_deny),
+        offline=offline,
+        offline_expected_run_duration=offline_expected_run_duration,
     )
 
 

@@ -1,14 +1,14 @@
 # CI pipeline for the prd-build track.
 #
-# Coverage threshold note: --cov-fail-under=70 (not 80) is used here
-# because the existing codebase may not yet reach the project-wide 80%
-# target defined in rules/common/testing.md. This is a transitional
-# floor to keep the build green while we raise coverage; it will be
-# ratcheted back to 80% in a later work unit.
+# Coverage threshold note: --cov-fail-under=80 matches the project-wide
+# coding-standards floor in rules/common/testing.md. Ratcheted from the
+# prior transitional 70% in the v0.6.0 review follow-ups (batch-a #4).
+# Measured at 87% locally across tests/ before the flip.
 #
-# ZFC lint note: the scripts/lint_zfc.py step is non-blocking
-# (continue-on-error: true) for now. It reports violations in mining/
-# but doesn't fail the build. A later work unit flips it to blocking.
+# ZFC lint note: the scripts/lint_zfc.py step is now blocking. Ratcheted
+# from non-blocking in the v0.6.0 review follow-ups (batch-a #3). The
+# allowlist in scripts/lint_zfc.allowlist.toml covers all pre-existing
+# violations documented in CLAUDE.md's Known Violations section.
 
 name: CI (prd-build)
 
@@ -50,12 +50,11 @@ jobs:
       - name: mypy
         run: mypy src/codeprobe --strict-optional
 
-      - name: pytest (coverage floor 70%)
-        run: pytest tests/ -x --cov=src/codeprobe --cov-fail-under=70
+      - name: pytest (coverage floor 80%)
+        run: pytest tests/ -x --cov=src/codeprobe --cov-fail-under=80
 
-      - name: lint_zfc (non-blocking)
-        continue-on-error: true
-        run: python3 scripts/lint_zfc.py src/codeprobe/mining/ --allowlist scripts/lint_zfc.allowlist.toml
+      - name: lint_zfc (blocking)
+        run: python3 scripts/lint_zfc.py src/codeprobe/ --allowlist scripts/lint_zfc.allowlist.toml
 
       - name: snapshot-format compatibility check
         run: |

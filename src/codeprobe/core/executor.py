@@ -34,7 +34,7 @@ from codeprobe.core.isolation import (
     git_restore_clean,
     setup_multi_repo_workspace,
 )
-from codeprobe.core.preamble import PreambleResolver, _base_prompt, compose_instruction
+from codeprobe.core.preamble import PreambleResolver, base_prompt, compose_instruction
 from codeprobe.core.scoring import (
     _COPYTREE_IGNORE,
     get_scorer,
@@ -46,6 +46,7 @@ from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
+    from codeprobe.trace.recorder import TraceRecorder
 
 
 # Per-run agent artifacts that must not leak across task runs.
@@ -313,7 +314,7 @@ def execute_task(
             except (FileNotFoundError, ValueError) as exc:
                 return _error_result(f"Preamble resolution failed: {exc}")
         else:
-            prompt = _base_prompt(instruction, repo_path, worktree_path=_effective_wt)
+            prompt = base_prompt(instruction, repo_path, worktree_path=_effective_wt)
 
         # Pin workspace to pre-merge commit when task has a ground_truth_commit.
         # The agent starts from the parent of the merge commit (the state before
@@ -760,7 +761,7 @@ def execute_config(
     repeats: int = 1,
     clean_excludes: tuple[str, ...] = (),
     event_dispatcher: EventDispatcher | None = None,
-    trace_recorder: object | None = None,
+    trace_recorder: TraceRecorder | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 

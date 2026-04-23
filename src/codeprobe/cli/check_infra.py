@@ -193,12 +193,12 @@ def preamble_drift_cmd(
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
 ) -> None:
-    """Flag preamble drift when mine-time capabilities differ from live.
+    """Alias of ``drift`` with a preamble-focused banner.
 
     Identical semantics to ``drift`` but surfaces the preamble-regeneration
-    intent in CI logs — a preamble built against a stale capability set will
-    describe tools the agent no longer has. The command fails loudly so CI
-    catches the mismatch.
+    intent in CI logs — a preamble built against a stale capability set
+    describes tools the agent no longer has. Routes through the same
+    underlying ``_run_drift_check`` so the two surfaces cannot diverge.
     """
     _run_drift_check(
         task_dir,
@@ -255,6 +255,91 @@ def _configured_backends() -> tuple[str, ...]:
     return tuple(b for b in KNOWN_BACKENDS if b in declared)
 
 
+def run_offline_preflight(
+    expected_run_duration: str,
+    backend_filter: tuple[str, ...] = (),
+    *,
+    echo: bool = True,
+) -> None:
+    """Execute the offline pre-flight credential-TTL check.
+
+    Shared entry point callable from both ``codeprobe check-infra offline``
+    and ``codeprobe run --offline``. Raises :class:`click.ClickException`
+    on any failure; callers that want a non-Click error surface can catch
+    and re-raise.
+
+    When *echo* is False, the per-backend ``no-expiry`` / ``ttl=...`` lines
+    are suppressed so a ``run --offline`` invocation doesn't interleave
+    pre-flight chatter with the run output.
+    """
+    expected = _parse_duration(expected_run_duration)
+
+    configured = _configured_backends()
+    if backend_filter:
+        requested = {name.strip().lower() for name in backend_filter if name.strip()}
+        unknown = sorted(requested - set(KNOWN_BACKENDS))
+        if unknown:
+            raise click.ClickException(
+                f"Unknown backend(s): {', '.join(unknown)}. "
+                f"Known: {', '.join(KNOWN_BACKENDS)}"
+            )
+        configured = tuple(b for b in configured if b in requested)
+
+    if not configured:
+        raise click.ClickException(
+            "No LLM backends configured for offline pre-flight. "
+            "Check model_registry.yaml or pass --backend explicitly."
+        )
+
+    failures: list[str] = []
+    for backend in configured:
+        try:
+            ttl = get_credential_ttl(backend)
+        except CredentialTTLError as exc:
+            failures.append(
+                f"{backend}: credential inspection failed — {exc}. "
+                f"Remediation: refresh the credential for {backend!r} "
+                f"before starting the offline run."
+            )
+            continue
+
+        if ttl is None:
+            if echo:
+                click.echo(f"{backend}: no-expiry")
+            continue
+
+        if ttl <= timedelta(0):
+            failures.append(
+                f"{backend}: credential EXPIRED. "
+                f"Remediation: refresh the {backend!r} credential "
+                f"(e.g. re-issue the STS / access token) before running."
+            )
+            continue
+
+        if ttl < expected:
+            failures.append(
+                f"{backend}: credential TTL {ttl} is shorter than "
+                f"expected run duration {expected}. "
+                f"Remediation: refresh the {backend!r} credential "
+                f"so it outlives the run, or shorten "
+                f"--expected-run-duration."
+            )
+            continue
+
+        if echo:
+            click.echo(f"{backend}: ttl={ttl} (>= {expected})")
+
+    if failures:
+        banner = "Offline pre-flight failed:"
+        raise click.ClickException("\n  ".join([banner, *failures]))
+
+    if echo:
+        click.echo(
+            f"OK — {len(configured)} backend(s) ready for an offline run "
+            f"of up to {expected}."
+        )
+
+
 @check_infra.command("offline")
 @click.option(
     "--expected-run-duration",
@@ -292,69 +377,7 @@ def offline_cmd(
     or with no expiration advertised in the current environment are
     reported as ``no-expiry`` and pass the check.
     """
-    expected = _parse_duration(expected_run_duration)
-
-    configured = _configured_backends()
-    if backend_filter:
-        requested = {name.strip().lower() for name in backend_filter if name.strip()}
-        unknown = sorted(requested - set(KNOWN_BACKENDS))
-        if unknown:
-            raise click.ClickException(
-                f"Unknown backend(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(KNOWN_BACKENDS)}"
-            )
-        configured = tuple(b for b in configured if b in requested)
-
-    if not configured:
-        raise click.ClickException(
-            "No LLM backends configured for offline pre-flight. "
-            "Check model_registry.yaml or pass --backend explicitly."
-        )
-
-    failures: list[str] = []
-    for backend in configured:
-        try:
-            ttl = get_credential_ttl(backend)
-        except CredentialTTLError as exc:
-            failures.append(
-                f"{backend}: credential inspection failed — {exc}. "
-                f"Remediation: refresh the credential for {backend!r} "
-                f"before starting the offline run."
-            )
-            continue
-
-        if ttl is None:
-            click.echo(f"{backend}: no-expiry")
-            continue
-
-        if ttl <= timedelta(0):
-            failures.append(
-                f"{backend}: credential EXPIRED. "
-                f"Remediation: refresh the {backend!r} credential "
-                f"(e.g. re-issue the STS / access token) before running."
-            )
-            continue
-
-        if ttl < expected:
-            failures.append(
-                f"{backend}: credential TTL {ttl} is shorter than "
-                f"expected run duration {expected}. "
-                f"Remediation: refresh the {backend!r} credential "
-                f"so it outlives the run, or shorten "
-                f"--expected-run-duration."
-            )
-            continue
-
-        click.echo(f"{backend}: ttl={ttl} (>= {expected})")
-
-    if failures:
-        banner = "Offline pre-flight failed:"
-        raise click.ClickException("\n  ".join([banner, *failures]))
-
-    click.echo(
-        f"OK — {len(configured)} backend(s) ready for an offline run "
-        f"of up to {expected}."
-    )
+    run_offline_preflight(expected_run_duration, backend_filter)
 
 
-__all__ = ["check_infra"]
+__all__ = ["check_infra", "run_offline_preflight"]

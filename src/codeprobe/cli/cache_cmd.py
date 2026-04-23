@@ -16,7 +16,7 @@ import shutil
 import click
 
 from codeprobe.cli._tenant import tenant_option
-from codeprobe.paths import tenant_root
+from codeprobe.paths import assert_tenant_owned, tenant_root
 
 __all__ = ["cache"]
 
@@ -36,6 +36,11 @@ def purge(tenant_id: str) -> None:
     (handled automatically by ``required=True`` on the option).
     """
     root = tenant_root(tenant_id)
+    # Defense-in-depth: refuse to rmtree anything that isn't actually
+    # under the tenant's state root. `tenant_root` already validates the
+    # tenant_id, but if a future refactor ever passes a derived path we
+    # want a hard fail-closed guard at the write boundary (INV2).
+    assert_tenant_owned(root, tenant_id)
     if not root.exists():
         click.echo(f"No cache for tenant {tenant_id!r} at {root} — nothing to purge.")
         return

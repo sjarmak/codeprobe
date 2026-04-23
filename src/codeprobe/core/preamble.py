@@ -8,6 +8,13 @@ from typing import Protocol, runtime_checkable
 from codeprobe.models.preamble import PreambleBlock
 from codeprobe.preambles import get_builtin
 
+__all__ = [
+    "PreambleResolver",
+    "DefaultPreambleResolver",
+    "base_prompt",
+    "compose_instruction",
+]
+
 
 @runtime_checkable
 class PreambleResolver(Protocol):
@@ -79,13 +86,17 @@ class DefaultPreambleResolver:
         )
 
 
-def _base_prompt(
+def base_prompt(
     instruction: str, repo_path: Path, *, worktree_path: Path | None = None
 ) -> str:
     """Build the base prompt wrapper shared across prompt-building paths.
 
     When *worktree_path* is provided (parallel isolation mode), the prompt
     references the worktree instead of the original repo path.
+
+    This is the public API entry point; the legacy private alias
+    ``_base_prompt`` is kept for backward compatibility with callers that
+    imported it before the promotion to public surface (batch-a review).
     """
     effective_path = worktree_path if worktree_path is not None else repo_path
     # Rewrite TASK_REPO_ROOT in the instruction so agents write to the
@@ -101,6 +112,10 @@ def _base_prompt(
         "Follow the instruction below.\n\n"
         f"{instruction}"
     )
+
+
+# Backward-compatible private alias. Callers should use ``base_prompt``.
+_base_prompt = base_prompt
 
 
 def compose_instruction(
@@ -121,7 +136,7 @@ def compose_instruction(
     *extra_context* is merged into the template context so preambles can
     reference task-specific values like ``{{sg_repo}}``.
     """
-    base = _base_prompt(instruction, repo_path, worktree_path=worktree_path)
+    base = base_prompt(instruction, repo_path, worktree_path=worktree_path)
 
     effective_path = worktree_path if worktree_path is not None else repo_path
     context = {

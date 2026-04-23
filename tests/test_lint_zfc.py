@@ -178,6 +178,58 @@ def test_nested_function_scopes_are_independent(linter):
 # ---------------------------------------------------------------------------
 
 
+def test_allowlist_does_not_reverse_match_longer_entry(linter, tmp_path):
+    """Regression: a longer allowlist entry path must NOT suppress a shorter finding.
+
+    Batch A review (v0.6.0) found that ``is_suppressed`` had three OR
+    arms for path matching, the third of which let an allowlist entry
+    like ``evil/src/codeprobe/mining/extractor.py`` silently suppress
+    findings at ``src/codeprobe/mining/extractor.py``. That arm was
+    removed; this test pins the fix.
+    """
+    # Finding path is the canonical repo-relative one.
+    finding_path = "src/codeprobe/mining/extractor.py"
+    # Entry path is *longer* (has a prepended component) and should NOT match.
+    entry_path = "evil/src/codeprobe/mining/extractor.py"
+
+    finding = linter.Finding(
+        file=finding_path,
+        line=42,
+        rule="zfc-hardcoded-task-metadata",
+        detail="synthetic",
+    )
+    allowlist = (
+        linter.AllowlistEntry(
+            file=entry_path,
+            line_start=1,
+            line_end=10000,
+            reason="should-not-match",
+        ),
+    )
+    assert linter.is_suppressed(finding, allowlist) is False
+
+
+def test_allowlist_still_matches_when_finding_is_longer_than_entry(
+    linter, tmp_path
+):
+    """The legitimate case: absolute finding path ends with repo-relative entry."""
+    finding = linter.Finding(
+        file="/home/x/repo/src/codeprobe/mining/extractor.py",
+        line=42,
+        rule="zfc-hardcoded-task-metadata",
+        detail="synthetic",
+    )
+    allowlist = (
+        linter.AllowlistEntry(
+            file="src/codeprobe/mining/extractor.py",
+            line_start=1,
+            line_end=10000,
+            reason="legitimate suffix match",
+        ),
+    )
+    assert linter.is_suppressed(finding, allowlist) is True
+
+
 def test_allowlist_suppresses_finding(linter, tmp_path):
     source_path = tmp_path / "bad.py"
     source_path.write_text(BAD_ATTR_ASSIGN_SOURCE, encoding="utf-8")

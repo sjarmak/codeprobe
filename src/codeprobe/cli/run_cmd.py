@@ -214,7 +214,7 @@ def show_prompt_and_exit(
     from codeprobe.core.executor import load_instruction
     from codeprobe.core.preamble import (
         DefaultPreambleResolver,
-        _base_prompt,
+        base_prompt,
         compose_instruction,
     )
 
@@ -290,7 +290,7 @@ def show_prompt_and_exit(
             task_id=first_task.name,
         )
     else:
-        prompt = _base_prompt(instruction, repo_root)
+        prompt = base_prompt(instruction, repo_root)
 
     click.echo(prompt)
 
@@ -312,8 +312,32 @@ def run_eval(
     suite_path: str | None = None,
     trace_overflow: str = "fail",
     trace_deny: tuple[str, ...] = (),
+    offline: bool = False,
+    offline_expected_run_duration: str = "1h",
 ) -> None:
-    """Run eval tasks against an AI coding agent."""
+    """Run eval tasks against an AI coding agent.
+
+    When *offline* is True, the credential-TTL preflight from
+    ``codeprobe check-infra offline`` is invoked BEFORE any adapter is
+    resolved, and ``CODEPROBE_OFFLINE=1`` is exported so subprocesses
+    can short-circuit network calls (subsystems currently opt in — see
+    ``codeprobe.net.is_offline_mode``).
+    """
+    if offline:
+        # Fail-loud: the preflight raises click.ClickException on any
+        # backend failure. We let it propagate so the adapter is never
+        # resolved and no tasks are dispatched.
+        from codeprobe.cli.check_infra import run_offline_preflight
+
+        run_offline_preflight(
+            offline_expected_run_duration,
+            backend_filter=(),
+            echo=not quiet,
+        )
+        # Set the env var for subprocesses AFTER preflight succeeds so a
+        # failed preflight leaves the environment untouched.
+        os.environ["CODEPROBE_OFFLINE"] = "1"
+
     exp_dir = Path(config) if config else Path(path)
 
     # Deprecation warning for legacy .evalrc.yaml
@@ -452,13 +476,16 @@ def run_eval(
     # R5: one TraceRecorder per experiment writes to <exp_dir>/runs/trace.db.
     # All configs share the DB — event rows are keyed by (run_id, config,
     # task_id, event_seq) so per-config slicing is cheap at query time.
+    #
+    # CLI callers are already guarded by click.Choice(["fail", "truncate"])
+    # so this check only matters for programmatic callers (library use,
+    # tests). Raise ValueError rather than SystemExit so they get a
+    # proper exception and can catch it; SystemExit leaks an exit-code
+    # contract onto library users.
     if trace_overflow not in ("fail", "truncate"):
-        click.echo(
-            f"Error: --trace-overflow must be 'fail' or 'truncate', "
-            f"got {trace_overflow!r}",
-            err=True,
+        raise ValueError(
+            f"trace_overflow must be 'fail' or 'truncate', got {trace_overflow!r}"
         )
-        raise SystemExit(2)
     overflow_policy = (
         TraceOverflowPolicy.FAIL
         if trace_overflow == "fail"
@@ -586,7 +613,7 @@ def run_eval(
             # R6: persist resolved instruction per task before adapter runs.
             # Write is fail-loud (INV1) — any OSError aborts the run.
             from codeprobe.core.executor import load_instruction
-            from codeprobe.core.preamble import _base_prompt, compose_instruction
+            from codeprobe.core.preamble import base_prompt, compose_instruction
 
             for _td in task_dirs:
                 _instr = load_instruction(_td, variant=exp_config.instruction_variant)
@@ -599,7 +626,7 @@ def run_eval(
                         task_id=_td.name,
                     )
                 else:
-                    _prompt = _base_prompt(_instr, repo_root)
+                    _prompt = base_prompt(_instr, repo_root)
                 _out = config_runs_dir / _td.name / "instruction.resolved.md"
                 _out.parent.mkdir(parents=True, exist_ok=True)
                 _out.write_text(_prompt, encoding="utf-8")
