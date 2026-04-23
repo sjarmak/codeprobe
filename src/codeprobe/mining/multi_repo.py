@@ -32,7 +32,9 @@ from codeprobe.mining.extractor import (
     _get_changed_files,
     list_merged_prs,
 )
+from codeprobe.mining.retry import RetryTracker, retry_call
 from codeprobe.mining.sources import detect_source
+from codeprobe.mining.state import MineState
 from codeprobe.models.task import (
     RepoRef,
     Task,
@@ -289,11 +291,17 @@ def mine_tasks_multi(
     count: int,
     family: Literal["callers", "refactor", "dependency"] = "callers",
     symbol_resolver: SymbolResolver,
+    state: MineState | None = None,
+    retry_tracker: RetryTracker | None = None,
 ) -> MultiRepoMineResult:
     """Mine cross-repo tasks from ``primary`` against ``secondaries``.
 
     Only the ``callers`` family is implemented in v1. Refactor/dependency
     families raise ``NotImplementedError`` with a follow-up message.
+
+    *state* optionally persists per-commit progress; *retry_tracker*
+    applies the mine-level retry exhaustion budget (INV1) to the
+    symbol-resolver calls which are the primary transient-failure source.
     """
     if family == "refactor":
         raise NotImplementedError(
@@ -313,6 +321,8 @@ def mine_tasks_multi(
         secondaries=secondaries,
         count=count,
         symbol_resolver=symbol_resolver,
+        state=state,
+        retry_tracker=retry_tracker,
     )
 
 
@@ -322,6 +332,8 @@ def _mine_callers(
     secondaries: tuple[Path, ...],
     count: int,
     symbol_resolver: SymbolResolver,
+    state: MineState | None = None,
+    retry_tracker: RetryTracker | None = None,
 ) -> MultiRepoMineResult:
     """Implementation of the ``callers`` family.
 
@@ -354,24 +366,47 @@ def _mine_callers(
 
     tasks: list[Task] = []
     gt_map: dict[str, list[str]] = {}
+    completed = state.completed_shas() if state is not None else frozenset()
 
     for sha in commit_shas:
-        changed = _get_changed_files(sha, primary)
-        if not changed:
+        if sha in completed:
+            logger.debug("mine_tasks_multi: skipping %s (already completed)", sha[:8])
             continue
-        symbols = _extract_modified_symbols(primary, sha, changed)
-        if not symbols:
-            continue
+        if state is not None:
+            state.record_running(sha)
+        try:
+            changed = _get_changed_files(sha, primary)
+            symbols = (
+                _extract_modified_symbols(primary, sha, changed) if changed else []
+            )
 
-        cross_refs: list[FileRef] = []
-        matched_symbol: str = ""
-        for sym in symbols:
-            refs = symbol_resolver.find_references(sym, secondary_paths)
-            if refs:
-                cross_refs = refs
-                matched_symbol = sym
-                break
-        if not cross_refs:
+            cross_refs: list[FileRef] = []
+            matched_symbol: str = ""
+            for sym in symbols:
+                if retry_tracker is not None:
+                    refs = retry_call(
+                        lambda s=sym: symbol_resolver.find_references(
+                            s, secondary_paths
+                        ),
+                        tracker=retry_tracker,
+                    )
+                else:
+                    refs = symbol_resolver.find_references(sym, secondary_paths)
+                if refs:
+                    cross_refs = refs
+                    matched_symbol = sym
+                    break
+        except Exception as exc:
+            if state is not None:
+                state.record_interrupted(sha, error=repr(exc))
+            raise
+        finally:
+            # Mechanical: if we didn't trip the interrupted branch, this
+            # SHA is done — whether or not we produced a task for it.
+            if state is not None and state.status(sha) != "interrupted":
+                state.record_completed(sha)
+
+        if not changed or not symbols or not cross_refs:
             continue
 
         # Build task with additional_repos + file_list ground truth.

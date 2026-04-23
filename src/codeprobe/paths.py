@@ -18,9 +18,13 @@ from pathlib import Path
 __all__ = [
     "CrossTenantAccessError",
     "assert_tenant_owned",
+    "compute_repo_hash",
+    "DEFAULT_TENANT",
     "tenant_root",
     "tenant_state_dir",
 ]
+
+DEFAULT_TENANT = "local"
 
 
 class CrossTenantAccessError(Exception):
@@ -35,9 +39,18 @@ class CrossTenantAccessError(Exception):
 def _codeprobe_root() -> Path:
     """Return ``~/.codeprobe`` (not created).
 
-    Kept as an internal helper so tests can monkeypatch ``HOME`` and every
-    tenant path resolves under the temp directory.
+    Respects the ``CODEPROBE_STATE_ROOT`` environment variable when set so
+    tests can redirect state into a tmp_path without touching the real
+    user home. When the env var is set, it is treated as the *state* root
+    (i.e. ``~/.codeprobe/state`` — see :func:`tenant_root` which joins
+    ``state``); the helper therefore returns the parent of the env value
+    so existing ``_codeprobe_root()/"state"/tenant`` joins still resolve
+    correctly.
     """
+    env_root = os.environ.get("CODEPROBE_STATE_ROOT")
+    if env_root:
+        # CODEPROBE_STATE_ROOT is the *state* directory itself.
+        return Path(env_root).parent if Path(env_root).name else Path(env_root)
     return Path.home() / ".codeprobe"
 
 
@@ -69,8 +82,10 @@ def tenant_root(tenant_id: str) -> Path:
     return _codeprobe_root() / "state" / tenant_id
 
 
-def _repo_hash(repo_remote_url: str, repo_ref: str, worktree_root: str) -> str:
-    """Return the 16-char hex sha256 digest identifying a repo/ref/worktree.
+def compute_repo_hash(
+    repo_remote_url: str, repo_ref: str, worktree_root: str
+) -> str:
+    """Return the 16-char hex sha256 digest identifying a (remote, ref, worktree) triple.
 
     Deterministic across runs: identical inputs always produce the same
     digest. Inputs are joined with ``:`` as the separator — consistent with
@@ -82,18 +97,26 @@ def _repo_hash(repo_remote_url: str, repo_ref: str, worktree_root: str) -> str:
 
 def tenant_state_dir(
     tenant_id: str,
-    repo_remote_url: str,
-    repo_ref: str,
-    worktree_root: str,
+    repo_remote_url: str = "",
+    repo_ref: str = "",
+    worktree_root: str = "",
+    *,
+    repo_hash: str | None = None,
 ) -> Path:
     """Return the tenant- and repo-scoped state directory.
 
     Form: ``~/.codeprobe/state/<tenant_id>/<repo_hash>``. Deterministic:
     identical arguments always produce the same path. Does not create the
     directory — callers decide whether/when to materialize it.
+
+    Callers that already have a precomputed ``repo_hash`` may pass it via
+    the keyword-only argument and skip the remote/ref/worktree triple.
     """
     root = tenant_root(tenant_id)
-    digest = _repo_hash(repo_remote_url, repo_ref, worktree_root)
+    if repo_hash is not None:
+        digest = repo_hash
+    else:
+        digest = compute_repo_hash(repo_remote_url, repo_ref, worktree_root)
     return root / digest
 
 
