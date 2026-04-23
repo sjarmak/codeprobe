@@ -664,6 +664,27 @@ def mine(
     type=click.Path(exists=True),
     help="Path to a suite.toml manifest to filter tasks by type, difficulty, and tags.",
 )
+@click.option(
+    "--trace-overflow",
+    type=click.Choice(["fail", "truncate"]),
+    default="fail",
+    show_default=True,
+    help=(
+        "Behaviour when the per-task trace byte budget is exceeded. "
+        "'fail' aborts the run with a non-zero exit; "
+        "'truncate' writes a marker row and drops later events for that task."
+    ),
+)
+@click.option(
+    "--trace-deny",
+    multiple=True,
+    metavar="GLOB",
+    help=(
+        "fnmatch-style glob applied to tool_output strings; any full-match "
+        "output is replaced with [REDACTED-GLOB] before entering trace.db. "
+        "Repeat for multiple patterns."
+    ),
+)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -680,6 +701,8 @@ def run(
     repeats: int | None,
     show_prompt: bool,
     suite_path: str | None,
+    trace_overflow: str,
+    trace_deny: tuple[str, ...],
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -713,6 +736,8 @@ def run(
         timeout=timeout,
         repeats=repeats if repeats is not None else 1,
         suite_path=suite_path,
+        trace_overflow=trace_overflow,
+        trace_deny=tuple(trace_deny),
     )
 
 

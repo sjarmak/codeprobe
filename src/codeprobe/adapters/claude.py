@@ -8,8 +8,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import (
@@ -186,6 +188,42 @@ class ClaudeAdapter(BaseAdapter):
 
     def __init__(self) -> None:
         self._collector = JsonStdoutCollector()
+        # Thread-local trace context: per-worker TraceRecorder + task_id so
+        # parallel task threads don't collide on a single shared attribute.
+        # The executor sets this in ``_run_one`` before calling ``run()`` and
+        # clears it afterwards.
+        self._trace_ctx: threading.local = threading.local()
+
+    def set_trace_context(
+        self,
+        *,
+        recorder: Any | None,
+        config: str | None,
+        task_id: str | None,
+    ) -> None:
+        """Bind trace-recorder state for the current thread.
+
+        Called by the executor before running a task. ``parse_output``
+        forwards these keys to ``JsonStdoutCollector.collect(**ctx)`` so
+        R5's trace.db is populated at the same parse step that fills
+        ``UsageData``. Passing ``recorder=None`` clears the context.
+        """
+        self._trace_ctx.recorder = recorder
+        self._trace_ctx.config = config
+        self._trace_ctx.task_id = task_id
+
+    def _current_trace_context(self) -> dict[str, Any]:
+        """Return kwargs for ``collect()`` from the thread-local trace slot."""
+        recorder = getattr(self._trace_ctx, "recorder", None)
+        config = getattr(self._trace_ctx, "config", None)
+        task_id = getattr(self._trace_ctx, "task_id", None)
+        if recorder is None or config is None or task_id is None:
+            return {}
+        return {
+            "trace_recorder": recorder,
+            "trace_config": config,
+            "trace_task_id": task_id,
+        }
 
     def preflight(self, config: AgentConfig) -> list[str]:
         issues = super().preflight(config)
@@ -325,7 +363,9 @@ class ClaudeAdapter(BaseAdapter):
         final ``type: "result"`` event carries the same fields as the
         single-envelope shape, so we reconstruct ``result`` text from it.
         """
-        usage = self._collector.collect(result.stdout)
+        usage = self._collector.collect(
+            result.stdout, **self._current_trace_context()
+        )
 
         # Extract content text. For stream-json, the terminal result event
         # has a ``result`` field; iterate events to find it. For single
