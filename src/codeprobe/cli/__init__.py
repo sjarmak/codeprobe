@@ -1023,3 +1023,8 @@ main.add_command(check_infra)
 from codeprobe.cli.calibrate_cmd import calibrate  # noqa: E402
 
 main.add_command(calibrate)
+
+# Register the snapshot command group
+from codeprobe.cli.snapshot_cmd import snapshot  # noqa: E402
+
+main.add_command(snapshot)
