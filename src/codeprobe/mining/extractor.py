@@ -1480,11 +1480,19 @@ def generate_instruction(
     if not problem:
         return task
 
+    # Preserve the narrative-adapter trail when present (r9): instead of
+    # overwriting with "llm", append so the final value reads e.g.
+    # "pr+llm" or "commits+rfcs+llm". Empty trail collapses to "llm" for
+    # backward compatibility with callers that bypass the CLI adapter
+    # selection (tests that call generate_instruction directly).
+    prior_trail = task.metadata.enrichment_source
+    new_enrichment_source = f"{prior_trail}+llm" if prior_trail else "llm"
+
     new_metadata = replace(
         task.metadata,
         description=task.metadata.description,
         difficulty=difficulty,
-        enrichment_source="llm",
+        enrichment_source=new_enrichment_source,
         issue_title=heading or task.metadata.issue_title,
         issue_body=_compose_issue_body(
             team_context=team_context,

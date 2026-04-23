@@ -378,6 +378,22 @@ def init(path: str) -> None:
     help="Produce dual-verification tasks with oracle ground truth from PR diffs. "
     "Only for comprehension, org-scale, and cross-repo task types.",
 )
+@click.option(
+    "--narrative-source",
+    "narrative_source",
+    multiple=True,
+    default=(),
+    metavar="NAME",
+    help="Explicit narrative source(s) for task enrichment (INV1: no silent "
+    "fallback). Accepted names: pr, commits, rfcs. Repeat the flag or pass "
+    "a '+'/','-separated value, e.g. `--narrative-source pr`, "
+    "`--narrative-source commits+rfcs`, or `--narrative-source commits "
+    "--narrative-source rfcs`. Default behavior: when the repo has merged "
+    "PRs and this flag is omitted, falls back to 'pr' for backward "
+    "compatibility. When the repo has NO merged PRs (e.g. squash-only "
+    "history) and this flag is omitted, mining fails loudly and asks you "
+    "to pass `--narrative-source commits+rfcs` (or a subset).",
+)
 @click.pass_context
 def mine(
     ctx: click.Context,
@@ -411,6 +427,7 @@ def mine(
     sg_repo: str,
     sg_discovery: bool,
     dual_verify: bool,
+    narrative_source: tuple[str, ...],
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -526,7 +543,14 @@ def mine(
         # Apply profile values for params NOT explicitly set on CLI.
         # Tuple-typed params (click multiple=True) need list→tuple coercion.
         _TUPLE_PARAMS = frozenset(  # noqa: N806
-            {"subsystem", "family", "repos", "backends", "cross_repo"}
+            {
+                "subsystem",
+                "family",
+                "repos",
+                "backends",
+                "cross_repo",
+                "narrative_source",
+            }
         )
 
         def _prof_val(key: str, current: object) -> object:
@@ -595,6 +619,7 @@ def mine(
         sg_repo=sg_repo,
         sg_discovery=sg_discovery,
         dual_verify=dual_verify,
+        narrative_source=narrative_source,
         explicit_set=explicitly_set,
         profile_set=profile_set,
     )

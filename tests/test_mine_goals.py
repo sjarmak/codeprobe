@@ -454,6 +454,7 @@ class TestDispatchPipelineIntegration:
             enrich=False,
             goal_name="Code quality",
             bias="mixed",
+            narrative_source=("pr",),
         )
         mock_mine.assert_called_once()
 
