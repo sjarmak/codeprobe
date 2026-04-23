@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.6.0 (2026-04-23)
+
+Large release landing the "Enterprise Repo Benchmark Parity" PRD (25 units across 5 layers, 27 commits). Net: +~744 tests (2096 → 2840 passing). Architecture supports enterprise constraints (non-GitHub VCS, non-GitHub trackers, self-hosted LLMs, on-prem MCP, airgapped runs) while OSS-repo consistency remains the near-term priority.
+
+### Features — mining
+
+- **Structured `answer.json` oracle (`oracle_type="structured_retrieval"`).** New schema `{files, symbols, chain, text}`, per-field F1 scoring, fail-loud on malformed/missing (no `$AGENT_OUTPUT` fallback). Legacy `answer_type="file_list"` preserved. Tests: `tests/mining/test_oracle_structured_retrieval.py`.
+- **Widened MCP instruction trigger.** `instruction_mcp.md` now emitted for `task_type in {"mcp_tool_usage", "org_scale_cross_repo"}`, `org_scale=True`, or non-empty `sg_repo`. Body rendered from capability map, not hardcoded tool names.
+- **Curator-assigned `oracle_tiers`.** Mining ground-truth files are tiered `required` / `supplementary` / `context` via `curator_backends.invoke_model` (ZFC-compliant). Hardcoded `tier="required"` assignments removed from `org_scale.py`.
+- **New `dependency_upgrade` task type.** Mines PRs touching only dependency manifests + lockfiles with a semver-bump title. Model-classified (ZFC-compliant). Covers package.json/pnpm-lock, go.mod/go.sum, pyproject/poetry.lock, Cargo, Gemfile.
+- **AST-ranked cross-repo discovery.** `mining/multi_repo.py::discover_related_repos` parses go.mod / package.json (npm/yarn/pnpm) / pyproject.toml candidates and ranks by real AST reference hits into candidate exports. Manifest declarations with zero AST hits are rejected (not ranked "low").
+- **Pluggable `NarrativeAdapter` interface.** Three shipped adapters: PR/MR, plain commits, RFC docs. Explicit selection via `--narrative-source` (INV1 — no silent fallback). Mining against a squash-only repo fails loudly with a prescriptive error.
+- **GitLab VCS + Jira tracker adapters** with auth-hygiene contract (`redact_request`/`redact_response` applied before any log/event). Zero-tolerance token-leak CI gate. OAuth 2.0 + PAT.
+- **Resumable tenant-scoped mining state** at `~/.codeprobe/state/{tenant_id}/{repo_hash}/mine.db`. WAL + `synchronous=FULL` + `BEGIN IMMEDIATE`. Startup sweep promotes stale `running`/`pending` rows to `interrupted`. Repo-level `flock()` around worktree create/remove. `git clone --filter=blob:none` for large repos.
+- **`mine --refresh <task-dir>`.** Re-mines against a new commit preserving task IDs where structural identity holds. Jaccard >20% oracle file churn OR oracle_type change fails loud with diff report unless `--accept-structural-change`. Ground-truth commit history tracked on `TaskMetadata.ground_truth_commit_history`.
+
+### Features — runtime
+
+- **SQLite trace store** at `runs/trace.db` with write-side budget enforcement (per-task 10MB / per-run 500MB). Fail-loud overflow by default; `--trace-overflow=truncate` opt-in. Content policy applied before INSERT: env-var value scan, auth-header regex (Authorization/X-Api-Key/AWS session/GCP bearer), `--trace-deny` globs. `codeprobe trace export` produces JSONL.
+- **Containerized tool execution** via `src/codeprobe/sandbox/`. `Write`/`Bash`/`Edit` run inside a read-only-bind-mounted container by default (`Dockerfile.sg_only` — python + git + ripgrep + coreutils). `--allow-mutating-tools` for host writes.
+- **`instruction.resolved.md`** persisted per task so A/B diffs between configs are auditable from disk.
+- **Claude adapter Write+MCP regression fixed.** `--tools ""` no longer strips built-ins when MCP tools are configured. Fixture-replay MCP server in tests.
+
+### Features — backends & capabilities
+
+- **LLM model registry** at `src/codeprobe/llm/model_registry.yaml` mapping logical names (opus-4.7, sonnet-4.6, haiku-4.5) to per-backend IDs across Anthropic, Bedrock, Vertex, Azure OpenAI, and generic OpenAI-compatible. Adapter shims in `src/codeprobe/llm/backends/`. Cross-backend parity fixture test.
+- **MCP capability registry** (`src/codeprobe/mcp/capabilities.py`) + Jinja-based preamble templates. Capability-backed `github` + `custom` preambles replace hardcoded tool tables.
+- **`check-infra` diagnostics.** `drift` and `preamble-drift` subcommands compare mine-time capability snapshots against live; `offline` subcommand validates reachability and credential TTL across configured backends.
+- **Tenant-scoped state paths** (`src/codeprobe/paths.py`). `--tenant` flag; cross-tenant reads fail closed; `codeprobe cache purge --tenant <id>`.
+
+### Features — publishing & analysis
+
+- **`codeprobe snapshot create`** emits CSB-compatible layout: `SNAPSHOT.json` manifest + `summary/{rewards,aggregate,timing,costs}.json` + `traces/` + `export/traces/{config}/{task_id}/`. Relative symlinks rooted in the snapshot; symlink-escape rejected at preflight.
+- **Hash manifest + signed attestation** (HMAC-SHA256 with `CODEPROBE_SIGNING_KEY`; unsigned mode documented). Single-byte tampering detected on verify.
+- **Redaction capability matrix.** `hashes-only` is the new default for publishable exports (was `none`). `contents`/`secrets` require `--allow-source-in-export`. Canary gate: `secrets` mode refuses to run until the configured scanner demonstrably catches a planted canary. Deterministic scanners only (gitleaks / trufflehog / pattern) — no LLM classification.
+- **Dependency-surface snapshot** in `SNAPSHOT.json`: MCP tool schemas, LLM model IDs per backend, issue-tracker API versions, build-manifest parser versions.
+- **Observability exporters.** `snapshot export --format {datadog,sigma,sheets,browse}`. `browse.html` is self-contained (inlined CSS/JS, no CDN) for airgapped viewing.
+- **Per-checkpoint partial credit** on multi-step tasks. Mining emits `checks/<step>.sh`; `CheckpointScorer` produces `checkpoint_scores` dict in `scoring.json`; `interpret` surfaces per-checkpoint breakdown.
+- **Tool-benefit fields on `TaskMetadata`** (`expected_tool_benefit`, `tool_benefit_rationale`, `mcp_capabilities_at_mine_time`). Populated via model call at mine time. `interpret` shows `tool_delta_vs_expected`.
+- **Calibration validity gate.** `src/codeprobe/calibration/` with `CalibrationProfile` + `validate_calibration_correlation` (raises below 0.6 Pearson). `codeprobe calibrate` refuses to emit a profile when holdout <100 tasks or <3 repos. (Partner data acquisition deferred.)
+- **`interpret --regression`** plots per-task score over time using `ground_truth_commit_history`.
+
+### Infrastructure
+
+- **ZFC boundary lint** (`scripts/lint_zfc.py`). AST-based check rejecting hardcoded semantic-string assignments to `TaskMetadata`-shaped attributes unless preceded by a model invocation in scope. Allowlist at `scripts/lint_zfc.allowlist.toml` for known pre-existing violations.
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) — ruff + mypy + pytest with `--cov-fail-under=70` + ZFC lint + snapshot-format compatibility check; matrix 3.11/3.12/3.13.
+- **Process docs.** `CONTRIBUTING.md` (second-reviewer + WIP-limit sections), `docs/onboarding/architecture_tour.md`, `docs/discovery/` templates (README, TEMPLATE, INTERVIEW_GUIDE), `docs/CALIBRATION.md`, `docs/SNAPSHOT_REDACTION.md`.
+
+### Known follow-ups (not shipping blockers)
+
+- `src/codeprobe/sandbox/runner.py` RO_WRITE_STDERR_PATTERNS includes `"permission denied"` which can misclassify non-ro-mount permission errors as sandbox denials. Narrow the pattern.
+- `instruction.resolved.md` diverges from the real agent prompt in worktree-parallel mode (multi-config) and when preambles reference `{{sg_repo}}`. Two scenarios not covered by tests.
+- `tests/trace/` uses unregistered `pytest.mark.unit` / `pytest.mark.integration`. Register in `[tool.pytest.ini_options].markers` to clear warnings.
+- Partner-gated acceptance from the PRD (R1 staff-engineer ratings, R3-new type representativeness, R11 ≥100 hand-labeled calibration tasks) is scaffolded but not validated — tracked for later customer rollout.
+- PRD Open Questions Q1–Q5 (answer.json schema shape, checkpoint verifier style, snapshot format lock-in, capability versioning, tenant_id semantics) not resolved in-band; Process Precondition P5 sign-off deferred.
+
 ## 0.5.5 (2026-04-22)
 
 ### Fixes
