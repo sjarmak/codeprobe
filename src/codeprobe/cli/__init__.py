@@ -958,3 +958,8 @@ main.add_command(validate)
 from codeprobe.cli.auth_cmd import auth  # noqa: E402
 
 main.add_command(auth)
+
+# Register the trace command group
+from codeprobe.cli.trace_cmd import trace  # noqa: E402
+
+main.add_command(trace)

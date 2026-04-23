@@ -213,8 +213,35 @@ class JsonStdoutCollector:
         #      events ending in a ``type: "result"`` event that mirrors
         #      shape (1). We also count ``tool_use`` blocks across all
         #      ``assistant`` events for accurate tool_call_count.
+        #
+        # When ``context`` carries a ``trace_recorder``, ``trace_config``,
+        # and ``trace_task_id`` triple, we replay the stream into the
+        # recorder so R5's trace.db gets populated at the same parse
+        # step that feeds ``UsageData`` — keeps the transcript and the
+        # telemetry in sync by construction.
         stream_tool_count: int | None = None
         stream_tool_by_name: dict[str, int] = {}
+        trace_recorder = context.get("trace_recorder")
+        trace_config = context.get("trace_config")
+        trace_task_id = context.get("trace_task_id")
+        if (
+            trace_recorder is not None
+            and trace_config is not None
+            and trace_task_id is not None
+        ):
+            try:
+                trace_recorder.ingest_stream(
+                    raw_output,
+                    config=str(trace_config),
+                    task_id=str(trace_task_id),
+                )
+            except Exception:  # noqa: BLE001 — trace must not break telemetry
+                logger.exception(
+                    "Trace recorder failed to ingest stream for config=%s task=%s",
+                    trace_config,
+                    trace_task_id,
+                )
+                raise
         trimmed = raw_output.lstrip()
         if trimmed.startswith("{\n") or trimmed.startswith("{"):
             # Try single-envelope path first — most adapters still use
