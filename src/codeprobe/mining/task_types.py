@@ -132,6 +132,20 @@ TASK_TYPE_REGISTRY: dict[str, TaskTypeInfo] = {
         ),
         dispatch_key="org_scale",
     ),
+    "dependency_upgrade": TaskTypeInfo(
+        name="dependency_upgrade",
+        description=(
+            "Dependency upgrade tasks mined from merged PRs that bump "
+            "package manifests or lockfiles to a newer version. Structural "
+            "filter: diff touches only dependency manifest files."
+        ),
+        csb_suite="csb_sdlc_fix",
+        csb_suites=(
+            "csb_sdlc_fix",
+            "csb_sdlc_refactor",
+        ),
+        dispatch_key="sdlc",
+    ),
     "mixed": TaskTypeInfo(
         name="mixed",
         description=(
