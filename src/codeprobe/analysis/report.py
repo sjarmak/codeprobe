@@ -413,6 +413,19 @@ def _build_task_rows(report: Report) -> list[dict]:
             tool_delta = _tool_delta_vs_expected(
                 expected_tool_benefit, task.tool_call_count
             )
+            # R17 — per-checkpoint partial-credit map. Emitted by
+            # CheckpointScorer and propagated through scoring_details.
+            # JSON reports carry the dict directly; CSV writers stringify
+            # via json.dumps so it fits in one cell.
+            raw_cp = details.get("checkpoint_scores")
+            if isinstance(raw_cp, dict) and raw_cp:
+                checkpoint_scores: dict[str, float] | None = {
+                    str(k): float(v) for k, v in raw_cp.items()
+                }
+                checkpoint_scores_csv = json.dumps(checkpoint_scores, sort_keys=True)
+            else:
+                checkpoint_scores = None
+                checkpoint_scores_csv = ""
             rows.append(
                 {
                     "config": cr.config,
@@ -448,6 +461,10 @@ def _build_task_rows(report: Report) -> list[dict]:
                     "scoring_policy": (
                         details.get("scoring_policy", "") if has_dual else ""
                     ),
+                    # R17 per-checkpoint breakdown: dict in memory/JSON, JSON
+                    # string in CSV so a single cell captures the full map.
+                    "checkpoint_scores": checkpoint_scores,
+                    "checkpoint_scores_csv": checkpoint_scores_csv,
                     # Full scoring_details dict — JSON export preserves this
                     # verbatim; CSV writer ignores it via extrasaction='ignore'.
                     "scoring_details": dict(details),
@@ -474,7 +491,12 @@ def format_json_report(report: Report) -> str:
             for r in report.rankings
         ],
         "comparisons": [asdict(c) for c in report.comparisons],
-        "tasks": _build_task_rows(report),
+        # Drop the CSV-helper mirror from the JSON view; the native
+        # ``checkpoint_scores`` dict is already present and more useful.
+        "tasks": [
+            {k: v for k, v in row.items() if k != "checkpoint_scores_csv"}
+            for row in _build_task_rows(report)
+        ],
     }
 
     # Add dual matrix when dual tasks are present
@@ -534,6 +556,9 @@ _CSV_COLUMNS = [
     "expected_tool_benefit",
     "tool_call_count",
     "tool_delta_vs_expected",
+    # R17 checkpoint scoring — JSON-encoded {step_name: score} dict. Empty
+    # for non-checkpoint tasks so the CSV schema stays uniform.
+    "checkpoint_scores",
 ]
 
 
@@ -873,9 +898,17 @@ def format_csv_report(report: Report) -> str:
     writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
     for row in _build_task_rows(report):
+        # CSV uses the stringified ``checkpoint_scores_csv`` for the
+        # ``checkpoint_scores`` column so a nested dict fits a single cell
+        # without the JSON-dump surprises of Python's default repr().
+        csv_source = dict(row)
+        csv_source["checkpoint_scores"] = row.get("checkpoint_scores_csv", "")
         # Replace None with empty string for optional dual columns so the CSV
         # shows a blank cell rather than the string "None".
-        csv_row = {k: ("" if row.get(k) is None else row.get(k)) for k in _CSV_COLUMNS}
+        csv_row = {
+            k: ("" if csv_source.get(k) is None else csv_source.get(k))
+            for k in _CSV_COLUMNS
+        }
         writer.writerow(csv_row)
 
     return buf.getvalue()

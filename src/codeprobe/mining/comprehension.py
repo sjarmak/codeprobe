@@ -47,9 +47,71 @@ from codeprobe.mining._graph import (
     _transitive_importers,
 )
 from codeprobe.mining.writer import logger as _writer_logger  # noqa: F401
-from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
 
 logger = logging.getLogger(__name__)
+
+
+# Templates that are genuinely multi-step — emitting ≥2 checkpoints matches
+# the R17 contract and gives interpret a partial-credit breakdown. Single-step
+# templates (return_type_resolution, transitive_dependency) stay unchanged so
+# sdlc-style tasks without multi-step reasoning don't get a spurious checks/
+# directory.
+_MULTI_STEP_TEMPLATES: frozenset[str] = frozenset({"import_chain", "dependency_analysis"})
+
+
+# Per-checkpoint verifier scripts for multi-step comprehension tasks.
+# Mirrors CHANGE_SCOPE_CHECKPOINT_SCRIPTS in org_scale but uses answer.json
+# (not answer.txt) because comprehension tasks are artifact_eval.
+COMPREHENSION_CHECKPOINT_SCRIPTS: dict[str, str] = {
+    "step1_answer_provided.sh": (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        '# R17 checkpoint: agent produced a non-empty answer.json.\n'
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'TASK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"\n'
+        'for candidate in "$TASK_DIR/answer.json" "$TASK_DIR/tests/answer.json"; do\n'
+        '    if [ -s "$candidate" ]; then\n'
+        "        exit 0\n"
+        "    fi\n"
+        "done\n"
+        "exit 1\n"
+    ),
+    "step2_answer_correct.sh": (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        '# R17 checkpoint: delegate to the codeprobe artifact scorer which\n'
+        '# compares answer.json against tests/ground_truth.json. Emits JSON\n'
+        '# on stdout so CheckpointScorer reads a continuous score.\n'
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'TASK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"\n'
+        'OUT=$(python3 -m codeprobe.core.scoring --artifact "$TASK_DIR" 2>/dev/null || echo "")\n'
+        'if [ -z "$OUT" ]; then\n'
+        '    echo \'{"score": 0.0, "passed": false}\'\n'
+        "    exit 1\n"
+        "fi\n"
+        'echo "$OUT"\n'
+    ),
+}
+
+
+def _comprehension_checkpoints() -> tuple[Checkpoint, ...]:
+    """Return the standard 2-step checkpoint list for multi-step comprehension tasks."""
+    return (
+        Checkpoint(
+            name="step1_answer_provided",
+            weight=0.3,
+            verifier="step1_answer_provided.sh",
+            description="Agent produced a non-empty answer.json",
+        ),
+        Checkpoint(
+            name="step2_answer_correct",
+            weight=0.7,
+            verifier="step2_answer_correct.sh",
+            description="Artifact oracle agrees with ground_truth.json",
+        ),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Specs
@@ -432,6 +494,9 @@ class ComprehensionGenerator:
             tags=("comprehension", spec.template),
             enrichment_source="static_analysis",
         )
+        checkpoints: tuple[Checkpoint, ...] = ()
+        if spec.template in _MULTI_STEP_TEMPLATES:
+            checkpoints = _comprehension_checkpoints()
         verification = TaskVerification(
             type="artifact_eval",
             command="python3 -m codeprobe.core.scoring --artifact .",
@@ -441,6 +506,7 @@ class ComprehensionGenerator:
             answer_schema=spec.answer_type,
             reward_type="artifact",
             ground_truth_schema_version="comprehension-v1",
+            checkpoints=checkpoints,
         )
         return Task(
             id=task_id,

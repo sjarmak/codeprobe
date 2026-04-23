@@ -960,6 +960,80 @@ PYEOF
 """
 
 
+def resolve_checkpoint_scripts(task: Task) -> dict[str, str] | None:
+    """Return the verifier scripts for *task*'s checkpoint contract, if any.
+
+    Callers (the mine CLI, test fixtures) can pass the result to
+    :func:`write_task_dir` so they don't have to import category-specific
+    helpers directly. Returns ``None`` when the task has no checkpoints
+    so writer emits nothing extra.
+    """
+    if not task.verification.checkpoints:
+        return None
+
+    category = task.metadata.category or ""
+    if category == "change-scope-audit":
+        from codeprobe.mining.org_scale import CHANGE_SCOPE_CHECKPOINT_SCRIPTS
+
+        return dict(CHANGE_SCOPE_CHECKPOINT_SCRIPTS)
+
+    if category == "architecture_comprehension" or task.metadata.task_type == (
+        "architecture_comprehension"
+    ):
+        from codeprobe.mining.comprehension import COMPREHENSION_CHECKPOINT_SCRIPTS
+
+        return dict(COMPREHENSION_CHECKPOINT_SCRIPTS)
+
+    return None
+
+
+def _write_checkpoints(
+    task: Task,
+    tests_dir: Path,
+    checkpoint_scripts: dict[str, str] | None,
+) -> None:
+    """Emit per-checkpoint verifier scripts + ``tests/checkpoints.json``.
+
+    No-op when ``task.verification.checkpoints`` is empty — this is the
+    gating contract that keeps single-step tasks (plain sdlc_code_change,
+    non-multi-step org_scale, etc.) from emitting ``tests/verifiers/`` or
+    ``tests/checkpoints.json`` (R17 acceptance #4).
+
+    ``checkpoint_scripts`` maps the verifier filename (e.g.
+    ``step1_answer_provided.sh``) to its bash body. Missing entries get
+    a safe stub that exits 0, keeping writer behavior total even when a
+    caller forgets to provide a body.
+    """
+    checkpoints = task.verification.checkpoints
+    if not checkpoints:
+        return
+
+    verifiers_dir = tests_dir / "verifiers"
+    verifiers_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve built-in scripts from the task's category when the caller
+    # didn't pass an explicit map. Keeps the mine CLI a one-liner without
+    # every dispatcher having to import category-specific constants.
+    scripts = checkpoint_scripts or resolve_checkpoint_scripts(task) or {}
+    for cp in checkpoints:
+        script_body = scripts.get(
+            cp.verifier,
+            "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+        )
+        verifier_path = verifiers_dir / cp.verifier
+        verifier_path.write_text(script_body, encoding="utf-8")
+        verifier_path.chmod(0o755)
+
+    checkpoints_payload = [
+        {"name": cp.name, "weight": cp.weight, "verifier": cp.verifier}
+        for cp in checkpoints
+    ]
+    (tests_dir / "checkpoints.json").write_text(
+        json.dumps(checkpoints_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def write_task_dir(
     task: Task,
     base_dir: Path,
@@ -967,6 +1041,7 @@ def write_task_dir(
     *,
     curation_backends: tuple[str, ...] = (),
     ground_truth: dict | None = None,
+    checkpoint_scripts: dict[str, str] | None = None,
 ) -> Path:
     """Write a mined task to the experiment directory structure.
 
@@ -1008,11 +1083,13 @@ def write_task_dir(
             safe_id,
             curation_backends=curation_backends,
         )
+        _write_checkpoints(task, tests_dir, checkpoint_scripts)
         return task_dir
 
     # Dual-verification tasks: direct test.sh + artifact answer.json
     if task.verification.verification_mode == "dual":
         _write_dual_task(task, task_dir, tests_dir, repo_path, safe_id)
+        _write_checkpoints(task, tests_dir, checkpoint_scripts)
         return task_dir
 
     if task.metadata.issue_title:
@@ -1111,6 +1188,10 @@ def write_task_dir(
             json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+
+    # Per-checkpoint verifier scripts + tests/checkpoints.json. Gated
+    # behind task.verification.checkpoints (R17 acceptance #4).
+    _write_checkpoints(task, tests_dir, checkpoint_scripts)
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir
