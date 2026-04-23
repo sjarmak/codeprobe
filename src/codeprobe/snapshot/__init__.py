@@ -29,6 +29,21 @@ from codeprobe.snapshot.canary import (
     CanaryResult,
     load_canary_proof,
 )
+from codeprobe.snapshot.create import (
+    CsbLayout,
+    SymlinkEscapeError,
+    create_snapshot,
+    preflight_symlink_containment,
+)
+from codeprobe.snapshot.manifest import (
+    SNAPSHOT_SCHEMA_VERSION,
+    Dependencies,
+    ExtendedManifest,
+    build_extended_manifest,
+    collect_dependencies,
+    manifest_to_json_dict,
+    write_extended_manifest,
+)
 from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
     Attestation,
@@ -50,6 +65,10 @@ from codeprobe.snapshot.scanners import (
     ScannerUnavailable,
     TrufflehogScanner,
 )
+from codeprobe.snapshot.verify import (
+    ExtendedVerificationResult,
+    verify_snapshot_extended,
+)
 
 __all__ = [
     "Attestation",
@@ -57,7 +76,11 @@ __all__ = [
     "CanaryFailed",
     "CanaryGate",
     "CanaryResult",
+    "CsbLayout",
     "DEFAULT_PATTERNS",
+    "Dependencies",
+    "ExtendedManifest",
+    "ExtendedVerificationResult",
     "FileEntry",
     "Finding",
     "GitleaksScanner",
@@ -65,13 +88,22 @@ __all__ = [
     "PatternScanner",
     "PUBLISHABLE_DEFAULT",
     "RedactionMode",
+    "SNAPSHOT_SCHEMA_VERSION",
     "Scanner",
     "ScannerUnavailable",
     "SnapshotManifest",
+    "SymlinkEscapeError",
     "TrufflehogScanner",
     "VerificationResult",
+    "build_extended_manifest",
+    "collect_dependencies",
+    "create_snapshot",
     "load_canary_proof",
+    "manifest_to_json_dict",
+    "preflight_symlink_containment",
     "redact",
     "verify_snapshot",
+    "verify_snapshot_extended",
+    "write_extended_manifest",
     "write_snapshot",
 ]

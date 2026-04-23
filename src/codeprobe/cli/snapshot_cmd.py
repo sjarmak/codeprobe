@@ -24,11 +24,13 @@ from codeprobe.snapshot.canary import (
     CanaryGate,
     load_canary_proof,
 )
+from codeprobe.snapshot.create import (
+    SymlinkEscapeError,
+    create_snapshot,
+)
 from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
     RedactionMode,
-    redact,
-    verify_snapshot,
 )
 from codeprobe.snapshot.scanners import (
     GitleaksScanner,
@@ -37,6 +39,7 @@ from codeprobe.snapshot.scanners import (
     ScannerUnavailable,
     TrufflehogScanner,
 )
+from codeprobe.snapshot.verify import verify_snapshot_extended
 
 _VALID_MODES: tuple[RedactionMode, ...] = ("hashes-only", "contents", "secrets")
 
@@ -197,33 +200,26 @@ def create_cmd(
                 sys.exit(6)
 
     try:
-        manifest = redact(
-            source_dir=experiment_dir,
-            mode=mode_cast,
+        status = create_snapshot(
+            experiment_dir=experiment_dir,
             out_dir=out_path,
+            mode=mode_cast,
             scanner=scanner,
             signing_key=signing_key,
             canary_proof=canary_result,
             allow_source_in_export=allow_source_in_export,
         )
-    except (PermissionError, CanaryFailed, ScannerUnavailable, FileNotFoundError) as e:
+    except (
+        PermissionError,
+        CanaryFailed,
+        ScannerUnavailable,
+        FileNotFoundError,
+        SymlinkEscapeError,
+    ) as e:
         click.echo(f"Snapshot failed: {e}", err=True)
         sys.exit(7)
 
-    click.echo(
-        json.dumps(
-            {
-                "status": "ok",
-                "mode": manifest.mode,
-                "files": len(manifest.files),
-                "attestation_kind": (
-                    manifest.attestation.kind if manifest.attestation else "missing"
-                ),
-                "out": str(out_path.resolve()),
-            },
-            indent=2,
-        )
-    )
+    click.echo(json.dumps(status, indent=2))
 
 
 @snapshot.command("verify")
@@ -238,16 +234,19 @@ def create_cmd(
     help="HMAC key (falls back to CODEPROBE_SIGNING_KEY). Required for hmac-signed manifests.",
 )
 def verify_cmd(snapshot_dir: Path, signing_key: str | None) -> None:
-    """Verify a snapshot's attestation and body hash."""
+    """Verify a snapshot's attestation, symlink containment, and file hashes."""
 
-    result = verify_snapshot(snapshot_dir, signing_key=signing_key)
+    result = verify_snapshot_extended(snapshot_dir, signing_key=signing_key)
     click.echo(
         json.dumps(
             {
                 "ok": result.ok,
                 "reason": result.reason,
-                "body_sha256_matches": result.body_sha256_matches,
-                "signature_matches": result.signature_matches,
+                "body_sha256_matches": result.base.body_sha256_matches,
+                "signature_matches": result.base.signature_matches,
+                "symlinks_contained": result.symlinks_contained,
+                "file_hashes_match": result.file_hashes_match,
+                "offending_paths": result.offending_paths,
             },
             indent=2,
         )
