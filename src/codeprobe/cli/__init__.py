@@ -1018,3 +1018,8 @@ main.add_command(trace)
 from codeprobe.cli.check_infra import check_infra  # noqa: E402
 
 main.add_command(check_infra)
+
+# Register the calibrate command (R11 validity gate)
+from codeprobe.cli.calibrate_cmd import calibrate  # noqa: E402
+
+main.add_command(calibrate)
