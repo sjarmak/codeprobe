@@ -32,6 +32,12 @@ from codeprobe.core.experiment import (
 )
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+from codeprobe.trace.content_policy import ContentPolicy
+from codeprobe.trace.recorder import (
+    TraceBudgetExceeded,
+    TraceOverflowPolicy,
+    TraceRecorder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +310,8 @@ def run_eval(
     force_rich: bool = False,
     timeout: int | None = None,
     suite_path: str | None = None,
+    trace_overflow: str = "fail",
+    trace_deny: tuple[str, ...] = (),
 ) -> None:
     """Run eval tasks against an AI coding agent."""
     exp_dir = Path(config) if config else Path(path)
@@ -441,6 +449,32 @@ def run_eval(
 
             shared_rich_listener = RichLiveListener()
 
+    # R5: one TraceRecorder per experiment writes to <exp_dir>/runs/trace.db.
+    # All configs share the DB — event rows are keyed by (run_id, config,
+    # task_id, event_seq) so per-config slicing is cheap at query time.
+    if trace_overflow not in ("fail", "truncate"):
+        click.echo(
+            f"Error: --trace-overflow must be 'fail' or 'truncate', "
+            f"got {trace_overflow!r}",
+            err=True,
+        )
+        raise SystemExit(2)
+    overflow_policy = (
+        TraceOverflowPolicy.FAIL
+        if trace_overflow == "fail"
+        else TraceOverflowPolicy.TRUNCATE
+    )
+    trace_runs_dir = exp_dir / "runs"
+    trace_runs_dir.mkdir(parents=True, exist_ok=True)
+    trace_db_path = trace_runs_dir / "trace.db"
+    trace_content_policy = ContentPolicy(deny_globs=tuple(trace_deny))
+    trace_recorder = TraceRecorder(
+        trace_db_path,
+        run_id=experiment.name,
+        overflow=overflow_policy,
+        content_policy=trace_content_policy,
+    )
+
     def _run_config(exp_config: ExperimentConfig) -> tuple[str, list[CompletedTask]]:
         """Run a single config (called from thread pool or sequentially)."""
         perm = exp_config.permission_mode
@@ -549,6 +583,27 @@ def run_eval(
                     user_dir=Path.home(),
                 )
 
+            # R6: persist resolved instruction per task before adapter runs.
+            # Write is fail-loud (INV1) — any OSError aborts the run.
+            from codeprobe.core.executor import load_instruction
+            from codeprobe.core.preamble import _base_prompt, compose_instruction
+
+            for _td in task_dirs:
+                _instr = load_instruction(_td, variant=exp_config.instruction_variant)
+                if exp_config.preambles and preamble_resolver is not None:
+                    _prompt, _ = compose_instruction(
+                        _instr,
+                        repo_root,
+                        preamble_names=list(exp_config.preambles),
+                        resolver=preamble_resolver,
+                        task_id=_td.name,
+                    )
+                else:
+                    _prompt = _base_prompt(_instr, repo_root)
+                _out = config_runs_dir / _td.name / "instruction.resolved.md"
+                _out.parent.mkdir(parents=True, exist_ok=True)
+                _out.write_text(_prompt, encoding="utf-8")
+
             results = execute_config(
                 adapter=config_adapter,
                 task_dirs=task_dirs,
@@ -563,6 +618,7 @@ def run_eval(
                 clean_excludes=_clean_excludes,
                 event_dispatcher=dispatcher,
                 preamble_resolver=preamble_resolver,
+                trace_recorder=trace_recorder,
             )
         except KeyboardInterrupt:
             interrupted = True
@@ -601,18 +657,41 @@ def run_eval(
         return exp_config.label, results
 
     # Run configs in parallel (each config gets its own adapter + checkpoint)
-    if parallel > 1 and len(configs_to_run) > 1:
-        with ThreadPoolExecutor(max_workers=len(configs_to_run)) as pool:
-            futures = {pool.submit(_run_config, c): c.label for c in configs_to_run}
-            for future in as_completed(futures):
-                label = futures[future]
+    budget_error: TraceBudgetExceeded | None = None
+    try:
+        if parallel > 1 and len(configs_to_run) > 1:
+            with ThreadPoolExecutor(max_workers=len(configs_to_run)) as pool:
+                futures = {
+                    pool.submit(_run_config, c): c.label for c in configs_to_run
+                }
+                for future in as_completed(futures):
+                    label = futures[future]
+                    try:
+                        future.result()
+                    except TraceBudgetExceeded as exc:
+                        budget_error = exc
+                        click.echo(f"  {label}: ERROR — {exc}", err=True)
+                    except Exception as exc:
+                        click.echo(f"  {label}: ERROR — {exc}", err=True)
+        else:
+            for exp_config in configs_to_run:
                 try:
-                    future.result()
-                except Exception as exc:
-                    click.echo(f"  {label}: ERROR — {exc}", err=True)
-    else:
-        for exp_config in configs_to_run:
-            _run_config(exp_config)
+                    _run_config(exp_config)
+                except TraceBudgetExceeded as exc:
+                    budget_error = exc
+                    click.echo(f"  {exp_config.label}: ERROR — {exc}", err=True)
+                    break
+    finally:
+        # Flush pending rows + close the DB connection deterministically.
+        try:
+            trace_recorder.close()
+        except Exception:  # noqa: BLE001 — close must not mask run errors
+            logger.exception("Failed to close TraceRecorder cleanly")
+
+    if budget_error is not None:
+        # AC6: overflow under policy=fail propagates to a non-zero exit so
+        # CI / callers see the failure.
+        raise SystemExit(3)
 
     click.echo()
     click.echo("Next: codeprobe interpret .")

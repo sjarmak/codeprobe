@@ -760,6 +760,7 @@ def execute_config(
     repeats: int = 1,
     clean_excludes: tuple[str, ...] = (),
     event_dispatcher: EventDispatcher | None = None,
+    trace_recorder: object | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -843,6 +844,19 @@ def execute_config(
         sem = get_concurrency_semaphore()
         if sem is not None:
             sem.acquire()
+        # R5: bind the TraceRecorder to this thread/task so the adapter's
+        # JsonStdoutCollector hook writes events for THIS task. Cleared in
+        # the finally-block so a later task on the same thread never
+        # inherits stale state from an aborted run.
+        set_trace = getattr(adapter, "set_trace_context", None)
+        wired_trace = False
+        if trace_recorder is not None and callable(set_trace):
+            set_trace(
+                recorder=trace_recorder,
+                config=experiment_config.label,
+                task_id=task_dir.name,
+            )
+            wired_trace = True
         try:
             task_result = execute_task(
                 adapter=adapter,
@@ -867,6 +881,8 @@ def execute_config(
                 )
             return task_result
         finally:
+            if wired_trace and callable(set_trace):
+                set_trace(recorder=None, config=None, task_id=None)
             if sem is not None:
                 sem.release()
 

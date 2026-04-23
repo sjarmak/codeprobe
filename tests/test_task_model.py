@@ -23,6 +23,7 @@ class TestTaskTypes:
             "mcp_tool_usage",
             "architecture_comprehension",
             "org_scale_cross_repo",
+            "dependency_upgrade",
         }
         assert TASK_TYPES == expected
 

@@ -40,9 +40,69 @@ from codeprobe.mining.org_scale_scanner import (
     get_tracked_files,
     scan_repo,
 )
-from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
 
 logger = logging.getLogger(__name__)
+
+
+# Per-checkpoint verifier scripts for multi-step org_scale task types.
+# Exposed as a module-level constant so ``codeprobe mine`` can pass it
+# to :func:`codeprobe.mining.writer.write_task_dir` when emitting checks/*.sh.
+# Kept small and shell-only for portability — any heavy oracle work runs
+# through the task's existing ``tests/test.sh``/``tests/oracle.py``.
+CHANGE_SCOPE_CHECKPOINT_SCRIPTS: dict[str, str] = {
+    "step1_answer_provided.sh": (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        '# R17 checkpoint: agent produced a non-empty answer.txt.\n'
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'TASK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"\n'
+        'if [ -s "$TASK_DIR/answer.txt" ]; then\n'
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n"
+    ),
+    "step2_scope_correct.sh": (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n\n"
+        '# R17 checkpoint: reuse the mined oracle to score F1 of the\n'
+        '# agent answer against ground_truth.json. Emits JSON on stdout so\n'
+        '# CheckpointScorer gets a continuous score in [0, 1].\n'
+        'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'TASK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"\n'
+        'REWARD="$TASK_DIR/reward.txt"\n'
+        "python3 \"$TASK_DIR/tests/oracle.py\" \"$TASK_DIR\" >/dev/null 2>&1 || true\n"
+        'if [ -f "$REWARD" ]; then\n'
+        "    SCORE=$(head -n1 \"$REWARD\" | tr -d '[:space:]')\n"
+        '    if [ -z "$SCORE" ]; then SCORE="0.0"; fi\n'
+        "    # F1 is already in [0, 1]; pass flag is a simple threshold.\n"
+        "    PASSED=false\n"
+        '    awk -v s="$SCORE" \'BEGIN { exit (s+0 >= 0.5) ? 0 : 1 }\' && PASSED=true\n'
+        '    printf \'{"score": %s, "passed": %s}\\n\' "$SCORE" "$PASSED"\n'
+        "    exit 0\n"
+        "fi\n"
+        'echo \'{"score": 0.0, "passed": false}\'\n'
+        "exit 1\n"
+    ),
+}
+
+
+def _change_scope_checkpoints() -> tuple[Checkpoint, ...]:
+    """Return the standard 2-step checkpoint list for change-scope-audit tasks."""
+    return (
+        Checkpoint(
+            name="step1_answer_provided",
+            weight=0.4,
+            verifier="step1_answer_provided.sh",
+            description="Agent produced a non-empty answer.txt",
+        ),
+        Checkpoint(
+            name="step2_scope_correct",
+            weight=0.6,
+            verifier="step2_scope_correct.sh",
+            description="F1 against ground_truth.json meets the oracle threshold",
+        ),
+    )
 
 # Re-export for backward compatibility
 __all__ = [
@@ -615,10 +675,15 @@ def _mine_type_hierarchy_tasks(
             f"that use those implementations."
         )
 
-        # Tier assignment: subclass_files → required, usage_files → supplementary
-        oracle_tiers: tuple[tuple[str, str], ...] = tuple(
-            [(f, "required") for f in subclass_files]
-            + [(f, "supplementary") for f in usage_files]
+        # Tier assignment: route subclass/usage file sets through the
+        # ZFC-compliant tier assigner (invokes call_claude before any
+        # string-literal tier emission — see curator_tiers.py).
+        from codeprobe.mining.curator_tiers import assign_mcp_family_tiers
+
+        oracle_tiers: tuple[tuple[str, str], ...] = assign_mcp_family_tiers(
+            required_files=subclass_files,
+            supplementary_files=usage_files,
+            family=None,
         )
 
         tasks.append(
@@ -735,6 +800,9 @@ def _mine_change_scope_tasks(
                     oracle_type="file_list",
                     oracle_answer=tuple(sorted(enriched_files)),
                     oracle_tiers=oracle_tiers,
+                    # R17: multi-step audits ship per-checkpoint scripts so
+                    # interpret can surface partial-credit breakdowns.
+                    checkpoints=_change_scope_checkpoints(),
                 ),
                 instruction_variant_path=None,
             )

@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 
 import click
@@ -1222,6 +1222,7 @@ def _dispatch_by_task_type(
     bias: str,
     min_quality: float = 0.5,
     dual_verify: bool = False,
+    narrative_source: tuple[str, ...] = (),
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
@@ -1249,6 +1250,7 @@ def _dispatch_by_task_type(
         goal_name=goal_name,
         bias=bias,
         dual_verify=dual_verify,
+        narrative_source=narrative_source,
     )
 
     def _sdlc() -> None:
@@ -1520,6 +1522,77 @@ def _mine_tasks_with_progress(
         )
 
 
+def _resolve_narrative_source(
+    narrative_source: tuple[str, ...],
+    repo_path: Path,
+    *,
+    tasks_mined: bool = True,
+    pr_bodies: dict[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Validate ``--narrative-source`` and enforce INV1 (no silent fallback).
+
+    Returns the resolved adapter-name selection. Behavior:
+
+    * If the user passed ``--narrative-source`` explicitly, validate each
+      name and return the parsed tuple.
+    * If omitted and ``tasks_mined`` is True:
+        * When ``pr_bodies`` contains at least one non-empty body, OR the
+          ``gh`` CLI reports at least one merged PR, default to
+          ``("pr",)`` (backward compat).
+        * Otherwise raise ``click.UsageError`` naming
+          ``--narrative-source commits+rfcs`` as the required fix.
+    * If omitted and ``tasks_mined`` is False, return ``()`` — mining
+      already yielded nothing so the user will see the "No suitable
+      tasks" message rather than the INV1 prompt.
+
+    ``pr_bodies`` is an optional shortcut: when the caller has already
+    run the miner, a non-empty body is direct evidence of PR narratives
+    and avoids a second ``gh`` round-trip (also avoids test-side subprocess
+    patching gymnastics).
+    """
+    from codeprobe.mining.sources import (
+        has_pr_narratives,
+        parse_narrative_selection,
+        select_narrative_adapters,
+    )
+
+    if narrative_source:
+        selection = parse_narrative_selection(narrative_source)
+        if not selection:
+            raise click.UsageError(
+                "--narrative-source was passed but parsed to an empty "
+                "selection. Accepted names: pr, commits, rfcs."
+            )
+        try:
+            select_narrative_adapters(selection)  # validate names
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+        return selection
+
+    if not tasks_mined:
+        # Nothing to enrich; short-circuit so zero-task test fixtures
+        # don't need to mock has_pr_narratives.
+        return ()
+
+    # Fast path: if the miner already produced a non-empty PR body for any
+    # candidate, we have narrative context. Default to the ``pr`` adapter.
+    if pr_bodies and any(body.strip() for body in pr_bodies.values()):
+        return ("pr",)
+
+    # Slower fallback: probe gh to see if the repo has PRs at all. Needed
+    # when mining yielded tasks but every PR body happened to be empty.
+    if has_pr_narratives(repo_path):
+        return ("pr",)
+
+    raise click.UsageError(
+        "No merged PR narratives found in this repo (squash-only or "
+        "no-remote history), and --narrative-source was not passed. "
+        "INV1 requires explicit selection: pass e.g. "
+        "--narrative-source commits+rfcs (or --narrative-source commits, "
+        "or --narrative-source rfcs). Accepted names: pr, commits, rfcs."
+    )
+
+
 def _dispatch_sdlc(
     *,
     repo_path: Path,
@@ -1533,6 +1606,7 @@ def _dispatch_sdlc(
     bias: str,
     min_quality: float = 0.5,
     dual_verify: bool = False,
+    narrative_source: tuple[str, ...] = (),
 ) -> None:
     """Run PR-based SDLC mining pipeline."""
     from codeprobe.mining import write_task_dir
@@ -1546,6 +1620,43 @@ def _dispatch_sdlc(
         subsystems=subsystems,
     )
     tasks = mine_result.tasks
+
+    if tasks:
+        # INV1 loud-error guard: if mining produced tasks but no
+        # --narrative-source was passed AND the repo has no PR narratives,
+        # that means the pipeline fell through to commit-message bare tier
+        # silently. Raise here so users know to pass --narrative-source
+        # explicitly. Zero-task test fixtures skip this block. We feed the
+        # already-mined pr_bodies in so evidence of PR narratives short-
+        # circuits the gh probe.
+        resolved_selection = _resolve_narrative_source(
+            narrative_source,
+            repo_path,
+            tasks_mined=True,
+            pr_bodies=mine_result.pr_bodies,
+        )
+
+        # Stamp the adapter trail onto every mined task so downstream
+        # writers can surface which narrative source fed the enrichment.
+        # LLM enrichment (if it runs) appends "+llm". We no-op on non-
+        # dataclass tasks (MagicMock from tests) rather than crash.
+        trail = "+".join(resolved_selection) if resolved_selection else "pr"
+        stamped: list[Task] = []
+        for task in tasks:
+            if is_dataclass(task) and is_dataclass(task.metadata):
+                stamped.append(
+                    replace(
+                        task,
+                        metadata=replace(
+                            task.metadata, enrichment_source=trail
+                        ),
+                    )
+                )
+            else:  # pragma: no cover — defensive for MagicMock-based tests
+                stamped.append(task)
+        tasks = stamped
+        if is_dataclass(mine_result):
+            mine_result = replace(mine_result, tasks=tasks)
 
     if not tasks:
         click.echo(
@@ -1694,6 +1805,7 @@ def _dispatch_mixed(
     bias: str,
     min_quality: float = 0.5,
     dual_verify: bool = False,
+    narrative_source: tuple[str, ...] = (),
 ) -> None:
     """Run SDLC mining + probe generation, combining results."""
     from codeprobe.mining import write_task_dir as write_mining_task
@@ -1719,6 +1831,22 @@ def _dispatch_mixed(
     )
     sdlc_tasks = mine_result.tasks
     if sdlc_tasks:
+        resolved_selection = _resolve_narrative_source(
+            narrative_source,
+            repo_path,
+            tasks_mined=True,
+            pr_bodies=mine_result.pr_bodies,
+        )
+        trail = "+".join(resolved_selection) if resolved_selection else "pr"
+        stamped: list[Task] = []
+        for t in sdlc_tasks:
+            if is_dataclass(t) and is_dataclass(t.metadata):
+                stamped.append(
+                    replace(t, metadata=replace(t.metadata, enrichment_source=trail))
+                )
+            else:  # pragma: no cover — MagicMock-based tests
+                stamped.append(t)
+        sdlc_tasks = stamped
         sdlc_tasks = _enrich_sdlc_tasks(sdlc_tasks, mine_result, no_llm, enrich)
         if dual_verify:
             sdlc_tasks = _apply_dual_verification(sdlc_tasks, mine_result, repo_path)
@@ -1865,12 +1993,26 @@ def run_mine(
     sg_repo: str = "",
     sg_discovery: bool = False,
     dual_verify: bool = False,
+    narrative_source: tuple[str, ...] = (),
+    refresh_dir: str | None = None,
+    accept_structural_change: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
 ) -> None:
     """Mine eval tasks from a repository."""
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
+
+    # Refresh dispatch: runs before any other mining path so users don't
+    # accidentally re-mine a whole tasks dir when they only meant to
+    # refresh a single task.
+    if refresh_dir is not None:
+        _run_refresh(
+            Path(refresh_dir).resolve(),
+            repo_path_arg=path,
+            accept_structural_change=accept_structural_change,
+        )
+        return
 
     # CLI validation: --cross-repo and --org-scale are mutually exclusive
     if cross_repo and org_scale:
@@ -2035,6 +2177,13 @@ def run_mine(
         # Apply cold-start and comprehension-availability fallbacks
         task_type = _resolve_task_type(task_type, repo_path, source)
 
+        # Note: narrative-source selection (INV1) is resolved inside
+        # _dispatch_sdlc / _dispatch_mixed — it needs to run only on
+        # dispatch paths that actually consume narrative context, and
+        # AFTER mining so zero-task fixtures (CI) do not need to mock
+        # has_pr_narratives. See _resolve_narrative_source for the
+        # loud-error contract.
+
         if discover_subsystems:
             subsystems = _discover_and_select(repo_path, source)
             if not subsystems:
@@ -2065,6 +2214,7 @@ def run_mine(
             goal_name=goal_name,
             bias=bias,
             dual_verify=dual_verify,
+            narrative_source=narrative_source,
         )
     except KeyboardInterrupt:
         # AC3: clean up partial output and exit with the standard SIGINT code.
@@ -2482,3 +2632,153 @@ def _show_org_scale_results(
             f"--metric weighted_f1"
         )
         click.echo()
+
+
+# ---------------------------------------------------------------------------
+# Refresh-mode dispatch — re-mines a single task dir against a new commit.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_refresh_commit(repo_path: Path) -> str:
+    """Return the current HEAD SHA for ``repo_path``.
+
+    Falls back to an empty string when the path isn't a git repo; the
+    refresh flow itself will surface a clearer error in that case.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return ""
+
+
+def _run_refresh(
+    existing_task_dir: Path,
+    *,
+    repo_path_arg: str,
+    accept_structural_change: bool,
+) -> None:
+    """Re-mine ``existing_task_dir`` against a new commit.
+
+    The CLI wiring is intentionally thin. We:
+
+    1. Read metadata.json + ground_truth.json from the existing task dir.
+    2. Resolve the "new commit" from the repo path (HEAD).
+    3. Build a fresh :class:`Task` from the on-disk ground truth (no
+       live git mining — we only refresh the commit pointer and any
+       file-set changes the user has already committed).
+    4. Delegate fail-loud structural-mismatch handling to
+       :func:`codeprobe.mining.refresh.refresh_task`.
+    5. Write the refreshed task back with :func:`write_task_dir`.
+
+    This is sufficient for the R20 contract (preserve-or-fail). More
+    sophisticated flows — re-mining PR metadata, re-enriching via LLM —
+    will layer on top of this primitive.
+    """
+    from codeprobe.mining.refresh import (
+        StructuralMismatchError,
+        read_structural_signature,
+        read_task_metadata_json,
+        refresh_task,
+    )
+    from codeprobe.mining.writer import write_task_dir
+    from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+
+    existing_task_dir = Path(existing_task_dir).resolve()
+    if not existing_task_dir.is_dir():
+        raise click.UsageError(
+            f"--refresh target is not a directory: {existing_task_dir}"
+        )
+
+    # 1. Read existing state. Missing metadata.json is a hard error — we
+    #    refuse to refresh a task we can't identify.
+    try:
+        old_meta = read_task_metadata_json(existing_task_dir)
+    except FileNotFoundError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    try:
+        new_signature = read_structural_signature(existing_task_dir)
+    except FileNotFoundError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # 2. Resolve new commit.
+    repo_path = _resolve_repo_path(repo_path_arg)
+    new_commit = _resolve_refresh_commit(repo_path)
+    if not new_commit:
+        raise click.UsageError(
+            f"Could not resolve HEAD commit in {repo_path}. "
+            "Ensure --refresh is run against a git repository."
+        )
+
+    # 3. Build a new_task from the on-disk ground truth. The miner would
+    #    normally supply a fresh Task, but for the primitive refresh case
+    #    we pass through the existing structure and let refresh_task
+    #    update the commit + history fields.
+    old_metadata_section = old_meta.get("metadata") or {}
+    old_verification = old_meta.get("verification") or {}
+    language = old_metadata_section.get("language", "") or ""
+
+    new_task = Task(
+        id=str(old_meta.get("id", "")),
+        repo=str(old_meta.get("repo", "")),
+        metadata=TaskMetadata(
+            name=str(old_metadata_section.get("name", "")),
+            description=str(old_metadata_section.get("description", "")),
+            language=language,
+            category=str(old_metadata_section.get("category", "sdlc")),
+            task_type=str(
+                old_metadata_section.get("task_type", "sdlc_code_change")
+            ),
+            ground_truth_commit=new_commit,
+            ground_truth_commit_history=tuple(
+                old_metadata_section.get("ground_truth_commit_history") or ()
+            ),
+        ),
+        verification=TaskVerification(
+            type=str(old_verification.get("type", "test_script")),
+            command=str(old_verification.get("command", "bash tests/test.sh")),
+            verification_mode=str(
+                old_verification.get("verification_mode", "test_script")
+            ),
+            oracle_type=new_signature.oracle_type,
+            oracle_answer=new_signature.oracle_files,
+        ),
+    )
+
+    # 4. Delegate to the pure function.
+    try:
+        result = refresh_task(
+            existing_task_dir,
+            new_task,
+            new_commit,
+            accept_structural_change=accept_structural_change,
+        )
+    except StructuralMismatchError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(2)
+
+    # 5. Write the refreshed task back. write_task_dir uses the task.id
+    #    (preserved) as the directory name, so this rewrites in place.
+    base_dir = existing_task_dir.parent
+    write_task_dir(result.task, base_dir, repo_path)
+
+    if result.renumbered:
+        click.echo(
+            f"Refreshed (accepted structural change): {result.task.id} "
+            f"-> history rooted at {new_commit[:7]}"
+        )
+    else:
+        history = result.task.metadata.ground_truth_commit_history
+        click.echo(
+            f"Refreshed: {result.task.id} -> commit history "
+            f"[{' -> '.join(c[:7] for c in history)}]"
+        )

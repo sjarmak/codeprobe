@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from codeprobe.mining.comprehension import _TASK_SPECS, ComprehensionTaskSpec
+from codeprobe.mining.writer import _write_checkpoints
 from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,11 @@ def write_comprehension_tasks(
             json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+
+        # R17: multi-step templates (import_chain, dependency_analysis)
+        # attach checkpoints; the writer resolves the script bodies from
+        # the task category. No-op for single-step templates.
+        _write_checkpoints(task, tests_dir, None)
 
         written.append(task_dir)
         logger.info("Wrote comprehension task %s -> %s", task.id, task_dir)

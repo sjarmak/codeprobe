@@ -60,6 +60,7 @@ TASK_TYPES: frozenset[str] = frozenset(
         "mcp_tool_usage",
         "architecture_comprehension",
         "org_scale_cross_repo",
+        "dependency_upgrade",
     }
 )
 
@@ -97,10 +98,26 @@ class TaskMetadata:
     ground_truth_commits: tuple[
         tuple[str, str], ...
     ] = ()  # (repo_name, sha) pairs for multi-repo
+    # Chronological commit SHAs this task has been mined against.
+    # Order: [oldest, ..., newest]. Single element on first mine; grows when
+    # ``codeprobe mine --refresh`` preserves the task across subsequent commits.
+    ground_truth_commit_history: tuple[str, ...] = ()
     sg_repo: str = ""  # Sourcegraph repo identifier for MCP instruction variant
     # Secondary repos required to complete the task (cross-repo mining).
     # Empty tuple for single-repo tasks (backwards compatible).
     additional_repos: tuple[RepoRef, ...] = ()
+    # Expected tool-use benefit for this task, populated by a curator model
+    # call at mine time (ZFC-compliant — the string is a delegated judgment,
+    # not a hardcoded heuristic). Accepted values: "" | "low" | "medium" | "high".
+    # Empty string means "not assessed" (e.g. offline mining without an LLM).
+    expected_tool_benefit: str = ""
+    # Plain-text rationale emitted alongside expected_tool_benefit by the same
+    # curator call. Empty when expected_tool_benefit is empty.
+    tool_benefit_rationale: str = ""
+    # Snapshot of MCP CAPABILITIES registry keys active at mine time. Tuple
+    # (not list) so TaskMetadata remains hashable. Enables drift detection —
+    # see ``codeprobe check-infra --fail-on-capability-drift``.
+    mcp_capabilities_at_mine_time: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

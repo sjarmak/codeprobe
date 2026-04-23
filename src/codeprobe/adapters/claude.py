@@ -8,8 +8,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import (
@@ -186,6 +188,42 @@ class ClaudeAdapter(BaseAdapter):
 
     def __init__(self) -> None:
         self._collector = JsonStdoutCollector()
+        # Thread-local trace context: per-worker TraceRecorder + task_id so
+        # parallel task threads don't collide on a single shared attribute.
+        # The executor sets this in ``_run_one`` before calling ``run()`` and
+        # clears it afterwards.
+        self._trace_ctx: threading.local = threading.local()
+
+    def set_trace_context(
+        self,
+        *,
+        recorder: Any | None,
+        config: str | None,
+        task_id: str | None,
+    ) -> None:
+        """Bind trace-recorder state for the current thread.
+
+        Called by the executor before running a task. ``parse_output``
+        forwards these keys to ``JsonStdoutCollector.collect(**ctx)`` so
+        R5's trace.db is populated at the same parse step that fills
+        ``UsageData``. Passing ``recorder=None`` clears the context.
+        """
+        self._trace_ctx.recorder = recorder
+        self._trace_ctx.config = config
+        self._trace_ctx.task_id = task_id
+
+    def _current_trace_context(self) -> dict[str, Any]:
+        """Return kwargs for ``collect()`` from the thread-local trace slot."""
+        recorder = getattr(self._trace_ctx, "recorder", None)
+        config = getattr(self._trace_ctx, "config", None)
+        task_id = getattr(self._trace_ctx, "task_id", None)
+        if recorder is None or config is None or task_id is None:
+            return {}
+        return {
+            "trace_recorder": recorder,
+            "trace_config": config,
+            "trace_task_id": task_id,
+        }
 
     def preflight(self, config: AgentConfig) -> list[str]:
         issues = super().preflight(config)
@@ -269,19 +307,37 @@ class ClaudeAdapter(BaseAdapter):
             cmd.extend(["--mcp-config", mcp_path, "--strict-mcp-config"])
 
         # Tool restrictions. Claude CLI has three related flags:
-        #   --tools ""            disables all built-in tools
+        #   --tools A,B           restricts the *built-in* tool allowlist
+        #                         to these names; ``--tools ""`` disables
+        #                         all built-ins. MCP tools come from
+        #                         ``mcp_config`` and are NOT valid entries
+        #                         here.
         #   --allowedTools X,Y    auto-approves these tools (no permission
         #                         prompt); names may include MCP tools as
-        #                         ``mcp__<server>__<tool>``
-        #   --disallowedTools X,Y blocks these tools outright
-        # We treat ``allowed_tools`` as a whitelist: when set, built-ins
-        # are disabled (``--tools ""``) and listed names are auto-approved
-        # (``--allowedTools``). This yields true MCP-only runs when the
-        # whitelist contains only ``mcp__*`` names — verified against
-        # claude 2.1.x: without auto-approval the agent hits permission
-        # prompts and ends the turn early.
+        #                         ``mcp__<server>__<tool>``.
+        #   --disallowedTools X,Y blocks these tools outright.
+        #
+        # We treat ``allowed_tools`` as a whitelist. Regression (r7): prior
+        # to this fix the adapter passed ``--tools ""`` unconditionally,
+        # which stripped every built-in including listed ones like
+        # ``Write`` — so a whitelist like
+        # ``["Write", "mcp__sourcegraph__keyword_search"]`` silently lost
+        # ``Write``. The agent then could not persist ``answer.json`` for
+        # structured-retrieval tasks and scoring fell back to the
+        # ``$AGENT_OUTPUT`` stdout transcript. ``--allowedTools`` only
+        # auto-approves; it does not re-enable a stripped built-in.
+        #
+        # Fix: partition ``allowed_tools`` into built-in vs MCP names
+        # (``mcp__<server>__<tool>`` is the canonical MCP prefix). Pass
+        # the built-in subset to ``--tools`` so listed built-ins stay
+        # available while unlisted built-ins are still disabled. Pass the
+        # full list to ``--allowedTools`` so both built-ins and MCP calls
+        # are auto-approved.
         if config.allowed_tools is not None:
-            cmd.extend(["--tools", ""])
+            builtin_tools = [
+                t for t in config.allowed_tools if not t.startswith("mcp__")
+            ]
+            cmd.extend(["--tools", ",".join(builtin_tools)])
             if config.allowed_tools:
                 cmd.extend(["--allowedTools", ",".join(config.allowed_tools)])
         if config.disallowed_tools:
@@ -325,7 +381,9 @@ class ClaudeAdapter(BaseAdapter):
         final ``type: "result"`` event carries the same fields as the
         single-envelope shape, so we reconstruct ``result`` text from it.
         """
-        usage = self._collector.collect(result.stdout)
+        usage = self._collector.collect(
+            result.stdout, **self._current_trace_context()
+        )
 
         # Extract content text. For stream-json, the terminal result event
         # has a ``result`` field; iterate events to find it. For single

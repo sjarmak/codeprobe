@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from codeprobe.mining.sources import RepoSource, detect_source
+from codeprobe.mining.state import MineState
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 logger = logging.getLogger(__name__)
@@ -1037,6 +1038,20 @@ def extract_task_from_merge(
 
     description = _format_task_description(pr_meta)
 
+    # Snapshot live MCP capability set + delegate tool-benefit judgment to a
+    # curator model call. The call must happen BEFORE the TaskMetadata(...)
+    # constructor so the ZFC lint rule (scripts/lint_zfc.py) sees a model
+    # invocation in scope when ``expected_tool_benefit`` is populated.
+    from codeprobe.mcp.capabilities import CAPABILITIES
+    from codeprobe.mining.curator_backends import score_tool_benefit
+
+    capability_snapshot = tuple(sorted(CAPABILITIES.keys()))
+    expected_tool_benefit, tool_benefit_rationale = score_tool_benefit(
+        description,
+        tuple(changed_files),
+        capability_snapshot,
+    )
+
     metadata = TaskMetadata(
         name=f"merge-{short_sha}",
         difficulty=difficulty,
@@ -1046,6 +1061,9 @@ def extract_task_from_merge(
         issue_title=pr_meta.issue_title,
         issue_body=pr_meta.issue_body,
         ground_truth_commit=merge_sha,
+        expected_tool_benefit=expected_tool_benefit,
+        tool_benefit_rationale=tool_benefit_rationale,
+        mcp_capabilities_at_mine_time=capability_snapshot,
     )
 
     verification = TaskVerification(
@@ -1095,6 +1113,7 @@ def _collect_candidates(
     min_quality: float,
     subsystems: tuple[str, ...],
     progress: Callable[[int], None] | None = None,
+    state: MineState | None = None,
 ) -> tuple[
     list[tuple[float, int, Task]],
     dict[str, str],
@@ -1109,6 +1128,12 @@ def _collect_candidates(
     of PRs processed since the previous call (always ``1``). Callers pass
     a ``click.progressbar.update`` here to render a progress indicator
     without coupling the mining core to Click.
+
+    *state* optionally persists per-commit progress across runs: commits
+    already recorded as ``completed`` in the state store are skipped,
+    and each PR processed here transitions ``running`` ->
+    ``completed`` / ``interrupted`` accordingly (see
+    :mod:`codeprobe.mining.state`).
     """
     candidates: list[tuple[float, int, Task]] = []
     pr_bodies: dict[str, str] = {}
@@ -1121,54 +1146,81 @@ def _collect_candidates(
     rejected_extraction = 0
     rejected_quality = 0
 
+    completed = state.completed_shas() if state is not None else frozenset()
+
     for pr in prs:
         if progress is not None:
             progress(1)
-        changed_files = _get_changed_files(pr.merge_commit, path)
-        if len(changed_files) < min_files:
-            rejected_min_files += 1
+        if pr.merge_commit in completed:
+            # Resume-path: this SHA was fully processed on a previous run.
+            # Trust the allowlist — don't re-run subprocesses for it.
+            logger.debug("Skipping %s: already completed in state", pr.merge_commit[:8])
             continue
-        if subsystems and not any(
-            f.startswith(prefix) for f in changed_files for prefix in subsystems
-        ):
-            rejected_subsystem += 1
-            continue
-        test_files = _find_test_files(changed_files)
-        result = extract_task_from_merge(
-            pr.merge_commit,
-            path,
-            changed_files=changed_files,
-            source=source,
-            merge_title=pr.title,
-            pr_body=pr.body,
-            pr_labels=pr.labels,
-        )
-        if result is None:
-            rejected_extraction += 1
-            continue
-        task, pr_meta = result
-        quality = score_pr_quality(
-            title=pr_meta.title,
-            body=pr_meta.body,
-            changed_files=changed_files,
-            test_files=test_files,
-            has_linked_issue=bool(pr_meta.issue_title),
-        )
-        if quality < min_quality:
-            logger.debug(
-                "Skipping %s: quality %.2f < %.2f threshold",
-                pr.merge_commit[:8],
-                quality,
-                min_quality,
+        if state is not None:
+            state.record_running(pr.merge_commit)
+        try:
+            try:
+                changed_files = _get_changed_files(pr.merge_commit, path)
+            except Exception as exc:
+                if state is not None:
+                    state.record_interrupted(pr.merge_commit, error=repr(exc))
+                raise
+            if len(changed_files) < min_files:
+                rejected_min_files += 1
+                continue
+            if subsystems and not any(
+                f.startswith(prefix) for f in changed_files for prefix in subsystems
+            ):
+                rejected_subsystem += 1
+                continue
+            test_files = _find_test_files(changed_files)
+            result = extract_task_from_merge(
+                pr.merge_commit,
+                path,
+                changed_files=changed_files,
+                source=source,
+                merge_title=pr.title,
+                pr_body=pr.body,
+                pr_labels=pr.labels,
             )
-            rejected_quality += 1
-            continue
-        enriched_metadata = replace(task.metadata, quality_score=quality)
-        task = replace(task, metadata=enriched_metadata)
-        candidates.append((quality, len(changed_files), task))
-        pr_bodies[task.id] = pr_meta.body
-        changed_files_map[task.id] = changed_files
-        merge_sha_map[task.id] = pr.merge_commit
+            if result is None:
+                rejected_extraction += 1
+                continue
+            task, pr_meta = result
+            quality = score_pr_quality(
+                title=pr_meta.title,
+                body=pr_meta.body,
+                changed_files=changed_files,
+                test_files=test_files,
+                has_linked_issue=bool(pr_meta.issue_title),
+            )
+            if quality < min_quality:
+                logger.debug(
+                    "Skipping %s: quality %.2f < %.2f threshold",
+                    pr.merge_commit[:8],
+                    quality,
+                    min_quality,
+                )
+                rejected_quality += 1
+                continue
+            enriched_metadata = replace(task.metadata, quality_score=quality)
+            task = replace(task, metadata=enriched_metadata)
+            candidates.append((quality, len(changed_files), task))
+            pr_bodies[task.id] = pr_meta.body
+            changed_files_map[task.id] = changed_files
+            merge_sha_map[task.id] = pr.merge_commit
+        finally:
+            # Record completed for the SHA regardless of reject/accept —
+            # "completed" here means "processed this run and made a
+            # deterministic decision", so resume can skip it. Exceptions
+            # inside the try body have already marked the SHA as
+            # interrupted above and re-raised; this finally won't
+            # overwrite that because the inner raise propagates past
+            # this line only when no interrupt record was taken (i.e.
+            # via ``continue`` paths, which do not raise).
+            if state is not None:
+                if state.status(pr.merge_commit) != "interrupted":
+                    state.record_completed(pr.merge_commit)
 
     total_rejected = (
         rejected_min_files + rejected_subsystem + rejected_extraction + rejected_quality
@@ -1200,6 +1252,7 @@ def mine_tasks(
     min_quality: float = _MIN_QUALITY_SCORE,
     subsystems: tuple[str, ...] = (),
     progress: Callable[[int], None] | None = None,
+    state: MineState | None = None,
 ) -> MineResult:
     """Mine eval tasks from a repository.
 
@@ -1233,6 +1286,7 @@ def mine_tasks(
         min_quality,
         subsystems,
         progress=progress,
+        state=state,
     )
 
     # Relax min_files if the threshold filtered out everything
@@ -1253,6 +1307,7 @@ def mine_tasks(
                     relaxed,
                     min_quality,
                     subsystems,
+                    state=state,
                 )
             )
             if candidates:
@@ -1425,11 +1480,19 @@ def generate_instruction(
     if not problem:
         return task
 
+    # Preserve the narrative-adapter trail when present (r9): instead of
+    # overwriting with "llm", append so the final value reads e.g.
+    # "pr+llm" or "commits+rfcs+llm". Empty trail collapses to "llm" for
+    # backward compatibility with callers that bypass the CLI adapter
+    # selection (tests that call generate_instruction directly).
+    prior_trail = task.metadata.enrichment_source
+    new_enrichment_source = f"{prior_trail}+llm" if prior_trail else "llm"
+
     new_metadata = replace(
         task.metadata,
         description=task.metadata.description,
         difficulty=difficulty,
-        enrichment_source="llm",
+        enrichment_source=new_enrichment_source,
         issue_title=heading or task.metadata.issue_title,
         issue_body=_compose_issue_body(
             team_context=team_context,

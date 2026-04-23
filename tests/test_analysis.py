@@ -1139,6 +1139,14 @@ class TestFormatCsvReport:
             "passed_direct",
             "passed_artifact",
             "scoring_policy",
+            # Tool-benefit delta columns (always present in schema; blank
+            # for tasks without a mine-time expected_tool_benefit).
+            "expected_tool_benefit",
+            "tool_call_count",
+            "tool_delta_vs_expected",
+            # R17: per-checkpoint partial-credit map (JSON-encoded in the
+            # CSV cell; blank for non-checkpoint tasks).
+            "checkpoint_scores",
         }
         assert reader.fieldnames is not None
         assert set(reader.fieldnames) == expected_cols

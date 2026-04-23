@@ -1,0 +1,23 @@
+# Minimal sandbox image for codeprobe agent runs (INV4).
+#
+# Provides python + git + ripgrep + coreutils so agents can run read/search/
+# script workloads inside a container whose only writable surfaces are
+# those explicitly bind-mounted :rw by the caller.
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        git \
+        ripgrep \
+        coreutils \
+        ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+CMD ["/bin/bash"]

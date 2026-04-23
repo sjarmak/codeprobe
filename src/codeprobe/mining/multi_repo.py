@@ -21,18 +21,25 @@ the caller's quality scoring path (inherited from single-repo mining).
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
+import sys
+import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
+from codeprobe.mining.ast_scan import count_references_in_tree
 from codeprobe.mining.extractor import (
     _get_changed_files,
     list_merged_prs,
 )
+from codeprobe.mining.retry import RetryTracker, retry_call
 from codeprobe.mining.sources import detect_source
+from codeprobe.mining.state import MineState
 from codeprobe.models.task import (
     RepoRef,
     Task,
@@ -289,11 +296,17 @@ def mine_tasks_multi(
     count: int,
     family: Literal["callers", "refactor", "dependency"] = "callers",
     symbol_resolver: SymbolResolver,
+    state: MineState | None = None,
+    retry_tracker: RetryTracker | None = None,
 ) -> MultiRepoMineResult:
     """Mine cross-repo tasks from ``primary`` against ``secondaries``.
 
     Only the ``callers`` family is implemented in v1. Refactor/dependency
     families raise ``NotImplementedError`` with a follow-up message.
+
+    *state* optionally persists per-commit progress; *retry_tracker*
+    applies the mine-level retry exhaustion budget (INV1) to the
+    symbol-resolver calls which are the primary transient-failure source.
     """
     if family == "refactor":
         raise NotImplementedError(
@@ -313,6 +326,8 @@ def mine_tasks_multi(
         secondaries=secondaries,
         count=count,
         symbol_resolver=symbol_resolver,
+        state=state,
+        retry_tracker=retry_tracker,
     )
 
 
@@ -322,6 +337,8 @@ def _mine_callers(
     secondaries: tuple[Path, ...],
     count: int,
     symbol_resolver: SymbolResolver,
+    state: MineState | None = None,
+    retry_tracker: RetryTracker | None = None,
 ) -> MultiRepoMineResult:
     """Implementation of the ``callers`` family.
 
@@ -354,24 +371,47 @@ def _mine_callers(
 
     tasks: list[Task] = []
     gt_map: dict[str, list[str]] = {}
+    completed = state.completed_shas() if state is not None else frozenset()
 
     for sha in commit_shas:
-        changed = _get_changed_files(sha, primary)
-        if not changed:
+        if sha in completed:
+            logger.debug("mine_tasks_multi: skipping %s (already completed)", sha[:8])
             continue
-        symbols = _extract_modified_symbols(primary, sha, changed)
-        if not symbols:
-            continue
+        if state is not None:
+            state.record_running(sha)
+        try:
+            changed = _get_changed_files(sha, primary)
+            symbols = (
+                _extract_modified_symbols(primary, sha, changed) if changed else []
+            )
 
-        cross_refs: list[FileRef] = []
-        matched_symbol: str = ""
-        for sym in symbols:
-            refs = symbol_resolver.find_references(sym, secondary_paths)
-            if refs:
-                cross_refs = refs
-                matched_symbol = sym
-                break
-        if not cross_refs:
+            cross_refs: list[FileRef] = []
+            matched_symbol: str = ""
+            for sym in symbols:
+                if retry_tracker is not None:
+                    refs = retry_call(
+                        lambda s=sym: symbol_resolver.find_references(
+                            s, secondary_paths
+                        ),
+                        tracker=retry_tracker,
+                    )
+                else:
+                    refs = symbol_resolver.find_references(sym, secondary_paths)
+                if refs:
+                    cross_refs = refs
+                    matched_symbol = sym
+                    break
+        except Exception as exc:
+            if state is not None:
+                state.record_interrupted(sha, error=repr(exc))
+            raise
+        finally:
+            # Mechanical: if we didn't trip the interrupted branch, this
+            # SHA is done — whether or not we produced a task for it.
+            if state is not None and state.status(sha) != "interrupted":
+                state.record_completed(sha)
+
+        if not changed or not symbols or not cross_refs:
             continue
 
         # Build task with additional_repos + file_list ground truth.
@@ -458,6 +498,317 @@ def _head_sha(repo: Path) -> str:
         return result.stdout.strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return ""
+
+
+# ---------------------------------------------------------------------------
+# discover_related_repos (R8 — AST-ranked cross-repo relation discovery)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RelatedRepoCandidate:
+    """A candidate related repository with its AST-evidenced relevance.
+
+    Fields
+    ------
+    hint:
+        The declared dependency name as it appears in the primary repo's
+        manifest files — e.g. ``"react"``, ``"lodash"``,
+        ``"github.com/foo/bar"``, or a Python package name.
+    ast_hits:
+        Total reference count in the primary repo's source tree, summed
+        across all source files via :mod:`codeprobe.mining.ast_scan`.
+    manifest_sources:
+        The manifest files in which this dependency was declared
+        (e.g. ``("package.json",)``). Sorted, de-duplicated.
+    """
+
+    hint: str
+    ast_hits: int
+    manifest_sources: tuple[str, ...] = ()
+
+
+def discover_related_repos(
+    primary_repo_path: Path,
+    hints: Mapping[str, Path] | None = None,
+    *,
+    interactive: bool | None = None,
+    cross_repo_confirmed: bool = False,
+) -> list[RelatedRepoCandidate]:
+    """Discover repos related to *primary_repo_path* via AST evidence.
+
+    Walks supported manifests in the primary repo, builds a candidate set
+    of declared dependencies, scans the primary repo's source tree for AST
+    references to each candidate, and returns the hit-ranked list.
+
+    Critical invariant: candidates with a manifest declaration but **zero**
+    AST references are REJECTED (absent from the returned list). This
+    prevents stale/shadowed manifest entries from contaminating cross-repo
+    mining.
+
+    Parameters
+    ----------
+    primary_repo_path:
+        Path to the primary repo root. Must contain at least one manifest
+        (``go.mod``, ``package.json``, or ``pyproject.toml``) for any
+        candidates to be produced.
+    hints:
+        Optional mapping of declared-dependency-name → source-tree path.
+        Unused at scan time (we scan the *primary* for refs to the
+        candidate name), but retained for future extension and advisory
+        inclusion in the returned records.
+    interactive:
+        ``None`` (default) auto-detects via :func:`sys.stdin.isatty`.
+        ``True`` forces an interactive ``y/n`` confirmation prompt per
+        candidate. ``False`` disables prompting.
+    cross_repo_confirmed:
+        Required to be ``True`` in non-interactive mode (caller passed
+        ``--cross-repo`` or equivalent). Guards against silent cross-repo
+        runs in CI or scripted contexts.
+
+    Returns
+    -------
+    list[RelatedRepoCandidate]
+        Ordered by ``ast_hits`` descending, ties broken by hint name
+        ascending. Output is **advisory** — callers must still pass the
+        accepted candidates through ``mine_tasks_multi``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``interactive`` is ``False`` (or auto-detected as such) and
+        ``cross_repo_confirmed`` is ``False``.
+    """
+    primary = Path(primary_repo_path).resolve()
+    manifest_deps = _parse_manifests(primary)
+
+    if interactive is None:
+        interactive = _stdin_isatty()
+
+    if not interactive and not cross_repo_confirmed:
+        raise RuntimeError(
+            "discover_related_repos: non-interactive mode requires explicit "
+            "cross_repo_confirmed=True (pass --cross-repo on the CLI)."
+        )
+
+    if not manifest_deps:
+        return []
+
+    _ = hints  # currently advisory-only; kept in signature per R8 spec
+
+    # Rank candidates by AST hit count in the primary source tree.
+    ranked: list[RelatedRepoCandidate] = []
+    for dep_name, manifest_sources in manifest_deps.items():
+        hits = count_references_in_tree(primary, [dep_name])
+        if hits <= 0:
+            # REJECT manifest-only declarations with zero AST evidence.
+            continue
+        ranked.append(
+            RelatedRepoCandidate(
+                hint=dep_name,
+                ast_hits=hits,
+                manifest_sources=tuple(sorted(set(manifest_sources))),
+            )
+        )
+
+    ranked.sort(key=lambda c: (-c.ast_hits, c.hint))
+
+    if interactive:
+        ranked = _interactive_confirm(ranked)
+
+    return ranked
+
+
+def _stdin_isatty() -> bool:
+    """Wrapper so tests can monkeypatch stdin TTY detection easily."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _interactive_confirm(
+    candidates: list[RelatedRepoCandidate],
+) -> list[RelatedRepoCandidate]:
+    """Prompt the user to confirm each candidate (``y`` accept / ``n`` reject)."""
+    accepted: list[RelatedRepoCandidate] = []
+    for cand in candidates:
+        prompt = (
+            f"Include related repo hint '{cand.hint}' "
+            f"(ast_hits={cand.ast_hits}, from={','.join(cand.manifest_sources)})? [y/N]: "
+        )
+        try:
+            reply = input(prompt)
+        except EOFError:
+            reply = ""
+        if reply.strip().lower() in ("y", "yes"):
+            accepted.append(cand)
+    return accepted
+
+
+# ---------------------------------------------------------------------------
+# Manifest parsers
+# ---------------------------------------------------------------------------
+
+
+def _parse_manifests(primary: Path) -> dict[str, list[str]]:
+    """Parse all supported manifests; return ``{dep_name: [manifest_source, ...]}``."""
+    deps: dict[str, list[str]] = {}
+
+    go_mod = primary / "go.mod"
+    if go_mod.is_file():
+        for name in _parse_go_mod(go_mod):
+            deps.setdefault(name, []).append("go.mod")
+
+    package_json = primary / "package.json"
+    if package_json.is_file():
+        for name in _parse_package_json(package_json):
+            deps.setdefault(name, []).append("package.json")
+
+    pyproject = primary / "pyproject.toml"
+    if pyproject.is_file():
+        for name in _parse_pyproject(pyproject):
+            deps.setdefault(name, []).append("pyproject.toml")
+
+    return deps
+
+
+def _parse_go_mod(path: Path) -> set[str]:
+    """Parse a ``go.mod`` file and return declared module paths.
+
+    Line-by-line parser — handles both single-line ``require foo v1.2.3``
+    and block ``require (...)`` forms. Ignores comments, the ``module``
+    declaration itself, and ``replace`` / ``exclude`` directives.
+    """
+    names: set[str] = set()
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return names
+    in_block = False
+    for raw in text.splitlines():
+        line = raw.split("//", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("require ("):
+            in_block = True
+            continue
+        if in_block:
+            if line == ")":
+                in_block = False
+                continue
+            mod = _split_first_token(line)
+            if mod:
+                names.add(mod)
+            continue
+        if line.startswith("require "):
+            rest = line[len("require ") :].strip()
+            if rest.startswith("("):  # edge-case: ``require (`` with trailing
+                in_block = True
+                continue
+            mod = _split_first_token(rest)
+            if mod:
+                names.add(mod)
+    return names
+
+
+def _split_first_token(line: str) -> str | None:
+    parts = line.split()
+    if not parts:
+        return None
+    tok = parts[0].strip().strip('"')
+    if not tok or tok in (")",):
+        return None
+    return tok
+
+
+def _parse_package_json(path: Path) -> set[str]:
+    """Parse ``package.json`` dependency fields (npm / yarn / pnpm share this).
+
+    Reads ``dependencies``, ``devDependencies``, ``peerDependencies``, and
+    ``optionalDependencies`` — the same shape is used by npm, yarn, and
+    pnpm.
+    """
+    names: set[str] = set()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, json.JSONDecodeError):
+        return names
+    if not isinstance(data, dict):
+        return names
+    for key in (
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ):
+        block = data.get(key)
+        if isinstance(block, dict):
+            for dep_name in block:
+                if isinstance(dep_name, str) and dep_name:
+                    names.add(dep_name)
+    return names
+
+
+def _parse_pyproject(path: Path) -> set[str]:
+    """Parse ``pyproject.toml`` — both PEP 621 and Poetry layouts.
+
+    Reads ``project.dependencies``, ``project.optional-dependencies.*``,
+    ``tool.poetry.dependencies``, and ``tool.poetry.dev-dependencies``.
+    Strips version specifiers / markers to produce canonical package names.
+    """
+    names: set[str] = set()
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return names
+
+    project = data.get("project")
+    if isinstance(project, dict):
+        deps = project.get("dependencies")
+        if isinstance(deps, list):
+            for item in deps:
+                normalized = _normalize_python_dep(item)
+                if normalized:
+                    names.add(normalized)
+        optional = project.get("optional-dependencies")
+        if isinstance(optional, dict):
+            for extra in optional.values():
+                if isinstance(extra, list):
+                    for item in extra:
+                        normalized = _normalize_python_dep(item)
+                        if normalized:
+                            names.add(normalized)
+
+    poetry = data.get("tool", {}).get("poetry", {}) if isinstance(data.get("tool"), dict) else {}
+    if isinstance(poetry, dict):
+        for key in ("dependencies", "dev-dependencies"):
+            block = poetry.get(key)
+            if isinstance(block, dict):
+                for dep_name in block:
+                    if isinstance(dep_name, str) and dep_name.lower() != "python":
+                        names.add(dep_name)
+
+    return names
+
+
+_PEP508_NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)")
+
+
+def _normalize_python_dep(raw: object) -> str | None:
+    """Strip version specifiers from a PEP 508 dep string; return the name only."""
+    if not isinstance(raw, str):
+        return None
+    match = _PEP508_NAME_RE.match(raw)
+    if not match:
+        return None
+    return match.group(1)
+
+
+# ---------------------------------------------------------------------------
+# Legacy helper kept for compatibility with existing _mine_callers path
+# ---------------------------------------------------------------------------
 
 
 def _extract_modified_symbols(

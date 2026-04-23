@@ -1,0 +1,37 @@
+# Code Intelligence Tools
+
+> Use the tools listed below as your PRIMARY code search and navigation method.
+> They expose the following capabilities: {{ capabilities | map(attribute='name') | join(', ') }}.
+> Supplement with local Grep for best recall.
+
+## Capabilities
+
+{% for cap in capabilities -%}
+- **{{ cap.name }}** ({{ cap.id }}) — {{ cap.description }}
+{% endfor %}
+
+## Tools
+
+| Tool | Capability | When to use |
+| ---- | ---------- | ----------- |
+{% for tool in tools -%}
+| `{{ tool.name }}` | {{ tool.capability_id }} | {{ tool.description }} |
+{% endfor %}
+
+## Tool Selection
+
+{% for tool in tools -%}
+- Use `{{ tool.name }}` for {{ tool.capability_id }} operations: {{ tool.description }}
+{% endfor %}
+
+## Required Workflow
+
+1. **Start with a search tool** to find files matching the task criteria.
+2. **Trace references** for known symbols to catch aliases, re-exports, and indirect usages that simple keyword search misses.
+3. **Read files** with a FILE_READ-capable tool to confirm matches and inspect context.
+4. **Supplement with local Grep** to catch anything the indexed tools may have missed.
+5. **Union all results** — combine indexed search and local Grep for maximum recall.
+
+## Scoping
+
+Scope queries to the target repository when possible. Start narrow, then broaden if results are insufficient. Record which tool produced which finding so the final answer is auditable.

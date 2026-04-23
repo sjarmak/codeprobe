@@ -1,0 +1,15 @@
+# MCP Capabilities
+
+You have access to the following code-intelligence capabilities via MCP tools.
+Use them to ground your edits in the actual state of the codebase rather than
+guessing at file contents or call sites.
+
+{% for cap in capabilities %}
+## {{ cap.name }}
+
+{{ cap.description }}
+{% endfor %}
+
+Invoke each capability via the MCP tool your harness has bound to it. Do not
+assume a particular tool naming scheme — the binding is provided by the server
+configuration at runtime.

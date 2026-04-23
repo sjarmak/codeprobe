@@ -477,9 +477,16 @@ class CheckpointScorer:
             )
 
         weighted_score = 0.0
+        # Per-checkpoint breakdown propagated via ScoreResult.details so
+        # the executor can surface it in scoring.json and the interpret
+        # report can show partial-credit columns (see R17).
+        checkpoint_scores: dict[str, float] = {}
+        checkpoint_weights: dict[str, float] = {}
+
         for cp in checkpoints:
             weight = cp.get("weight", 0.0)
             verifier_name = cp.get("verifier", "")
+            name = str(cp.get("name", verifier_name) or verifier_name)
             verifier_path = task_dir / "tests" / "verifiers" / verifier_name
 
             if not verifier_path.is_file():
@@ -491,9 +498,18 @@ class CheckpointScorer:
 
             cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
             weighted_score += cp_score * weight
+            checkpoint_scores[name] = cp_score
+            checkpoint_weights[name] = float(weight)
 
         clamped = max(0.0, min(1.0, weighted_score))
-        return ScoreResult(score=clamped, passed=clamped > 0.0)
+        return ScoreResult(
+            score=clamped,
+            passed=clamped > 0.0,
+            details={
+                "checkpoint_scores": checkpoint_scores,
+                "checkpoint_weights": checkpoint_weights,
+            },
+        )
 
     @staticmethod
     def _run_verifier(
