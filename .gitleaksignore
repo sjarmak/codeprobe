@@ -1,0 +1,22 @@
+# Pre-existing false positives in historical commits.
+# All entries below were audited and confirmed non-sensitive:
+# - .gc/events.jsonl: internal Gas City event log with session UUIDs and
+#   instance tokens that are routing identifiers, not credentials.
+# - tests/test_secret_redaction.py: fixture values exercising the
+#   redaction scanner itself.
+# - tests/test_executor_events.py:158: "duration=3.0" numeric literal
+#   false-matched as a generic-api-key.
+# - tests/capabilities/test_run_capability.py: fixture value.
+
+3cc47d617feca42466db40ff334ab34dbb20e86f:tests/test_secret_redaction.py:generic-api-key:33
+815f247286d1cc20951edec80331390b1f8702d8:tests/test_secret_redaction.py:generic-api-key:234
+815f247286d1cc20951edec80331390b1f8702d8:tests/test_secret_redaction.py:generic-api-key:235
+815f247286d1cc20951edec80331390b1f8702d8:tests/test_secret_redaction.py:generic-api-key:236
+815f247286d1cc20951edec80331390b1f8702d8:tests/test_secret_redaction.py:github-pat:235
+917cdbb7d4d20bc8c9e7ca2f61a1dd9789288318:.gc/events.jsonl:generic-api-key:3
+917cdbb7d4d20bc8c9e7ca2f61a1dd9789288318:.gc/events.jsonl:generic-api-key:4
+917cdbb7d4d20bc8c9e7ca2f61a1dd9789288318:.gc/events.jsonl:generic-api-key:16
+917cdbb7d4d20bc8c9e7ca2f61a1dd9789288318:.gc/events.jsonl:generic-api-key:24
+917cdbb7d4d20bc8c9e7ca2f61a1dd9789288318:.gc/events.jsonl:generic-api-key:27
+917cdbb7d4d20bc8c9e7ca2f61a1dd9789288318:tests/test_executor_events.py:generic-api-key:158
+f444c5cd16681850cffbba2c02e9201947b11cc9:tests/capabilities/test_run_capability.py:generic-api-key:55
