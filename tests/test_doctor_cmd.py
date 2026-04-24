@@ -102,7 +102,9 @@ class TestDoctorCLI:
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
 
         runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+        # --no-json forces the legacy pretty "PASS" surface; CliRunner is
+        # non-TTY so the default is now the single-envelope JSON mode.
+        result = runner.invoke(main, ["doctor", "--no-json"])
         assert result.exit_code == 0
         assert "FAIL" not in result.output
         assert "PASS" in result.output
@@ -114,7 +116,7 @@ class TestDoctorCLI:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+        result = runner.invoke(main, ["doctor", "--no-json"])
         assert result.exit_code == 1
         assert "FAIL" in result.output
 

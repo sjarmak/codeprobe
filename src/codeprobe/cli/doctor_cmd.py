@@ -6,9 +6,15 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import click
+
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_mode,
+)
 
 
 @dataclass(frozen=True)
@@ -97,18 +103,41 @@ def run_checks() -> list[CheckResult]:
 
 
 @click.command("doctor")
-def doctor() -> None:
+@add_json_flags
+def doctor(
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Check environment readiness for running codeprobe."""
+    mode = resolve_mode(
+        "doctor", json_flag, no_json_flag, json_lines_flag,
+    )
+
     results = run_checks()
-    any_failed = False
+    any_failed = any(not r.passed for r in results)
 
-    for r in results:
-        if r.passed:
-            click.echo(f"  PASS  {r.name} ({r.detail})")
-        else:
-            any_failed = True
-            click.echo(f"  FAIL  {r.name} ({r.detail})")
-            click.echo(f"        -> {r.fix}")
+    if mode.mode == "pretty":
+        for r in results:
+            if r.passed:
+                click.echo(f"  PASS  {r.name} ({r.detail})")
+            else:
+                click.echo(f"  FAIL  {r.name} ({r.detail})")
+                click.echo(f"        -> {r.fix}")
+        if any_failed:
+            raise SystemExit(1)
+        return
 
+    # Envelope / NDJSON mode — skip pretty, emit a single envelope.
+    exit_code = 1 if any_failed else 0
+    emit_envelope(
+        command="doctor",
+        ok=not any_failed,
+        exit_code=exit_code,
+        data={
+            "checks": [asdict(r) for r in results],
+            "any_failed": any_failed,
+        },
+    )
     if any_failed:
-        raise SystemExit(1)
+        raise SystemExit(exit_code)

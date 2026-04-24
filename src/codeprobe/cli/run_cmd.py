@@ -14,6 +14,11 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.analysis.dual import format_dual_suffix
+from codeprobe.cli._output_helpers import (
+    emit_envelope,
+    emit_event,
+    resolve_mode,
+)
 from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
@@ -97,6 +102,28 @@ class PlainTextListener:
                 f"  Finished: {event.completed_count}/{event.total_tasks} tasks, "
                 f"mean score {event.mean_score:.2f}, "
                 f"total cost ${event.total_cost:.2f}"
+            )
+
+
+class NdjsonStdoutListener:
+    """RunEventListener that streams ``record_type="event"`` lines to stdout.
+
+    Used when ``codeprobe run`` is invoked in NDJSON mode (non-TTY default
+    or ``--json-lines``). Emits one JSON line per :class:`TaskScored` so
+    consumers can observe per-task completion without waiting for the
+    terminal envelope.
+    """
+
+    def on_event(self, event: RunEvent) -> None:
+        if isinstance(event, TaskScored):
+            emit_event(
+                {
+                    "event": "task_done",
+                    "task_id": event.task_id,
+                    "score": event.automated_score,
+                    "duration_seconds": event.duration_seconds,
+                    "cost_usd": getattr(event, "cost_usd", None),
+                }
             )
 
 
@@ -314,6 +341,9 @@ def run_eval(
     trace_deny: tuple[str, ...] = (),
     offline: bool = False,
     offline_expected_run_duration: str = "1h",
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -323,6 +353,19 @@ def run_eval(
     can short-circuit network calls (subsystems currently opt in — see
     ``codeprobe.net.is_offline_mode``).
     """
+    # Validate trace_overflow early so programmatic callers get a ValueError
+    # before any IO (experiment.json load, adapter resolution, etc.). This
+    # keeps the library-level error contract intact even when the CLI layer
+    # already constrains the surface via click.Choice.
+    if trace_overflow not in ("fail", "truncate"):
+        raise ValueError(
+            f"trace_overflow must be 'fail' or 'truncate', got {trace_overflow!r}"
+        )
+
+    out_mode = resolve_mode(
+        "run", json_flag, no_json_flag, json_lines_flag,
+    )
+    _results_by_config: dict[str, list[CompletedTask]] = {}
     if offline:
         # Fail-loud: the preflight raises click.ClickException on any
         # backend failure. We let it propagate so the adapter is never
@@ -581,7 +624,19 @@ def run_eval(
             pass  # experiment dir is outside the repo
 
         dispatcher = EventDispatcher()
-        if shared_rich_listener is not None:
+        if out_mode.mode == "ndjson":
+            # NDJSON mode: stream one ``record_type="event"`` per task to
+            # stdout. The JsonLineListener (stderr event stream) is still
+            # wired when log_format=='json' so CI pipelines see both.
+            dispatcher.register(NdjsonStdoutListener())
+            if log_format == "json":
+                dispatcher.register(JsonLineListener())
+        elif out_mode.mode == "single_envelope":
+            # Envelope mode suppresses per-task chatter on stdout; the
+            # stderr JsonLineListener remains available when requested.
+            if log_format == "json":
+                dispatcher.register(JsonLineListener())
+        elif shared_rich_listener is not None:
             dispatcher.register(shared_rich_listener)
         elif log_format == "json":
             dispatcher.register(JsonLineListener())
@@ -672,15 +727,17 @@ def run_eval(
         mean = sum(scores) / len(scores) if scores else 0.0
         perfect = sum(1 for s in scores if s >= 1.0)
         scoring = sum(1 for s in scores if s > 0.0)
-        if perfect == scoring:
-            # Binary results — show pass count
-            click.echo(f"  {exp_config.label}: {perfect}/{len(results)} passed")
-        else:
-            # Partial scoring — show mean and breakdown
-            click.echo(
-                f"  {exp_config.label}: mean={mean:.2f}, "
-                f"{perfect} perfect + {scoring - perfect} partial / {len(results)}"
-            )
+        if out_mode.mode == "pretty":
+            if perfect == scoring:
+                # Binary results — show pass count
+                click.echo(f"  {exp_config.label}: {perfect}/{len(results)} passed")
+            else:
+                # Partial scoring — show mean and breakdown
+                click.echo(
+                    f"  {exp_config.label}: mean={mean:.2f}, "
+                    f"{perfect} perfect + {scoring - perfect} partial / {len(results)}"
+                )
+        _results_by_config[exp_config.label] = list(results)
         return exp_config.label, results
 
     # Run configs in parallel (each config gets its own adapter + checkpoint)
@@ -720,5 +777,37 @@ def run_eval(
         # CI / callers see the failure.
         raise SystemExit(3)
 
-    click.echo()
-    click.echo("Next: codeprobe interpret .")
+    if out_mode.mode == "pretty":
+        click.echo()
+        click.echo("Next: codeprobe interpret .")
+        return
+
+    # Envelope / NDJSON terminal summary — PRD §5.3.
+    summary_configs = []
+    total_tasks = 0
+    total_cost = 0.0
+    for label, results in _results_by_config.items():
+        scores = [r.automated_score for r in results]
+        cfg_cost = sum(
+            (getattr(r, "cost_usd", 0.0) or 0.0) for r in results
+        )
+        total_cost += cfg_cost
+        total_tasks += len(results)
+        summary_configs.append(
+            {
+                "label": label,
+                "tasks": len(results),
+                "mean_score": (sum(scores) / len(scores)) if scores else 0.0,
+                "perfect": sum(1 for s in scores if s >= 1.0),
+                "cost_usd": cfg_cost,
+            }
+        )
+    emit_envelope(
+        command="run",
+        data={
+            "experiment": experiment.name,
+            "configs": summary_configs,
+            "total_tasks": total_tasks,
+            "total_cost_usd": total_cost,
+        },
+    )

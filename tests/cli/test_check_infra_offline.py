@@ -154,7 +154,7 @@ def test_offline_exit_zero_when_ttls_exceed_duration(
 
     result = CliRunner().invoke(
         check_infra,
-        ["offline", "--expected-run-duration", "1h"],
+        ["offline", "--expected-run-duration", "1h", "--no-json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -230,6 +230,7 @@ def test_offline_noexpiry_backends_pass(
             "2h",
             "--backend",
             "anthropic",
+            "--no-json",
         ],
     )
 

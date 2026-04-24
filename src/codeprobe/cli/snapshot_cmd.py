@@ -18,6 +18,11 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_mode,
+)
 from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
     CanaryFailed,
@@ -75,6 +80,7 @@ def _build_scanner(name: str) -> Scanner:
 
 
 @snapshot.command("create")
+@add_json_flags
 @click.argument(
     "experiment_dir",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
@@ -142,6 +148,9 @@ def create_cmd(
     scanner_name: str,
     canary_proof_path: Path | None,
     signing_key: str | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Create a snapshot of EXPERIMENT_DIR.
 
@@ -153,6 +162,9 @@ def create_cmd(
     supply ``--canary-proof <path>`` or run interactively so the CLI can
     prompt you to confirm the scanner caught a planted canary.
     """
+    out_mode = resolve_mode(
+        "snapshot create", json_flag, no_json_flag, json_lines_flag,
+    )
 
     mode_cast: RedactionMode = mode  # type: ignore[assignment]
 
@@ -225,10 +237,14 @@ def create_cmd(
         click.echo(f"Snapshot failed: {e}", err=True)
         sys.exit(7)
 
-    click.echo(json.dumps(status, indent=2))
+    if out_mode.mode == "pretty":
+        click.echo(json.dumps(status, indent=2))
+    else:
+        emit_envelope(command="snapshot create", data={"status": status})
 
 
 @snapshot.command("verify")
+@add_json_flags
 @click.argument(
     "snapshot_dir",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
@@ -239,24 +255,36 @@ def create_cmd(
     envvar="CODEPROBE_SIGNING_KEY",
     help="HMAC key (falls back to CODEPROBE_SIGNING_KEY). Required for hmac-signed manifests.",
 )
-def verify_cmd(snapshot_dir: Path, signing_key: str | None) -> None:
+def verify_cmd(
+    snapshot_dir: Path,
+    signing_key: str | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Verify a snapshot's attestation, symlink containment, and file hashes."""
+    mode = resolve_mode(
+        "snapshot verify", json_flag, no_json_flag, json_lines_flag,
+    )
 
     result = verify_snapshot_extended(snapshot_dir, signing_key=signing_key)
-    click.echo(
-        json.dumps(
-            {
-                "ok": result.ok,
-                "reason": result.reason,
-                "body_sha256_matches": result.base.body_sha256_matches,
-                "signature_matches": result.base.signature_matches,
-                "symlinks_contained": result.symlinks_contained,
-                "file_hashes_match": result.file_hashes_match,
-                "offending_paths": result.offending_paths,
-            },
-            indent=2,
+    payload = {
+        "ok": result.ok,
+        "reason": result.reason,
+        "body_sha256_matches": result.base.body_sha256_matches,
+        "signature_matches": result.base.signature_matches,
+        "symlinks_contained": result.symlinks_contained,
+        "file_hashes_match": result.file_hashes_match,
+        "offending_paths": result.offending_paths,
+    }
+    if mode.mode == "pretty":
+        click.echo(json.dumps(payload, indent=2))
+    else:
+        emit_envelope(
+            command="snapshot verify",
+            ok=result.ok,
+            data=payload,
         )
-    )
     if not result.ok:
         sys.exit(1)
 
@@ -265,6 +293,7 @@ _EXPORT_FORMATS: tuple[str, ...] = ("datadog", "sigma", "sheets", "browse")
 
 
 @snapshot.command("export")
+@add_json_flags
 @click.argument(
     "snapshot_dir",
     type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
@@ -287,13 +316,23 @@ _EXPORT_FORMATS: tuple[str, ...] = ("datadog", "sigma", "sheets", "browse")
         "sheets -> <snapshot>/sheets.tsv, browse -> <snapshot>/browse.html."
     ),
 )
-def export_cmd(snapshot_dir: Path, fmt: str, out_path: Path | None) -> None:
+def export_cmd(
+    snapshot_dir: Path,
+    fmt: str,
+    out_path: Path | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Export SNAPSHOT_DIR into an observability artefact.
 
     The export subcommand is a pure local transform — no network calls are
     issued. Callers ship the generated artefact to the downstream system
     (Datadog intake, Sigma/dbt, Google Sheets, or a browser) themselves.
     """
+    mode = resolve_mode(
+        "snapshot export", json_flag, no_json_flag, json_lines_flag,
+    )
 
     fmt_normalised = fmt.lower()
 
@@ -301,30 +340,30 @@ def export_cmd(snapshot_dir: Path, fmt: str, out_path: Path | None) -> None:
         if fmt_normalised == "datadog":
             target = out_path if out_path is not None else snapshot_dir / "datadog.json"
             written = export_datadog(snapshot_dir, target)
-            click.echo(json.dumps({"format": "datadog", "out": str(written)}, indent=2))
+            payload = {"format": "datadog", "out": str(written)}
         elif fmt_normalised == "sigma":
             target_dir = out_path if out_path is not None else snapshot_dir
             csv_path, schema_path = export_sigma(snapshot_dir, target_dir)
-            click.echo(
-                json.dumps(
-                    {
-                        "format": "sigma",
-                        "csv": str(csv_path),
-                        "schema": str(schema_path),
-                    },
-                    indent=2,
-                )
-            )
+            payload = {
+                "format": "sigma",
+                "csv": str(csv_path),
+                "schema": str(schema_path),
+            }
         elif fmt_normalised == "sheets":
             target = out_path if out_path is not None else snapshot_dir / "sheets.tsv"
             written = export_sheets(snapshot_dir, target)
-            click.echo(json.dumps({"format": "sheets", "out": str(written)}, indent=2))
+            payload = {"format": "sheets", "out": str(written)}
         elif fmt_normalised == "browse":
             target = out_path if out_path is not None else snapshot_dir / "browse.html"
             written = export_browse(snapshot_dir, target)
-            click.echo(json.dumps({"format": "browse", "out": str(written)}, indent=2))
+            payload = {"format": "browse", "out": str(written)}
         else:  # pragma: no cover — Click choice guards this branch.
             raise click.UsageError(f"unknown --format {fmt!r}")
     except FileNotFoundError as e:
         click.echo(f"Export failed: {e}", err=True)
         sys.exit(8)
+
+    if mode.mode == "pretty":
+        click.echo(json.dumps(payload, indent=2))
+    else:
+        emit_envelope(command="snapshot export", data=payload)
