@@ -2,7 +2,7 @@
 
 Auth: PAT via ``PRIVATE-TOKEN`` header, OR OAuth 2.0 via ``Authorization: Bearer``.
 All outgoing / incoming payloads are redacted before they reach any log or
-event emitter. HTTP 401/403 → :class:`AuthFailure` (fail-loud, no fallback).
+event emitter. HTTP 401/403 → :class:`AuthFailureError` (fail-loud, no fallback).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, cast
 
 from codeprobe.mining.vcs._http import stdlib_get
 from codeprobe.mining.vcs.base import (
-    AuthFailure,
+    AuthFailureError,
     AuthMode,
     MergeRequest,
     RedactingLoggerMixin,
@@ -77,7 +77,7 @@ class GitLabAdapter(RedactingLoggerMixin):
 
     def _check_auth(self, status: int) -> None:
         if status in (401, 403):
-            raise AuthFailure(self.name, status, _REMEDIATION_URL)
+            raise AuthFailureError(self.name, status, _REMEDIATION_URL)
 
     # --------------------------------------------------------------- redact
     def redact_request(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -133,14 +133,14 @@ class GitLabAdapter(RedactingLoggerMixin):
             raise RuntimeError(f"GitLab returned non-dict MR payload: {type(mr).__name__}")
 
         # Related commits (best effort — if this sub-call fails on auth we
-        # still fail loud because AuthFailure is re-raised explicitly.
+        # still fail loud because AuthFailureError is re-raised explicitly.
         # Any other RuntimeError (e.g. HTTP 500 on the sub-call) is treated
         # as a best-effort miss and yields an empty commit list.
         try:
             commits = self._get(
                 f"/api/v4/projects/{project_ref}/merge_requests/{int(mr_iid)}/commits"
             )
-        except AuthFailure:
+        except AuthFailureError:
             raise
         except RuntimeError:
             commits = []

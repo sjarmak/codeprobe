@@ -7,7 +7,7 @@ budgets at write time (INV1 — fail-loud):
 * **per-run**  (default 500 MB) — accumulates across all tasks in the
   recorder's lifetime
 
-On overflow the recorder raises :class:`TraceBudgetExceeded`. The
+On overflow the recorder raises :class:`TraceBudgetExceededError`. The
 opt-in ``--trace-overflow=truncate`` policy writes a final
 ``event_type='trace_truncated'`` row for the affected task and silently
 drops subsequent events for that task (without halting the run).
@@ -54,7 +54,7 @@ class TraceOverflowPolicy(enum.Enum):
     TRUNCATE = "truncate"
 
 
-class TraceBudgetExceeded(Exception):
+class TraceBudgetExceededError(Exception):
     """Raised when a write would exceed per-task or per-run byte budget.
 
     ``scope`` is ``'task'`` or ``'run'``. ``limit`` / ``current`` are
@@ -83,6 +83,27 @@ class TraceBudgetExceeded(Exception):
             f"task_id={task_id!r}: current={current} + incoming={incoming} "
             f"would exceed limit={limit}"
         )
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "TraceBudgetExceeded": "TraceBudgetExceededError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — see :mod:`codeprobe.calibration.gate` for rationale."""
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -184,7 +205,7 @@ class TraceRecorder:
     ) -> None:
         """Record one event, applying redaction and budget checks.
 
-        Raises :class:`TraceBudgetExceeded` when the write would exceed
+        Raises :class:`TraceBudgetExceededError` when the write would exceed
         per-task or per-run budget under ``overflow=FAIL``. Under
         ``TRUNCATE``, per-task overflow writes a final
         ``trace_truncated`` row and silently drops subsequent events
@@ -360,7 +381,7 @@ class TraceRecorder:
         # Run-scope overflow ALWAYS fails loudly — the PRD only allows
         # truncate at task scope.
         if run_overflow:
-            raise TraceBudgetExceeded(
+            raise TraceBudgetExceededError(
                 scope="run",
                 config=config,
                 task_id=task_id,
@@ -371,7 +392,7 @@ class TraceRecorder:
 
         # Task-scope overflow: respect overflow policy.
         if self._overflow is TraceOverflowPolicy.FAIL:
-            raise TraceBudgetExceeded(
+            raise TraceBudgetExceededError(
                 scope="task",
                 config=config,
                 task_id=task_id,

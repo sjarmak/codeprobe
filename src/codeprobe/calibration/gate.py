@@ -9,7 +9,7 @@ Gate policy:
 * Holdout must span at least ``min_repos`` distinct repositories
   (default 3).
 
-Any violation raises :class:`CalibrationRejected`.
+Any violation raises :class:`CalibrationRejectedError`.
 
 Why this lives in code (not in policy docs alone)
 -------------------------------------------------
@@ -31,8 +31,35 @@ from pathlib import Path
 from codeprobe.calibration.profile import CalibrationProfile
 
 
-class CalibrationRejected(Exception):
+class CalibrationRejectedError(Exception):
     """Raised when a calibration profile fails the R11 validity gate."""
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "CalibrationRejected": "CalibrationRejectedError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — ``CalibrationRejected`` → ``CalibrationRejectedError``.
+
+    PEP 8 / ruff N818 require an ``Error`` suffix. The alias keeps
+    external callers working across one minor-version cycle and emits
+    :class:`DeprecationWarning` on access so they know to migrate.
+    Removal is planned for v0.9.
+    """
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -59,28 +86,28 @@ def load_holdout(path: Path) -> tuple[HoldoutRow, ...]:
     ``curator_b``, ``repo``.
 
     Raises:
-        CalibrationRejected: if the file is missing, malformed, or any row
+        CalibrationRejectedError: if the file is missing, malformed, or any row
             is ill-typed.
     """
     if not path.exists():
-        raise CalibrationRejected(f"Holdout file does not exist: {path}")
+        raise CalibrationRejectedError(f"Holdout file does not exist: {path}")
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise CalibrationRejected(f"Holdout JSON is invalid: {exc}") from exc
+        raise CalibrationRejectedError(f"Holdout JSON is invalid: {exc}") from exc
 
     if not isinstance(raw, list):
-        raise CalibrationRejected("Holdout JSON must be a list of rows")
+        raise CalibrationRejectedError("Holdout JSON must be a list of rows")
 
     rows: list[HoldoutRow] = []
     required = ("task_id", "curator_a", "curator_b", "repo")
     for i, row in enumerate(raw):
         if not isinstance(row, dict):
-            raise CalibrationRejected(f"Holdout row {i} is not an object")
+            raise CalibrationRejectedError(f"Holdout row {i} is not an object")
         missing = [k for k in required if k not in row]
         if missing:
-            raise CalibrationRejected(
+            raise CalibrationRejectedError(
                 f"Holdout row {i} missing fields: {missing}"
             )
         try:
@@ -93,7 +120,7 @@ def load_holdout(path: Path) -> tuple[HoldoutRow, ...]:
                 )
             )
         except (TypeError, ValueError) as exc:
-            raise CalibrationRejected(
+            raise CalibrationRejectedError(
                 f"Holdout row {i} has bad types: {exc}"
             ) from exc
 
@@ -108,15 +135,15 @@ def compute_pearson(x: Sequence[float], y: Sequence[float]) -> float:
     identical float.
 
     Raises:
-        CalibrationRejected: if lengths differ, size < 2, or either series
+        CalibrationRejectedError: if lengths differ, size < 2, or either series
             has zero variance (undefined correlation).
     """
     if len(x) != len(y):
-        raise CalibrationRejected(
+        raise CalibrationRejectedError(
             f"Pearson requires equal-length sequences (got {len(x)} vs {len(y)})"
         )
     if len(x) < 2:
-        raise CalibrationRejected(
+        raise CalibrationRejectedError(
             "Pearson requires at least 2 observations per sequence"
         )
     # statistics.correlation raises StatisticsError on zero variance; catch
@@ -125,7 +152,7 @@ def compute_pearson(x: Sequence[float], y: Sequence[float]) -> float:
     try:
         return statistics.correlation(x, y)
     except statistics.StatisticsError as exc:
-        raise CalibrationRejected(
+        raise CalibrationRejectedError(
             f"Pearson correlation undefined (zero variance): {exc}"
         ) from exc
 
@@ -136,7 +163,7 @@ def refuse_profile_emission(
     min_tasks: int = 100,
     min_repos: int = 3,
 ) -> None:
-    """Raise :class:`CalibrationRejected` if the holdout is too small/thin.
+    """Raise :class:`CalibrationRejectedError` if the holdout is too small/thin.
 
     The partner-gated R11 requirement is >=100 tasks across >=3 non-OSS
     repositories. This function enforces the numeric portion; partner
@@ -145,12 +172,12 @@ def refuse_profile_emission(
     rows = tuple(holdout)
     n = len(rows)
     if n < min_tasks:
-        raise CalibrationRejected(
+        raise CalibrationRejectedError(
             f"Holdout too small: {n} tasks (need >= {min_tasks})"
         )
     distinct_repos = {row.repo for row in rows}
     if len(distinct_repos) < min_repos:
-        raise CalibrationRejected(
+        raise CalibrationRejectedError(
             f"Holdout spans too few repos: {len(distinct_repos)} "
             f"(need >= {min_repos})"
         )
@@ -160,7 +187,7 @@ def validate_calibration_correlation(
     profile: CalibrationProfile,
     threshold: float = 0.6,
 ) -> None:
-    """Raise :class:`CalibrationRejected` when correlation is below threshold.
+    """Raise :class:`CalibrationRejectedError` when correlation is below threshold.
 
     Args:
         profile: Candidate profile produced from a holdout run.
@@ -168,11 +195,11 @@ def validate_calibration_correlation(
             matches the R11 PRD.
 
     Raises:
-        CalibrationRejected: when ``profile.correlation_coefficient`` is
+        CalibrationRejectedError: when ``profile.correlation_coefficient`` is
             strictly less than ``threshold``.
     """
     if profile.correlation_coefficient < threshold:
-        raise CalibrationRejected(
+        raise CalibrationRejectedError(
             f"Correlation {profile.correlation_coefficient:.3f} below "
             f"threshold {threshold:.3f} — profile not emitted"
         )
@@ -196,7 +223,7 @@ def emit_profile(
     4. ``validate_calibration_correlation`` — threshold check.
 
     Raises:
-        CalibrationRejected: at any step that fails.
+        CalibrationRejectedError: at any step that fails.
     """
     rows = tuple(holdout)
     refuse_profile_emission(rows, min_tasks=min_tasks, min_repos=min_repos)

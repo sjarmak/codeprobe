@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from codeprobe.mining.retry import RetryLimitExceeded, RetryTracker, retry_call
+from codeprobe.mining.retry import RetryLimitExceededError, RetryTracker, retry_call
 
 
 def test_successful_call_counts_one_attempt() -> None:
@@ -57,7 +57,7 @@ def test_above_threshold_aborts_with_retry_limit_exceeded() -> None:
     tracker = RetryTracker(min_attempts=100, ratio=0.001)
     tracker.attempts = 1000
     tracker.exhausted = 2
-    with pytest.raises(RetryLimitExceeded):
+    with pytest.raises(RetryLimitExceededError):
         tracker.check_threshold()
 
 
@@ -74,7 +74,7 @@ def test_mine_aborts_when_budget_crossed_via_retry_call() -> None:
     """A series of exhausted retries that cross the ratio aborts the mine.
 
     Simulates the INV1 contract: once >0.1% of attempts exhaust their
-    retries, the NEXT exhausted retry_call propagates RetryLimitExceeded
+    retries, the NEXT exhausted retry_call propagates RetryLimitExceededError
     instead of the transient exception.
     """
     tracker = RetryTracker(min_attempts=100, ratio=0.001)
@@ -86,7 +86,7 @@ def test_mine_aborts_when_budget_crossed_via_retry_call() -> None:
     def always_fail() -> None:
         raise RuntimeError("sustained failure")
 
-    with pytest.raises(RetryLimitExceeded):
+    with pytest.raises(RetryLimitExceededError):
         retry_call(always_fail, tracker=tracker, retries=0, backoff=0.0)
 
 

@@ -22,7 +22,7 @@ from codeprobe.cli.check_infra import check_infra
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 
-class OutboundNetworkBlocked(RuntimeError):
+class OutboundNetworkBlockedError(RuntimeError):
     """Raised when an airgapped test attempts non-loopback network IO."""
 
 
@@ -53,14 +53,14 @@ def airgap(monkeypatch: pytest.MonkeyPatch) -> None:
     def guarded_create_connection(address, *args, **kwargs):  # type: ignore[no-untyped-def]
         host = address[0] if isinstance(address, tuple) else address
         if not _is_local_host(host):
-            raise OutboundNetworkBlocked(
+            raise OutboundNetworkBlockedError(
                 f"airgap fixture blocked outbound connect to {address!r}"
             )
         return original_create_connection(address, *args, **kwargs)
 
     def guarded_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
         if not _is_local_host(host):
-            raise OutboundNetworkBlocked(
+            raise OutboundNetworkBlockedError(
                 f"airgap fixture blocked getaddrinfo for {host!r}"
             )
         return original_getaddrinfo(host, *args, **kwargs)
@@ -68,7 +68,7 @@ def airgap(monkeypatch: pytest.MonkeyPatch) -> None:
     def guarded_socket_connect(self, address):  # type: ignore[no-untyped-def]
         host = address[0] if isinstance(address, tuple) else address
         if not _is_local_host(host):
-            raise OutboundNetworkBlocked(
+            raise OutboundNetworkBlockedError(
                 f"airgap fixture blocked socket.connect to {address!r}"
             )
         return original_socket_connect(self, address)
@@ -76,7 +76,7 @@ def airgap(monkeypatch: pytest.MonkeyPatch) -> None:
     def guarded_socket_connect_ex(self, address):  # type: ignore[no-untyped-def]
         host = address[0] if isinstance(address, tuple) else address
         if not _is_local_host(host):
-            raise OutboundNetworkBlocked(
+            raise OutboundNetworkBlockedError(
                 f"airgap fixture blocked socket.connect_ex to {address!r}"
             )
         return original_socket_connect_ex(self, address)
@@ -105,7 +105,7 @@ def test_airgap_fixture_actually_blocks_outbound_traffic(
     airgap: None,
 ) -> None:
     """Sanity check: the fixture really does block non-loopback calls."""
-    with pytest.raises(OutboundNetworkBlocked):
+    with pytest.raises(OutboundNetworkBlockedError):
         socket.create_connection(("example.com", 80), timeout=1)
 
 

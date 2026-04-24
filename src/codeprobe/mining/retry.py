@@ -3,7 +3,7 @@
 Per INV1: when the fraction of retry-exhausted attempts crosses
 ``0.1%`` of total attempted writes the mine aborts. Transient failures
 remain silent WARN noise; a sustained failure mode is promoted to an
-ERROR-level :class:`RetryLimitExceeded`, which callers surface as a
+ERROR-level :class:`RetryLimitExceededError`, which callers surface as a
 mine-level abort rather than dropping results on the floor.
 
 The tracker is process-scoped and passed in explicitly — no module
@@ -26,12 +26,33 @@ _DEFAULT_RATIO = 0.001  # 0.1%
 T = TypeVar("T")
 
 
-class RetryLimitExceeded(RuntimeError):
+class RetryLimitExceededError(RuntimeError):
     """Raised when the exhausted-to-attempts ratio crosses the threshold.
 
     Callers treat this as a mine-level ERROR — propagate out of the
     current mine and abort. Do NOT swallow.
     """
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "RetryLimitExceeded": "RetryLimitExceededError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — see :mod:`codeprobe.calibration.gate` for rationale."""
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass
@@ -75,7 +96,7 @@ class RetryTracker:
         return self.exhausted / self.attempts
 
     def check_threshold(self) -> None:
-        """Raise :class:`RetryLimitExceeded` if the ratio is exceeded.
+        """Raise :class:`RetryLimitExceededError` if the ratio is exceeded.
 
         The check is a *strict* inequality (``ratio > threshold``) so
         exactly 1-in-1000 sits at the boundary and does NOT abort — per
@@ -90,7 +111,7 @@ class RetryTracker:
                 f"({current:.4%}) exceeds threshold {self.ratio:.4%}"
             )
             logger.error("%s — aborting mine", msg)
-            raise RetryLimitExceeded(msg)
+            raise RetryLimitExceededError(msg)
 
 
 def retry_call(
@@ -113,7 +134,7 @@ def retry_call(
       *retries* times.
     - When retries are exhausted, increment ``tracker.exhausted``, call
       ``tracker.check_threshold()`` (which may raise
-      :class:`RetryLimitExceeded`), and re-raise the original exception.
+      :class:`RetryLimitExceededError`), and re-raise the original exception.
     - Any exception that isn't in *exceptions* propagates immediately
       without burning retries.
 

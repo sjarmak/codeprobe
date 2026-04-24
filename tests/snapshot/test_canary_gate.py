@@ -19,7 +19,7 @@ import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli import main as cli_main
-from codeprobe.snapshot import CANARY_DEFAULT, CanaryFailed, CanaryGate, MockScanner
+from codeprobe.snapshot import CANARY_DEFAULT, CanaryFailedError, CanaryGate, MockScanner
 
 
 def test_canary_gate_passes_when_scanner_catches() -> None:
@@ -36,7 +36,7 @@ def test_canary_gate_fails_when_scanner_misses() -> None:
     gate = CanaryGate(scanner)
     result = gate.prove()
     assert result.passed is False
-    with pytest.raises(CanaryFailed):
+    with pytest.raises(CanaryFailedError):
         CanaryGate(MockScanner(hit_substrings=[])).require_pass_or_raise()
 
 

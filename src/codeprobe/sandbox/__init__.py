@@ -7,7 +7,7 @@ Public API:
   read-only so agent Write/Bash/Edit calls cannot mutate the host worktree.
 - :class:`SandboxResult` — stdout/stderr/exit_code/duration_ms envelope.
 - :class:`SandboxError` — base runtime failure (missing engine, timeout, etc.).
-- :class:`SandboxWriteDenied` — raised when the container tried to write to a
+- :class:`SandboxWriteDeniedError` — raised when the container tried to write to a
   read-only mount.
 """
 
@@ -16,13 +16,23 @@ from __future__ import annotations
 from codeprobe.sandbox.runner import (
     SandboxError,
     SandboxResult,
-    SandboxWriteDenied,
+    SandboxWriteDeniedError,
     run_in_sandbox,
 )
+
+
+def __getattr__(name: str) -> object:
+    """Re-export shim for ``SandboxWriteDenied`` → ``SandboxWriteDeniedError`` (N818)."""
+    if name == "SandboxWriteDenied":
+        from codeprobe.sandbox.runner import __getattr__ as _runner_getattr
+
+        return _runner_getattr(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "SandboxError",
     "SandboxResult",
-    "SandboxWriteDenied",
+    "SandboxWriteDeniedError",
     "run_in_sandbox",
 ]

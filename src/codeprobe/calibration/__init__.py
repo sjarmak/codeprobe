@@ -13,7 +13,7 @@ for this unit — see ``docs/CALIBRATION.md``.
 from __future__ import annotations
 
 from codeprobe.calibration.gate import (
-    CalibrationRejected,
+    CalibrationRejectedError,
     HoldoutRow,
     compute_pearson,
     emit_profile,
@@ -24,9 +24,21 @@ from codeprobe.calibration.gate import (
 )
 from codeprobe.calibration.profile import CalibrationProfile
 
+
+def __getattr__(name: str) -> object:
+    """Re-export shim for the ``CalibrationRejected`` → ``CalibrationRejectedError``
+    rename (N818). See :mod:`codeprobe.calibration.gate` for the full alias table.
+    """
+    if name == "CalibrationRejected":
+        from codeprobe.calibration.gate import __getattr__ as _gate_getattr
+
+        return _gate_getattr(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "CalibrationProfile",
-    "CalibrationRejected",
+    "CalibrationRejectedError",
     "HoldoutRow",
     "compute_pearson",
     "emit_profile",

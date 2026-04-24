@@ -25,17 +25,39 @@ from codeprobe.snapshot.scanners import Finding, Scanner
 CANARY_DEFAULT: str = "CODEPROBE_CANARY_7f3e9b2a8d1c5e4f_test_token"
 
 
-class CanaryFailed(RuntimeError):
+class CanaryFailedError(RuntimeError):
     """Raised when the scanner fails to detect the planted canary."""
 
 
-class CanaryProofInvalid(RuntimeError):
+class CanaryProofInvalidError(RuntimeError):
     """Raised when a loaded canary proof fails validation (e.g. passed=False).
 
-    Distinct from :class:`CanaryFailed` so CLI callers can surface a
+    Distinct from :class:`CanaryFailedError` so CLI callers can surface a
     different message for "proof file is malformed / marked as failing"
     versus "scanner actually missed the canary during a live run".
     """
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "CanaryFailed": "CanaryFailedError",
+    "CanaryProofInvalid": "CanaryProofInvalidError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — see :mod:`codeprobe.calibration.gate` for rationale."""
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -104,7 +126,7 @@ class CanaryGate:
     def require_pass_or_raise(self) -> CanaryResult:
         result = self.prove()
         if not result.passed:
-            raise CanaryFailed(
+            raise CanaryFailedError(
                 f"Canary gate failed: scanner {result.scanner_name!r} did not "
                 f"detect the planted canary. Refusing to export source-bearing "
                 f"snapshot."
@@ -125,7 +147,7 @@ def load_canary_proof(path: Path) -> CanaryResult:
     """Load a previously-recorded canary proof from disk.
 
     The loaded proof is validated eagerly: if ``passed`` is not ``True``,
-    :class:`CanaryProofInvalid` is raised so callers cannot accidentally
+    :class:`CanaryProofInvalidError` is raised so callers cannot accidentally
     feed a failed proof into :func:`codeprobe.snapshot.redact.redact`. The
     CLI performs its own belt-and-suspenders check on top of this.
     """
@@ -148,7 +170,7 @@ def load_canary_proof(path: Path) -> CanaryResult:
         timestamp=str(raw.get("timestamp", "")),
     )
     if not result.passed:
-        raise CanaryProofInvalid(
+        raise CanaryProofInvalidError(
             f"canary proof at {path} has passed=False (scanner="
             f"{result.scanner_name!r}); refusing to load it as a passing "
             f"proof."

@@ -28,7 +28,7 @@ from codeprobe.cli._tenant import resolve_tenant, tenant_option
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
-    CanaryFailed,
+    CanaryFailedError,
     CanaryGate,
     load_canary_proof,
 )
@@ -50,7 +50,7 @@ from codeprobe.snapshot.scanners import (
     GitleaksScanner,
     PatternScanner,
     Scanner,
-    ScannerUnavailable,
+    ScannerUnavailableError,
     TrufflehogScanner,
 )
 from codeprobe.snapshot.verify import verify_snapshot_extended
@@ -68,7 +68,7 @@ def _build_scanner(name: str) -> Scanner:
 
     ``pattern`` is always available. ``gitleaks`` and ``trufflehog`` require
     the corresponding binary on PATH — scanning with them raises
-    :class:`ScannerUnavailable` at runtime if missing.
+    :class:`ScannerUnavailableError` at runtime if missing.
     """
 
     if name == "pattern":
@@ -257,7 +257,7 @@ def create_cmd(
                 assert scanner is not None
                 try:
                     canary_result = CanaryGate(scanner).require_pass_or_raise()
-                except CanaryFailed as e:
+                except CanaryFailedError as e:
                     raise DiagnosticError(
                         code="CANARY_GATE_FAILED",
                         message=str(e),
@@ -277,8 +277,8 @@ def create_cmd(
             )
         except (
             PermissionError,
-            CanaryFailed,
-            ScannerUnavailable,
+            CanaryFailedError,
+            ScannerUnavailableError,
             FileNotFoundError,
             SymlinkEscapeError,
         ) as e:

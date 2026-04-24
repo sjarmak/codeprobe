@@ -46,7 +46,7 @@ from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from codeprobe.models.suite import Suite
 from codeprobe.trace.content_policy import ContentPolicy
 from codeprobe.trace.recorder import (
-    TraceBudgetExceeded,
+    TraceBudgetExceededError,
     TraceOverflowPolicy,
     TraceRecorder,
 )
@@ -860,7 +860,7 @@ def run_eval(
             return exp_config.label, results
 
         # Run configs in parallel (each config gets its own adapter + checkpoint)
-        budget_error: TraceBudgetExceeded | None = None
+        budget_error: TraceBudgetExceededError | None = None
         try:
             if parallel > 1 and len(configs_to_run) > 1:
                 with ThreadPoolExecutor(max_workers=len(configs_to_run)) as pool:
@@ -871,7 +871,7 @@ def run_eval(
                         label = futures[future]
                         try:
                             future.result()
-                        except TraceBudgetExceeded as exc:
+                        except TraceBudgetExceededError as exc:
                             budget_error = exc
                             click.echo(f"  {label}: ERROR — {exc}", err=True)
                         except Exception as exc:
@@ -880,7 +880,7 @@ def run_eval(
                 for exp_config in configs_to_run:
                     try:
                         _run_config(exp_config)
-                    except TraceBudgetExceeded as exc:
+                    except TraceBudgetExceededError as exc:
                         budget_error = exc
                         click.echo(f"  {exp_config.label}: ERROR — {exc}", err=True)
                         break

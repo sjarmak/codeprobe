@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from codeprobe.mining.vcs import gitlab as gitlab_module
-from codeprobe.mining.vcs.base import AuthFailure, AuthMode, MergeRequest
+from codeprobe.mining.vcs.base import AuthFailureError, AuthMode, MergeRequest
 from codeprobe.mining.vcs.gitlab import GitLabAdapter
 
 
@@ -110,7 +110,7 @@ def test_auth_failure_raises_with_remediation_url(
     monkeypatch.setattr(gitlab_module, "_http_get", stub)
 
     adapter = GitLabAdapter("tok_abc", auth_mode=AuthMode.PAT)
-    with pytest.raises(AuthFailure) as exc_info:
+    with pytest.raises(AuthFailureError) as exc_info:
         list(adapter.list_merges("acme/proj"))
 
     err = exc_info.value
@@ -145,7 +145,7 @@ def test_pr_context_commits_sub_call_auth_failure_propagates(
     monkeypatch: pytest.MonkeyPatch, status: int
 ) -> None:
     """Regression: a revoked token on the commits sub-call must raise
-    ``AuthFailure`` instead of silently returning an empty commit list.
+    ``AuthFailureError`` instead of silently returning an empty commit list.
     """
     stub = _HttpStub(
         [
@@ -156,7 +156,7 @@ def test_pr_context_commits_sub_call_auth_failure_propagates(
     monkeypatch.setattr(gitlab_module, "_http_get", stub)
 
     adapter = GitLabAdapter("tok_abc", auth_mode=AuthMode.PAT)
-    with pytest.raises(AuthFailure) as exc_info:
+    with pytest.raises(AuthFailureError) as exc_info:
         adapter.pr_context("acme/proj", 42)
     assert exc_info.value.status == status
     assert exc_info.value.adapter == "gitlab"

@@ -60,8 +60,29 @@ class SandboxError(RuntimeError):
     """Base class for sandbox-runner failures (engine missing, timeout, etc.)."""
 
 
-class SandboxWriteDenied(SandboxError):
+class SandboxWriteDeniedError(SandboxError):
     """Raised when a command tried to write to a read-only mount."""
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "SandboxWriteDenied": "SandboxWriteDeniedError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — see :mod:`codeprobe.calibration.gate` for rationale."""
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _detect_engine() -> str:
@@ -177,7 +198,7 @@ def run_in_sandbox(
     SandboxError
         No container engine on PATH, subprocess timeout, or unexpected OS
         error while launching the engine.
-    SandboxWriteDenied
+    SandboxWriteDeniedError
         Command exited non-zero with stderr indicating a write to a
         read-only mount.
     """
@@ -223,7 +244,7 @@ def run_in_sandbox(
         and not allow_writes
         and _looks_like_ro_write_failure(stderr)
     ):
-        raise SandboxWriteDenied(
+        raise SandboxWriteDeniedError(
             f"sandbox blocked write to read-only mount (exit {exit_code}): "
             f"{stderr.strip()}"
         )

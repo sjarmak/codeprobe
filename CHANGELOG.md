@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Deprecations
+
+- **Exception classes renamed to carry the PEP 8 / ruff N818 ``Error`` suffix** (bead `codeprobe-6c9`). Each old name is preserved as a module-level alias via ``__getattr__`` that emits :class:`DeprecationWarning` on access; the aliases will be removed in **v0.9**. Migration: update your imports to the new name.
+
+  | Old | New |
+  |-----|-----|
+  | `CalibrationRejected` | `CalibrationRejectedError` |
+  | `RetryLimitExceeded` | `RetryLimitExceededError` |
+  | `AuthFailure` | `AuthFailureError` |
+  | `SandboxWriteDenied` | `SandboxWriteDeniedError` |
+  | `CanaryFailed` | `CanaryFailedError` |
+  | `CanaryProofInvalid` | `CanaryProofInvalidError` |
+  | `ScannerUnavailable` | `ScannerUnavailableError` |
+  | `TraceBudgetExceeded` | `TraceBudgetExceededError` |
+
+  The ``N818`` ignore has been removed from `pyproject.toml [tool.ruff.lint]`.
+
 ## 0.6.0 (2026-04-23)
 
 Large release landing the "Enterprise Repo Benchmark Parity" PRD (25 units across 5 layers, 27 commits). Net: +~744 tests (2096 → 2840 passing). Architecture supports enterprise constraints (non-GitHub VCS, non-GitHub trackers, self-hosted LLMs, on-prem MCP, airgapped runs) while OSS-repo consistency remains the near-term priority.

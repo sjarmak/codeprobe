@@ -6,7 +6,7 @@ The fixes ensure:
    is supplied OR an inline canary gate succeeds — same protection as
    ``secrets`` mode. Programmatic callers cannot bypass the gate by using
    ``contents`` instead of ``secrets``.
-2. :func:`load_canary_proof` raises :class:`CanaryProofInvalid` when the
+2. :func:`load_canary_proof` raises :class:`CanaryProofInvalidError` when the
    loaded proof has ``passed=False``, so callers cannot accidentally pass
    a known-failing proof through.
 """
@@ -21,8 +21,8 @@ import pytest
 
 from codeprobe.snapshot import (
     CANARY_DEFAULT,
-    CanaryFailed,
-    CanaryProofInvalid,
+    CanaryFailedError,
+    CanaryProofInvalidError,
     CanaryResult,
     MockScanner,
     load_canary_proof,
@@ -43,7 +43,7 @@ def test_contents_mode_without_passing_canary_raises(tmp_path: Path) -> None:
     out = tmp_path / "snap"
     # Scanner catches *something* but NOT the planted canary string.
     broken_scanner = MockScanner(hit_substrings=[b"nothing-matches-here"])
-    with pytest.raises(CanaryFailed):
+    with pytest.raises(CanaryFailedError):
         redact(
             source_dir=src,
             mode="contents",
@@ -105,7 +105,7 @@ def test_contents_mode_accepts_passing_canary_proof(tmp_path: Path) -> None:
 
 
 def test_load_canary_proof_rejects_failed_proof(tmp_path: Path) -> None:
-    """``load_canary_proof`` raises CanaryProofInvalid on passed=False."""
+    """``load_canary_proof`` raises CanaryProofInvalidError on passed=False."""
     proof_path = tmp_path / "proof.json"
     proof_path.write_text(
         json.dumps(
@@ -118,7 +118,7 @@ def test_load_canary_proof_rejects_failed_proof(tmp_path: Path) -> None:
             }
         )
     )
-    with pytest.raises(CanaryProofInvalid) as exc:
+    with pytest.raises(CanaryProofInvalidError) as exc:
         load_canary_proof(proof_path)
     # The error message must name the offending path so operators can find
     # the file quickly during triage.

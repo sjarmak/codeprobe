@@ -2,7 +2,7 @@
 
 Auth: PAT or OAuth 2.0. Both materialize as ``Authorization: Bearer <token>``.
 Outgoing / incoming payloads are redacted before any log / event write.
-HTTP 401/403 → :class:`AuthFailure` (fail-loud, no fallback).
+HTTP 401/403 → :class:`AuthFailureError` (fail-loud, no fallback).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, cast
 from codeprobe.mining.trackers.base import Ticket
 from codeprobe.mining.vcs._http import stdlib_get
 from codeprobe.mining.vcs.base import (
-    AuthFailure,
+    AuthFailureError,
     AuthMode,
     RedactingLoggerMixin,
     redact,
@@ -80,7 +80,7 @@ class JiraAdapter(RedactingLoggerMixin):
 
     def _check_auth(self, status: int) -> None:
         if status in (401, 403):
-            raise AuthFailure(self.name, status, _REMEDIATION_URL)
+            raise AuthFailureError(self.name, status, _REMEDIATION_URL)
 
     # --------------------------------------------------------------- redact
     def redact_request(self, req: dict[str, Any]) -> dict[str, Any]:

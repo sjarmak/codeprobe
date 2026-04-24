@@ -6,7 +6,7 @@ Every adapter that talks to a hosted VCS / issue tracker MUST:
    :func:`redact` using the adapter's ``_known_tokens`` set.
 2. Route every log call through ``self._log(...)`` so messages pass through the
    redactor BEFORE they reach any handler.
-3. Raise :class:`AuthFailure` on HTTP 401/403 — never silently degrade.
+3. Raise :class:`AuthFailureError` on HTTP 401/403 — never silently degrade.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
-    "AuthFailure",
+    "AuthFailureError",
     "AuthMode",
     "MergeRequest",
     "VCSAdapter",
@@ -33,7 +33,7 @@ class AuthMode(str, Enum):
     OAUTH2 = "oauth2"
 
 
-class AuthFailure(RuntimeError):
+class AuthFailureError(RuntimeError):
     """Raised when an adapter receives HTTP 401/403.
 
     The exception message always includes a concrete remediation URL so the
@@ -48,6 +48,27 @@ class AuthFailure(RuntimeError):
         self.adapter = adapter
         self.status = status
         self.remediation_url = remediation_url
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "AuthFailure": "AuthFailureError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — see :mod:`codeprobe.calibration.gate` for rationale."""
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)

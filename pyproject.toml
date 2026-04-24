@@ -111,14 +111,12 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
-# N818 — pre-existing Exception class names without an "Error" suffix. Renaming
-# them would be a breaking API change for downstream consumers (e.g.
-# ``CalibrationRejected`` is re-exported via the ``codeprobe.calibration``
-# public surface). Tracked as cosmetic debt; grandfather in place.
 # N802 — one intentional mixed-case test method name asserting on camelCase
 # flag forwarding (``--disallowedTools``).
 # UP028/UP042 — one-off modernizations not worth the churn in this release.
-ignore = ["N818", "N802", "UP028", "UP042"]
+# (N818 was removed in codeprobe-6c9 — all exception classes now carry the
+# ``Error`` suffix, with deprecated aliases for one minor-version cycle.)
+ignore = ["N802", "UP028", "UP042"]
 
 [tool.ruff.lint.per-file-ignores]
 # One stale local var + one unused-but-kept-for-shape helper in existing tests.

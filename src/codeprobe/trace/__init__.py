@@ -9,16 +9,26 @@ from __future__ import annotations
 
 from codeprobe.trace.content_policy import ContentPolicy
 from codeprobe.trace.recorder import (
-    TraceBudgetExceeded,
+    TraceBudgetExceededError,
     TraceOverflowPolicy,
     TraceRecorder,
 )
 from codeprobe.trace.store import SCHEMA_VERSION, export_jsonl, open_store
 
+
+def __getattr__(name: str) -> object:
+    """Re-export shim for ``TraceBudgetExceeded`` → ``TraceBudgetExceededError`` (N818)."""
+    if name == "TraceBudgetExceeded":
+        from codeprobe.trace.recorder import __getattr__ as _rec_getattr
+
+        return _rec_getattr(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "ContentPolicy",
     "SCHEMA_VERSION",
-    "TraceBudgetExceeded",
+    "TraceBudgetExceededError",
     "TraceOverflowPolicy",
     "TraceRecorder",
     "export_jsonl",

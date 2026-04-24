@@ -10,7 +10,7 @@ import pytest
 from codeprobe.trace.content_policy import ContentPolicy
 from codeprobe.trace.recorder import (
     DEFAULT_TASK_BUDGET_BYTES,
-    TraceBudgetExceeded,
+    TraceBudgetExceededError,
     TraceOverflowPolicy,
     TraceRecorder,
 )
@@ -91,7 +91,7 @@ def test_task_budget_fail_loud(tmp_path: Path, null_policy: ContentPolicy) -> No
         rec.record_event(
             config="c", task_id="t", event_type="tool_use", tool_output=huge
         )
-        with pytest.raises(TraceBudgetExceeded) as excinfo:
+        with pytest.raises(TraceBudgetExceededError) as excinfo:
             # second event pushes us over 4096
             rec.record_event(
                 config="c", task_id="t", event_type="tool_use", tool_output=huge
@@ -115,7 +115,7 @@ def test_run_budget_fail_loud(tmp_path: Path, null_policy: ContentPolicy) -> Non
         rec.record_event(
             config="c", task_id="t1", event_type="tool_use", tool_output=huge
         )
-        with pytest.raises(TraceBudgetExceeded) as excinfo:
+        with pytest.raises(TraceBudgetExceededError) as excinfo:
             rec.record_event(
                 config="c", task_id="t2", event_type="tool_use", tool_output=huge
             )
@@ -141,7 +141,7 @@ def test_run_budget_fails_even_with_truncate_policy(
         rec.record_event(
             config="c", task_id="t1", event_type="tool_use", tool_output=huge
         )
-        with pytest.raises(TraceBudgetExceeded) as excinfo:
+        with pytest.raises(TraceBudgetExceededError) as excinfo:
             rec.record_event(
                 config="c", task_id="t2", event_type="tool_use", tool_output=huge
             )

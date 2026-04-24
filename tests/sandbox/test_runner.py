@@ -21,7 +21,7 @@ from codeprobe.cli._sandbox import sandbox_options
 from codeprobe.sandbox.runner import (
     SandboxError,
     SandboxResult,
-    SandboxWriteDenied,
+    SandboxWriteDeniedError,
     _build_run_command,
     run_in_sandbox,
 )
@@ -215,7 +215,7 @@ def test_run_in_sandbox_ro_write_failure_raises_write_denied() -> None:
     with patch(
         "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
     ), patch("codeprobe.sandbox.runner.subprocess.run", return_value=fake):
-        with pytest.raises(SandboxWriteDenied):
+        with pytest.raises(SandboxWriteDeniedError):
             run_in_sandbox(
                 ["touch", "/mnt/x"],
                 {"/tmp/src": "/mnt"},
@@ -244,7 +244,7 @@ def test_run_in_sandbox_ro_write_not_raised_when_allow_writes_true() -> None:
 
 def test_run_in_sandbox_non_write_failure_returns_result() -> None:
     # A generic non-zero exit (e.g. test failure, syntax error) must NOT be
-    # promoted to SandboxWriteDenied — only ro-mount violations escalate.
+    # promoted to SandboxWriteDeniedError — only ro-mount violations escalate.
     fake = _make_completed(stdout="", stderr="syntax error\n", returncode=2)
     with patch(
         "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
@@ -458,9 +458,9 @@ def test_docker_ls_does_not_leak_host_paths(
 def test_docker_write_to_ro_mount_raises_write_denied(
     docker_image: str, tmp_path: Path
 ) -> None:
-    """A write into a :ro bind mount must raise SandboxWriteDenied."""
+    """A write into a :ro bind mount must raise SandboxWriteDeniedError."""
     (tmp_path / "existing.txt").write_text("hi")
-    with pytest.raises(SandboxWriteDenied):
+    with pytest.raises(SandboxWriteDeniedError):
         run_in_sandbox(
             ["touch", "/workspace/newfile.txt"],
             {str(tmp_path): "/workspace"},

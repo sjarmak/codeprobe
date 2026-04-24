@@ -31,8 +31,29 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 
-class ScannerUnavailable(RuntimeError):
+class ScannerUnavailableError(RuntimeError):
     """Raised when an external scanner binary is not installed on PATH."""
+
+
+_LEGACY_EXCEPTION_ALIASES = {
+    "ScannerUnavailable": "ScannerUnavailableError",
+}
+
+
+def __getattr__(name: str) -> object:
+    """Legacy-alias shim — see :mod:`codeprobe.calibration.gate` for rationale."""
+    new_name = _LEGACY_EXCEPTION_ALIASES.get(name)
+    if new_name is not None:
+        import warnings
+
+        warnings.warn(
+            f"{name} is deprecated; use {new_name}. "
+            "The alias will be removed in v0.9.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new_name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @dataclass(frozen=True)
@@ -147,7 +168,7 @@ def _safe_preview(secret: bytes, head: int = 4, tail: int = 2) -> str:
 class GitleaksScanner:
     """Shells out to the ``gitleaks`` CLI.
 
-    Raises :class:`ScannerUnavailable` in :meth:`scan` / :meth:`redact` if the
+    Raises :class:`ScannerUnavailableError` in :meth:`scan` / :meth:`redact` if the
     binary is not on ``PATH``. The canary gate exercises the real binary path;
     tests that cannot depend on gitleaks being installed should use
     :class:`MockScanner` instead.
@@ -160,7 +181,7 @@ class GitleaksScanner:
     def _require(self) -> str:
         path = shutil.which(self.binary)
         if path is None:
-            raise ScannerUnavailable(
+            raise ScannerUnavailableError(
                 f"gitleaks binary {self.binary!r} not found on PATH"
             )
         return path
@@ -229,7 +250,7 @@ class TrufflehogScanner:
     def _require(self) -> str:
         path = shutil.which(self.binary)
         if path is None:
-            raise ScannerUnavailable(
+            raise ScannerUnavailableError(
                 f"trufflehog binary {self.binary!r} not found on PATH"
             )
         return path

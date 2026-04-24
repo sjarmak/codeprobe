@@ -33,7 +33,7 @@ def stdlib_get(
 
     Returns ``(status, parsed_body, response_headers)``. Non-2xx
     :class:`urllib.error.HTTPError` responses are caught so that callers
-    can inspect the status code (e.g. 401/403 → AuthFailure) without
+    can inspect the status code (e.g. 401/403 → AuthFailureError) without
     bespoke exception handling.
 
     The response body is parsed as UTF-8 JSON. If decoding fails (non-UTF-8

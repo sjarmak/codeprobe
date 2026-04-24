@@ -24,9 +24,9 @@ No LLM is invoked anywhere in this module (tested by
 
 from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
-    CanaryFailed,
+    CanaryFailedError,
     CanaryGate,
-    CanaryProofInvalid,
+    CanaryProofInvalidError,
     CanaryResult,
     load_canary_proof,
 )
@@ -63,7 +63,7 @@ from codeprobe.snapshot.scanners import (
     MockScanner,
     PatternScanner,
     Scanner,
-    ScannerUnavailable,
+    ScannerUnavailableError,
     TrufflehogScanner,
 )
 from codeprobe.snapshot.verify import (
@@ -71,12 +71,36 @@ from codeprobe.snapshot.verify import (
     verify_snapshot_extended,
 )
 
+_LEGACY_EXCEPTION_RE_EXPORTS = {
+    "CanaryFailed": ("codeprobe.snapshot.canary", "CanaryFailedError"),
+    "CanaryProofInvalid": ("codeprobe.snapshot.canary", "CanaryProofInvalidError"),
+    "ScannerUnavailable": ("codeprobe.snapshot.scanners", "ScannerUnavailableError"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Re-export shim for the N818 exception-class renames.
+
+    See :mod:`codeprobe.calibration.gate` for the full pattern. Emits
+    :class:`DeprecationWarning` on access and returns the
+    ``*Error``-suffixed replacement.
+    """
+    entry = _LEGACY_EXCEPTION_RE_EXPORTS.get(name)
+    if entry is not None:
+        module_name, _new_name = entry
+        import importlib
+
+        module = importlib.import_module(module_name)
+        return module.__getattr__(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "Attestation",
     "CANARY_DEFAULT",
-    "CanaryFailed",
+    "CanaryFailedError",
     "CanaryGate",
-    "CanaryProofInvalid",
+    "CanaryProofInvalidError",
     "CanaryResult",
     "CsbLayout",
     "DEFAULT_PATTERNS",
@@ -92,7 +116,7 @@ __all__ = [
     "RedactionMode",
     "SNAPSHOT_SCHEMA_VERSION",
     "Scanner",
-    "ScannerUnavailable",
+    "ScannerUnavailableError",
     "SnapshotManifest",
     "SymlinkEscapeError",
     "TrufflehogScanner",

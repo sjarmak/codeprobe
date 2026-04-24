@@ -9,7 +9,7 @@ import pytest
 from codeprobe.mining.trackers import jira as jira_module
 from codeprobe.mining.trackers.base import Ticket
 from codeprobe.mining.trackers.jira import JiraAdapter
-from codeprobe.mining.vcs.base import AuthFailure, AuthMode
+from codeprobe.mining.vcs.base import AuthFailureError, AuthMode
 
 
 class _HttpStub:
@@ -96,7 +96,7 @@ def test_fetch_ticket_auth_failure(
         jira_module, "_http_get", _HttpStub([(status, {"message": "nope"}, {})])
     )
     adapter = JiraAdapter("tok", base_url="https://acme.atlassian.net")
-    with pytest.raises(AuthFailure) as exc_info:
+    with pytest.raises(AuthFailureError) as exc_info:
         adapter.fetch_ticket("PROJ-1")
     assert "id.atlassian.com/manage-profile/security/api-tokens" in str(exc_info.value)
     assert exc_info.value.adapter == "jira"

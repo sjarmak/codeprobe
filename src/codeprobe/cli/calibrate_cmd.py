@@ -28,7 +28,7 @@ from pathlib import Path
 import click
 
 from codeprobe.calibration import (
-    CalibrationRejected,
+    CalibrationRejectedError,
     emit_profile,
     load_holdout,
 )
@@ -112,7 +112,7 @@ def calibrate(
             min_tasks=min_tasks,
             min_repos=min_repos,
         )
-    except CalibrationRejected as exc:
+    except CalibrationRejectedError as exc:
         raise DiagnosticError(
             code="CALIBRATION_REJECTED",
             message=f"calibration_rejected: {exc}",
