@@ -37,6 +37,7 @@ from codeprobe.cli._output_helpers import (
     emit_envelope,
     resolve_mode,
 )
+from codeprobe.cli.errors import DiagnosticError
 
 
 @click.command("calibrate")
@@ -111,8 +112,12 @@ def calibrate(
             min_repos=min_repos,
         )
     except CalibrationRejected as exc:
-        click.echo(f"calibration_rejected: {exc}", err=True)
-        raise SystemExit(1) from exc
+        raise DiagnosticError(
+            code="CALIBRATION_REJECTED",
+            message=f"calibration_rejected: {exc}",
+            diagnose_cmd="codeprobe interpret <holdout> --json",
+            terminal=True,
+        ) from exc
 
     payload = profile.to_dict()
     output = json.dumps(payload, indent=2, sort_keys=True)

@@ -117,9 +117,9 @@ class TestLoadProfile:
             "codeprobe.cli.mine_cmd._project_profiles_path",
             lambda repo_path=None: tmp_path / "project.json",
         )
-        import click
+        from codeprobe.cli.errors import PrescriptiveError
 
-        with pytest.raises(click.UsageError, match="not found"):
+        with pytest.raises(PrescriptiveError, match="not found"):
             load_profile("nope")
 
     def test_project_overrides_user(

@@ -19,6 +19,7 @@ from codeprobe.cli._output_helpers import (
     emit_event,
     resolve_mode,
 )
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
@@ -264,11 +265,16 @@ def show_prompt_and_exit(
                     exp_dir = candidates[0]
                     experiment = load_experiment(exp_dir)
         if experiment is None:
-            click.echo(
-                f"Error: No experiment found in {Path(path) / '.codeprobe'}",
-                err=True,
+            raise DiagnosticError(
+                code="NO_EXPERIMENT",
+                message=(
+                    f"No experiment found in {Path(path) / '.codeprobe'}."
+                ),
+                diagnose_cmd=f"codeprobe init {path}",
+                terminal=True,
+                next_steps=[("Initialize", f"codeprobe init {path}")],
+                detail={"path": str(path)},
             )
-            raise SystemExit(1)
 
     # Resolve repo root
     try:
@@ -292,8 +298,20 @@ def show_prompt_and_exit(
         task_dirs = _find_tasks(repo_tasks, task_ids=experiment.task_ids)
 
     if not task_dirs:
-        click.echo("No tasks found. Run 'codeprobe mine' first.", err=True)
-        raise SystemExit(1)
+        raise DiagnosticError(
+            code="NO_TASKS",
+            message="No tasks found. Run 'codeprobe mine' first.",
+            diagnose_cmd=f"codeprobe validate {path} --json",
+            terminal=True,
+            next_steps=[
+                ("Mine tasks", f"codeprobe mine {path} --json"),
+                (
+                    "Then run",
+                    f"codeprobe run {path} --agent claude --json",
+                ),
+            ],
+            detail={"path": str(path), "tasks_dir": str(tasks_dir)},
+        )
 
     first_task = task_dirs[0]
     exp_config = (experiment.configs or [None])[0]
@@ -413,27 +431,44 @@ def run_eval(
                     exp_dir = candidates[0]
                     experiment = load_experiment(exp_dir)
                 elif len(candidates) > 1:
-                    click.echo("Multiple experiments found:", err=True)
-                    for c in candidates:
-                        click.echo(f"  {c.name}", err=True)
-                    click.echo(
-                        "Use --config to specify: codeprobe run <path> --config <path>/.codeprobe/<name>",
-                        err=True,
+                    first_candidate = str(candidates[0])
+                    raise PrescriptiveError(
+                        code="AMBIGUOUS_EXPERIMENT",
+                        message=(
+                            "Multiple experiments found in "
+                            f"{codeprobe_dir}: "
+                            + ", ".join(c.name for c in candidates)
+                            + ". Use --config to specify which experiment."
+                        ),
+                        next_try_flag="--config",
+                        next_try_value=first_candidate,
+                        detail={
+                            "candidates": [str(c) for c in candidates],
+                        },
                     )
-                    raise SystemExit(1)
         if experiment is None:
-            click.echo(
-                f"Error: No experiment found in {Path(path) / '.codeprobe'}",
-                err=True,
+            raise DiagnosticError(
+                code="NO_EXPERIMENT",
+                message=(
+                    f"No experiment found in {Path(path) / '.codeprobe'}. "
+                    "Run 'codeprobe init <path>' first to set up an experiment."
+                ),
+                diagnose_cmd=f"codeprobe init {path}",
+                terminal=True,
+                next_steps=[("Initialize", f"codeprobe init {path}")],
+                detail={"path": str(path)},
             )
-            click.echo("Run 'codeprobe init <path>' first to set up an experiment.")
-            raise SystemExit(1)
 
     try:
         resolve(agent)
     except KeyError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise PrescriptiveError(
+            code="UNKNOWN_BACKEND",
+            message=f"Unknown agent backend: {exc}",
+            next_try_flag="--agent",
+            next_try_value="claude",
+            detail={"requested": agent},
+        ) from exc
 
     # Resolve to the git repo root — `path` may be an experiment subdir.
     try:
@@ -459,11 +494,26 @@ def run_eval(
             tasks_dir = repo_tasks
 
     if not task_dirs:
-        click.echo("No tasks found. Run 'codeprobe mine' first.", err=True)
-        click.echo(f"  Checked: {tasks_dir}", err=True)
+        checked = [str(tasks_dir)]
         if repo_tasks != tasks_dir:
-            click.echo(f"  Checked: {repo_tasks}", err=True)
-        raise SystemExit(1)
+            checked.append(str(repo_tasks))
+        raise DiagnosticError(
+            code="NO_TASKS",
+            message=(
+                "No tasks found. Run 'codeprobe mine' first. "
+                f"Checked: {', '.join(checked)}"
+            ),
+            diagnose_cmd=f"codeprobe validate {path} --json",
+            terminal=True,
+            next_steps=[
+                ("Mine tasks", f"codeprobe mine {path} --json"),
+                (
+                    "Then run",
+                    f"codeprobe run {path} --agent claude --json",
+                ),
+            ],
+            detail={"path": str(path), "checked_dirs": checked},
+        )
 
     # Apply suite filtering when a suite.toml path is provided
     if suite_path is not None:
@@ -473,11 +523,20 @@ def run_eval(
         pre_count = len(task_dirs)
         task_dirs = _filter_tasks_by_suite(task_dirs, suite)
         if not task_dirs:
-            click.echo(
-                f"Suite '{suite.name}' matched 0 of {pre_count} tasks. Check suite.toml filters.",
-                err=True,
+            raise DiagnosticError(
+                code="NO_SUITE_MATCH",
+                message=(
+                    f"Suite '{suite.name}' matched 0 of {pre_count} tasks. "
+                    "Check suite.toml filters."
+                ),
+                diagnose_cmd=f"codeprobe run --dry-run {path}",
+                terminal=True,
+                detail={
+                    "suite_name": suite.name,
+                    "suite_path": str(suite_path),
+                    "pre_count": pre_count,
+                },
             )
-            raise SystemExit(1)
         click.echo(f"Suite '{suite.name}': {len(task_dirs)}/{pre_count} tasks selected")
 
     configs_to_run = experiment.configs
@@ -562,9 +621,19 @@ def run_eval(
             owns_sandbox = True
 
         if perm not in ALLOWED_PERMISSION_MODES:
-            raise SystemExit(
-                f"Error: invalid permission_mode {perm!r} in config "
-                f"{exp_config.label!r}. Allowed: {', '.join(sorted(ALLOWED_PERMISSION_MODES))}"
+            raise PrescriptiveError(
+                code="INVALID_PERMISSION_MODE",
+                message=(
+                    f"Invalid permission_mode {perm!r} in config "
+                    f"{exp_config.label!r}. "
+                    f"Allowed: {', '.join(sorted(ALLOWED_PERMISSION_MODES))}"
+                ),
+                next_try_flag="--permission-mode",
+                next_try_value="default",
+                detail={
+                    "config_label": exp_config.label,
+                    "allowed": sorted(ALLOWED_PERMISSION_MODES),
+                },
             )
 
         config_adapter = resolve(exp_config.agent or agent)
@@ -710,13 +779,22 @@ def run_eval(
 
         if interrupted:
             partial = checkpoint_store.load_ids()
-            click.echo(
-                f"\nInterrupted — partial results saved ({len(partial)} tasks completed)",
-                err=True,
-            )
             if owns_sandbox:
                 _release_sandbox()
-            raise SystemExit(130)
+            raise DiagnosticError(
+                code="INTERRUPTED",
+                message=(
+                    f"Interrupted — partial results saved "
+                    f"({len(partial)} tasks completed)"
+                ),
+                diagnose_cmd=f"codeprobe run {path} --resume",
+                terminal=True,
+                exit_code=130,
+                detail={
+                    "partial_task_count": len(partial),
+                    "config_label": exp_config.label,
+                },
+            )
 
         if owns_sandbox:
             _release_sandbox()
@@ -773,9 +851,15 @@ def run_eval(
             logger.exception("Failed to close TraceRecorder cleanly")
 
     if budget_error is not None:
-        # AC6: overflow under policy=fail propagates to a non-zero exit so
-        # CI / callers see the failure.
-        raise SystemExit(3)
+        # AC6: overflow under policy=fail surfaces via TRACE_BUDGET_EXCEEDED
+        # so agents see a structured error; the catalog pins exit_code=2.
+        raise PrescriptiveError(
+            code="TRACE_BUDGET_EXCEEDED",
+            message=f"Trace budget exceeded: {budget_error}",
+            next_try_flag="--trace-overflow",
+            next_try_value="truncate",
+            detail={"error": str(budget_error)},
+        )
 
     if out_mode.mode == "pretty":
         click.echo()

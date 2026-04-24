@@ -88,9 +88,15 @@ def resolve_mode(
     :func:`resolve_output_mode` and re-raises it as a
     :class:`click.UsageError` so Click surfaces the expected usage-error
     exit code / formatting instead of a bare traceback.
+
+    Side-effect: stashes the resolved mode on the current click context's
+    ``obj`` dict under the key ``"codeprobe_output_mode"`` so the
+    top-level :class:`~codeprobe.cli._error_handler.CodeprobeGroup` error
+    renderer can honour the subcommand's flag choice even after the
+    subcommand's own context has been torn down.
     """
     try:
-        return resolve_output_mode(
+        mode = resolve_output_mode(
             command=command,
             is_tty=sys.stdout.isatty(),
             explicit_json=json_flag,
@@ -101,6 +107,23 @@ def resolve_mode(
         )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
+
+    # Propagate the resolved mode upward so error handlers can find it
+    # without re-parsing flags.
+    try:
+        ctx = click.get_current_context(silent=True)
+    except RuntimeError:
+        ctx = None
+    if ctx is not None:
+        # Walk to the root context so siblings see the same mode. ctx.obj
+        # is a shared dict when the root callback ran ctx.ensure_object.
+        root = ctx
+        while root.parent is not None:
+            root = root.parent
+        if isinstance(root.obj, dict):
+            root.obj["codeprobe_output_mode"] = mode
+            root.obj["codeprobe_command"] = command
+    return mode
 
 
 def _normalise_data(data: dict[str, Any] | None) -> dict[str, Any]:

@@ -7,6 +7,7 @@ import sys
 import click
 
 from codeprobe import __version__
+from codeprobe.cli._error_handler import CodeprobeGroup
 from codeprobe.cli._output_helpers import (
     add_json_flags,
     emit_envelope,
@@ -113,7 +114,7 @@ def _configure_logging(verbose: int, quiet: bool, log_format: str = "text") -> N
     logger.addHandler(handler)
 
 
-@click.group()
+@click.group(cls=CodeprobeGroup)
 @click.option(
     "-v",
     "--verbose",

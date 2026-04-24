@@ -18,11 +18,13 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._error_handler import CodeprobeGroup
 from codeprobe.cli._output_helpers import (
     add_json_flags,
     emit_envelope,
     resolve_mode,
 )
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
     CanaryFailed,
@@ -55,7 +57,7 @@ from codeprobe.snapshot.verify import verify_snapshot_extended
 _VALID_MODES: tuple[RedactionMode, ...] = ("hashes-only", "contents", "secrets")
 
 
-@click.group()
+@click.group(cls=CodeprobeGroup)
 def snapshot() -> None:
     """Create and verify shareable snapshots of experiment directories."""
 
@@ -74,8 +76,13 @@ def _build_scanner(name: str) -> Scanner:
         return GitleaksScanner()
     if name == "trufflehog":
         return TrufflehogScanner()
-    raise click.UsageError(
-        f"unknown --scanner {name!r} (choose: pattern, gitleaks, trufflehog)"
+    raise PrescriptiveError(
+        code="UNKNOWN_BACKEND",
+        message=(
+            f"unknown --scanner {name!r} (choose: pattern, gitleaks, trufflehog)"
+        ),
+        next_try_flag="--scanner",
+        next_try_value="pattern",
     )
 
 
@@ -169,13 +176,17 @@ def create_cmd(
     mode_cast: RedactionMode = mode  # type: ignore[assignment]
 
     if mode_cast in ("contents", "secrets") and not allow_source_in_export:
-        click.echo(
-            f"Refusing --redact={mode_cast} without --allow-source-in-export. "
-            "This flag is required to acknowledge that file bodies will be "
-            "written (after scanner redaction). See docs/SNAPSHOT_REDACTION.md.",
-            err=True,
+        raise PrescriptiveError(
+            code="SOURCE_EXPORT_REQUIRES_ACK",
+            message=(
+                f"Refusing --redact={mode_cast} without --allow-source-in-export. "
+                "This flag is required to acknowledge that file bodies will be "
+                "written (after scanner redaction). See docs/SNAPSHOT_REDACTION.md."
+            ),
+            next_try_flag="--allow-source-in-export",
+            next_try_value="",
+            detail={"mode": mode_cast},
         )
-        sys.exit(2)
 
     scanner: Scanner | None = None
     if mode_cast in ("contents", "secrets"):
@@ -186,36 +197,51 @@ def create_cmd(
         if canary_proof_path is not None:
             canary_result = load_canary_proof(canary_proof_path)
             if not canary_result.passed:
-                click.echo(
-                    f"Canary proof at {canary_proof_path} is marked passed=False. "
-                    "Refusing to create a secrets-mode snapshot.",
-                    err=True,
+                raise DiagnosticError(
+                    code="CANARY_PROOF_FAILED",
+                    message=(
+                        f"Canary proof at {canary_proof_path} is marked passed=False. "
+                        "Refusing to create a secrets-mode snapshot."
+                    ),
+                    diagnose_cmd="codeprobe doctor",
+                    terminal=True,
+                    detail={"canary_proof_path": str(canary_proof_path)},
                 )
-                sys.exit(3)
         else:
             if not sys.stdin.isatty():
-                click.echo(
-                    "--redact=secrets requires --canary-proof <path> in "
-                    "non-interactive contexts. Either provide the proof file "
-                    "or run this command in a TTY so you can paste the canary "
-                    "string interactively.",
-                    err=True,
+                raise PrescriptiveError(
+                    code="CANARY_PROOF_REQUIRED",
+                    message=(
+                        "--redact=secrets requires --canary-proof <path> in "
+                        "non-interactive contexts. Either provide the proof file "
+                        "or run this command in a TTY so you can paste the canary "
+                        "string interactively."
+                    ),
+                    next_try_flag="--canary-proof",
+                    next_try_value="<path-to-canary-proof.json>",
                 )
-                sys.exit(4)
             click.echo(
                 f"Interactive canary gate. Paste this canary to continue:\n"
                 f"  {CANARY_DEFAULT}"
             )
             pasted = click.prompt("canary", default="", show_default=False)
             if pasted.strip() != CANARY_DEFAULT:
-                click.echo("Canary mismatch. Aborting.", err=True)
-                sys.exit(5)
+                raise DiagnosticError(
+                    code="CANARY_MISMATCH",
+                    message="Canary mismatch. Aborting.",
+                    diagnose_cmd="codeprobe doctor",
+                    terminal=True,
+                )
             assert scanner is not None
             try:
                 canary_result = CanaryGate(scanner).require_pass_or_raise()
             except CanaryFailed as e:
-                click.echo(str(e), err=True)
-                sys.exit(6)
+                raise DiagnosticError(
+                    code="CANARY_GATE_FAILED",
+                    message=str(e),
+                    diagnose_cmd="codeprobe doctor --json",
+                    terminal=True,
+                ) from e
 
     try:
         status = create_snapshot(
@@ -234,8 +260,13 @@ def create_cmd(
         FileNotFoundError,
         SymlinkEscapeError,
     ) as e:
-        click.echo(f"Snapshot failed: {e}", err=True)
-        sys.exit(7)
+        raise DiagnosticError(
+            code="SNAPSHOT_CREATE_FAILED",
+            message=f"Snapshot failed: {e}",
+            diagnose_cmd="codeprobe doctor",
+            terminal=True,
+            detail={"experiment_dir": str(experiment_dir)},
+        ) from e
 
     if out_mode.mode == "pretty":
         click.echo(json.dumps(status, indent=2))
@@ -286,7 +317,15 @@ def verify_cmd(
             data=payload,
         )
     if not result.ok:
-        sys.exit(1)
+        raise DiagnosticError(
+            code="SNAPSHOT_VERIFY_FAILED",
+            message=(
+                f"Snapshot verify failed: {result.reason or 'integrity mismatch'}"
+            ),
+            diagnose_cmd="codeprobe snapshot verify --verbose",
+            terminal=True,
+            detail=payload,
+        )
 
 
 _EXPORT_FORMATS: tuple[str, ...] = ("datadog", "sigma", "sheets", "browse")
@@ -358,10 +397,20 @@ def export_cmd(
             written = export_browse(snapshot_dir, target)
             payload = {"format": "browse", "out": str(written)}
         else:  # pragma: no cover — Click choice guards this branch.
-            raise click.UsageError(f"unknown --format {fmt!r}")
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=f"unknown --format {fmt!r}",
+                next_try_flag="--format",
+                next_try_value=_EXPORT_FORMATS[0],
+            )
     except FileNotFoundError as e:
-        click.echo(f"Export failed: {e}", err=True)
-        sys.exit(8)
+        raise DiagnosticError(
+            code="METADATA_MISSING",
+            message=f"Export failed: {e}",
+            diagnose_cmd=f"codeprobe snapshot verify {snapshot_dir}",
+            terminal=True,
+            detail={"snapshot_dir": str(snapshot_dir), "format": fmt},
+        ) from e
 
     if mode.mode == "pretty":
         click.echo(json.dumps(payload, indent=2))

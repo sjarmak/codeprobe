@@ -15,6 +15,7 @@ from codeprobe.cli._output_helpers import (
     emit_envelope,
     resolve_mode,
 )
+from codeprobe.cli.errors import DiagnosticError
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,11 @@ def doctor(
     results = run_checks()
     any_failed = any(not r.passed for r in results)
 
+    checks_data = {
+        "checks": [asdict(r) for r in results],
+        "any_failed": any_failed,
+    }
+
     if mode.mode == "pretty":
         for r in results:
             if r.passed:
@@ -125,19 +131,29 @@ def doctor(
                 click.echo(f"  FAIL  {r.name} ({r.detail})")
                 click.echo(f"        -> {r.fix}")
         if any_failed:
-            raise SystemExit(1)
+            raise DiagnosticError(
+                code="DOCTOR_CHECKS_FAILED",
+                message="One or more doctor checks failed.",
+                diagnose_cmd="codeprobe doctor",
+                terminal=True,
+                detail={"_envelope_data": checks_data},
+            )
         return
 
-    # Envelope / NDJSON mode — skip pretty, emit a single envelope.
-    exit_code = 1 if any_failed else 0
+    # Envelope / NDJSON mode — let the top-level handler emit the single
+    # envelope when checks fail; success still emits a terminal envelope
+    # here directly.
+    if any_failed:
+        raise DiagnosticError(
+            code="DOCTOR_CHECKS_FAILED",
+            message="One or more doctor checks failed.",
+            diagnose_cmd="codeprobe doctor",
+            terminal=True,
+            detail={"_envelope_data": checks_data},
+        )
     emit_envelope(
         command="doctor",
-        ok=not any_failed,
-        exit_code=exit_code,
-        data={
-            "checks": [asdict(r) for r in results],
-            "any_failed": any_failed,
-        },
+        ok=True,
+        exit_code=0,
+        data=checks_data,
     )
-    if any_failed:
-        raise SystemExit(exit_code)
