@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -10,12 +11,14 @@ from dataclasses import asdict, dataclass
 
 import click
 
+from codeprobe import __version__
 from codeprobe.cli._output_helpers import (
     add_json_flags,
     emit_envelope,
     resolve_mode,
 )
 from codeprobe.cli.errors import DiagnosticError
+from codeprobe.config.defaults import compact_budget_bytes
 
 
 @dataclass(frozen=True)
@@ -103,12 +106,91 @@ def run_checks() -> list[CheckResult]:
     ]
 
 
+def _llm_available(results: list[CheckResult]) -> bool:
+    """Return True when at least one model CLI + its API key are present."""
+    by_name = {r.name: r for r in results}
+    claude_ready = (
+        by_name.get("claude CLI", CheckResult("", False, "", "")).passed
+        and by_name.get("ANTHROPIC_API_KEY", CheckResult("", False, "", "")).passed
+    )
+    codex_ready = (
+        by_name.get("codex CLI", CheckResult("", False, "", "")).passed
+        and by_name.get("OPENAI_API_KEY", CheckResult("", False, "", "")).passed
+    )
+    return claude_ready or codex_ready
+
+
+def _build_compact_envelope(results: list[CheckResult]) -> dict[str, object]:
+    """Build a ≤2 KB JSON envelope for SKILL.md preflight substitution."""
+    by_name = {r.name: r for r in results}
+    gh_auth_ok = by_name.get(
+        "GITHUB_TOKEN", CheckResult("", False, "", "")
+    ).passed
+    sourcegraph_token_present = any(
+        os.environ.get(k) for k in (
+            "SOURCEGRAPH_TOKEN", "SRC_ACCESS_TOKEN", "SOURCEGRAPH_ACCESS_TOKEN",
+        )
+    )
+    any_failed = any(not r.passed for r in results)
+
+    envelope: dict[str, object] = {
+        "record_type": "doctor",
+        "ok": not any_failed,
+        "command": "doctor",
+        "version": __version__,
+        "schema_version": 1,
+        "exit_code": 1 if any_failed else 0,
+        "warnings": [],
+        "next_steps": [],
+        "error": None,
+        "data": {
+            "tenant": None,
+            "tenant_source": "default",
+            "llm_available": _llm_available(results),
+            "gh_auth_ok": gh_auth_ok,
+            "sourcegraph_token_present": sourcegraph_token_present,
+        },
+    }
+    return envelope
+
+
+def _build_full_envelope(results: list[CheckResult]) -> dict[str, object]:
+    """Full envelope for ``--json`` without ``--compact``."""
+    any_failed = any(not r.passed for r in results)
+    subsystem_status = [
+        {
+            "name": r.name,
+            "passed": r.passed,
+            "detail": r.detail,
+            "fix": r.fix if not r.passed else "",
+        }
+        for r in results
+    ]
+    envelope = _build_compact_envelope(results)
+    envelope["data"] = {  # type: ignore[index]
+        **envelope["data"],  # type: ignore[dict-item]
+        "subsystem_status": subsystem_status,
+    }
+    envelope["ok"] = not any_failed
+    return envelope
+
+
 @click.command("doctor")
 @add_json_flags
+@click.option(
+    "--compact",
+    is_flag=True,
+    default=False,
+    help=(
+        "With --json, emit a minimal envelope (<=2048 bytes) suitable for "
+        "SKILL.md `!` substitution. No effect in pretty mode."
+    ),
+)
 def doctor(
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
+    compact: bool,
 ) -> None:
     """Check environment readiness for running codeprobe."""
     mode = resolve_mode(
@@ -119,9 +201,36 @@ def doctor(
     any_failed = any(not r.passed for r in results)
 
     checks_data = {
-        "checks": [asdict(r) for r in results],
+        "subsystem_status": [asdict(r) for r in results],
         "any_failed": any_failed,
     }
+
+    # --compact path: emit a bounded-size envelope for SKILL.md preflight use.
+    # Budget is enforced against the serialised payload; degrade gracefully by
+    # dropping verbose fields until we fit.
+    if compact and mode.mode != "pretty":
+        envelope = _build_compact_envelope(results)
+        payload = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+        budget = compact_budget_bytes()
+        if len(payload.encode("utf-8")) > budget:
+            minimal = {
+                "record_type": "doctor",
+                "ok": not any_failed,
+                "command": "doctor",
+                "version": envelope["version"],
+                "schema_version": 1,
+                "exit_code": 1 if any_failed else 0,
+                "error": None,
+                "data": envelope["data"],
+            }
+            payload = json.dumps(
+                minimal, sort_keys=True, separators=(",", ":")
+            )
+        click.echo(payload)
+        if any_failed:
+            # lint-exempt: compact path bypasses the top-level handler; SystemExit is just the exit code.
+            raise SystemExit(1)
+        return
 
     if mode.mode == "pretty":
         for r in results:

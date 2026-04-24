@@ -38,6 +38,7 @@ from codeprobe.cli._output_helpers import (
     resolve_mode,
 )
 from codeprobe.cli.errors import DiagnosticError
+from codeprobe.config.defaults import resolve_out_calibrate, use_v07_defaults
 
 
 @click.command("calibrate")
@@ -121,6 +122,14 @@ def calibrate(
 
     payload = profile.to_dict()
     output = json.dumps(payload, indent=2, sort_keys=True)
+
+    # Under v0.7 defaults, auto-resolve an output path when the user
+    # did not pass --out so the profile is persisted to a predictable
+    # location. Pre-v0.7 behavior (stdout-only when --out is omitted)
+    # is preserved.
+    if out is None and use_v07_defaults():
+        resolved, _ = resolve_out_calibrate(curator_version)
+        out = str(resolved)
 
     if out is not None:
         out_path = Path(out)

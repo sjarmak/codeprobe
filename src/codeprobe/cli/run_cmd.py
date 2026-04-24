@@ -21,6 +21,11 @@ from codeprobe.cli._output_helpers import (
 )
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.cli.json_display import JsonLineListener
+from codeprobe.config.defaults import (
+    resolve_max_cost_usd,
+    resolve_timeout,
+    use_v07_defaults,
+)
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
     BudgetWarning,
@@ -411,6 +416,17 @@ def run_eval(
                 "(codeprobe.net.guard_offline active)",
                 err=True,
             )
+
+    # v0.7 gate-on-context defaults — fire only when the env flag is
+    # set AND the caller didn't pass an explicit value. v0.6 (unset)
+    # keeps the classic Click-default behavior untouched.
+    if use_v07_defaults():
+        if max_cost_usd is None:
+            max_cost_usd, _ = resolve_max_cost_usd()
+        if timeout is None:
+            # No goal available at this layer; fall back to the quality
+            # default (600s). Users running MCP suites pass --timeout.
+            timeout, _ = resolve_timeout("quality")
 
     exp_dir = Path(config) if config else Path(path)
 

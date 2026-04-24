@@ -47,8 +47,8 @@ def test_doctor_json_emits_envelope() -> None:
     assert "exit_code" in payload
     assert "data" in payload
     assert payload["data"]["command_schema_version"] == "1"
-    assert "checks" in payload["data"]
-    assert isinstance(payload["data"]["checks"], list)
+    assert "subsystem_status" in payload["data"]
+    assert isinstance(payload["data"]["subsystem_status"], list)
 
 
 def test_doctor_no_json_forces_pretty_even_with_env(monkeypatch: pytest.MonkeyPatch) -> None:

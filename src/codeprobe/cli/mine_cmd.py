@@ -2131,6 +2131,47 @@ def run_mine(
         "mine", json_flag, no_json_flag, json_lines_flag,
     )
 
+    # v0.7 gate-on-context defaults — opt-in via CODEPROBE_DEFAULTS=v0.7.
+    # Compute (goal, narrative_source) defaults from structural repo signals
+    # when the user did not pass explicit values. Pre-v0.7 paths remain
+    # byte-identical. PrescriptiveError flows up to the top-level handler
+    # which renders per output mode.
+    goal_source = "flag" if goal is not None else "default"
+    narrative_source_source = "flag" if narrative_source else "default"
+    from codeprobe.cli.errors import PrescriptiveError as _PrescriptiveError
+    from codeprobe.config.defaults import (
+        resolve_goal as _resolve_goal,
+        resolve_narrative_source as _resolve_narrative_source,
+        scan_repo_shape as _scan_repo_shape,
+        use_v07_defaults as _use_v07_defaults,
+    )
+
+    if _use_v07_defaults() and refresh_dir is None:
+        try:
+            _repo_path = Path(path).resolve()
+        except Exception:  # pragma: no cover - defensive
+            _repo_path = None
+        if _repo_path is not None and _repo_path.is_dir():
+            _shape = _scan_repo_shape(_repo_path)
+            if goal is None and "goal" not in explicit_set:
+                goal, goal_source = _resolve_goal(_shape)
+            if (
+                not narrative_source
+                and "narrative_source" not in explicit_set
+            ):
+                (
+                    narrative_source,
+                    narrative_source_source,
+                ) = _resolve_narrative_source(_shape)
+            click.echo(
+                "v0.7 defaults: "
+                f"goal={goal} ({goal_source}) "
+                f"narrative_source={list(narrative_source)} "
+                f"({narrative_source_source})",
+                err=True,
+            )
+
+
     # Refresh dispatch: runs before any other mining path so users don't
     # accidentally re-mine a whole tasks dir when they only meant to
     # refresh a single task.
