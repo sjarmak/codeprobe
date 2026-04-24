@@ -78,6 +78,7 @@ where = ["src"]
 "codeprobe.preambles" = ["*.md", "*.j2"]
 "codeprobe.templates" = ["*.yaml"]
 "codeprobe.llm" = ["*.yaml"]
+"codeprobe.cli" = ["error_codes.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

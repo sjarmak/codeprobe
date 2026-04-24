@@ -1,0 +1,277 @@
+{
+  "version": "1",
+  "codes": [
+    {
+      "code": "NARRATIVE_SOURCE_UNDETECTABLE",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "codeprobe could not auto-detect whether the repository's narrative source is GitHub PRs, GitLab MRs, or another backend.",
+      "remediation_pattern": "Pass --narrative-source=<github|gitlab|...> explicitly."
+    },
+    {
+      "code": "MUTEX_FLAGS",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Two mutually exclusive CLI flags were supplied on the same invocation.",
+      "remediation_pattern": "Remove one of the conflicting flags and retry."
+    },
+    {
+      "code": "TRACE_OVERFLOW_FIRED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Trace capture exceeded the configured overflow threshold and was truncated.",
+      "remediation_pattern": "Re-run with --trace-max-bytes=<higher> or --trace-disable to avoid truncation."
+    },
+    {
+      "code": "NO_EXPERIMENT",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "No experiment was found matching the current working directory or the user's selection history.",
+      "remediation_pattern": "Run `codeprobe experiment list` and `codeprobe experiment new` to establish an experiment."
+    },
+    {
+      "code": "AMBIGUOUS_EXPERIMENT",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Multiple experiments match the current selection; codeprobe needs disambiguation.",
+      "remediation_pattern": "Pass --experiment=<id> with the exact experiment id from `codeprobe experiment list`."
+    },
+    {
+      "code": "NO_TASKS",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The selected experiment or suite contains no runnable tasks.",
+      "remediation_pattern": "Run `codeprobe experiment show` to inspect task inclusion rules, or mine/scaffold new tasks."
+    },
+    {
+      "code": "NO_SUITE_MATCH",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The provided suite filter did not match any known suites.",
+      "remediation_pattern": "Run `codeprobe suite list` to see available suites and re-issue with a valid name."
+    },
+    {
+      "code": "INVALID_PERMISSION_MODE",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The provided --permission-mode value is not one of the accepted modes.",
+      "remediation_pattern": "Pass --permission-mode=<readonly|workspace|full> (see `codeprobe run --help`)."
+    },
+    {
+      "code": "INTERRUPTED",
+      "kind": "diagnostic",
+      "exit_code": 130,
+      "since": "0.7.0",
+      "description": "The run was interrupted by the user (SIGINT/SIGTERM) before completion.",
+      "remediation_pattern": "Inspect partial results under .codeprobe/runs/<run-id> and re-run if desired."
+    },
+    {
+      "code": "TRACE_BUDGET_EXCEEDED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Per-task trace budget was exceeded; the task's trace was capped.",
+      "remediation_pattern": "Re-run with --trace-budget=<higher> or --no-trace to skip trace capture."
+    },
+    {
+      "code": "SOURCE_EXPORT_REQUIRES_ACK",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Exporting source artifacts requires explicit acknowledgement of the data egress implications.",
+      "remediation_pattern": "Re-run with --acknowledge-source-export to confirm intent."
+    },
+    {
+      "code": "CANARY_PROOF_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The canary task failed its proof-of-work check, indicating an unreliable run environment.",
+      "remediation_pattern": "Run `codeprobe doctor` and inspect canary artifacts under .codeprobe/runs/<run-id>/canary."
+    },
+    {
+      "code": "CANARY_PROOF_REQUIRED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Canary proof-of-work is required for this run configuration but was not enabled.",
+      "remediation_pattern": "Re-run with --canary-proof to enable canary verification."
+    },
+    {
+      "code": "CANARY_MISMATCH",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The canary result did not match the expected reference output.",
+      "remediation_pattern": "Run `codeprobe doctor` and compare canary diff output to identify environment drift."
+    },
+    {
+      "code": "CANARY_GATE_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The canary gate blocked the run because canary metrics fell outside acceptance bounds.",
+      "remediation_pattern": "Run `codeprobe doctor --canary` to review gate thresholds and canary deltas."
+    },
+    {
+      "code": "SNAPSHOT_CREATE_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Snapshot creation failed (disk, permissions, or git state).",
+      "remediation_pattern": "Run `codeprobe doctor` to diagnose the snapshot backend and retry after resolving the underlying issue."
+    },
+    {
+      "code": "SNAPSHOT_VERIFY_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Snapshot integrity verification failed; the snapshot is corrupt or has drifted.",
+      "remediation_pattern": "Run `codeprobe snapshot verify --verbose` and rebuild the snapshot if necessary."
+    },
+    {
+      "code": "METADATA_MISSING",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Required metadata fields are missing from a task, run, or snapshot record.",
+      "remediation_pattern": "Run `codeprobe validate` on the affected artifact to identify missing fields."
+    },
+    {
+      "code": "METADATA_INVALID",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Metadata is present but violates schema (wrong type, out-of-range value, or malformed reference).",
+      "remediation_pattern": "Run `codeprobe validate --strict` and repair the offending fields."
+    },
+    {
+      "code": "CAPABILITY_DRIFT",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Detected drift between recorded agent capability profile and current environment.",
+      "remediation_pattern": "Run `codeprobe doctor --capabilities` to view drift details and re-baseline if intentional."
+    },
+    {
+      "code": "UNKNOWN_BACKEND",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The requested backend identifier does not match any registered codeprobe backend.",
+      "remediation_pattern": "Pass --backend=<one of: claude|codex|copilot|...> — see `codeprobe run --help` for the current registry."
+    },
+    {
+      "code": "NO_BACKENDS_CONFIGURED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "No agent backends are configured or discoverable in this environment.",
+      "remediation_pattern": "Run `codeprobe doctor` to see which backends were probed and install at least one."
+    },
+    {
+      "code": "OFFLINE_PREFLIGHT_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Offline preflight checks failed — required cached artifacts or local binaries are unavailable.",
+      "remediation_pattern": "Run `codeprobe doctor --offline` to list missing prerequisites before retrying."
+    },
+    {
+      "code": "INVALID_GIT_URL",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The supplied repository URL could not be parsed as a valid git URL.",
+      "remediation_pattern": "Pass --repo=<https://host/owner/name.git or git@host:owner/name.git> with a well-formed URL."
+    },
+    {
+      "code": "CLONE_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "git clone failed (network, auth, or server-side error).",
+      "remediation_pattern": "Run `codeprobe doctor --net` and verify git credentials and connectivity before retrying."
+    },
+    {
+      "code": "CALIBRATION_REJECTED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Calibration results were rejected because they fell outside acceptance bounds or statistical power thresholds.",
+      "remediation_pattern": "Inspect `codeprobe calibrate report` and increase sample size or adjust thresholds as appropriate."
+    },
+    {
+      "code": "DOCTOR_CHECKS_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "One or more `codeprobe doctor` checks failed.",
+      "remediation_pattern": "Run `codeprobe doctor --verbose` to view per-check failure details."
+    },
+    {
+      "code": "BUDGET_EXCEEDED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The run exceeded its configured cost/time budget. This error is intentionally diagnostic (not prescriptive): auto-retrying with a higher budget is unsafe and must be an explicit human decision.",
+      "remediation_pattern": "Review the run's cost report and, if intentional, re-run with an explicitly increased --budget — but only after confirming the previous run's behaviour."
+    },
+    {
+      "code": "GOAL_UNDETECTABLE",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "codeprobe could not infer a goal or intent for mining from the repository signals available.",
+      "remediation_pattern": "Run `codeprobe mine --goals` with an explicit goal specification, or supply --goal=<description>."
+    },
+    {
+      "code": "SG_DISCOVERY_QUOTA_EXCEEDED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Sourcegraph-backed discovery exceeded the configured request or token quota.",
+      "remediation_pattern": "Inspect `codeprobe doctor --sg` output and wait for quota reset or reduce discovery scope."
+    },
+    {
+      "code": "OFFLINE_NET_ATTEMPT",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "A component attempted network IO while codeprobe was running in --offline mode.",
+      "remediation_pattern": "Run `codeprobe doctor --offline` to identify the component and either pre-cache its data or drop --offline."
+    },
+    {
+      "code": "TENANT_REQUIRED_IN_CI",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "Running in CI requires an explicit tenant binding; codeprobe refuses to infer one.",
+      "remediation_pattern": "Set the CODEPROBE_TENANT environment variable (or `--tenant=<id>`) in your CI configuration."
+    },
+    {
+      "code": "STALE_USER_HOME_SKILL",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The user-home skill bundle referenced by this run is older than the currently installed codeprobe version.",
+      "remediation_pattern": "Run `codeprobe doctor --skills` and re-install the referenced skill bundle to refresh it."
+    },
+    {
+      "code": "LLM_UNAVAILABLE",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.0",
+      "description": "The configured LLM provider is unavailable (auth, rate limit, or outage). Usually surfaced as a warning rather than a hard stop.",
+      "remediation_pattern": "Run `codeprobe doctor --llm` and verify provider credentials and status."
+    }
+  ]
+}
