@@ -13,6 +13,7 @@ from codeprobe.cli._output_helpers import (
     emit_envelope,
     resolve_mode,
 )
+from codeprobe.cli._tenant import resolve_tenant, tenant_option
 from codeprobe.mining.task_types import (
     TASK_TYPE_REGISTRY as _TASK_TYPE_REGISTRY,
     list_task_types as _list_task_types,
@@ -435,6 +436,7 @@ def init(
         "history is reset to root at the new commit."
     ),
 )
+@tenant_option(required=False)
 @click.pass_context
 def mine(
     ctx: click.Context,
@@ -471,6 +473,7 @@ def mine(
     narrative_source: tuple[str, ...],
     refresh_dir: str | None,
     accept_structural_change: bool,
+    tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
@@ -517,6 +520,26 @@ def mine(
         "mine", json_flag, no_json_flag, json_lines_flag,
     )
 
+    # Resolve tenant once, up-front. Any CI guard failure raises
+    # DiagnosticError which CodeprobeGroup surfaces as the terminal
+    # envelope — we intentionally do this before any long-running IO
+    # so a CI misconfiguration fails fast.
+    def _is_url(p: str) -> bool:
+        return p.startswith(
+            ("http://", "https://", "git@", "ssh://", "git://")
+        )
+
+    if _is_url(path):
+        _mine_url_override: str | None = path
+        _mine_cwd = _Path.cwd()
+    else:
+        _mine_url_override = None
+        _mine_cwd = _Path(path).resolve() if path != "." else _Path.cwd()
+
+    mine_tenant, mine_tenant_source = resolve_tenant(
+        ctx, tenant_id, cwd=_mine_cwd, url_override=_mine_url_override,
+    )
+
     # --list-task-types: show and exit
     if list_task_types_flag:
         if _mine_output_mode.mode != "pretty":
@@ -532,6 +555,8 @@ def mine(
                         }
                         for name, info in _list_task_types()
                     ],
+                    "tenant": mine_tenant,
+                    "tenant_source": mine_tenant_source,
                 },
             )
             return
@@ -560,7 +585,9 @@ def mine(
                     "profiles": [
                         {"name": n, "source": s, "settings": p}
                         for n, s, p in entries
-                    ]
+                    ],
+                    "tenant": mine_tenant,
+                    "tenant_source": mine_tenant_source,
                 },
             )
             return
@@ -589,6 +616,8 @@ def mine(
                 "json_flag",
                 "no_json_flag",
                 "json_lines_flag",
+                # tenant_id is identity, not a mining setting — never persist.
+                "tenant_id",
             }
         )
         values = {
@@ -603,6 +632,8 @@ def mine(
                 data={
                     "saved_profile": save_profile_name,
                     "path": str(saved_path),
+                    "tenant": mine_tenant,
+                    "tenant_source": mine_tenant_source,
                 },
             )
             return
@@ -713,6 +744,8 @@ def mine(
         accept_structural_change=accept_structural_change,
         explicit_set=explicitly_set,
         profile_set=profile_set,
+        tenant=mine_tenant,
+        tenant_source=mine_tenant_source,
         json_flag=json_flag,
         no_json_flag=no_json_flag,
         json_lines_flag=json_lines_flag,
@@ -825,6 +858,7 @@ def mine(
     ),
 )
 @add_json_flags
+@tenant_option(required=False)
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -845,6 +879,7 @@ def run(
     trace_deny: tuple[str, ...],
     offline: bool,
     offline_expected_run_duration: str,
+    tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
@@ -854,11 +889,20 @@ def run(
     Spawns isolated agent sessions for each task, scores results with
     automated tests, and produces a results summary.
     """
+    from pathlib import Path as _Path
+
     from codeprobe.cli.run_cmd import run_eval
 
     ctx.ensure_object(dict)
     log_format = ctx.obj.get("log_format", "text")
     quiet = ctx.obj.get("quiet", False)
+
+    # Resolve tenant before any long-running IO so CI misconfiguration
+    # fails fast via DiagnosticError(TENANT_REQUIRED_IN_CI).
+    run_cwd = _Path(path).resolve() if path != "." else _Path.cwd()
+    run_tenant, run_tenant_source = resolve_tenant(
+        ctx, tenant_id, cwd=run_cwd, url_override=None,
+    )
 
     if show_prompt:
         from codeprobe.cli.run_cmd import show_prompt_and_exit
@@ -885,6 +929,8 @@ def run(
         trace_deny=tuple(trace_deny),
         offline=offline,
         offline_expected_run_duration=offline_expected_run_duration,
+        tenant=run_tenant,
+        tenant_source=run_tenant_source,
         json_flag=json_flag,
         no_json_flag=no_json_flag,
         json_lines_flag=json_lines_flag,
@@ -1234,3 +1280,8 @@ main.add_command(calibrate)
 from codeprobe.cli.snapshot_cmd import snapshot  # noqa: E402
 
 main.add_command(snapshot)
+
+# Register the tenant-scoped cache group (``codeprobe cache purge --tenant <id>``).
+from codeprobe.cli.cache_cmd import cache  # noqa: E402
+
+main.add_command(cache)
