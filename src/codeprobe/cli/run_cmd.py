@@ -359,6 +359,8 @@ def run_eval(
     trace_deny: tuple[str, ...] = (),
     offline: bool = False,
     offline_expected_run_duration: str = "1h",
+    tenant: str | None = None,
+    tenant_source: str | None = None,
     json_flag: bool = False,
     no_json_flag: bool = False,
     json_lines_flag: bool = False,
@@ -898,5 +900,7 @@ def run_eval(
             "configs": summary_configs,
             "total_tasks": total_tasks,
             "total_cost_usd": total_cost,
+            "tenant": tenant,
+            "tenant_source": tenant_source,
         },
     )

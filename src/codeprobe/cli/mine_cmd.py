@@ -2115,6 +2115,8 @@ def run_mine(
     accept_structural_change: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
+    tenant: str | None = None,
+    tenant_source: str | None = None,
     json_flag: bool = False,
     no_json_flag: bool = False,
     json_lines_flag: bool = False,
@@ -2405,6 +2407,8 @@ def run_mine(
                 "tasks_dir": tasks_dir_str,
                 "task_count": task_count,
                 "goal": goal,
+                "tenant": tenant,
+                "tenant_source": tenant_source,
             },
         )
 

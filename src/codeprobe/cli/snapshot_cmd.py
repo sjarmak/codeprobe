@@ -24,6 +24,7 @@ from codeprobe.cli._output_helpers import (
     emit_envelope,
     resolve_mode,
 )
+from codeprobe.cli._tenant import resolve_tenant, tenant_option
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
@@ -147,7 +148,10 @@ def _build_scanner(name: str) -> Scanner:
         "'unsigned' (body hash only)."
     ),
 )
+@tenant_option(required=False)
+@click.pass_context
 def create_cmd(
+    ctx: click.Context,
     experiment_dir: Path,
     out_path: Path,
     mode: str,
@@ -155,6 +159,7 @@ def create_cmd(
     scanner_name: str,
     canary_proof_path: Path | None,
     signing_key: str | None,
+    tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
@@ -171,6 +176,15 @@ def create_cmd(
     """
     out_mode = resolve_mode(
         "snapshot create", json_flag, no_json_flag, json_lines_flag,
+    )
+
+    # Resolve tenant up-front so a CI misconfig fails fast and the
+    # resolved id is always available for the final envelope.
+    snap_tenant, snap_tenant_source = resolve_tenant(
+        ctx,
+        tenant_id,
+        cwd=experiment_dir.resolve(),
+        url_override=None,
     )
 
     mode_cast: RedactionMode = mode  # type: ignore[assignment]
@@ -271,7 +285,14 @@ def create_cmd(
     if out_mode.mode == "pretty":
         click.echo(json.dumps(status, indent=2))
     else:
-        emit_envelope(command="snapshot create", data={"status": status})
+        emit_envelope(
+            command="snapshot create",
+            data={
+                "status": status,
+                "tenant": snap_tenant,
+                "tenant_source": snap_tenant_source,
+            },
+        )
 
 
 @snapshot.command("verify")
