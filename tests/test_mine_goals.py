@@ -249,7 +249,6 @@ class TestGoalFlag:
         assert call_args[0][0] == "architecture_comprehension"
 
     def test_invalid_goal_raises_usage_error(self, tmp_path) -> None:
-        import click
 
         from codeprobe.cli.mine_cmd import run_mine
 
@@ -261,7 +260,9 @@ class TestGoalFlag:
                 "codeprobe.cli.mine_cmd._resolve_task_type",
                 return_value="mixed",
             ):
-                with pytest.raises(click.UsageError, match="Unknown goal"):
+                from codeprobe.cli.errors import PrescriptiveError
+
+                with pytest.raises(PrescriptiveError, match="Unknown goal"):
                     run_mine(str(tmp_path), goal="invalid", interactive=False)
 
     @patch("codeprobe.cli.mine_cmd._resolve_task_type", return_value="mixed")
@@ -791,9 +792,9 @@ class TestResolveEffectiveConfig:
         assert result["org_scale"] is True
 
     def test_preset_and_different_goal_raises(self) -> None:
-        import click
+        from codeprobe.cli.errors import PrescriptiveError
 
-        with pytest.raises(click.UsageError, match="preset"):
+        with pytest.raises(PrescriptiveError, match="preset"):
             self._resolve(preset="mcp", goal="quality")
 
     def test_preset_and_matching_goal_ok(self) -> None:
@@ -803,15 +804,15 @@ class TestResolveEffectiveConfig:
         assert result["org_scale"] is True
 
     def test_invalid_goal_raises(self) -> None:
-        import click
+        from codeprobe.cli.errors import PrescriptiveError
 
-        with pytest.raises(click.UsageError, match="Unknown goal"):
+        with pytest.raises(PrescriptiveError, match="Unknown goal"):
             self._resolve(goal="bogus")
 
     def test_invalid_preset_raises(self) -> None:
-        import click
+        from codeprobe.cli.errors import PrescriptiveError
 
-        with pytest.raises(click.UsageError, match="preset"):
+        with pytest.raises(PrescriptiveError, match="Unknown preset"):
             self._resolve(preset="bogus")
 
     def test_preset_emits_deprecation_warning(self) -> None:

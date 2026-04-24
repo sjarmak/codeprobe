@@ -1,0 +1,177 @@
+{
+  "airgapped": {
+    "interpret": {
+      "command": "interpret",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": false,
+      "ok": true,
+      "task_count": null
+    },
+    "mine": {
+      "command": "mine",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": null,
+      "ok": true,
+      "task_count": 0
+    },
+    "run": {
+      "command": "run",
+      "detected_narrative_source": null,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
+      "has_results": null,
+      "ok": false,
+      "task_count": null
+    }
+  },
+  "auto-squash-pr-heavy": {
+    "interpret": {
+      "command": "interpret",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": false,
+      "ok": true,
+      "task_count": null
+    },
+    "mine": {
+      "command": "mine",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": null,
+      "ok": true,
+      "task_count": 0
+    },
+    "run": {
+      "command": "run",
+      "detected_narrative_source": null,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
+      "has_results": null,
+      "ok": false,
+      "task_count": null
+    }
+  },
+  "commits-only": {
+    "interpret": {
+      "command": "interpret",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": false,
+      "ok": true,
+      "task_count": null
+    },
+    "mine": {
+      "command": "mine",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": null,
+      "ok": true,
+      "task_count": 0
+    },
+    "run": {
+      "command": "run",
+      "detected_narrative_source": null,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
+      "has_results": null,
+      "ok": false,
+      "task_count": null
+    }
+  },
+  "issue-tracked": {
+    "interpret": {
+      "command": "interpret",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": false,
+      "ok": true,
+      "task_count": null
+    },
+    "mine": {
+      "command": "mine",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": null,
+      "ok": true,
+      "task_count": 0
+    },
+    "run": {
+      "command": "run",
+      "detected_narrative_source": null,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
+      "has_results": null,
+      "ok": false,
+      "task_count": null
+    }
+  },
+  "pr-rich": {
+    "interpret": {
+      "command": "interpret",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": true,
+      "ok": true,
+      "task_count": null
+    },
+    "mine": {
+      "command": "mine",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": null,
+      "ok": true,
+      "task_count": 2
+    },
+    "run": {
+      "command": "run",
+      "detected_narrative_source": null,
+      "error_code": null,
+      "error_kind": null,
+      "error_terminal": null,
+      "exit_code": 0,
+      "has_results": null,
+      "ok": true,
+      "task_count": null
+    }
+  }
+}

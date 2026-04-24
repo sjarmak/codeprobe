@@ -125,7 +125,6 @@ class TestAssessSurface:
         """
         from click.testing import CliRunner
 
-        import codeprobe.cli.assess_cmd as assess_mod
         from codeprobe.assess.heuristics import AssessmentScore, DimensionScore
 
         file = _write_valid_profile(tmp_path, correlation=0.73)

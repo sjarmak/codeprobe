@@ -10,8 +10,6 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from acceptance.loader import Criterion
 from codeprobe.acceptance_compiler import compile_actions
 

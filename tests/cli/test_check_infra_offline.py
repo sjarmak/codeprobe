@@ -14,7 +14,7 @@ AWS, Azure, or GCP endpoints.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
@@ -26,14 +26,13 @@ from codeprobe.net.credential_ttl import (
     get_credential_ttl,
 )
 
-
 # ---------------------------------------------------------------------------
 # get_credential_ttl unit tests (AC #4)
 # ---------------------------------------------------------------------------
 
 
 def _iso(ts: datetime) -> str:
-    return ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return ts.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _clear_creds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -60,7 +59,7 @@ def test_bedrock_reads_session_expiration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_creds(monkeypatch)
-    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
     expires = now + timedelta(hours=4)
     monkeypatch.setenv("AWS_SESSION_EXPIRATION", _iso(expires))
 
@@ -72,7 +71,7 @@ def test_bedrock_falls_back_to_credential_expiration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_creds(monkeypatch)
-    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
     expires = now + timedelta(minutes=30)
     monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", _iso(expires))
 
@@ -82,7 +81,7 @@ def test_bedrock_falls_back_to_credential_expiration(
 
 def test_bedrock_expired_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_creds(monkeypatch)
-    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
     monkeypatch.setenv(
         "AWS_SESSION_EXPIRATION", _iso(now - timedelta(minutes=1))
     )
@@ -93,7 +92,7 @@ def test_bedrock_expired_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_vertex_reads_token_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_creds(monkeypatch)
-    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
     expires = now + timedelta(hours=2)
     monkeypatch.setenv(
         "GOOGLE_APPLICATION_CREDENTIALS_TOKEN_EXPIRY", _iso(expires)
@@ -105,7 +104,7 @@ def test_vertex_reads_token_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_azure_reads_token_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_creds(monkeypatch)
-    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
     expires = now + timedelta(minutes=45)
     monkeypatch.setenv("AZURE_TOKEN_EXPIRES_ON", _iso(expires))
 
@@ -143,7 +142,7 @@ def test_known_backends_matches_registry_matrix() -> None:
 def _plenty_of_time(monkeypatch: pytest.MonkeyPatch) -> None:
     """Set Bedrock session to expire well after the default 1h run budget."""
     _clear_creds(monkeypatch)
-    future = datetime.now(tz=timezone.utc) + timedelta(hours=12)
+    future = datetime.now(tz=UTC) + timedelta(hours=12)
     monkeypatch.setenv("AWS_SESSION_EXPIRATION", _iso(future))
 
 
@@ -154,7 +153,7 @@ def test_offline_exit_zero_when_ttls_exceed_duration(
 
     result = CliRunner().invoke(
         check_infra,
-        ["offline", "--expected-run-duration", "1h"],
+        ["offline", "--expected-run-duration", "1h", "--no-json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -168,7 +167,7 @@ def test_offline_fails_when_bedrock_ttl_short_and_names_backend(
     remediation message."""
     _clear_creds(monkeypatch)
     # Set bedrock to expire in 10 minutes; we'll demand 1h.
-    soon = datetime.now(tz=timezone.utc) + timedelta(minutes=10)
+    soon = datetime.now(tz=UTC) + timedelta(minutes=10)
     monkeypatch.setenv("AWS_SESSION_EXPIRATION", _iso(soon))
 
     result = CliRunner().invoke(
@@ -196,7 +195,7 @@ def test_offline_reports_expired_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_creds(monkeypatch)
-    past = datetime.now(tz=timezone.utc) - timedelta(minutes=5)
+    past = datetime.now(tz=UTC) - timedelta(minutes=5)
     monkeypatch.setenv("AWS_SESSION_EXPIRATION", _iso(past))
 
     result = CliRunner().invoke(
@@ -230,6 +229,7 @@ def test_offline_noexpiry_backends_pass(
             "2h",
             "--backend",
             "anthropic",
+            "--no-json",
         ],
     )
 

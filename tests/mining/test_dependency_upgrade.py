@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from codeprobe.mining.dependency_upgrade import (
     DEPENDENCY_MANIFESTS,
     PRCandidate,
@@ -18,7 +16,6 @@ from codeprobe.mining.dependency_upgrade import (
 from codeprobe.mining.task_types import TASK_TYPE_REGISTRY, task_type_names
 from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.task import TASK_TYPES
-
 
 # ---------------------------------------------------------------------------
 # Registry acceptance criteria (AC #1)

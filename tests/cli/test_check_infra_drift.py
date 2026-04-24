@@ -36,7 +36,11 @@ def _write_metadata_json(
 
 def test_matching_snapshot_exits_zero(tmp_path: Path) -> None:
     _write_metadata_json(tmp_path, sorted(CAPABILITIES.keys()))
-    result = CliRunner().invoke(check_infra, ["drift", str(tmp_path)])
+    # --no-json keeps the legacy pretty "OK" surface; CliRunner is non-TTY
+    # and would otherwise resolve to the envelope default.
+    result = CliRunner().invoke(
+        check_infra, ["drift", str(tmp_path), "--no-json"]
+    )
     assert result.exit_code == 0, result.output
     assert "OK" in result.output
 

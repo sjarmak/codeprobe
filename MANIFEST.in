@@ -1,0 +1,5 @@
+# Include repo-committed agent skills in the sdist. The files live outside
+# src/codeprobe/ so they cannot be declared in [tool.setuptools.package-data];
+# this MANIFEST.in + `include-package-data = true` in pyproject.toml is the
+# equivalent mechanism for setuptools builds. See PRD §7 (paired-skills).
+recursive-include .claude/skills SKILL.md

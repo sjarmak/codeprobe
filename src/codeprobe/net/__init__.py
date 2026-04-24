@@ -19,6 +19,7 @@ from codeprobe.net.credential_ttl import (
 __all__ = [
     "CredentialTTLError",
     "get_credential_ttl",
+    "guard_offline",
     "is_offline_mode",
 ]
 
@@ -38,3 +39,8 @@ def is_offline_mode() -> bool:
     """
     raw = os.environ.get("CODEPROBE_OFFLINE", "")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Import after ``is_offline_mode`` is defined so ``offline.py`` can import
+# it from this package without tripping a partial-init error.
+from codeprobe.net.offline import guard_offline  # noqa: E402

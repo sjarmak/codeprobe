@@ -12,13 +12,12 @@ traffic — so it should pass the check with stubbed credentials.
 from __future__ import annotations
 
 import socket
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli.check_infra import check_infra
-
 
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
@@ -89,7 +88,7 @@ def airgap(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _iso(ts: datetime) -> str:
-    return ts.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return ts.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _clear_creds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,7 +124,7 @@ def test_offline_check_passes_in_airgapped_vm_with_stubbed_endpoints(
     allowed, ``codeprobe check-infra offline`` must complete and exit 0.
     """
     _clear_creds(monkeypatch)
-    future = datetime.now(tz=timezone.utc) + timedelta(hours=8)
+    future = datetime.now(tz=UTC) + timedelta(hours=8)
     # Stub every TTL-bearing backend so the pre-flight sees a healthy
     # matrix without any network IO.
     monkeypatch.setenv("AWS_SESSION_EXPIRATION", _iso(future))
@@ -136,7 +135,7 @@ def test_offline_check_passes_in_airgapped_vm_with_stubbed_endpoints(
 
     result = CliRunner().invoke(
         check_infra,
-        ["offline", "--expected-run-duration", "1h"],
+        ["offline", "--expected-run-duration", "1h", "--no-json"],
     )
 
     assert result.exit_code == 0, (
@@ -151,7 +150,7 @@ def test_offline_check_fails_in_airgapped_vm_when_ttl_too_short(
 ) -> None:
     """Airgap fixture on + expired-ish Bedrock creds → failure, no network."""
     _clear_creds(monkeypatch)
-    soon = datetime.now(tz=timezone.utc) + timedelta(minutes=5)
+    soon = datetime.now(tz=UTC) + timedelta(minutes=5)
     monkeypatch.setenv("AWS_SESSION_EXPIRATION", _iso(soon))
 
     result = CliRunner().invoke(
@@ -189,6 +188,7 @@ def test_offline_check_respects_backend_filter_with_no_network(
             "anthropic",
             "--backend",
             "openai_compat",
+            "--no-json",
         ],
     )
 

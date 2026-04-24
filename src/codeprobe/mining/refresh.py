@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from codeprobe.models.task import Task, TaskMetadata
+from codeprobe.models.task import Task
 
 __all__ = [
     "CHURN_THRESHOLD",

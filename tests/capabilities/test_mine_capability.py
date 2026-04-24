@@ -20,7 +20,6 @@ import pytest
 
 from codeprobe.cli import main
 
-
 pytestmark = [pytest.mark.capability]
 
 
@@ -61,7 +60,8 @@ def _make_repo_with_merged_pr(repo: Path) -> None:
 @pytest.mark.matrix
 def test_mine_list_task_types(cli_runner) -> None:
     """mine --list-task-types exits clean and lists built-in task types."""
-    result = cli_runner.invoke(main, ["mine", "--list-task-types"])
+    # --no-json preserves the legacy pretty surface; CliRunner is non-TTY.
+    result = cli_runner.invoke(main, ["mine", "--list-task-types", "--no-json"])
 
     assert result.exit_code == 0, (
         f"capability=mine flag=--list-task-types exit_code={result.exit_code} "
@@ -85,7 +85,9 @@ def test_mine_list_profiles_clean_env(
     """mine --list-profiles succeeds even when no profiles exist."""
     monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.codeprobe/mine-profiles.json
 
-    result = cli_runner.invoke(main, ["mine", str(tmp_path), "--list-profiles"])
+    result = cli_runner.invoke(
+        main, ["mine", str(tmp_path), "--list-profiles", "--no-json"]
+    )
 
     assert result.exit_code == 0, (
         f"capability=mine flag=--list-profiles exit_code={result.exit_code} "

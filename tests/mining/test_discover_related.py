@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from codeprobe.mining.multi_repo import (
     RelatedRepoCandidate,
     _parse_go_mod,
@@ -21,7 +19,6 @@ from codeprobe.mining.multi_repo import (
     _parse_pyproject,
     discover_related_repos,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a tiny repo fixture under tmp_path

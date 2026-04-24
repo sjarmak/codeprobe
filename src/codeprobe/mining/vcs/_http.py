@@ -21,6 +21,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from codeprobe.net import guard_offline
+
 __all__ = ["stdlib_get"]
 
 
@@ -39,6 +41,11 @@ def stdlib_get(
     safe fallback dict ``{"_raw": <text-preview>}`` instead of raising —
     adapters decide how to surface that to the user.
     """
+    # Offline gate: fail loud when ``CODEPROBE_OFFLINE`` is set so
+    # mining/tracker adapters (GitLab, Jira, ...) don't silently try to
+    # reach the public internet in airgapped runs.
+    guard_offline(f"vcs/tracker HTTP GET {url}")
+
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (validated URL)

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.mining.extractor import MineResult
 from codeprobe.mining.org_scale import OrgScaleMineResult
 from codeprobe.mining.org_scale_families import TaskFamily
@@ -70,23 +71,39 @@ def _validate_git_url_shape(url: str) -> None:
     if not parsed.scheme:
         return  # No scheme → treated as a local path upstream
     if parsed.scheme not in _ACCEPTED_GIT_URL_SCHEMES:
-        raise click.UsageError(
-            f"URL {url!r} is not a valid git URL: "
-            f"scheme {parsed.scheme!r} is not one of "
-            f"{sorted(_ACCEPTED_GIT_URL_SCHEMES)}. "
-            "Pass an https/ssh git URL or a local path."
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"URL {url!r} is not a valid git URL: "
+                f"scheme {parsed.scheme!r} is not one of "
+                f"{sorted(_ACCEPTED_GIT_URL_SCHEMES)}. "
+                "Pass an https/ssh git URL or a local path."
+            ),
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"url": url, "scheme": parsed.scheme},
         )
     # urlparse keeps the leading slash in .path, so a bare host has path=''
     # and 'owner/repo' shorthand never reaches this function (see _is_git_url).
     if not parsed.netloc:
-        raise click.UsageError(
-            f"URL {url!r} is not a valid git URL: missing host."
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=f"URL {url!r} is not a valid git URL: missing host.",
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"url": url},
         )
     if parsed.path in ("", "/"):
-        raise click.UsageError(
-            f"URL {url!r} is not a valid git URL: "
-            "missing repository path (expected e.g. "
-            "https://host.example/owner/repo.git)."
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"URL {url!r} is not a valid git URL: "
+                "missing repository path (expected e.g. "
+                "https://host.example/owner/repo.git)."
+            ),
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"url": url},
         )
 
 
@@ -100,8 +117,14 @@ def _validate_clone_url(url: str) -> None:
     try:
         addr = ipaddress.ip_address(host)
         if not addr.is_global:
-            raise click.UsageError(
-                f"Refusing to clone from private/link-local address: {host}"
+            raise PrescriptiveError(
+                code="INVALID_GIT_URL",
+                message=(
+                    f"Refusing to clone from private/link-local address: {host}"
+                ),
+                next_try_flag="paths-or-https-url",
+                next_try_value="",
+                detail={"host": host},
             )
     except ValueError:
         pass  # hostname, not IP literal — allow
@@ -132,18 +155,30 @@ def _clone_repo(url: str) -> Path:
     except subprocess.CalledProcessError as exc:
         shutil.rmtree(clone_dir, ignore_errors=True)
         stderr = (exc.stderr or "").strip()
-        raise click.UsageError(
-            f"Could not clone {url}.\n"
-            f"  git error: {stderr or 'unknown failure'}\n"
-            "  Check that the URL is correct, the repository is public, "
-            "or that you have access (try `git clone` manually to verify)."
+        raise DiagnosticError(
+            code="CLONE_FAILED",
+            message=(
+                f"Could not clone {url}.\n"
+                f"  git error: {stderr or 'unknown failure'}\n"
+                "  Check that the URL is correct, the repository is public, "
+                "or that you have access (try `git clone` manually to verify)."
+            ),
+            diagnose_cmd=f"gh repo view {url}",
+            terminal=True,
+            detail={"url": url, "git_error": stderr},
         ) from exc
     except subprocess.TimeoutExpired as exc:
         shutil.rmtree(clone_dir, ignore_errors=True)
-        raise click.UsageError(
-            f"Clone of {url} timed out after 120s. "
-            "The repository may be large or the network slow; "
-            "try cloning manually and pass the local path instead."
+        raise DiagnosticError(
+            code="CLONE_FAILED",
+            message=(
+                f"Clone of {url} timed out after 120s. "
+                "The repository may be large or the network slow; "
+                "try cloning manually and pass the local path instead."
+            ),
+            diagnose_cmd=f"gh repo view {url}",
+            terminal=True,
+            detail={"url": url, "timeout_seconds": 120},
         ) from exc
 
     click.echo(f"Cloned to {clone_dir}", err=True)
@@ -631,15 +666,27 @@ def _validate_git_repo(repo_path: Path) -> None:
     installing a real .git database.
     """
     if not repo_path.is_dir():
-        raise click.UsageError(
-            f"Path is not a directory: {repo_path}. "
-            "Pass the path to a local git repository."
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"Path is not a directory: {repo_path}. "
+                "Pass the path to a local git repository."
+            ),
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"path": str(repo_path)},
         )
     if not (repo_path / ".git").exists():
-        raise click.UsageError(
-            f"Not a git repository: {repo_path} "
-            "(no .git/ directory found). "
-            "Initialize with `git init` or pass a different path."
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"Not a git repository: {repo_path} "
+                "(no .git/ directory found). "
+                "Initialize with `git init` or pass a different path."
+            ),
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"path": str(repo_path)},
         )
 
 
@@ -673,13 +720,23 @@ def _resolve_repo_path(path: str) -> Path:
     if _looks_like_url(path):
         _validate_git_url_shape(path)
         # _validate_git_url_shape will raise; this is a safety net.
-        raise click.UsageError(f"URL {path!r} is not a valid git URL.")
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=f"URL {path!r} is not a valid git URL.",
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"path": path},
+        )
     repo_path = Path(path).resolve()
     if not repo_path.exists():
         suggestion = _suggest_path(repo_path)
         hint = f" Did you mean: {suggestion}?" if suggestion else ""
-        raise click.UsageError(
-            f"Path does not exist: {repo_path}.{hint}"
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=f"Path does not exist: {repo_path}.{hint}",
+            next_try_flag="paths-or-https-url",
+            next_try_value=suggestion or "",
+            detail={"path": str(repo_path), "suggestion": suggestion or ""},
         )
     _validate_git_repo(repo_path)
     return repo_path
@@ -1079,8 +1136,20 @@ def load_profile(name: str, repo_path: Path | None = None) -> dict:
     entry = all_profiles.get(name)
     if entry is None:
         available = ", ".join(sorted(all_profiles)) if all_profiles else "(none)"
-        raise click.UsageError(
-            f"Profile '{name}' not found. Available profiles: {available}"
+        first_available = (
+            sorted(all_profiles)[0] if all_profiles else ""
+        )
+        raise PrescriptiveError(
+            code="UNKNOWN_BACKEND",
+            message=(
+                f"Profile '{name}' not found. Available profiles: {available}"
+            ),
+            next_try_flag="--profile",
+            next_try_value=first_available,
+            detail={
+                "requested": name,
+                "available": sorted(all_profiles),
+            },
         )
     return entry[0]
 
@@ -1167,9 +1236,19 @@ def resolve_effective_config(
     # Step 1: translate deprecated preset → goal.
     if preset is not None:
         if preset not in _PRESET_ALIASES:
-            raise click.UsageError(
-                f"Unknown preset '{preset}'. "
-                f"Choose from: {', '.join(sorted(_PRESET_ALIASES))}"
+            first_preset = sorted(_PRESET_ALIASES)[0] if _PRESET_ALIASES else ""
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=(
+                    f"Unknown preset '{preset}'. "
+                    f"Choose from: {', '.join(sorted(_PRESET_ALIASES))}"
+                ),
+                next_try_flag="--preset",
+                next_try_value=first_preset,
+                detail={
+                    "requested": preset,
+                    "available": sorted(_PRESET_ALIASES),
+                },
             )
         preset_goal, preset_overrides = _PRESET_ALIASES[preset]
 
@@ -1180,9 +1259,15 @@ def resolve_effective_config(
             )
 
         if goal is not None and goal != preset_goal:
-            raise click.UsageError(
-                f"Cannot use both --preset {preset} and --goal {goal}; "
-                "--preset is deprecated, use --goal only."
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    f"Cannot use both --preset {preset} and --goal {goal}; "
+                    "--preset is deprecated, use --goal only."
+                ),
+                next_try_flag="--preset",
+                next_try_value="",
+                detail={"preset": preset, "goal": goal},
             )
 
         if goal is None:
@@ -1194,9 +1279,19 @@ def resolve_effective_config(
     # Step 2: apply goal extras.
     if goal is not None:
         if goal not in _EVAL_GOALS:
-            raise click.UsageError(
-                f"Unknown goal '{goal}'. "
-                f"Choose from: {', '.join(sorted(_EVAL_GOALS))}"
+            first_goal = sorted(_EVAL_GOALS)[0] if _EVAL_GOALS else ""
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=(
+                    f"Unknown goal '{goal}'. "
+                    f"Choose from: {', '.join(sorted(_EVAL_GOALS))}"
+                ),
+                next_try_flag="--goal",
+                next_try_value=first_goal,
+                detail={
+                    "requested": goal,
+                    "available": sorted(_EVAL_GOALS),
+                },
             )
         _apply_overrides(_EVAL_GOALS[goal]["extras"])
 
@@ -1325,8 +1420,12 @@ def _dispatch_cross_repo(
             if not rp.exists():
                 suggestion = _suggest_path(rp)
                 hint = f" Did you mean: {suggestion}?" if suggestion else ""
-                raise click.UsageError(
-                    f"--cross-repo path does not exist: {rp}.{hint}"
+                raise PrescriptiveError(
+                    code="INVALID_GIT_URL",
+                    message=f"--cross-repo path does not exist: {rp}.{hint}",
+                    next_try_flag="paths-or-https-url",
+                    next_try_value=suggestion or "",
+                    detail={"path": str(rp), "suggestion": suggestion or ""},
                 )
             secondaries.append(rp)
 
@@ -1479,7 +1578,7 @@ def _mine_tasks_with_progress(
     min_files: int,
     min_quality: float,
     subsystems: tuple[str, ...],
-) -> "MineResult":
+) -> MineResult:
     """Call :func:`mine_tasks` with a click.progressbar when stderr is a TTY.
 
     Falls back to a plain call (no bar) in non-interactive environments so
@@ -1559,14 +1658,26 @@ def _resolve_narrative_source(
     if narrative_source:
         selection = parse_narrative_selection(narrative_source)
         if not selection:
-            raise click.UsageError(
-                "--narrative-source was passed but parsed to an empty "
-                "selection. Accepted names: pr, commits, rfcs."
+            raise PrescriptiveError(
+                code="NARRATIVE_SOURCE_UNDETECTABLE",
+                message=(
+                    "--narrative-source was passed but parsed to an empty "
+                    "selection. Accepted names: pr, commits, rfcs."
+                ),
+                next_try_flag="--narrative-source",
+                next_try_value="commits",
+                detail={"input": list(narrative_source)},
             )
         try:
             select_narrative_adapters(selection)  # validate names
         except ValueError as exc:
-            raise click.UsageError(str(exc)) from exc
+            raise PrescriptiveError(
+                code="NARRATIVE_SOURCE_UNDETECTABLE",
+                message=str(exc),
+                next_try_flag="--narrative-source",
+                next_try_value="commits",
+                detail={"input": list(narrative_source)},
+            ) from exc
         return selection
 
     if not tasks_mined:
@@ -1584,12 +1695,18 @@ def _resolve_narrative_source(
     if has_pr_narratives(repo_path):
         return ("pr",)
 
-    raise click.UsageError(
-        "No merged PR narratives found in this repo (squash-only or "
-        "no-remote history), and --narrative-source was not passed. "
-        "INV1 requires explicit selection: pass e.g. "
-        "--narrative-source commits+rfcs (or --narrative-source commits, "
-        "or --narrative-source rfcs). Accepted names: pr, commits, rfcs."
+    raise PrescriptiveError(
+        code="NARRATIVE_SOURCE_UNDETECTABLE",
+        message=(
+            "No merged PR narratives found in this repo (squash-only or "
+            "no-remote history), and --narrative-source was not passed. "
+            "INV1 requires explicit selection: pass e.g. "
+            "--narrative-source commits+rfcs (or --narrative-source commits, "
+            "or --narrative-source rfcs). Accepted names: pr, commits, rfcs."
+        ),
+        next_try_flag="--narrative-source",
+        next_try_value="commits",
+        detail={"repo_path": str(repo_path)},
     )
 
 
@@ -1998,10 +2115,67 @@ def run_mine(
     accept_structural_change: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
+    tenant: str | None = None,
+    tenant_source: str | None = None,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
+    from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
+
+    _mine_mode = resolve_mode(
+        "mine", json_flag, no_json_flag, json_lines_flag,
+    )
+
+    # v0.7 gate-on-context defaults — opt-in via CODEPROBE_DEFAULTS=v0.7.
+    # Compute (goal, narrative_source) defaults from structural repo signals
+    # when the user did not pass explicit values. Pre-v0.7 paths remain
+    # byte-identical. PrescriptiveError flows up to the top-level handler
+    # which renders per output mode.
+    goal_source = "flag" if goal is not None else "default"
+    narrative_source_source = "flag" if narrative_source else "default"
+    from codeprobe.config.defaults import (
+        resolve_goal as _resolve_goal,
+    )
+    from codeprobe.config.defaults import (
+        resolve_narrative_source as _resolve_narrative_source,
+    )
+    from codeprobe.config.defaults import (
+        scan_repo_shape as _scan_repo_shape,
+    )
+    from codeprobe.config.defaults import (
+        use_v07_defaults as _use_v07_defaults,
+    )
+
+    if _use_v07_defaults() and refresh_dir is None:
+        try:
+            _repo_path = Path(path).resolve()
+        except Exception:  # pragma: no cover - defensive
+            _repo_path = None
+        if _repo_path is not None and _repo_path.is_dir():
+            _shape = _scan_repo_shape(_repo_path)
+            if goal is None and "goal" not in explicit_set:
+                goal, goal_source = _resolve_goal(_shape)
+            if (
+                not narrative_source
+                and "narrative_source" not in explicit_set
+            ):
+                (
+                    narrative_source,
+                    narrative_source_source,
+                ) = _resolve_narrative_source(_shape)
+            click.echo(
+                "v0.7 defaults: "
+                f"goal={goal} ({goal_source}) "
+                f"narrative_source={list(narrative_source)} "
+                f"({narrative_source_source})",
+                err=True,
+            )
+
 
     # Refresh dispatch: runs before any other mining path so users don't
     # accidentally re-mine a whole tasks dir when they only meant to
@@ -2016,10 +2190,18 @@ def run_mine(
 
     # CLI validation: --cross-repo and --org-scale are mutually exclusive
     if cross_repo and org_scale:
-        raise click.UsageError(
-            "Cannot use --cross-repo with --org-scale. "
-            "Use --cross-repo for cross-repo SDLC mining or "
-            "--org-scale for org-scale comprehension mining."
+        raise PrescriptiveError(
+            code="MUTEX_FLAGS",
+            message=(
+                "Cannot use --cross-repo with --org-scale. "
+                "Use --cross-repo for cross-repo SDLC mining or "
+                "--org-scale for org-scale comprehension mining."
+            ),
+            next_try_flag="--org-scale",
+            next_try_value="",
+            detail={
+                "conflicting_flags": ["--cross-repo", "--org-scale"],
+            },
         )
 
     # Default goal to mcp when --cross-repo is used without explicit --goal
@@ -2078,9 +2260,15 @@ def run_mine(
 
     # CLI validation: --backends agent --no-llm is incompatible
     if no_llm and "agent" in backends:
-        raise click.UsageError(
-            "Cannot use --backends agent with --no-llm: "
-            "AgentSearchBackend requires an LLM backend."
+        raise PrescriptiveError(
+            code="MUTEX_FLAGS",
+            message=(
+                "Cannot use --backends agent with --no-llm: "
+                "AgentSearchBackend requires an LLM backend."
+            ),
+            next_try_flag="--no-llm",
+            next_try_value="",
+            detail={"conflicting_flags": ["--backends agent", "--no-llm"]},
         )
 
     # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
@@ -2139,8 +2327,15 @@ def run_mine(
                         hint = (
                             f" Did you mean: {suggestion}?" if suggestion else ""
                         )
-                        raise click.UsageError(
-                            f"--repos path does not exist: {rp}.{hint}"
+                        raise PrescriptiveError(
+                            code="INVALID_GIT_URL",
+                            message=f"--repos path does not exist: {rp}.{hint}",
+                            next_try_flag="paths-or-https-url",
+                            next_try_value=suggestion or "",
+                            detail={
+                                "path": str(rp),
+                                "suggestion": suggestion or "",
+                            },
                         )
                     repo_paths.append(rp)
             _run_org_scale_mine(
@@ -2216,17 +2411,52 @@ def run_mine(
             dual_verify=dual_verify,
             narrative_source=narrative_source,
         )
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
         # AC3: clean up partial output and exit with the standard SIGINT code.
         partial = _CURRENT_TASKS_DIR
         if partial is not None and partial.exists():
             shutil.rmtree(partial, ignore_errors=True)
-            click.echo(
-                f"\nInterrupted. Removed partial output at {partial}.", err=True
+            message = (
+                f"Interrupted. Removed partial output at {partial}."
             )
+            partial_path = str(partial)
         else:
-            click.echo("\nInterrupted.", err=True)
-        sys.exit(130)
+            message = "Interrupted."
+            partial_path = ""
+        raise DiagnosticError(
+            code="INTERRUPTED",
+            message=message,
+            diagnose_cmd="codeprobe mine ... --resume",
+            terminal=True,
+            exit_code=130,
+            detail={"partial_path": partial_path},
+        ) from exc
+
+    # Success path: when envelope/NDJSON mode is active, emit a terminal
+    # summary envelope. Pretty mode preserves the existing click.echo
+    # output block untouched.
+    if _mine_mode.mode in ("single_envelope", "ndjson"):
+        tasks_dir = _CURRENT_TASKS_DIR
+        task_count = 0
+        tasks_dir_str: str | None = None
+        if tasks_dir is not None:
+            tasks_dir_str = str(tasks_dir)
+            if tasks_dir.is_dir():
+                task_count = sum(
+                    1
+                    for c in tasks_dir.iterdir()
+                    if c.is_dir() and (c / "instruction.md").is_file()
+                )
+        emit_envelope(
+            command="mine",
+            data={
+                "tasks_dir": tasks_dir_str,
+                "task_count": task_count,
+                "goal": goal,
+                "tenant": tenant,
+                "tenant_source": tenant_source,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2694,8 +2924,14 @@ def _run_refresh(
 
     existing_task_dir = Path(existing_task_dir).resolve()
     if not existing_task_dir.is_dir():
-        raise click.UsageError(
-            f"--refresh target is not a directory: {existing_task_dir}"
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"--refresh target is not a directory: {existing_task_dir}"
+            ),
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"path": str(existing_task_dir)},
         )
 
     # 1. Read existing state. Missing metadata.json is a hard error — we
@@ -2703,20 +2939,42 @@ def _run_refresh(
     try:
         old_meta = read_task_metadata_json(existing_task_dir)
     except FileNotFoundError as exc:
-        raise click.UsageError(str(exc)) from exc
+        raise DiagnosticError(
+            code="METADATA_MISSING",
+            message=str(exc),
+            diagnose_cmd=(
+                f"codeprobe check-infra drift {existing_task_dir} --json"
+            ),
+            terminal=True,
+            detail={"task_dir": str(existing_task_dir)},
+        ) from exc
 
     try:
         new_signature = read_structural_signature(existing_task_dir)
     except FileNotFoundError as exc:
-        raise click.UsageError(str(exc)) from exc
+        raise DiagnosticError(
+            code="METADATA_MISSING",
+            message=str(exc),
+            diagnose_cmd=(
+                f"codeprobe check-infra drift {existing_task_dir} --json"
+            ),
+            terminal=True,
+            detail={"task_dir": str(existing_task_dir)},
+        ) from exc
 
     # 2. Resolve new commit.
     repo_path = _resolve_repo_path(repo_path_arg)
     new_commit = _resolve_refresh_commit(repo_path)
     if not new_commit:
-        raise click.UsageError(
-            f"Could not resolve HEAD commit in {repo_path}. "
-            "Ensure --refresh is run against a git repository."
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"Could not resolve HEAD commit in {repo_path}. "
+                "Ensure --refresh is run against a git repository."
+            ),
+            next_try_flag="paths-or-https-url",
+            next_try_value="",
+            detail={"repo_path": str(repo_path)},
         )
 
     # 3. Build a new_task from the on-disk ground truth. The miner would
@@ -2763,8 +3021,15 @@ def _run_refresh(
             accept_structural_change=accept_structural_change,
         )
     except StructuralMismatchError as exc:
-        click.echo(str(exc), err=True)
-        sys.exit(2)
+        raise DiagnosticError(
+            code="METADATA_INVALID",
+            message=str(exc),
+            diagnose_cmd=(
+                f"codeprobe check-infra drift {existing_task_dir} --json"
+            ),
+            terminal=True,
+            detail={"task_dir": str(existing_task_dir)},
+        ) from exc
 
     # 5. Write the refreshed task back. write_task_dir uses the task.id
     #    (preserved) as the directory name, so this rewrites in place.

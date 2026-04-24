@@ -23,7 +23,6 @@ from click.testing import CliRunner
 from codeprobe.cli import main as cli_main
 from tests.snapshot._export_helpers import SYNTHETIC_ENTRIES, build_snapshot
 
-
 # Match http:// or https:// — case-insensitive — but NOT data:, file:, etc.
 _EXTERNAL_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 

@@ -34,7 +34,7 @@ import hmac
 import json
 import os
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -326,7 +326,7 @@ def _attest(
 ) -> Attestation:
     body = _canonical_body_bytes(manifest)
     body_sha = hashlib.sha256(body).hexdigest()
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
 
     if signing_key:
         sig = hmac.new(

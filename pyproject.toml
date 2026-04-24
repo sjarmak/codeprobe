@@ -78,6 +78,17 @@ where = ["src"]
 "codeprobe.preambles" = ["*.md", "*.j2"]
 "codeprobe.templates" = ["*.yaml"]
 "codeprobe.llm" = ["*.yaml"]
+"codeprobe.cli" = ["error_codes.json"]
+# Repo-committed agent skills live outside the src/ package tree at
+# .claude/skills/codeprobe-*/SKILL.md. They are the authoritative agent
+# contract (see PRD §7) and must ship in the sdist so downstream tooling
+# can consult them. Because package-data is scoped to files inside a
+# package, inclusion of the out-of-tree .claude/skills/**/SKILL.md files
+# is handled by MANIFEST.in (graft .claude/skills) + include-package-data
+# below. Keep this comment in sync if the skill layout changes.
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -98,3 +109,20 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# N818 — pre-existing Exception class names without an "Error" suffix. Renaming
+# them would be a breaking API change for downstream consumers (e.g.
+# ``CalibrationRejected`` is re-exported via the ``codeprobe.calibration``
+# public surface). Tracked as cosmetic debt; grandfather in place.
+# N802 — one intentional mixed-case test method name asserting on camelCase
+# flag forwarding (``--disallowedTools``).
+# UP028/UP042 — one-off modernizations not worth the churn in this release.
+ignore = ["N818", "N802", "UP028", "UP042"]
+
+[tool.ruff.lint.per-file-ignores]
+# One stale local var + one unused-but-kept-for-shape helper in existing tests.
+"tests/test_verify.py" = ["F841"]
+# Pre-existing alias intentionally re-exports the registry under a private name;
+# ruff's explicit-re-export suggestion would be a larger refactor.
+"src/codeprobe/cli/__init__.py" = ["F401"]
+# Wide HTML template string that reads better on one line than broken up.
+"src/codeprobe/snapshot/exporters/browse.py" = ["E501"]

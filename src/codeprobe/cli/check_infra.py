@@ -29,6 +29,13 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._error_handler import CodeprobeGroup
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_mode,
+)
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.mcp.capabilities import CAPABILITIES
 from codeprobe.net.credential_ttl import (
     KNOWN_BACKENDS,
@@ -49,12 +56,22 @@ def _load_snapshot(metadata_path: Path) -> tuple[str, ...]:
     fixtures and older mined tasks both work.
     """
     if not metadata_path.is_file():
-        raise click.ClickException(f"metadata.json not found at {metadata_path}")
+        raise DiagnosticError(
+            code="METADATA_MISSING",
+            message=f"metadata.json not found at {metadata_path}",
+            diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+            terminal=True,
+            detail={"metadata_path": str(metadata_path)},
+        )
     try:
         data = json.loads(metadata_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise click.ClickException(
-            f"metadata.json at {metadata_path} is not valid JSON: {exc}"
+        raise DiagnosticError(
+            code="METADATA_INVALID",
+            message=f"metadata.json at {metadata_path} is not valid JSON: {exc}",
+            diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+            terminal=True,
+            detail={"metadata_path": str(metadata_path)},
         ) from exc
 
     # Prefer the nested metadata.<field> layout produced by the writer.
@@ -68,13 +85,21 @@ def _load_snapshot(metadata_path: Path) -> tuple[str, ...]:
         raw = []
 
     if not isinstance(raw, list):
-        raise click.ClickException(
-            "metadata.mcp_capabilities_at_mine_time must be a JSON array"
+        raise DiagnosticError(
+            code="METADATA_INVALID",
+            message="metadata.mcp_capabilities_at_mine_time must be a JSON array",
+            diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+            terminal=True,
+            detail={"metadata_path": str(metadata_path)},
         )
     for item in raw:
         if not isinstance(item, str):
-            raise click.ClickException(
-                "metadata.mcp_capabilities_at_mine_time entries must be strings"
+            raise DiagnosticError(
+                code="METADATA_INVALID",
+                message="metadata.mcp_capabilities_at_mine_time entries must be strings",
+                diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+                terminal=True,
+                detail={"metadata_path": str(metadata_path)},
             )
     return tuple(sorted(raw))
 
@@ -96,16 +121,54 @@ def _run_drift_check(
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
     banner: str,
+    command_name: str,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
+    mode = resolve_mode(
+        command_name, json_flag, no_json_flag, json_lines_flag,
+    )
+
     metadata_path = Path(task_dir) / "metadata.json"
     snapshot = _load_snapshot(metadata_path)
     live = tuple(sorted(CAPABILITIES.keys()))
 
-    if snapshot == live:
+    added, removed = _format_diff(snapshot, live)
+    has_drift = snapshot != live
+
+    drift_detail = {
+        "task_dir": task_dir,
+        "has_drift": has_drift,
+        "snapshot_count": len(snapshot),
+        "live_count": len(live),
+        "added": list(added),
+        "removed": list(removed),
+    }
+
+    if mode.mode != "pretty":
+        if has_drift and fail_on_capability_drift and not allow_capability_drift:
+            raise DiagnosticError(
+                code="CAPABILITY_DRIFT",
+                message=(
+                    f"Capability drift detected for {task_dir}: "
+                    f"{len(added)} added, {len(removed)} removed since mine."
+                ),
+                diagnose_cmd=f"codeprobe check-infra drift {task_dir} --json",
+                terminal=True,
+                detail={"_envelope_data": drift_detail},
+            )
+        emit_envelope(
+            command=command_name,
+            ok=True,
+            data=drift_detail,
+        )
+        return
+
+    if not has_drift:
         click.echo(f"OK — {len(live)} capabilities match snapshot.")
         return
 
-    added, removed = _format_diff(snapshot, live)
     parts: list[str] = [banner]
     if added:
         parts.append(f"  added since mine: {', '.join(added)}")
@@ -121,18 +184,25 @@ def _run_drift_check(
         return
 
     if fail_on_capability_drift:
-        raise click.ClickException(message)
+        raise DiagnosticError(
+            code="CAPABILITY_DRIFT",
+            message=message,
+            diagnose_cmd=f"codeprobe check-infra drift {task_dir} --json",
+            terminal=True,
+            detail=drift_detail,
+        )
 
     click.echo(f"WARNING: {message}", err=True)
 
 
 
-@click.group(name="check-infra")
+@click.group(name="check-infra", cls=CodeprobeGroup)
 def check_infra() -> None:
     """Diagnostics for mined-task infrastructure (capability drift, etc.)."""
 
 
 @check_infra.command("drift")
+@add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True, file_okay=False))
 @click.option(
     "--fail-on-capability-drift/--no-fail-on-capability-drift",
@@ -155,6 +225,9 @@ def drift_cmd(
     task_dir: str,
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Compare metadata.json capability snapshot to live CAPABILITIES.
 
@@ -166,10 +239,15 @@ def drift_cmd(
         fail_on_capability_drift=fail_on_capability_drift,
         allow_capability_drift=allow_capability_drift,
         banner="Capability drift detected:",
+        command_name="check-infra drift",
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
 @check_infra.command("preamble-drift")
+@add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True, file_okay=False))
 @click.option(
     "--fail-on-capability-drift/--no-fail-on-capability-drift",
@@ -192,6 +270,9 @@ def preamble_drift_cmd(
     task_dir: str,
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Alias of ``drift`` with a preamble-focused banner.
 
@@ -205,6 +286,10 @@ def preamble_drift_cmd(
         fail_on_capability_drift=fail_on_capability_drift,
         allow_capability_drift=allow_capability_drift,
         banner="Preamble capability drift detected:",
+        command_name="check-infra preamble-drift",
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
@@ -279,16 +364,28 @@ def run_offline_preflight(
         requested = {name.strip().lower() for name in backend_filter if name.strip()}
         unknown = sorted(requested - set(KNOWN_BACKENDS))
         if unknown:
-            raise click.ClickException(
-                f"Unknown backend(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(KNOWN_BACKENDS)}"
+            first_known = KNOWN_BACKENDS[0] if KNOWN_BACKENDS else ""
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=(
+                    f"Unknown backend(s): {', '.join(unknown)}. "
+                    f"Known: {', '.join(KNOWN_BACKENDS)}"
+                ),
+                next_try_flag="--backend",
+                next_try_value=first_known,
+                detail={"unknown": unknown, "known": list(KNOWN_BACKENDS)},
             )
         configured = tuple(b for b in configured if b in requested)
 
     if not configured:
-        raise click.ClickException(
-            "No LLM backends configured for offline pre-flight. "
-            "Check model_registry.yaml or pass --backend explicitly."
+        raise DiagnosticError(
+            code="NO_BACKENDS_CONFIGURED",
+            message=(
+                "No LLM backends configured for offline pre-flight. "
+                "Check model_registry.yaml or pass --backend explicitly."
+            ),
+            diagnose_cmd="codeprobe doctor --json",
+            terminal=True,
         )
 
     failures: list[str] = []
@@ -331,7 +428,13 @@ def run_offline_preflight(
 
     if failures:
         banner = "Offline pre-flight failed:"
-        raise click.ClickException("\n  ".join([banner, *failures]))
+        raise DiagnosticError(
+            code="OFFLINE_PREFLIGHT_FAILED",
+            message="\n  ".join([banner, *failures]),
+            diagnose_cmd="codeprobe check-infra offline --json",
+            terminal=True,
+            detail={"failures": list(failures)},
+        )
 
     if echo:
         click.echo(
@@ -341,6 +444,7 @@ def run_offline_preflight(
 
 
 @check_infra.command("offline")
+@add_json_flags
 @click.option(
     "--expected-run-duration",
     "expected_run_duration",
@@ -365,6 +469,9 @@ def run_offline_preflight(
 def offline_cmd(
     expected_run_duration: str,
     backend_filter: tuple[str, ...],
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Pre-flight credential-TTL check for airgapped runs.
 
@@ -377,7 +484,24 @@ def offline_cmd(
     or with no expiration advertised in the current environment are
     reported as ``no-expiry`` and pass the check.
     """
-    run_offline_preflight(expected_run_duration, backend_filter)
+    mode = resolve_mode(
+        "check-infra offline", json_flag, no_json_flag, json_lines_flag,
+    )
+    # Suppress per-backend chatter in envelope mode so stdout stays
+    # single-line JSON-parseable.
+    run_offline_preflight(
+        expected_run_duration,
+        backend_filter,
+        echo=(mode.mode == "pretty"),
+    )
+    if mode.mode != "pretty":
+        emit_envelope(
+            command="check-infra offline",
+            data={
+                "expected_run_duration": expected_run_duration,
+                "backend_filter": list(backend_filter),
+            },
+        )
 
 
 __all__ = ["check_infra", "run_offline_preflight"]

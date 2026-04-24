@@ -13,7 +13,6 @@ from click.testing import CliRunner
 
 from tests.capabilities.fixtures import OracleFixture
 
-
 # ---------------------------------------------------------------------------
 # Marker registration — per pyproject.toml [tool.pytest.ini_options] only the
 # "integration" marker is declared. Capability tests use "capability" and

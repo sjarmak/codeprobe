@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import click
 import pytest
 
 from codeprobe.mining.curator import CuratedFile, CurationResult, MergeConfig
@@ -194,9 +193,10 @@ class TestWriterCuration:
 
 class TestCLIValidation:
     def test_agent_no_llm_raises_error(self) -> None:
+        from codeprobe.cli.errors import PrescriptiveError
         from codeprobe.cli.mine_cmd import run_mine
 
-        with pytest.raises(click.UsageError, match="AgentSearchBackend requires"):
+        with pytest.raises(PrescriptiveError, match="AgentSearchBackend requires"):
             run_mine(
                 path="/nonexistent",
                 no_llm=True,
@@ -207,11 +207,12 @@ class TestCLIValidation:
     def test_curate_without_agent_and_no_llm_succeeds_validation(self) -> None:
         """--curate --no-llm --backends grep should not raise on flag validation."""
         # We only test that flag validation passes — actual mining fails at
-        # path resolution because the path doesn't exist, which surfaces as
-        # a click.UsageError (exit code 2) with an actionable message.
+        # path resolution because the path doesn't exist, which now surfaces
+        # as a PrescriptiveError with code=INVALID_GIT_URL (exit code 2).
+        from codeprobe.cli.errors import PrescriptiveError
         from codeprobe.cli.mine_cmd import run_mine
 
-        with pytest.raises(click.UsageError, match="does not exist"):
+        with pytest.raises(PrescriptiveError, match="does not exist"):
             run_mine(
                 path="/nonexistent",
                 no_llm=True,

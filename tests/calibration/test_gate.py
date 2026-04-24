@@ -334,7 +334,10 @@ class TestCalibrateCli:
                 "cli-test-v1",
             ],
         )
-        assert result.exit_code == 1
+        # CALIBRATION_REJECTED is catalog-pinned at exit_code=2 after the
+        # error-migration unit converted SystemExit(1) to a typed
+        # DiagnosticError.
+        assert result.exit_code == 2
         assert "calibration_rejected" in _combined_output(result)
 
     def test_cli_rejects_small_holdout(self, tmp_path: Path) -> None:
@@ -351,5 +354,6 @@ class TestCalibrateCli:
                 "cli-test-v1",
             ],
         )
-        assert result.exit_code == 1
+        # See comment above — exit_code=2 is the typed-error contract.
+        assert result.exit_code == 2
         assert "too small" in _combined_output(result)

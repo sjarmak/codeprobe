@@ -3,10 +3,10 @@
 Currently provides ``codeprobe cache purge --tenant <id>`` to remove the
 full ~/.codeprobe/state/<id>/ tree for a single tenant.
 
-This module intentionally does NOT register itself in
-``src/codeprobe/cli/__init__.py`` — wiring into the top-level CLI happens
-in a later work unit. Importers should invoke the :data:`cache` group
-directly (e.g. from tests or future wiring code).
+The group is attached to the root CLI from
+``src/codeprobe/cli/__init__.py`` (``main.add_command(cache)``). Tests
+that want to exercise the group in isolation can still import and invoke
+the :data:`cache` symbol directly.
 """
 
 from __future__ import annotations

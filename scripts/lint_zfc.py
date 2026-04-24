@@ -40,9 +40,9 @@ import argparse
 import ast
 import sys
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 # ---------------------------------------------------------------------------
 # Structural configuration (NOT heuristics — these are the bounded sets the

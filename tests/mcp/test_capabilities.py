@@ -23,7 +23,6 @@ from codeprobe.mcp.capabilities import (
 from codeprobe.mcp.fixtures import list_tools, tools_list_response
 from codeprobe.preambles.templates import list_templates, render
 
-
 REQUIRED_IDS = (KEYWORD_SEARCH, SYMBOL_REFERENCES, FILE_READ, GO_TO_DEFINITION)
 
 

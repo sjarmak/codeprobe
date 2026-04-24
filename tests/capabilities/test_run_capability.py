@@ -24,7 +24,6 @@ from codeprobe.core.executor import execute_config
 from codeprobe.models.experiment import ExperimentConfig
 from tests.conftest import FakeAdapter
 
-
 pytestmark = [pytest.mark.capability]
 
 

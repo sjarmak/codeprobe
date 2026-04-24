@@ -10,7 +10,6 @@ import pytest
 from codeprobe.mining.state import MineState
 from codeprobe.paths import compute_repo_hash, tenant_state_dir
 
-
 TENANT = "acme"
 REPO_HASH = compute_repo_hash("git@example.com:acme/repo.git", "main", "/tmp/wt")
 

@@ -117,9 +117,9 @@ class TestLoadProfile:
             "codeprobe.cli.mine_cmd._project_profiles_path",
             lambda repo_path=None: tmp_path / "project.json",
         )
-        import click
+        from codeprobe.cli.errors import PrescriptiveError
 
-        with pytest.raises(click.UsageError, match="not found"):
+        with pytest.raises(PrescriptiveError, match="not found"):
             load_profile("nope")
 
     def test_project_overrides_user(
@@ -226,7 +226,9 @@ class TestCLIListProfiles:
         from codeprobe.cli import main
 
         runner = CliRunner()
-        result = runner.invoke(main, ["mine", "--list-profiles", str(tmp_path)])
+        result = runner.invoke(
+            main, ["mine", "--list-profiles", str(tmp_path), "--no-json"]
+        )
         assert result.exit_code == 0
         assert "No profiles found" in result.output
 

@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from codeprobe.net import guard_offline
+
 logger = logging.getLogger(__name__)
 
 _HOST_MAP: dict[str, str] = {
@@ -235,6 +237,12 @@ def has_pr_narratives(path: Path, timeout: int = 10) -> bool:
     missing or failing ``gh`` CLI counts as "no PRs available" — callers
     must choose a non-PR adapter explicitly in that case.
     """
+    # Offline gate: ``gh pr list`` talks to the GitHub API over HTTPS. In
+    # offline mode we fail loud rather than silently returning False (a
+    # silent False would masquerade as "no PRs available" and mine would
+    # pick a degraded default narrative source).
+    guard_offline("sources.has_pr_narratives (github via gh)")
+
     try:
         result = subprocess.run(
             [

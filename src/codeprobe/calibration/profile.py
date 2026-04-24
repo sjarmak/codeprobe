@@ -8,7 +8,7 @@ gauge how much to trust curator-derived scores.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 
 @dataclass(frozen=True)
@@ -36,7 +36,7 @@ class CalibrationProfile:
     @staticmethod
     def utcnow_iso() -> str:
         """Return current UTC time as ISO 8601 (seconds precision)."""
-        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        return datetime.now(UTC).replace(microsecond=0).isoformat()
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serialisable dict view of this profile.
@@ -55,7 +55,7 @@ class CalibrationProfile:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, object]) -> "CalibrationProfile":
+    def from_dict(cls, payload: dict[str, object]) -> CalibrationProfile:
         """Validate-or-die parsing of a profile dict.
 
         Raises:

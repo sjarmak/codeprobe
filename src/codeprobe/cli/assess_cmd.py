@@ -13,6 +13,7 @@ from codeprobe.calibration import (
     CalibrationProfile,
     format_calibration_line,
 )
+from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,19 @@ def load_calibration_profile(
         return None
 
 
-def run_assess(path: str) -> None:
+def run_assess(
+    path: str,
+    *,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
     """Assess a codebase for AI agent benchmarking potential."""
     from codeprobe.assess import assess_repo
+
+    mode = resolve_mode(
+        "assess", json_flag, no_json_flag, json_lines_flag,
+    )
 
     repo_path = Path(path).resolve()
     if not repo_path.is_dir():
@@ -63,30 +74,49 @@ def run_assess(path: str) -> None:
         click.echo(f"Error: {repo_path} does not appear to be a git repository.", err=True)
         raise SystemExit(1)
     score = assess_repo(repo_path)
-
-    click.echo(f"Codebase Assessment: {repo_path.name}")
-    click.echo(f"{'=' * 50}")
-    click.echo()
-
-    method_label = score.scoring_method
-    if score.model_used:
-        method_label += f" ({score.model_used})"
-    click.echo(f"Scoring method: {method_label}")
-    click.echo(f"Overall Score: {score.overall:.0%}")
-    click.echo()
-    click.echo("Breakdown:")
-    for dim in score.dimensions:
-        click.echo(f"  {dim.name:20s} {dim.score:.0%}  {dim.reasoning}")
-    click.echo()
-    click.echo(f"Recommendation: {score.recommendation}")
-
-    # Calibration confidence surface (R11). Printed unconditionally so
-    # downstream consumers always see the field — either a value or an
-    # explicit "unavailable" marker.
     profile = load_calibration_profile()
-    click.echo()
-    click.echo(format_calibration_line(profile))
 
-    if score.overall >= 0.5:
+    if mode.mode == "pretty":
+        click.echo(f"Codebase Assessment: {repo_path.name}")
+        click.echo(f"{'=' * 50}")
         click.echo()
-        click.echo("Next: codeprobe mine . --count 5")
+
+        method_label = score.scoring_method
+        if score.model_used:
+            method_label += f" ({score.model_used})"
+        click.echo(f"Scoring method: {method_label}")
+        click.echo(f"Overall Score: {score.overall:.0%}")
+        click.echo()
+        click.echo("Breakdown:")
+        for dim in score.dimensions:
+            click.echo(f"  {dim.name:20s} {dim.score:.0%}  {dim.reasoning}")
+        click.echo()
+        click.echo(f"Recommendation: {score.recommendation}")
+
+        # Calibration confidence surface (R11). Printed unconditionally so
+        # downstream consumers always see the field — either a value or an
+        # explicit "unavailable" marker.
+        click.echo()
+        click.echo(format_calibration_line(profile))
+
+        if score.overall >= 0.5:
+            click.echo()
+            click.echo("Next: codeprobe mine . --count 5")
+        return
+
+    # Envelope / NDJSON mode.
+    emit_envelope(
+        command="assess",
+        data={
+            "repo": str(repo_path),
+            "overall": score.overall,
+            "scoring_method": score.scoring_method,
+            "model_used": score.model_used,
+            "dimensions": [
+                {"name": d.name, "score": d.score, "reasoning": d.reasoning}
+                for d in score.dimensions
+            ],
+            "recommendation": score.recommendation,
+            "calibration": format_calibration_line(profile),
+        },
+    )

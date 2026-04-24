@@ -78,7 +78,12 @@ def test_check_infra_passes_when_capability_set_matches(tmp_path: Path) -> None:
     )
 
     runner = CliRunner()
-    result = runner.invoke(main, ["check-infra", "drift", str(task_dir)])
+    # --no-json preserves the legacy "OK" pretty surface the assertion
+    # expects; CliRunner is non-TTY so the envelope default would otherwise
+    # be emitted.
+    result = runner.invoke(
+        main, ["check-infra", "drift", str(task_dir), "--no-json"]
+    )
 
     assert result.exit_code == 0, (
         f"expected exit 0 when capabilities match; got {result.exit_code}\n"
@@ -95,7 +100,13 @@ def test_check_infra_allow_drift_flag(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["check-infra", "drift", "--allow-capability-drift", str(task_dir)],
+        [
+            "check-infra",
+            "drift",
+            "--allow-capability-drift",
+            str(task_dir),
+            "--no-json",
+        ],
     )
 
     assert result.exit_code == 0

@@ -32,9 +32,17 @@ from codeprobe.calibration import (
     emit_profile,
     load_holdout,
 )
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_mode,
+)
+from codeprobe.cli.errors import DiagnosticError
+from codeprobe.config.defaults import resolve_out_calibrate, use_v07_defaults
 
 
 @click.command("calibrate")
+@add_json_flags
 @click.argument("holdout_path", type=click.Path(exists=True, dir_okay=False))
 @click.option(
     "--curator-version",
@@ -75,6 +83,9 @@ def calibrate(
     min_tasks: int,
     min_repos: int,
     out: str | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Run the calibration gate and emit a profile when it passes.
 
@@ -87,6 +98,9 @@ def calibrate(
     Any failure prints the reason to stderr and exits 1 without writing a
     profile. This is the R11 validity gate.
     """
+    mode = resolve_mode(
+        "calibrate", json_flag, no_json_flag, json_lines_flag,
+    )
     holdout_file = Path(holdout_path)
 
     try:
@@ -99,15 +113,39 @@ def calibrate(
             min_repos=min_repos,
         )
     except CalibrationRejected as exc:
-        click.echo(f"calibration_rejected: {exc}", err=True)
-        raise SystemExit(1) from exc
+        raise DiagnosticError(
+            code="CALIBRATION_REJECTED",
+            message=f"calibration_rejected: {exc}",
+            diagnose_cmd="codeprobe interpret <holdout> --json",
+            terminal=True,
+        ) from exc
 
     payload = profile.to_dict()
     output = json.dumps(payload, indent=2, sort_keys=True)
-    click.echo(output)
+
+    # Under v0.7 defaults, auto-resolve an output path when the user
+    # did not pass --out so the profile is persisted to a predictable
+    # location. Pre-v0.7 behavior (stdout-only when --out is omitted)
+    # is preserved.
+    if out is None and use_v07_defaults():
+        resolved, _ = resolve_out_calibrate(curator_version)
+        out = str(resolved)
 
     if out is not None:
         out_path = Path(out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(output + "\n", encoding="utf-8")
-        click.echo(f"Wrote profile to {out_path}", err=True)
+
+    if mode.mode == "pretty":
+        click.echo(output)
+        if out is not None:
+            click.echo(f"Wrote profile to {Path(out)}", err=True)
+        return
+
+    emit_envelope(
+        command="calibrate",
+        data={
+            "profile": payload,
+            "out_path": str(Path(out)) if out is not None else None,
+        },
+    )

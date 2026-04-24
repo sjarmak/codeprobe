@@ -21,7 +21,6 @@ from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.adapters.telemetry import JsonStdoutCollector
 from codeprobe.cli import main
 
-
 # A valid Claude CLI ``--output-format stream-json --verbose`` transcript.
 # One assistant event with two ``tool_use`` blocks, followed by a
 # terminal ``result`` event carrying usage + cost. The recorder's

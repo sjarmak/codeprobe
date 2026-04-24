@@ -47,11 +47,11 @@ implements and ``docs/prd/`` for the PRDs the criteria manifest encodes.
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import json
 import re
 from collections.abc import Callable
-import dataclasses
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path

@@ -32,7 +32,6 @@ from codeprobe.models.experiment import ConfigResults, ExperimentConfig
 from tests.capabilities.fixtures import FULL_TASK_FIXTURES, MCP_CCX_SGAUTH_301
 from tests.conftest import FakeAdapter
 
-
 pytestmark = [pytest.mark.capability]
 
 

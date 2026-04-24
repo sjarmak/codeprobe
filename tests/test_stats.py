@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from codeprobe.analysis.stats import (
-    PASS_THRESHOLD,
-    summarize_config,
     summarize_completed_tasks,
+    summarize_config,
     task_passed,
 )
 from codeprobe.models.experiment import CompletedTask, ConfigResults

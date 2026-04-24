@@ -10,7 +10,6 @@ import pytest
 
 from codeprobe.mining.refresh import (
     CHURN_THRESHOLD,
-    RefreshDiff,
     StructuralMismatchError,
     StructuralSignature,
     compute_diff,
@@ -21,7 +20,6 @@ from codeprobe.mining.refresh import (
 )
 from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
-
 
 # ---------------------------------------------------------------------------
 # Fixture builders
