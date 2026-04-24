@@ -22,6 +22,23 @@ import pytest
 from tests.conftest import FakeAdapter
 
 
+@pytest.fixture(autouse=True)
+def _restore_offline_env():
+    """The CLI on success sets ``os.environ['CODEPROBE_OFFLINE']='1'`` directly
+    so child subprocesses see it. monkeypatch does not track direct os.environ
+    mutations made by code-under-test, so restore state after each test to
+    avoid poisoning sibling test modules (notably test_tenant_cli.py).
+    """
+    before = os.environ.get("CODEPROBE_OFFLINE")
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("CODEPROBE_OFFLINE", None)
+        else:
+            os.environ["CODEPROBE_OFFLINE"] = before
+
+
 def _iso(ts: datetime) -> str:
     return ts.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
