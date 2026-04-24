@@ -51,6 +51,7 @@ This project is AI-orchestration code — ZFC applies at two levels:
 - `analysis/stats.py` — arithmetic aggregation (deterministic math, not judgment)
 - `assess/heuristics.py:score_repo_with_model()` — delegates scoring to Claude via fixed RUBRIC_V1; model judges quality, code does IO
 - `mining/extractor.py:generate_instruction()` — delegates instruction.md generation to LLM; regex fallback only for `--no-llm` offline mode
+- `config/defaults.py` narrative-source resolver — delegates selection to `core/llm.py` under the fixed rubric `_NARRATIVE_RUBRIC_V1`; falls back to the deterministic priority `pr > commits > rfcs > issues` only when no LLM backend is available or `offline=True`, and emits an `LLM_UNAVAILABLE` envelope warning so callers see the degraded mode (PRD §13-T4 refactor)
 
 ### Known violations (tracked for refactoring)
 
@@ -59,7 +60,6 @@ This project is AI-orchestration code — ZFC applies at two levels:
 - `cli/mine_cmd.py:_quality_review()` — three heuristics: length+keyword check for "thin instructions" (desc < 50 chars), hardcoded 0.7 threshold for "low diversity", stub command keyword match. These are UI warnings, not scoring judgments, so lower priority for refactoring
 - `mining/org_scale_families.py` — `min_hits` thresholds (3-5) are hardcoded. Structural file-counting is OK per ZFC, but the thresholds are arbitrary. Acceptable as tunable parameters
 - `mining/curator_tiers.py:assign_ground_truth_tiers()` — the `use_llm=False` branch (line ~410) returns the pure mechanical heuristic tiers without any LLM call. This is a documented offline fallback mode; callers that opt in accept the ZFC trade-off. Not a drift bug — refactor would instead tighten the docstring/labeling so consumers know when they're seeing heuristic-only tiers
-- `config/defaults.py:resolve_narrative_source()` — priority rule `pr > commits > rfcs > issues` is a semantic tiebreaker. Replace with model-assessed selection via `core/llm.py` before 2026-10-23 (Q5 + T4 follow-up bead). Self-enforced by `tests/zfc/test_narrative_source_slo.py`.
 
 ### Justified exceptions
 

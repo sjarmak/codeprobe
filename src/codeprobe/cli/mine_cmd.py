@@ -2123,9 +2123,16 @@ def run_mine(
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+    from codeprobe.cli.envelope import WarningEntry as _WarningEntry
 
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
+
+    # Warnings that should ride along with the terminating envelope. The v0.7
+    # defaults block below appends to this when the narrative-source resolver
+    # fell back to the deterministic priority because no LLM backend was
+    # available (PRD §13-T4 ZFC refactor).
+    _defaults_warnings: list[_WarningEntry] = []
 
     _mine_mode = resolve_mode(
         "mine", json_flag, no_json_flag, json_lines_flag,
@@ -2168,6 +2175,31 @@ def run_mine(
                     narrative_source,
                     narrative_source_source,
                 ) = _resolve_narrative_source(_shape)
+                if narrative_source_source in (
+                    "offline-fallback",
+                    "llm-unavailable",
+                ):
+                    _defaults_warnings.append(
+                        _WarningEntry(
+                            code="LLM_UNAVAILABLE",
+                            message=(
+                                "Narrative-source was selected by the "
+                                "deterministic priority rule because no LLM "
+                                "backend was available. Install one of "
+                                "codeprobe[anthropic] / codeprobe[codex] / "
+                                "the Claude CLI (with credentials) to enable "
+                                "model-assisted selection, or pass "
+                                "--narrative-source explicitly to silence "
+                                "this warning."
+                            ),
+                            detail={
+                                "narrative_source_source": (
+                                    narrative_source_source
+                                ),
+                                "selected": list(narrative_source),
+                            },
+                        )
+                    )
             click.echo(
                 "v0.7 defaults: "
                 f"goal={goal} ({goal_source}) "
@@ -2456,6 +2488,7 @@ def run_mine(
                 "tenant": tenant,
                 "tenant_source": tenant_source,
             },
+            warnings=_defaults_warnings or None,
         )
 
 

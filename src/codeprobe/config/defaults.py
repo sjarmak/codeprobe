@@ -7,28 +7,36 @@ All new default behavior is GATED by env ``CODEPROBE_DEFAULTS``:
 * ``v0.7`` — the resolvers in this module fire and fill in defaults
   based on repository shape / environment.
 
-Each resolver is a PURE function. ``use_v07_defaults()`` is the only
-function in this module that reads the environment. Resolvers return a
+Each resolver is a PURE function with one deliberate exception:
+:func:`resolve_narrative_source` delegates to ``core/llm.py`` (which
+reads env vars for provider credentials) per PRD §13-T4. ``use_v07_defaults()``
+is the other function that reads the environment. Resolvers return a
 ``(value, source)`` tuple where ``source`` is a short tag like
 ``'auto-detected'`` / ``'env'`` / ``'default'`` / ``'config-file'`` /
-``'llm-available'`` etc., so that callers can echo provenance into
-their ``data.*_source`` envelope fields.
+``'llm'`` / ``'offline-fallback'`` etc., so that callers can echo
+provenance into their ``data.*_source`` envelope fields.
 
-ZFC note: :func:`resolve_narrative_source` uses a mechanical priority
-rule (``pr > commits > rfcs > issues``). That priority is a *semantic
-tiebreaker* — not a structural check — so it is tracked as ZFC debt in
-``CLAUDE.md § Known violations`` with a dated SLO enforced by
-``tests/zfc/test_narrative_source_slo.py``.
+:func:`resolve_narrative_source` is ZFC-compliant: selection is
+delegated to the model under a fixed rubric. When no LLM backend is
+available (or ``offline=True``), the function falls back to the legacy
+priority ``pr > commits > rfcs > issues`` and returns source
+``'offline-fallback'`` so the caller can emit an ``LLM_UNAVAILABLE``
+warning into the envelope.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Feature flag
@@ -263,28 +271,69 @@ def resolve_task_type(goal: str) -> tuple[str, str]:
     return task_type, "auto-detected"
 
 
-def resolve_narrative_source(
+_NARRATIVE_CHOICES: tuple[str, ...] = ("pr", "commits", "rfcs", "issues")
+
+# Fixed rubric used for the LLM-assisted narrative-source selection
+# (PRD §13-T4). Kept as a module constant so tests can snapshot-diff it.
+_NARRATIVE_RUBRIC_V1 = """\
+You are selecting the narrative source that codeprobe should mine from a
+git repository. The narrative source is the document type whose text best
+explains WHY each change was made (needed for rich task instructions).
+
+Pick EXACTLY ONE of: pr | commits | rfcs | issues.
+
+Signal availability for this repo:
+- has_merged_prs: {has_merged_prs}  (True ⇔ repo has merge commits; proxy for merged PR history)
+- commit_count: {commit_count}
+- has_rfcs: {has_rfcs}  (True ⇔ repo has rfcs/, RFCS/, or docs/rfcs/ directories)
+- has_issues: {has_issues}
+- pr_density: {pr_density}  (merge commits / total commits)
+
+Rules:
+- You MUST pick a source that is available (signal above is True / non-zero).
+- Prefer "pr" when merged-PR narratives are likely rich (typical open-source repos).
+- Prefer "commits" for squash-merge workflows, force-push workflows, or repos where
+  commit messages are the most reliable narrative.
+- Prefer "rfcs" when RFC docs are present and the repo has no merged-PR history.
+- Prefer "issues" only as a last resort when the other three carry no narrative.
+
+Respond with ONLY a single-line JSON object (no prose, no code fences):
+{{"selected_source": "<one of: pr, commits, rfcs, issues>", "confidence": <0.0-1.0>, "source": "model"}}
+"""
+
+_JSON_OBJECT_RE = re.compile(r"\{[^{}]*\}", re.DOTALL)
+
+
+def _deterministic_narrative_priority(
     repo_shape: RepoShape,
-) -> tuple[tuple[str, ...], str]:
-    """Pick narrative source(s) using the priority ``pr > commits > rfcs > issues``.
-
-    This is a SEMANTIC TIEBREAKER and is therefore tracked in
-    ``CLAUDE.md § Known violations``. It is self-enforced by
-    ``tests/zfc/test_narrative_source_slo.py`` with deadline
-    ``2026-10-23``.
-
-    Raises :class:`PrescriptiveError` ``NARRATIVE_SOURCE_UNDETECTABLE``
-    when the repo has no PRs, commits, RFCs, or issues.
-    """
+) -> tuple[str, ...]:
+    """Legacy priority ``pr > commits > rfcs > issues`` used as offline fallback."""
     if repo_shape.has_merged_prs:
-        return ("pr",), "auto-detected"
+        return ("pr",)
     if repo_shape.commit_count > 0:
-        return ("commits",), "auto-detected"
+        return ("commits",)
     if repo_shape.has_rfcs:
-        return ("rfcs",), "auto-detected"
+        return ("rfcs",)
     if repo_shape.has_issues:
-        return ("issues",), "auto-detected"
+        return ("issues",)
+    return ()
 
+
+def _available_narrative_sources(repo_shape: RepoShape) -> set[str]:
+    """Return the set of narrative sources with non-empty structural signal."""
+    available: set[str] = set()
+    if repo_shape.has_merged_prs:
+        available.add("pr")
+    if repo_shape.commit_count > 0:
+        available.add("commits")
+    if repo_shape.has_rfcs:
+        available.add("rfcs")
+    if repo_shape.has_issues:
+        available.add("issues")
+    return available
+
+
+def _raise_undetectable() -> None:
     raise PrescriptiveError(
         code="NARRATIVE_SOURCE_UNDETECTABLE",
         message=(
@@ -294,6 +343,107 @@ def resolve_narrative_source(
         next_try_flag="--narrative-source",
         next_try_value="commits",
     )
+
+
+def _parse_narrative_model_response(
+    text: str, available: set[str]
+) -> str | None:
+    """Extract and validate a narrative source from the model's raw text.
+
+    Returns the selected source string on success, or ``None`` when the
+    response is unparseable / invalid / picks an unavailable source.
+    """
+    if not text:
+        return None
+    match = _JSON_OBJECT_RE.search(text)
+    if match is None:
+        return None
+    try:
+        payload = json.loads(match.group(0))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    selected = payload.get("selected_source")
+    if not isinstance(selected, str):
+        return None
+    selected = selected.strip().lower()
+    if selected not in _NARRATIVE_CHOICES:
+        return None
+    if selected not in available:
+        return None
+    return selected
+
+
+def resolve_narrative_source(
+    repo_shape: RepoShape,
+    *,
+    offline: bool = False,
+) -> tuple[tuple[str, ...], str]:
+    """Pick narrative source(s) via model judgment with deterministic fallback.
+
+    Delegates selection to ``core/llm.py`` under the fixed rubric
+    :data:`_NARRATIVE_RUBRIC_V1`. When ``offline=True`` or no LLM backend
+    is available, falls back to the legacy priority
+    ``pr > commits > rfcs > issues`` and returns source
+    ``'offline-fallback'`` so the caller can emit an ``LLM_UNAVAILABLE``
+    warning into the envelope.
+
+    Source tags:
+
+    - ``'llm'`` — LLM was consulted and its choice was accepted.
+    - ``'offline-fallback'`` — offline mode requested or no LLM backend
+      available; deterministic priority used. Caller SHOULD emit a
+      warning with code ``LLM_UNAVAILABLE``.
+    - ``'llm-unavailable'`` — an LLM backend was available but the call
+      failed / returned garbage; deterministic priority used. Caller
+      SHOULD emit a warning with code ``LLM_UNAVAILABLE``.
+
+    Raises :class:`PrescriptiveError` ``NARRATIVE_SOURCE_UNDETECTABLE``
+    when the repo has no PRs, commits, RFCs, or issues.
+    """
+    available = _available_narrative_sources(repo_shape)
+    if not available:
+        _raise_undetectable()
+        return (), "default"  # unreachable; _raise_undetectable always raises
+
+    # Local imports keep the defaults module dependency-light for the
+    # (common) caller that never triggers the LLM path.
+    from codeprobe.core.llm import (  # noqa: PLC0415
+        LLMError,
+        LLMRequest,
+        call_llm,
+        llm_available,
+    )
+
+    if offline or not llm_available():
+        return _deterministic_narrative_priority(repo_shape), "offline-fallback"
+
+    prompt = _NARRATIVE_RUBRIC_V1.format(
+        has_merged_prs=repo_shape.has_merged_prs,
+        commit_count=repo_shape.commit_count,
+        has_rfcs=repo_shape.has_rfcs,
+        has_issues=repo_shape.has_issues,
+        pr_density=f"{repo_shape.pr_density:.3f}",
+    )
+
+    try:
+        response = call_llm(
+            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+        )
+    except LLMError as exc:
+        logger.debug("LLM narrative-source call failed: %s", exc)
+        return _deterministic_narrative_priority(repo_shape), "llm-unavailable"
+
+    selected = _parse_narrative_model_response(response.text, available)
+    if selected is None:
+        logger.debug(
+            "LLM narrative-source response invalid or picked unavailable source: %r",
+            response.text[:200],
+        )
+        return _deterministic_narrative_priority(repo_shape), "llm-unavailable"
+
+    return (selected,), "llm"
 
 
 def resolve_enrich(llm_available: bool) -> tuple[bool, str]:

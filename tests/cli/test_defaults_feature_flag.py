@@ -139,9 +139,9 @@ def test_mine_v07_auto_derives_narrative_source_on_commit_fixture(
     assert shape.commit_count >= 3
     assert shape.has_merged_prs is False
 
-    value, source = resolve_narrative_source(shape)
+    value, source = resolve_narrative_source(shape, offline=True)
     assert value == ("commits",)
-    assert source == "auto-detected"
+    assert source == "offline-fallback"
 
 
 def test_mine_v07_raises_narrative_undetectable_on_empty_fixture(

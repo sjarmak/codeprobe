@@ -37,37 +37,47 @@ def _claude_md_path() -> Path:
 
 
 def test_narrative_source_priority_slo() -> None:
-    """Fail the build when the SLO has elapsed AND the ZFC debt is still listed."""
+    """Fail the build when the SLO has elapsed AND the ZFC debt is still listed.
+
+    The refactor landed on 2026-04-24 via bead ``codeprobe-0vk``: the
+    narrative-source resolver now delegates to ``core/llm.py`` under the
+    fixed rubric ``_NARRATIVE_RUBRIC_V1`` and falls back to the legacy
+    priority only when no LLM backend is available. This test is kept as
+    a regression guard against the exact ZFC-debt entry being
+    re-introduced under ``### Known violations``.
+    """
     claude_md = _claude_md_path()
     text = claude_md.read_text(encoding="utf-8")
-    entry_present = ENTRY_MARKER in text
+
+    # Only fail if the entry is re-introduced into the Known-violations
+    # section specifically — a mention elsewhere (changelog, commit log
+    # reference, docstring quote) is fine.
+    known_section = text.split("### Known violations", 1)
+    if len(known_section) == 2:
+        # Look only inside the Known-violations block, up to the next
+        # top-level section header.
+        after = known_section[1].split("\n## ", 1)[0]
+        after = after.split("\n### ", 1)[0]
+        entry_regressed = ENTRY_MARKER in after
+    else:
+        entry_regressed = False
 
     today = date.today()
 
-    if not entry_present:
+    if not entry_regressed:
         # ZFC debt has been paid down — test always passes.
         return
 
     if today < NARRATIVE_SOURCE_SLO_DEADLINE:
         pytest.skip(
-            f"narrative-source priority is acknowledged ZFC debt until "
+            f"narrative-source priority is re-listed ZFC debt until "
             f"{NARRATIVE_SOURCE_SLO_DEADLINE.isoformat()}; "
             f"remove the entry from CLAUDE.md when refactored."
         )
 
     pytest.fail(
         f"SLO expired ({NARRATIVE_SOURCE_SLO_DEADLINE.isoformat()}): "
-        f"the ZFC debt entry '{ENTRY_MARKER}' is still in CLAUDE.md. "
-        "Refactor resolve_narrative_source to delegate selection to a "
-        "model via core/llm.py, then remove the entry."
-    )
-
-
-def test_claude_md_has_entry_today() -> None:
-    """Document the current state: entry is present in CLAUDE.md (until refactored)."""
-    claude_md = _claude_md_path()
-    text = claude_md.read_text(encoding="utf-8")
-    assert ENTRY_MARKER in text, (
-        "narrative-source priority debt missing from CLAUDE.md; "
-        "add it back under '### Known violations' or remove this test."
+        f"the ZFC debt entry '{ENTRY_MARKER}' has been re-introduced "
+        "under '### Known violations' in CLAUDE.md. The resolver must "
+        "stay delegated to core/llm.py (see codeprobe-0vk)."
     )

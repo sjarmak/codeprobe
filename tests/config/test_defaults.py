@@ -232,9 +232,9 @@ def test_resolve_narrative_source_pr_priority(tmp_path: Path) -> None:
         commit_count=10,
         has_rfcs=True,
     )
-    value, source = resolve_narrative_source(shape)
+    value, source = resolve_narrative_source(shape, offline=True)
     assert value == ("pr",)
-    assert source == "auto-detected"
+    assert source == "offline-fallback"
 
 
 def test_resolve_narrative_source_commits_fallback(tmp_path: Path) -> None:
@@ -244,7 +244,7 @@ def test_resolve_narrative_source_commits_fallback(tmp_path: Path) -> None:
         commit_count=5,
         has_rfcs=True,
     )
-    value, _ = resolve_narrative_source(shape)
+    value, _ = resolve_narrative_source(shape, offline=True)
     assert value == ("commits",)
 
 
@@ -255,7 +255,7 @@ def test_resolve_narrative_source_rfcs_fallback(tmp_path: Path) -> None:
         commit_count=0,
         has_rfcs=True,
     )
-    value, _ = resolve_narrative_source(shape)
+    value, _ = resolve_narrative_source(shape, offline=True)
     assert value == ("rfcs",)
 
 
@@ -466,5 +466,5 @@ def test_resolvers_pure_under_any_flag_value(
     )
     goal, _ = resolve_goal(shape)
     assert goal == "quality"
-    ns, _ = resolve_narrative_source(shape)
+    ns, _ = resolve_narrative_source(shape, offline=True)
     assert ns == ("pr",)
