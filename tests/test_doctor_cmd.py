@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from click.testing import CliRunner
 
 from codeprobe.cli import main
@@ -93,13 +95,16 @@ class TestDoctorChecks:
 class TestDoctorCLI:
     """Integration tests for the CLI command."""
 
-    def test_doctor_all_pass(self, monkeypatch: object) -> None:
+    def test_doctor_all_pass(self, monkeypatch: object, tmp_path: Path) -> None:
         import codeprobe.cli.doctor_cmd as mod
 
         monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        # Redirect HOME so the user-home-skills check doesn't trip on the
+        # developer's local ``~/.claude/skills/`` tree (codeprobe-coa).
+        monkeypatch.setenv("HOME", str(tmp_path))
 
         runner = CliRunner()
         # --no-json forces the legacy pretty "PASS" surface; CliRunner is

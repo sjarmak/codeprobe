@@ -79,6 +79,32 @@ def _check_python_version() -> CheckResult:
     )
 
 
+def _check_user_home_skills() -> CheckResult:
+    """Flag stale user-home codeprobe skills that need migration (codeprobe-coa)."""
+    from codeprobe.cli.skills_cmd import stale_user_home_skills
+
+    stale = stale_user_home_skills()
+    if not stale:
+        return CheckResult(
+            name="user-home skills up to date",
+            passed=True,
+            detail="no stale user-home codeprobe skills detected",
+            fix="",
+        )
+    names = ", ".join(r.old_name for r in stale)
+    return CheckResult(
+        name="user-home skills up to date",
+        passed=False,
+        detail=(
+            f"{len(stale)} stale user-home skill(s): {names}. "
+            "Claude Code's skill resolver may pick the stale copy."
+        ),
+        fix="Run 'codeprobe skills migrate --dry-run' to preview, then "
+        "'codeprobe skills migrate --yes' (TTY) or set "
+        "CODEPROBE_SKILLS_MIGRATE=ack (CI) to apply.",
+    )
+
+
 def run_checks() -> list[CheckResult]:
     """Run all environment checks and return results."""
     return [
@@ -103,6 +129,7 @@ def run_checks() -> list[CheckResult]:
         ),
         _check_git_repo(),
         _check_python_version(),
+        _check_user_home_skills(),
     ]
 
 

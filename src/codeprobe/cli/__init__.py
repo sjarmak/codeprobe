@@ -1294,3 +1294,8 @@ main.add_command(snapshot)
 from codeprobe.cli.cache_cmd import cache  # noqa: E402
 
 main.add_command(cache)
+
+# Register the skills migration group (user-home deprecation helper).
+from codeprobe.cli.skills_cmd import skills  # noqa: E402
+
+main.add_command(skills)
