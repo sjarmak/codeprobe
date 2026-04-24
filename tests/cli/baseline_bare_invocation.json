@@ -23,12 +23,12 @@
       "task_count": 0
     },
     "run": {
-      "command": null,
+      "command": "run",
       "detected_narrative_source": null,
-      "error_code": "no_envelope",
-      "error_kind": null,
-      "error_terminal": null,
-      "exit_code": 1,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
       "has_results": null,
       "ok": false,
       "task_count": null
@@ -58,12 +58,12 @@
       "task_count": 0
     },
     "run": {
-      "command": null,
+      "command": "run",
       "detected_narrative_source": null,
-      "error_code": "no_envelope",
-      "error_kind": null,
-      "error_terminal": null,
-      "exit_code": 1,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
       "has_results": null,
       "ok": false,
       "task_count": null
@@ -93,12 +93,12 @@
       "task_count": 0
     },
     "run": {
-      "command": null,
+      "command": "run",
       "detected_narrative_source": null,
-      "error_code": "no_envelope",
-      "error_kind": null,
-      "error_terminal": null,
-      "exit_code": 1,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
       "has_results": null,
       "ok": false,
       "task_count": null
@@ -128,12 +128,12 @@
       "task_count": 0
     },
     "run": {
-      "command": null,
+      "command": "run",
       "detected_narrative_source": null,
-      "error_code": "no_envelope",
-      "error_kind": null,
-      "error_terminal": null,
-      "exit_code": 1,
+      "error_code": "NO_TASKS",
+      "error_kind": "diagnostic",
+      "error_terminal": true,
+      "exit_code": 2,
       "has_results": null,
       "ok": false,
       "task_count": null
