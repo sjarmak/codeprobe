@@ -66,7 +66,7 @@ def test_sigma_export_cli_emits_path_payload(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli_main,
-        ["snapshot", "export", str(snap), "--format", "sigma"],
+        ["snapshot", "export", str(snap), "--format", "sigma", "--no-json"],
     )
     assert result.exit_code == 0, result.output
 

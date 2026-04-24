@@ -63,6 +63,7 @@ def test_sheets_export_preserves_values(tmp_path: Path) -> None:
             "sheets",
             "--out",
             str(target),
+            "--no-json",
         ],
     )
     assert result.exit_code == 0, result.output

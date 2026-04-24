@@ -7,6 +7,11 @@ import sys
 import click
 
 from codeprobe import __version__
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_mode,
+)
 from codeprobe.mining.task_types import (
     TASK_TYPE_REGISTRY as _TASK_TYPE_REGISTRY,
     list_task_types as _list_task_types,
@@ -143,8 +148,14 @@ def main(verbose: int, quiet: bool, log_format: str) -> None:
 
 
 @main.command()
+@add_json_flags
 @click.argument("path", default=".", type=click.Path(exists=True))
-def init(path: str) -> None:
+def init(
+    path: str,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Interactive setup wizard — what do you want to learn?
 
     Walks you through choosing what to compare (models, tools, prompts),
@@ -152,10 +163,16 @@ def init(path: str) -> None:
     """
     from codeprobe.cli.init_cmd import run_init
 
-    run_init(path)
+    run_init(
+        path,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
 
 
 @main.command(cls=MineCommand)
+@add_json_flags
 @click.argument("path", default=".")
 @click.option(
     "--goal",
@@ -453,6 +470,9 @@ def mine(
     narrative_source: tuple[str, ...],
     refresh_dir: str | None,
     accept_structural_change: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
 
@@ -492,8 +512,28 @@ def mine(
         save_profile,
     )
 
+    _mine_output_mode = resolve_mode(
+        "mine", json_flag, no_json_flag, json_lines_flag,
+    )
+
     # --list-task-types: show and exit
     if list_task_types_flag:
+        if _mine_output_mode.mode != "pretty":
+            emit_envelope(
+                command="mine",
+                data={
+                    "list_task_types": [
+                        {
+                            "name": name,
+                            "csb_suite": info.csb_suite,
+                            "csb_suites": list(info.csb_suites),
+                            "description": info.description,
+                        }
+                        for name, info in _list_task_types()
+                    ],
+                },
+            )
+            return
         click.echo(f"{'Task type':<28s} {'CSB suite':<28s} Description")
         click.echo("-" * 100)
         for name, info in _list_task_types():
@@ -512,6 +552,17 @@ def mine(
     if list_profiles_flag:
         repo_path = _Path(path).resolve() if path != "." else _Path.cwd()
         entries = list_profiles(repo_path)
+        if _mine_output_mode.mode != "pretty":
+            emit_envelope(
+                command="mine",
+                data={
+                    "profiles": [
+                        {"name": n, "source": s, "settings": p}
+                        for n, s, p in entries
+                    ]
+                },
+            )
+            return
         if not entries:
             click.echo("No profiles found.")
         else:
@@ -534,6 +585,9 @@ def mine(
                 "profile_name",
                 "save_profile_name",
                 "list_profiles_flag",
+                "json_flag",
+                "no_json_flag",
+                "json_lines_flag",
             }
         )
         values = {
@@ -542,6 +596,15 @@ def mine(
             if k not in _EXCLUDE_FROM_PROFILE and v != param_defaults.get(k)
         }
         saved_path = save_profile(save_profile_name, values)
+        if _mine_output_mode.mode != "pretty":
+            emit_envelope(
+                command="mine",
+                data={
+                    "saved_profile": save_profile_name,
+                    "path": str(saved_path),
+                },
+            )
+            return
         click.echo(f"Profile '{save_profile_name}' saved to {saved_path}")
         return
 
@@ -649,6 +712,9 @@ def mine(
         accept_structural_change=accept_structural_change,
         explicit_set=explicitly_set,
         profile_set=profile_set,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
@@ -757,6 +823,7 @@ def mine(
         "Accepts <N>s, <N>m, <N>h, <N>d."
     ),
 )
+@add_json_flags
 @click.pass_context
 def run(
     ctx: click.Context,
@@ -777,6 +844,9 @@ def run(
     trace_deny: tuple[str, ...],
     offline: bool,
     offline_expected_run_duration: str,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Run eval tasks against an AI coding agent.
 
@@ -814,10 +884,14 @@ def run(
         trace_deny=tuple(trace_deny),
         offline=offline,
         offline_expected_run_duration=offline_expected_run_duration,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
 @main.command()
+@add_json_flags
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--format", "fmt", default="text", help="Output format: text, json, csv.")
 @click.option(
@@ -842,7 +916,13 @@ def run(
     ),
 )
 def interpret(
-    path: str, fmt: str, regression: bool, results_path: str | None
+    path: str,
+    fmt: str,
+    regression: bool,
+    results_path: str | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Analyze eval results and get recommendations.
 
@@ -861,7 +941,13 @@ def interpret(
 
     from codeprobe.cli.interpret_cmd import run_interpret
 
-    run_interpret(path, fmt=fmt)
+    run_interpret(
+        path,
+        fmt=fmt,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
 
 
 @main.group()
@@ -1009,8 +1095,14 @@ def aggregate_experiment(path: str) -> None:
 
 
 @main.command()
+@add_json_flags
 @click.argument("path", default=".", type=click.Path(exists=True))
-def assess(path: str) -> None:
+def assess(
+    path: str,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Assess a codebase for AI agent benchmarking potential.
 
     Analyzes repo structure, complexity, and history to estimate
@@ -1018,10 +1110,16 @@ def assess(path: str) -> None:
     """
     from codeprobe.cli.assess_cmd import run_assess
 
-    run_assess(path)
+    run_assess(
+        path,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
 
 
 @main.command("oracle-check")
+@add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True))
 @click.option(
     "--metric",
@@ -1033,29 +1131,52 @@ def assess(path: str) -> None:
     "ground_truth.json has oracle_tiers, else f1).",
 )
 @click.option("--write-reward", is_flag=True, default=False, help="Write reward.txt.")
-def oracle_check_cmd(task_dir: str, metric: str, write_reward: bool) -> None:
+def oracle_check_cmd(
+    task_dir: str,
+    metric: str,
+    write_reward: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Compare agent answer against oracle ground truth.
 
-    Reads answer.txt and ground_truth.json from TASK_DIR, computes F1/recall/
-    precision/jaccard, and prints the result. Use --write-reward to write the
-    score to reward.txt (for test.sh integration).
+    Reads agent's answer.txt and ground_truth.json from TASK_DIR, computes
+    F1/recall/precision/jaccard, and prints the result. Use --write-reward
+    to write the score to reward.txt (for test.sh integration).
     """
     import json
     from pathlib import Path
 
     from codeprobe.mining.org_scale_oracle import oracle_check
 
+    mode = resolve_mode(
+        "oracle-check", json_flag, no_json_flag, json_lines_flag,
+    )
+
     result = oracle_check(Path(task_dir), metric=metric)
 
     if result.get("error"):
         click.echo(f"Error: {result['error']}", err=True)
 
-    click.echo(json.dumps(result, indent=2))
-
     if write_reward:
         reward_path = Path(task_dir) / "reward.txt"
         reward_path.write_text(str(result.get("score", 0.0)) + "\n")
-        click.echo(f"Wrote {reward_path}")
+
+    if mode.mode == "pretty":
+        click.echo(json.dumps(result, indent=2))
+        if write_reward:
+            click.echo(f"Wrote {Path(task_dir) / 'reward.txt'}")
+    else:
+        emit_envelope(
+            command="oracle-check",
+            data={
+                "task_dir": task_dir,
+                "metric": metric,
+                "result": result,
+                "reward_written": write_reward,
+            },
+        )
 
 
 # Register the ratings subcommand group

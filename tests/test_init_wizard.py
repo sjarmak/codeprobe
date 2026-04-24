@@ -451,7 +451,9 @@ class TestEvalrcDeprecationWarning:
         """codeprobe init should NOT create .evalrc.yaml."""
         runner = CliRunner()
         input_text = "2\n\nclaude\nclaude-sonnet-4-6, claude-opus-4-6\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
         # experiment.json should still be created
@@ -480,7 +482,9 @@ class TestInitCliIntegration:
         # Inputs: goal=1, name=default, agent=claude, model=skip,
         # select=1 (the discovered config)
         input_text = "1\n\nclaude\n\n1\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
         assert (tmp_path / ".codeprobe").is_dir()
@@ -504,7 +508,9 @@ class TestInitCliIntegration:
         # Inputs: goal=1, name=default, agent=claude, model=skip,
         # choose=1 (PAT), choose=1 (paste now), token, url=default (enter)
         input_text = "1\n\nclaude\n\n1\n1\ntok_test123\n\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
 
@@ -519,21 +525,27 @@ class TestInitCliIntegration:
     def test_goal2_model_flow(self, tmp_path: Path) -> None:
         runner = CliRunner()
         input_text = "2\n\nclaude\nclaude-sonnet-4-6, claude-opus-4-6\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
 
     def test_goal3_prompt_flow(self, tmp_path: Path) -> None:
         runner = CliRunner()
         input_text = "3\n\nclaude\n\nprompts/a.md, prompts/b.md\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert result.exit_code == 0, result.output
         assert not (tmp_path / ".evalrc.yaml").exists()
 
     def test_prints_next_steps(self, tmp_path: Path) -> None:
         runner = CliRunner()
         input_text = "2\n\nclaude\nclaude-sonnet-4-6, claude-opus-4-6\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert "codeprobe mine" in result.output
         assert "codeprobe run" in result.output
         assert "codeprobe interpret" in result.output
@@ -541,7 +553,9 @@ class TestInitCliIntegration:
     def test_experiment_json_created(self, tmp_path: Path) -> None:
         runner = CliRunner()
         input_text = "2\nmy-test\nclaude\nclaude-sonnet-4-6, claude-opus-4-6\n"
-        result = runner.invoke(main, ["init", str(tmp_path)], input=input_text)
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
         assert result.exit_code == 0, result.output
         exp_json = tmp_path / ".codeprobe" / "my-test" / "experiment.json"
         assert exp_json.exists()

@@ -1998,10 +1998,19 @@ def run_mine(
     accept_structural_change: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
+    from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
+
+    _mine_mode = resolve_mode(
+        "mine", json_flag, no_json_flag, json_lines_flag,
+    )
 
     # Refresh dispatch: runs before any other mining path so users don't
     # accidentally re-mine a whole tasks dir when they only meant to
@@ -2227,6 +2236,30 @@ def run_mine(
         else:
             click.echo("\nInterrupted.", err=True)
         sys.exit(130)
+
+    # Success path: when envelope/NDJSON mode is active, emit a terminal
+    # summary envelope. Pretty mode preserves the existing click.echo
+    # output block untouched.
+    if _mine_mode.mode in ("single_envelope", "ndjson"):
+        tasks_dir = _CURRENT_TASKS_DIR
+        task_count = 0
+        tasks_dir_str: str | None = None
+        if tasks_dir is not None:
+            tasks_dir_str = str(tasks_dir)
+            if tasks_dir.is_dir():
+                task_count = sum(
+                    1
+                    for c in tasks_dir.iterdir()
+                    if c.is_dir() and (c / "instruction.md").is_file()
+                )
+        emit_envelope(
+            command="mine",
+            data={
+                "tasks_dir": tasks_dir_str,
+                "task_count": task_count,
+                "goal": goal,
+            },
+        )
 
 
 # ---------------------------------------------------------------------------

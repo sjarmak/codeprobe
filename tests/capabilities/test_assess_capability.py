@@ -41,7 +41,10 @@ def test_assess_scores_a_python_repo(
     minimal_git_repo: Path,
 ) -> None:
     """Assess a fresh Python repo: must produce an overall score and rubric breakdown."""
-    result = cli_runner.invoke(main, ["assess", str(minimal_git_repo)])
+    # --no-json keeps the legacy pretty "Codebase Assessment" surface.
+    result = cli_runner.invoke(
+        main, ["assess", str(minimal_git_repo), "--no-json"]
+    )
 
     assert result.exit_code == 0, (
         f"capability=assess fixture=synthetic/python exit_code={result.exit_code} "
@@ -85,7 +88,9 @@ def test_assess_on_real_oracle_repo(cli_runner) -> None:
             f"oracle fixture EnterpriseBench not a git repo at {ENTERPRISE_BENCH_ROOT}"
         )
 
-    result = cli_runner.invoke(main, ["assess", str(ENTERPRISE_BENCH_ROOT)])
+    result = cli_runner.invoke(
+        main, ["assess", str(ENTERPRISE_BENCH_ROOT), "--no-json"]
+    )
 
     assert result.exit_code == 0, (
         f"capability=assess fixture=EnterpriseBench exit_code={result.exit_code} "

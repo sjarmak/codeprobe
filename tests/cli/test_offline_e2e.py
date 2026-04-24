@@ -136,7 +136,7 @@ def test_offline_check_passes_in_airgapped_vm_with_stubbed_endpoints(
 
     result = CliRunner().invoke(
         check_infra,
-        ["offline", "--expected-run-duration", "1h"],
+        ["offline", "--expected-run-duration", "1h", "--no-json"],
     )
 
     assert result.exit_code == 0, (
@@ -189,6 +189,7 @@ def test_offline_check_respects_backend_filter_with_no_network(
             "anthropic",
             "--backend",
             "openai_compat",
+            "--no-json",
         ],
     )
 

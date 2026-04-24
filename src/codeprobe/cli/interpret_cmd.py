@@ -6,6 +6,8 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+
 
 def _count_expected_tasks(tasks_dir: Path) -> int | None:
     """Count the number of task directories in the tasks manifest.
@@ -53,8 +55,17 @@ def run_regression(path: str, results_path: str | None = None) -> None:
     click.echo(report)
 
 
-def run_interpret(path: str, fmt: str = "text") -> None:
+def run_interpret(
+    path: str,
+    fmt: str = "text",
+    *,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
     """Analyze eval results and generate report."""
+    import json as _json
+
     from codeprobe.analysis import (
         format_csv_report,
         format_html_report,
@@ -63,6 +74,18 @@ def run_interpret(path: str, fmt: str = "text") -> None:
         generate_report,
     )
     from codeprobe.core.experiment import load_config_results, load_experiment
+
+    # Resolve output mode once up-front. ``--format text`` maps to an
+    # explicit pretty request; ``--format json`` is orthogonal and is used
+    # to produce a report payload inside the envelope when envelope mode is
+    # active.
+    mode = resolve_mode(
+        "interpret",
+        json_flag,
+        no_json_flag,
+        json_lines_flag,
+        explicit_format="text" if fmt == "text" else None,
+    )
 
     exp_dir = Path(path).resolve()
     try:
@@ -82,10 +105,21 @@ def run_interpret(path: str, fmt: str = "text") -> None:
             results = load_config_results(exp_dir, config.label)
             all_results.append(results)
         except (FileNotFoundError, ValueError) as exc:
-            click.echo(f"Warning: Skipping config '{config.label}': {exc}")
+            if mode.mode == "pretty":
+                click.echo(f"Warning: Skipping config '{config.label}': {exc}")
 
     if not all_results:
-        click.echo("No results found. Run 'codeprobe run' first.")
+        if mode.mode == "pretty":
+            click.echo("No results found. Run 'codeprobe run' first.")
+        else:
+            emit_envelope(
+                command="interpret",
+                data={
+                    "experiment": experiment.name,
+                    "has_results": False,
+                    "message": "No results found. Run 'codeprobe run' first.",
+                },
+            )
         return
 
     # Detect incomplete sweeps by comparing checkpoint results to task manifest
@@ -93,21 +127,41 @@ def run_interpret(path: str, fmt: str = "text") -> None:
 
     report = generate_report(experiment.name, all_results, total_tasks=total_tasks)
 
-    if report.is_partial:
-        click.echo(
-            f"Note: Sweep incomplete — "
-            f"{report.completion_ratio:.0%} of tasks finished. "
-            f"Results are partial.\n"
-        )
+    if mode.mode == "pretty":
+        if report.is_partial:
+            click.echo(
+                f"Note: Sweep incomplete — "
+                f"{report.completion_ratio:.0%} of tasks finished. "
+                f"Results are partial.\n"
+            )
 
-    if fmt == "csv":
-        click.echo(format_csv_report(report))
-    elif fmt == "json":
-        click.echo(format_json_report(report))
-    elif fmt == "html":
-        html = format_html_report(report)
-        out_path = exp_dir / f"{experiment.name}_report.html"
-        out_path.write_text(html)
-        click.echo(f"HTML report written to {out_path}")
-    else:
-        click.echo(format_text_report(report))
+        if fmt == "csv":
+            click.echo(format_csv_report(report))
+        elif fmt == "json":
+            click.echo(format_json_report(report))
+        elif fmt == "html":
+            html = format_html_report(report)
+            out_path = exp_dir / f"{experiment.name}_report.html"
+            out_path.write_text(html)
+            click.echo(f"HTML report written to {out_path}")
+        else:
+            click.echo(format_text_report(report))
+        return
+
+    # Envelope / NDJSON mode — serialize the report payload into data.
+    report_json = format_json_report(report)
+    try:
+        report_payload = _json.loads(report_json)
+    except ValueError:
+        report_payload = {"raw": report_json}
+
+    emit_envelope(
+        command="interpret",
+        data={
+            "experiment": experiment.name,
+            "has_results": True,
+            "is_partial": report.is_partial,
+            "completion_ratio": report.completion_ratio,
+            "report": report_payload,
+        },
+    )

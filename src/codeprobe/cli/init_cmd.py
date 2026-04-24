@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
 from codeprobe.cli.wizard import (
     ask_custom,
     ask_mcp_comparison,
@@ -27,14 +28,42 @@ _GOAL_DEFAULTS = {
 }
 
 
-def run_init(path: str) -> None:
+def run_init(
+    path: str,
+    *,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
     """Interactive wizard: What do you want to learn?"""
+    mode = resolve_mode(
+        "init", json_flag, no_json_flag, json_lines_flag,
+    )
+
     target = Path(path).resolve()
     agents = available()
     if not agents:
         raise click.ClickException(
             "No agent adapters registered. Install an adapter first."
         )
+
+    # Non-pretty mode: init is an interactive wizard, so we short-circuit
+    # to a minimal envelope that advertises the surface without prompting.
+    if mode.mode != "pretty":
+        emit_envelope(
+            command="init",
+            data={
+                "target": str(target),
+                "agents_available": list(agents),
+                "interactive": False,
+                "message": (
+                    "codeprobe init is an interactive wizard; run it in a "
+                    "TTY (without --json / --json-lines) to configure an "
+                    "experiment."
+                ),
+            },
+        )
+        return
 
     click.echo("Welcome to codeprobe!")
     click.echo()

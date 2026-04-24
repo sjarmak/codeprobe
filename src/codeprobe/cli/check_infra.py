@@ -29,6 +29,11 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_mode,
+)
 from codeprobe.mcp.capabilities import CAPABILITIES
 from codeprobe.net.credential_ttl import (
     KNOWN_BACKENDS,
@@ -96,16 +101,43 @@ def _run_drift_check(
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
     banner: str,
+    command_name: str,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
+    mode = resolve_mode(
+        command_name, json_flag, no_json_flag, json_lines_flag,
+    )
+
     metadata_path = Path(task_dir) / "metadata.json"
     snapshot = _load_snapshot(metadata_path)
     live = tuple(sorted(CAPABILITIES.keys()))
 
-    if snapshot == live:
+    added, removed = _format_diff(snapshot, live)
+    has_drift = snapshot != live
+
+    if mode.mode != "pretty":
+        emit_envelope(
+            command=command_name,
+            ok=not (has_drift and fail_on_capability_drift and not allow_capability_drift),
+            data={
+                "task_dir": task_dir,
+                "has_drift": has_drift,
+                "snapshot_count": len(snapshot),
+                "live_count": len(live),
+                "added": list(added),
+                "removed": list(removed),
+            },
+        )
+        if has_drift and fail_on_capability_drift and not allow_capability_drift:
+            raise SystemExit(1)
+        return
+
+    if not has_drift:
         click.echo(f"OK — {len(live)} capabilities match snapshot.")
         return
 
-    added, removed = _format_diff(snapshot, live)
     parts: list[str] = [banner]
     if added:
         parts.append(f"  added since mine: {', '.join(added)}")
@@ -133,6 +165,7 @@ def check_infra() -> None:
 
 
 @check_infra.command("drift")
+@add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True, file_okay=False))
 @click.option(
     "--fail-on-capability-drift/--no-fail-on-capability-drift",
@@ -155,6 +188,9 @@ def drift_cmd(
     task_dir: str,
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Compare metadata.json capability snapshot to live CAPABILITIES.
 
@@ -166,10 +202,15 @@ def drift_cmd(
         fail_on_capability_drift=fail_on_capability_drift,
         allow_capability_drift=allow_capability_drift,
         banner="Capability drift detected:",
+        command_name="check-infra drift",
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
 @check_infra.command("preamble-drift")
+@add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True, file_okay=False))
 @click.option(
     "--fail-on-capability-drift/--no-fail-on-capability-drift",
@@ -192,6 +233,9 @@ def preamble_drift_cmd(
     task_dir: str,
     fail_on_capability_drift: bool,
     allow_capability_drift: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Alias of ``drift`` with a preamble-focused banner.
 
@@ -205,6 +249,10 @@ def preamble_drift_cmd(
         fail_on_capability_drift=fail_on_capability_drift,
         allow_capability_drift=allow_capability_drift,
         banner="Preamble capability drift detected:",
+        command_name="check-infra preamble-drift",
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
@@ -341,6 +389,7 @@ def run_offline_preflight(
 
 
 @check_infra.command("offline")
+@add_json_flags
 @click.option(
     "--expected-run-duration",
     "expected_run_duration",
@@ -365,6 +414,9 @@ def run_offline_preflight(
 def offline_cmd(
     expected_run_duration: str,
     backend_filter: tuple[str, ...],
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Pre-flight credential-TTL check for airgapped runs.
 
@@ -377,7 +429,24 @@ def offline_cmd(
     or with no expiration advertised in the current environment are
     reported as ``no-expiry`` and pass the check.
     """
-    run_offline_preflight(expected_run_duration, backend_filter)
+    mode = resolve_mode(
+        "check-infra offline", json_flag, no_json_flag, json_lines_flag,
+    )
+    # Suppress per-backend chatter in envelope mode so stdout stays
+    # single-line JSON-parseable.
+    run_offline_preflight(
+        expected_run_duration,
+        backend_filter,
+        echo=(mode.mode == "pretty"),
+    )
+    if mode.mode != "pretty":
+        emit_envelope(
+            command="check-infra offline",
+            data={
+                "expected_run_duration": expected_run_duration,
+                "backend_filter": list(backend_filter),
+            },
+        )
 
 
 __all__ = ["check_infra", "run_offline_preflight"]

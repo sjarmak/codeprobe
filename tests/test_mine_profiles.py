@@ -226,7 +226,9 @@ class TestCLIListProfiles:
         from codeprobe.cli import main
 
         runner = CliRunner()
-        result = runner.invoke(main, ["mine", "--list-profiles", str(tmp_path)])
+        result = runner.invoke(
+            main, ["mine", "--list-profiles", str(tmp_path), "--no-json"]
+        )
         assert result.exit_code == 0
         assert "No profiles found" in result.output
 
