@@ -2130,6 +2130,7 @@ def run_mine(
     """Mine eval tasks from a repository."""
     from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
     from codeprobe.cli.envelope import WarningEntry as _WarningEntry
+    from codeprobe.tenant_lock import acquire_tenant_lock
 
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
@@ -2140,362 +2141,370 @@ def run_mine(
     # available (PRD §13-T4 ZFC refactor).
     _defaults_warnings: list[_WarningEntry] = []
 
-    _mine_mode = resolve_mode(
-        "mine", json_flag, no_json_flag, json_lines_flag,
-    )
-
-    # v0.7 gate-on-context defaults — opt-in via CODEPROBE_DEFAULTS=v0.7.
-    # Compute (goal, narrative_source) defaults from structural repo signals
-    # when the user did not pass explicit values. Pre-v0.7 paths remain
-    # byte-identical. PrescriptiveError flows up to the top-level handler
-    # which renders per output mode.
-    goal_source = "flag" if goal is not None else "default"
-    narrative_source_source = "flag" if narrative_source else "default"
-    from codeprobe.config.defaults import (
-        resolve_goal as _resolve_goal,
-    )
-    from codeprobe.config.defaults import (
-        resolve_narrative_source as _resolve_narrative_source,
-    )
-    from codeprobe.config.defaults import (
-        scan_repo_shape as _scan_repo_shape,
-    )
-    from codeprobe.config.defaults import (
-        use_v07_defaults as _use_v07_defaults,
-    )
-
-    if _use_v07_defaults() and refresh_dir is None:
-        try:
-            _repo_path = Path(path).resolve()
-        except Exception:  # pragma: no cover - defensive
-            _repo_path = None
-        if _repo_path is not None and _repo_path.is_dir():
-            _shape = _scan_repo_shape(_repo_path)
-            if goal is None and "goal" not in explicit_set:
-                goal, goal_source = _resolve_goal(_shape)
-            if (
-                not narrative_source
-                and "narrative_source" not in explicit_set
-            ):
-                (
-                    narrative_source,
-                    narrative_source_source,
-                ) = _resolve_narrative_source(_shape)
-                if narrative_source_source in (
-                    "offline-fallback",
-                    "llm-unavailable",
-                ):
-                    _defaults_warnings.append(
-                        _WarningEntry(
-                            code="LLM_UNAVAILABLE",
-                            message=(
-                                "Narrative-source was selected by the "
-                                "deterministic priority rule because no LLM "
-                                "backend was available. Install one of "
-                                "codeprobe[anthropic] / codeprobe[codex] / "
-                                "the Claude CLI (with credentials) to enable "
-                                "model-assisted selection, or pass "
-                                "--narrative-source explicitly to silence "
-                                "this warning."
-                            ),
-                            detail={
-                                "narrative_source_source": (
-                                    narrative_source_source
-                                ),
-                                "selected": list(narrative_source),
-                            },
-                        )
-                    )
-            click.echo(
-                "v0.7 defaults: "
-                f"goal={goal} ({goal_source}) "
-                f"narrative_source={list(narrative_source)} "
-                f"({narrative_source_source})",
-                err=True,
-            )
-
-
-    # Refresh dispatch: runs before any other mining path so users don't
-    # accidentally re-mine a whole tasks dir when they only meant to
-    # refresh a single task.
-    if refresh_dir is not None:
-        _run_refresh(
-            Path(refresh_dir).resolve(),
-            repo_path_arg=path,
-            accept_structural_change=accept_structural_change,
-        )
-        return
-
-    # CLI validation: --cross-repo and --org-scale are mutually exclusive
-    if cross_repo and org_scale:
-        raise PrescriptiveError(
-            code="MUTEX_FLAGS",
-            message=(
-                "Cannot use --cross-repo with --org-scale. "
-                "Use --cross-repo for cross-repo SDLC mining or "
-                "--org-scale for org-scale comprehension mining."
-            ),
-            next_try_flag="--org-scale",
-            next_try_value="",
-            detail={
-                "conflicting_flags": ["--cross-repo", "--org-scale"],
-            },
-        )
-
-    # Default goal to mcp when --cross-repo is used without explicit --goal
-    if cross_repo and goal is None and "goal" not in explicit_set:
-        click.echo("Defaulting to --goal mcp for cross-repo mining")
-        goal = "mcp"
-
-    # Resolve goal, deprecated preset alias, and flag extras in one pass.
-    # Any extras from a goal (e.g. --goal mcp → org_scale=True, min_files=6)
-    # take effect *before* the org-scale dispatch branch below.
-    resolved = resolve_effective_config(
-        goal=goal,
-        preset=preset,
-        count=count,
-        source=source,
-        min_files=min_files,
-        min_quality=min_quality,
-        enrich=enrich,
-        org_scale=org_scale,
-        mcp_families=mcp_families,
-        explicit_set=explicit_set,
-        profile_set=profile_set,
-        warn=lambda msg: click.echo(f"Warning: {msg}", err=True),
-    )
-    count = resolved["count"]
-    source = resolved["source"]
-    min_files = resolved["min_files"]
-    min_quality = resolved["min_quality"]
-    enrich = resolved["enrich"]
-    org_scale = resolved["org_scale"]
-    mcp_families = resolved["mcp_families"]
-    goal = resolved["goal"]
-
-    # Derive display name, bias, and task_type from the resolved goal, if any.
-    # min_files is already resolved via goal extras inside
-    # resolve_effective_config, so we only pull the descriptive fields here.
-    if goal is not None:
-        goal_entry = _EVAL_GOALS[goal]
-        goal_name = goal_entry["name"]
-        bias = goal_entry["bias"]
-        task_type = goal_entry["task_type"]
-    else:
-        goal_name = "General benchmarking"
-        bias = "balanced"
-        task_type = "mixed"
-
-    # --task-type takes precedence over the goal-derived task_type.
-    if task_type_override is not None:
-        task_type = task_type_override
-        goal_name = f"{goal_name} (task-type={task_type})"
-        # org_scale_cross_repo routes through the org-scale pipeline,
-        # which is gated on the separate --org-scale flag path. Auto-
-        # enable it so --task-type alone is enough.
-        if task_type == "org_scale_cross_repo":
-            org_scale = True
-
-    # CLI validation: --backends agent --no-llm is incompatible
-    if no_llm and "agent" in backends:
-        raise PrescriptiveError(
-            code="MUTEX_FLAGS",
-            message=(
-                "Cannot use --backends agent with --no-llm: "
-                "AgentSearchBackend requires an LLM backend."
-            ),
-            next_try_flag="--no-llm",
-            next_try_value="",
-            detail={"conflicting_flags": ["--backends agent", "--no-llm"]},
-        )
-
-    # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
-    # for a usable path rather than bailing out with a hard error. This is the
-    # "guided flow for missing inputs" case — the user ran `codeprobe mine`
-    # from a non-repo directory, which is easy to do on first use.
-    if path == "." and _is_interactive():
-        cwd_is_repo = (Path.cwd() / ".git").exists()
-        if not cwd_is_repo:
-            click.echo(
-                f"Current directory ({Path.cwd()}) is not a git repository."
-            )
-            path = click.prompt(
-                "Path to a local git repo (or a git URL to clone)",
-                type=str,
-            )
-
-    repo_path = _resolve_repo_path(path)
-
-    # Non-blocking suitability check applies to every dispatch path
-    # (cross-repo, org-scale, and the single-repo pipelines below).
-    # Runs once here, before any mining happens.
-    if interactive is None:
-        interactive = _is_interactive()
-    if not _run_suitability_check(
-        task_type,
-        repo_path,
-        interactive=bool(interactive),
-    ):
-        click.echo("Aborted.")
-        return
-
+    # R4 tenant lock: serialize concurrent mine invocations in the same
+    # tenant (same cwd + same $USER). On contention a DiagnosticError
+    # ``TENANT_IN_USE`` propagates to the top-level handler.
+    _lock_cm = acquire_tenant_lock(tenant or "local", "mine")
+    _lock_cm.__enter__()
     try:
-        # Cross-repo dispatch: AFTER resolve_effective_config, BEFORE org_scale
-        if cross_repo:
-            _dispatch_cross_repo(
-                primary=repo_path,
-                cross_repo=cross_repo,
-                count=count,
-                goal_name=goal_name,
-                bias=bias,
-                dual_verify=dual_verify,
-            )
-            return
+        _mine_mode = resolve_mode(
+        "mine", json_flag, no_json_flag, json_lines_flag,
+        )
 
-        if org_scale:
-            # Build repo_paths list: primary path + any --repos entries
-            repo_paths = [repo_path]
-            for r in repos:
-                if _is_git_url(r):
-                    repo_paths.append(_clone_repo(r))
-                else:
-                    rp = Path(r).resolve()
-                    if not rp.exists():
-                        suggestion = _suggest_path(rp)
-                        hint = (
-                            f" Did you mean: {suggestion}?" if suggestion else ""
+        # v0.7 gate-on-context defaults — opt-in via CODEPROBE_DEFAULTS=v0.7.
+        # Compute (goal, narrative_source) defaults from structural repo signals
+        # when the user did not pass explicit values. Pre-v0.7 paths remain
+        # byte-identical. PrescriptiveError flows up to the top-level handler
+        # which renders per output mode.
+        goal_source = "flag" if goal is not None else "default"
+        narrative_source_source = "flag" if narrative_source else "default"
+        from codeprobe.config.defaults import (
+            resolve_goal as _resolve_goal,
+        )
+        from codeprobe.config.defaults import (
+            resolve_narrative_source as _resolve_narrative_source,
+        )
+        from codeprobe.config.defaults import (
+            scan_repo_shape as _scan_repo_shape,
+        )
+        from codeprobe.config.defaults import (
+            use_v07_defaults as _use_v07_defaults,
+        )
+
+        if _use_v07_defaults() and refresh_dir is None:
+            try:
+                _repo_path = Path(path).resolve()
+            except Exception:  # pragma: no cover - defensive
+                _repo_path = None
+            if _repo_path is not None and _repo_path.is_dir():
+                _shape = _scan_repo_shape(_repo_path)
+                if goal is None and "goal" not in explicit_set:
+                    goal, goal_source = _resolve_goal(_shape)
+                if (
+                    not narrative_source
+                    and "narrative_source" not in explicit_set
+                ):
+                    (
+                        narrative_source,
+                        narrative_source_source,
+                    ) = _resolve_narrative_source(_shape)
+                    if narrative_source_source in (
+                        "offline-fallback",
+                        "llm-unavailable",
+                    ):
+                        _defaults_warnings.append(
+                            _WarningEntry(
+                                code="LLM_UNAVAILABLE",
+                                message=(
+                                    "Narrative-source was selected by the "
+                                    "deterministic priority rule because no LLM "
+                                    "backend was available. Install one of "
+                                    "codeprobe[anthropic] / codeprobe[codex] / "
+                                    "the Claude CLI (with credentials) to enable "
+                                    "model-assisted selection, or pass "
+                                    "--narrative-source explicitly to silence "
+                                    "this warning."
+                                ),
+                                detail={
+                                    "narrative_source_source": (
+                                        narrative_source_source
+                                    ),
+                                    "selected": list(narrative_source),
+                                },
+                            )
                         )
-                        raise PrescriptiveError(
-                            code="INVALID_GIT_URL",
-                            message=f"--repos path does not exist: {rp}.{hint}",
-                            next_try_flag="paths-or-https-url",
-                            next_try_value=suggestion or "",
-                            detail={
-                                "path": str(rp),
-                                "suggestion": suggestion or "",
-                            },
-                        )
-                    repo_paths.append(rp)
-            _run_org_scale_mine(
-                repo_paths,
-                count=count,
-                no_llm=no_llm,
-                families=families,
-                scan_timeout=scan_timeout,
-                validate_flag=validate_flag,
-                curate=curate,
-                backends=backends,
-                verify_curation_flag=verify_curation_flag,
-                mcp_families=mcp_families,
-                sg_repo=sg_repo,
-                sg_discovery=sg_discovery,
-                dual_verify=dual_verify,
+                click.echo(
+                    "v0.7 defaults: "
+                    f"goal={goal} ({goal_source}) "
+                    f"narrative_source={list(narrative_source)} "
+                    f"({narrative_source_source})",
+                    err=True,
+                )
+
+
+        # Refresh dispatch: runs before any other mining path so users don't
+        # accidentally re-mine a whole tasks dir when they only meant to
+        # refresh a single task.
+        if refresh_dir is not None:
+            _run_refresh(
+                Path(refresh_dir).resolve(),
+                repo_path_arg=path,
+                accept_structural_change=accept_structural_change,
             )
             return
 
-        if interactive and goal is None:
-            (
-                goal_name,
-                count,
-                source,
-                min_files,
-                bias,
-                task_type,
-                subsystems,
-                discover_subsystems,
-            ) = _interactive_config(
-                count, source, min_files, subsystems, discover_subsystems, repo_path
+        # CLI validation: --cross-repo and --org-scale are mutually exclusive
+        if cross_repo and org_scale:
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    "Cannot use --cross-repo with --org-scale. "
+                    "Use --cross-repo for cross-repo SDLC mining or "
+                    "--org-scale for org-scale comprehension mining."
+                ),
+                next_try_flag="--org-scale",
+                next_try_value="",
+                detail={
+                    "conflicting_flags": ["--cross-repo", "--org-scale"],
+                },
             )
 
-        # Apply cold-start and comprehension-availability fallbacks
-        task_type = _resolve_task_type(task_type, repo_path, source)
+        # Default goal to mcp when --cross-repo is used without explicit --goal
+        if cross_repo and goal is None and "goal" not in explicit_set:
+            click.echo("Defaulting to --goal mcp for cross-repo mining")
+            goal = "mcp"
 
-        # Note: narrative-source selection (INV1) is resolved inside
-        # _dispatch_sdlc / _dispatch_mixed — it needs to run only on
-        # dispatch paths that actually consume narrative context, and
-        # AFTER mining so zero-task fixtures (CI) do not need to mock
-        # has_pr_narratives. See _resolve_narrative_source for the
-        # loud-error contract.
-
-        if discover_subsystems:
-            subsystems = _discover_and_select(repo_path, source)
-            if not subsystems:
-                return
-
-        subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
-
-        if interactive and not _show_preflight(
-            repo_path, goal_name, count, source, min_files, bias, subsystems
-        ):
-            click.echo("Aborted.")
-            return
-
-        if interactive:
-            click.echo("\nMining tasks...")
-
-        # Dispatch based on resolved task_type
-        _dispatch_by_task_type(
-            task_type=task_type,
-            repo_path=repo_path,
+        # Resolve goal, deprecated preset alias, and flag extras in one pass.
+        # Any extras from a goal (e.g. --goal mcp → org_scale=True, min_files=6)
+        # take effect *before* the org-scale dispatch branch below.
+        resolved = resolve_effective_config(
+            goal=goal,
+            preset=preset,
             count=count,
             source=source,
             min_files=min_files,
             min_quality=min_quality,
-            subsystems=subsystems,
-            no_llm=no_llm,
             enrich=enrich,
-            goal_name=goal_name,
-            bias=bias,
-            dual_verify=dual_verify,
-            narrative_source=narrative_source,
+            org_scale=org_scale,
+            mcp_families=mcp_families,
+            explicit_set=explicit_set,
+            profile_set=profile_set,
+            warn=lambda msg: click.echo(f"Warning: {msg}", err=True),
         )
-    except KeyboardInterrupt as exc:
-        # AC3: clean up partial output and exit with the standard SIGINT code.
-        partial = _CURRENT_TASKS_DIR
-        if partial is not None and partial.exists():
-            shutil.rmtree(partial, ignore_errors=True)
-            message = (
-                f"Interrupted. Removed partial output at {partial}."
-            )
-            partial_path = str(partial)
-        else:
-            message = "Interrupted."
-            partial_path = ""
-        raise DiagnosticError(
-            code="INTERRUPTED",
-            message=message,
-            diagnose_cmd="codeprobe mine ... --resume",
-            terminal=True,
-            exit_code=130,
-            detail={"partial_path": partial_path},
-        ) from exc
+        count = resolved["count"]
+        source = resolved["source"]
+        min_files = resolved["min_files"]
+        min_quality = resolved["min_quality"]
+        enrich = resolved["enrich"]
+        org_scale = resolved["org_scale"]
+        mcp_families = resolved["mcp_families"]
+        goal = resolved["goal"]
 
-    # Success path: when envelope/NDJSON mode is active, emit a terminal
-    # summary envelope. Pretty mode preserves the existing click.echo
-    # output block untouched.
-    if _mine_mode.mode in ("single_envelope", "ndjson"):
-        tasks_dir = _CURRENT_TASKS_DIR
-        task_count = 0
-        tasks_dir_str: str | None = None
-        if tasks_dir is not None:
-            tasks_dir_str = str(tasks_dir)
-            if tasks_dir.is_dir():
-                task_count = sum(
-                    1
-                    for c in tasks_dir.iterdir()
-                    if c.is_dir() and (c / "instruction.md").is_file()
+        # Derive display name, bias, and task_type from the resolved goal, if any.
+        # min_files is already resolved via goal extras inside
+        # resolve_effective_config, so we only pull the descriptive fields here.
+        if goal is not None:
+            goal_entry = _EVAL_GOALS[goal]
+            goal_name = goal_entry["name"]
+            bias = goal_entry["bias"]
+            task_type = goal_entry["task_type"]
+        else:
+            goal_name = "General benchmarking"
+            bias = "balanced"
+            task_type = "mixed"
+
+        # --task-type takes precedence over the goal-derived task_type.
+        if task_type_override is not None:
+            task_type = task_type_override
+            goal_name = f"{goal_name} (task-type={task_type})"
+            # org_scale_cross_repo routes through the org-scale pipeline,
+            # which is gated on the separate --org-scale flag path. Auto-
+            # enable it so --task-type alone is enough.
+            if task_type == "org_scale_cross_repo":
+                org_scale = True
+
+        # CLI validation: --backends agent --no-llm is incompatible
+        if no_llm and "agent" in backends:
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    "Cannot use --backends agent with --no-llm: "
+                    "AgentSearchBackend requires an LLM backend."
+                ),
+                next_try_flag="--no-llm",
+                next_try_value="",
+                detail={"conflicting_flags": ["--backends agent", "--no-llm"]},
+            )
+
+        # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
+        # for a usable path rather than bailing out with a hard error. This is the
+        # "guided flow for missing inputs" case — the user ran `codeprobe mine`
+        # from a non-repo directory, which is easy to do on first use.
+        if path == "." and _is_interactive():
+            cwd_is_repo = (Path.cwd() / ".git").exists()
+            if not cwd_is_repo:
+                click.echo(
+                    f"Current directory ({Path.cwd()}) is not a git repository."
                 )
-        emit_envelope(
-            command="mine",
-            data={
-                "tasks_dir": tasks_dir_str,
-                "task_count": task_count,
-                "goal": goal,
-                "tenant": tenant,
-                "tenant_source": tenant_source,
-            },
-            warnings=_defaults_warnings or None,
-        )
+                path = click.prompt(
+                    "Path to a local git repo (or a git URL to clone)",
+                    type=str,
+                )
+
+        repo_path = _resolve_repo_path(path)
+
+        # Non-blocking suitability check applies to every dispatch path
+        # (cross-repo, org-scale, and the single-repo pipelines below).
+        # Runs once here, before any mining happens.
+        if interactive is None:
+            interactive = _is_interactive()
+        if not _run_suitability_check(
+            task_type,
+            repo_path,
+            interactive=bool(interactive),
+        ):
+            click.echo("Aborted.")
+            return
+
+        try:
+            # Cross-repo dispatch: AFTER resolve_effective_config, BEFORE org_scale
+            if cross_repo:
+                _dispatch_cross_repo(
+                    primary=repo_path,
+                    cross_repo=cross_repo,
+                    count=count,
+                    goal_name=goal_name,
+                    bias=bias,
+                    dual_verify=dual_verify,
+                )
+                return
+
+            if org_scale:
+                # Build repo_paths list: primary path + any --repos entries
+                repo_paths = [repo_path]
+                for r in repos:
+                    if _is_git_url(r):
+                        repo_paths.append(_clone_repo(r))
+                    else:
+                        rp = Path(r).resolve()
+                        if not rp.exists():
+                            suggestion = _suggest_path(rp)
+                            hint = (
+                                f" Did you mean: {suggestion}?" if suggestion else ""
+                            )
+                            raise PrescriptiveError(
+                                code="INVALID_GIT_URL",
+                                message=f"--repos path does not exist: {rp}.{hint}",
+                                next_try_flag="paths-or-https-url",
+                                next_try_value=suggestion or "",
+                                detail={
+                                    "path": str(rp),
+                                    "suggestion": suggestion or "",
+                                },
+                            )
+                        repo_paths.append(rp)
+                _run_org_scale_mine(
+                    repo_paths,
+                    count=count,
+                    no_llm=no_llm,
+                    families=families,
+                    scan_timeout=scan_timeout,
+                    validate_flag=validate_flag,
+                    curate=curate,
+                    backends=backends,
+                    verify_curation_flag=verify_curation_flag,
+                    mcp_families=mcp_families,
+                    sg_repo=sg_repo,
+                    sg_discovery=sg_discovery,
+                    dual_verify=dual_verify,
+                )
+                return
+
+            if interactive and goal is None:
+                (
+                    goal_name,
+                    count,
+                    source,
+                    min_files,
+                    bias,
+                    task_type,
+                    subsystems,
+                    discover_subsystems,
+                ) = _interactive_config(
+                    count, source, min_files, subsystems, discover_subsystems, repo_path
+                )
+
+            # Apply cold-start and comprehension-availability fallbacks
+            task_type = _resolve_task_type(task_type, repo_path, source)
+
+            # Note: narrative-source selection (INV1) is resolved inside
+            # _dispatch_sdlc / _dispatch_mixed — it needs to run only on
+            # dispatch paths that actually consume narrative context, and
+            # AFTER mining so zero-task fixtures (CI) do not need to mock
+            # has_pr_narratives. See _resolve_narrative_source for the
+            # loud-error contract.
+
+            if discover_subsystems:
+                subsystems = _discover_and_select(repo_path, source)
+                if not subsystems:
+                    return
+
+            subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
+
+            if interactive and not _show_preflight(
+                repo_path, goal_name, count, source, min_files, bias, subsystems
+            ):
+                click.echo("Aborted.")
+                return
+
+            if interactive:
+                click.echo("\nMining tasks...")
+
+            # Dispatch based on resolved task_type
+            _dispatch_by_task_type(
+                task_type=task_type,
+                repo_path=repo_path,
+                count=count,
+                source=source,
+                min_files=min_files,
+                min_quality=min_quality,
+                subsystems=subsystems,
+                no_llm=no_llm,
+                enrich=enrich,
+                goal_name=goal_name,
+                bias=bias,
+                dual_verify=dual_verify,
+                narrative_source=narrative_source,
+            )
+        except KeyboardInterrupt as exc:
+            # AC3: clean up partial output and exit with the standard SIGINT code.
+            partial = _CURRENT_TASKS_DIR
+            if partial is not None and partial.exists():
+                shutil.rmtree(partial, ignore_errors=True)
+                message = (
+                    f"Interrupted. Removed partial output at {partial}."
+                )
+                partial_path = str(partial)
+            else:
+                message = "Interrupted."
+                partial_path = ""
+            raise DiagnosticError(
+                code="INTERRUPTED",
+                message=message,
+                diagnose_cmd="codeprobe mine ... --resume",
+                terminal=True,
+                exit_code=130,
+                detail={"partial_path": partial_path},
+            ) from exc
+
+        # Success path: when envelope/NDJSON mode is active, emit a terminal
+        # summary envelope. Pretty mode preserves the existing click.echo
+        # output block untouched.
+        if _mine_mode.mode in ("single_envelope", "ndjson"):
+            tasks_dir = _CURRENT_TASKS_DIR
+            task_count = 0
+            tasks_dir_str: str | None = None
+            if tasks_dir is not None:
+                tasks_dir_str = str(tasks_dir)
+                if tasks_dir.is_dir():
+                    task_count = sum(
+                        1
+                        for c in tasks_dir.iterdir()
+                        if c.is_dir() and (c / "instruction.md").is_file()
+                    )
+            emit_envelope(
+                command="mine",
+                data={
+                    "tasks_dir": tasks_dir_str,
+                    "task_count": task_count,
+                    "goal": goal,
+                    "tenant": tenant,
+                    "tenant_source": tenant_source,
+                },
+                warnings=_defaults_warnings or None,
+            )
+    finally:
+        _lock_cm.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------

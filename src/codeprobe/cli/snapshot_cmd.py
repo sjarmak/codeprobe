@@ -187,112 +187,122 @@ def create_cmd(
         url_override=None,
     )
 
-    mode_cast: RedactionMode = mode  # type: ignore[assignment]
+    # R4 tenant lock: serialize concurrent snapshot-create invocations
+    # within the same tenant. verify/export are read-only / external-write
+    # so they don't need the lock.
+    from codeprobe.tenant_lock import acquire_tenant_lock
 
-    if mode_cast in ("contents", "secrets") and not allow_source_in_export:
-        raise PrescriptiveError(
-            code="SOURCE_EXPORT_REQUIRES_ACK",
-            message=(
-                f"Refusing --redact={mode_cast} without --allow-source-in-export. "
-                "This flag is required to acknowledge that file bodies will be "
-                "written (after scanner redaction). See docs/SNAPSHOT_REDACTION.md."
-            ),
-            next_try_flag="--allow-source-in-export",
-            next_try_value="",
-            detail={"mode": mode_cast},
-        )
-
-    scanner: Scanner | None = None
-    if mode_cast in ("contents", "secrets"):
-        scanner = _build_scanner(scanner_name)
-
-    canary_result = None
-    if mode_cast == "secrets":
-        if canary_proof_path is not None:
-            canary_result = load_canary_proof(canary_proof_path)
-            if not canary_result.passed:
-                raise DiagnosticError(
-                    code="CANARY_PROOF_FAILED",
-                    message=(
-                        f"Canary proof at {canary_proof_path} is marked passed=False. "
-                        "Refusing to create a secrets-mode snapshot."
-                    ),
-                    diagnose_cmd="codeprobe doctor",
-                    terminal=True,
-                    detail={"canary_proof_path": str(canary_proof_path)},
-                )
-        else:
-            if not sys.stdin.isatty():
-                raise PrescriptiveError(
-                    code="CANARY_PROOF_REQUIRED",
-                    message=(
-                        "--redact=secrets requires --canary-proof <path> in "
-                        "non-interactive contexts. Either provide the proof file "
-                        "or run this command in a TTY so you can paste the canary "
-                        "string interactively."
-                    ),
-                    next_try_flag="--canary-proof",
-                    next_try_value="<path-to-canary-proof.json>",
-                )
-            click.echo(
-                f"Interactive canary gate. Paste this canary to continue:\n"
-                f"  {CANARY_DEFAULT}"
-            )
-            pasted = click.prompt("canary", default="", show_default=False)
-            if pasted.strip() != CANARY_DEFAULT:
-                raise DiagnosticError(
-                    code="CANARY_MISMATCH",
-                    message="Canary mismatch. Aborting.",
-                    diagnose_cmd="codeprobe doctor",
-                    terminal=True,
-                )
-            assert scanner is not None
-            try:
-                canary_result = CanaryGate(scanner).require_pass_or_raise()
-            except CanaryFailed as e:
-                raise DiagnosticError(
-                    code="CANARY_GATE_FAILED",
-                    message=str(e),
-                    diagnose_cmd="codeprobe doctor --json",
-                    terminal=True,
-                ) from e
-
+    _lock_cm = acquire_tenant_lock(snap_tenant or "local", "snapshot")
+    _lock_cm.__enter__()
     try:
-        status = create_snapshot(
-            experiment_dir=experiment_dir,
-            out_dir=out_path,
-            mode=mode_cast,
-            scanner=scanner,
-            signing_key=signing_key,
-            canary_proof=canary_result,
-            allow_source_in_export=allow_source_in_export,
-        )
-    except (
-        PermissionError,
-        CanaryFailed,
-        ScannerUnavailable,
-        FileNotFoundError,
-        SymlinkEscapeError,
-    ) as e:
-        raise DiagnosticError(
-            code="SNAPSHOT_CREATE_FAILED",
-            message=f"Snapshot failed: {e}",
-            diagnose_cmd="codeprobe doctor",
-            terminal=True,
-            detail={"experiment_dir": str(experiment_dir)},
-        ) from e
+        mode_cast: RedactionMode = mode  # type: ignore[assignment]
 
-    if out_mode.mode == "pretty":
-        click.echo(json.dumps(status, indent=2))
-    else:
-        emit_envelope(
-            command="snapshot create",
-            data={
-                "status": status,
-                "tenant": snap_tenant,
-                "tenant_source": snap_tenant_source,
-            },
-        )
+        if mode_cast in ("contents", "secrets") and not allow_source_in_export:
+            raise PrescriptiveError(
+                code="SOURCE_EXPORT_REQUIRES_ACK",
+                message=(
+                    f"Refusing --redact={mode_cast} without --allow-source-in-export. "
+                    "This flag is required to acknowledge that file bodies will be "
+                    "written (after scanner redaction). See docs/SNAPSHOT_REDACTION.md."
+                ),
+                next_try_flag="--allow-source-in-export",
+                next_try_value="",
+                detail={"mode": mode_cast},
+            )
+
+        scanner: Scanner | None = None
+        if mode_cast in ("contents", "secrets"):
+            scanner = _build_scanner(scanner_name)
+
+        canary_result = None
+        if mode_cast == "secrets":
+            if canary_proof_path is not None:
+                canary_result = load_canary_proof(canary_proof_path)
+                if not canary_result.passed:
+                    raise DiagnosticError(
+                        code="CANARY_PROOF_FAILED",
+                        message=(
+                            f"Canary proof at {canary_proof_path} is marked passed=False. "
+                            "Refusing to create a secrets-mode snapshot."
+                        ),
+                        diagnose_cmd="codeprobe doctor",
+                        terminal=True,
+                        detail={"canary_proof_path": str(canary_proof_path)},
+                    )
+            else:
+                if not sys.stdin.isatty():
+                    raise PrescriptiveError(
+                        code="CANARY_PROOF_REQUIRED",
+                        message=(
+                            "--redact=secrets requires --canary-proof <path> in "
+                            "non-interactive contexts. Either provide the proof file "
+                            "or run this command in a TTY so you can paste the canary "
+                            "string interactively."
+                        ),
+                        next_try_flag="--canary-proof",
+                        next_try_value="<path-to-canary-proof.json>",
+                    )
+                click.echo(
+                    f"Interactive canary gate. Paste this canary to continue:\n"
+                    f"  {CANARY_DEFAULT}"
+                )
+                pasted = click.prompt("canary", default="", show_default=False)
+                if pasted.strip() != CANARY_DEFAULT:
+                    raise DiagnosticError(
+                        code="CANARY_MISMATCH",
+                        message="Canary mismatch. Aborting.",
+                        diagnose_cmd="codeprobe doctor",
+                        terminal=True,
+                    )
+                assert scanner is not None
+                try:
+                    canary_result = CanaryGate(scanner).require_pass_or_raise()
+                except CanaryFailed as e:
+                    raise DiagnosticError(
+                        code="CANARY_GATE_FAILED",
+                        message=str(e),
+                        diagnose_cmd="codeprobe doctor --json",
+                        terminal=True,
+                    ) from e
+
+        try:
+            status = create_snapshot(
+                experiment_dir=experiment_dir,
+                out_dir=out_path,
+                mode=mode_cast,
+                scanner=scanner,
+                signing_key=signing_key,
+                canary_proof=canary_result,
+                allow_source_in_export=allow_source_in_export,
+            )
+        except (
+            PermissionError,
+            CanaryFailed,
+            ScannerUnavailable,
+            FileNotFoundError,
+            SymlinkEscapeError,
+        ) as e:
+            raise DiagnosticError(
+                code="SNAPSHOT_CREATE_FAILED",
+                message=f"Snapshot failed: {e}",
+                diagnose_cmd="codeprobe doctor",
+                terminal=True,
+                detail={"experiment_dir": str(experiment_dir)},
+            ) from e
+
+        if out_mode.mode == "pretty":
+            click.echo(json.dumps(status, indent=2))
+        else:
+            emit_envelope(
+                command="snapshot create",
+                data={
+                    "status": status,
+                    "tenant": snap_tenant,
+                    "tenant_source": snap_tenant_source,
+                },
+            )
+    finally:
+        _lock_cm.__exit__(None, None, None)
 
 
 @snapshot.command("verify")

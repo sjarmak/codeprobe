@@ -272,6 +272,14 @@
       "since": "0.7.0",
       "description": "The configured LLM provider is unavailable (auth, rate limit, or outage). Usually surfaced as a warning rather than a hard stop.",
       "remediation_pattern": "Run `codeprobe doctor --llm` and verify provider credentials and status."
+    },
+    {
+      "code": "TENANT_IN_USE",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.7.1",
+      "description": "Another codeprobe process holds the tenant lock for the same command (mine/run/snapshot). Only one such invocation may run per tenant at a time.",
+      "remediation_pattern": "Run `ps -p <holder_pid>` to inspect the live holder, or remove the stale lockfile at ~/.codeprobe/state/{tenant}/.lock-<command> if you are sure the holder is dead."
     }
   ]
 }
