@@ -398,6 +398,17 @@ def run_eval(
         # Set the env var for subprocesses AFTER preflight succeeds so a
         # failed preflight leaves the environment untouched.
         os.environ["CODEPROBE_OFFLINE"] = "1"
+        # One-line stderr notice so users & agents can see the gate is
+        # now armed; ``codeprobe.net.guard_offline`` will raise
+        # ``OFFLINE_NET_ATTEMPT`` if a downstream subsystem tries to
+        # reach the network.
+        if not quiet:
+            click.echo(
+                "offline mode: CODEPROBE_OFFLINE=1 set; "
+                "network-touching subsystems will fail loud "
+                "(codeprobe.net.guard_offline active)",
+                err=True,
+            )
 
     exp_dir = Path(config) if config else Path(path)
 
@@ -579,15 +590,9 @@ def run_eval(
     # All configs share the DB — event rows are keyed by (run_id, config,
     # task_id, event_seq) so per-config slicing is cheap at query time.
     #
-    # CLI callers are already guarded by click.Choice(["fail", "truncate"])
-    # so this check only matters for programmatic callers (library use,
-    # tests). Raise ValueError rather than SystemExit so they get a
-    # proper exception and can catch it; SystemExit leaks an exit-code
-    # contract onto library users.
-    if trace_overflow not in ("fail", "truncate"):
-        raise ValueError(
-            f"trace_overflow must be 'fail' or 'truncate', got {trace_overflow!r}"
-        )
+    # ``trace_overflow`` is validated at the top of ``run_eval`` so
+    # library callers get a clean ValueError without triggering any
+    # experiment-loading side effects.
     overflow_policy = (
         TraceOverflowPolicy.FAIL
         if trace_overflow == "fail"

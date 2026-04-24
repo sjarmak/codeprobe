@@ -16,6 +16,7 @@ from typing import Literal
 from codeprobe.mining.sources import RepoSource, detect_source
 from codeprobe.mining.state import MineState
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+from codeprobe.net import guard_offline
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,11 @@ def _list_merged_prs_gh(path: Path, limit: int) -> list[MergedPR] | None:
     can fall back to git-log.  Handles squash merges, rebase merges, and
     regular merge commits — anything GitHub marks as "merged".
     """
+    # Offline gate: ``gh pr list`` issues an HTTPS call to the GitHub API.
+    # Fail loud instead of silently returning None (which would mask as
+    # "gh unavailable" and trigger the git-log fallback).
+    guard_offline("extractor._list_merged_prs_gh (github via gh)")
+
     try:
         result = subprocess.run(
             [
@@ -694,6 +700,9 @@ def _fetch_issue_body(repo_path: Path, issue_number: int) -> tuple[str, str] | N
 
     Returns ``(title, body)`` or *None* on failure.
     """
+    # Offline gate: ``gh issue view`` hits the GitHub API.
+    guard_offline("extractor._fetch_issue_body (github via gh)")
+
     try:
         result = subprocess.run(
             ["gh", "issue", "view", str(issue_number), "--json", "title,body"],
@@ -744,6 +753,9 @@ def _fetch_pr_metadata_from_api(
         return None
 
     pr_number = match.group(1)
+    # Offline gate: ``gh pr view`` hits the GitHub API.
+    guard_offline("extractor._fetch_pr_metadata_from_api (github via gh)")
+
     try:
         result = subprocess.run(
             ["gh", "pr", "view", pr_number, "--json", "title,body,labels"],

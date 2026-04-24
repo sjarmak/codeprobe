@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING
 
 import requests
 
+from codeprobe.net import guard_offline
+
 if TYPE_CHECKING:
     from codeprobe.mining.multi_repo import FileRef
 
@@ -112,6 +114,11 @@ def _call_find_references(
             },
         },
     }
+
+    # Offline gate: must fire BEFORE any network IO and BEFORE the broad
+    # ``except Exception`` below so the DiagnosticError propagates out of
+    # this subsystem and the CLI handler can render a structured envelope.
+    guard_offline(f"sg_ground_truth.find_references -> {url}")
 
     for attempt in range(2):
         headers = {
