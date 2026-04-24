@@ -548,19 +548,49 @@ def _maybe_enrich(
     symbol: str,
     def_file: str,
     grep_files: frozenset[str],
+    *,
+    repo_path: Path | None = None,
+    language: str = "",
 ) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
-    """Enrich ground truth via Sourcegraph if available, else return grep-only."""
-    if not sg_available:
-        return grep_files, ()
+    """Enrich ground truth via Sourcegraph if available, else return grep-only.
 
-    from codeprobe.mining.sg_ground_truth import enrich_ground_truth
+    When *repo_path* and *language* are provided, a final import-dependency
+    filter is applied to drop candidates that cannot plausibly reference the
+    defining symbol (e.g. files that only call the stdlib homonym). See
+    :mod:`codeprobe.mining.reference_filter`.
+    """
+    if sg_available:
+        from codeprobe.mining.sg_ground_truth import enrich_ground_truth
 
-    files, tier_dict = enrich_ground_truth(
-        symbol=symbol,
-        defining_file=def_file,
-        grep_files=grep_files,
-        repo_sg_name=sg_repo,
-    )
+        files, tier_dict = enrich_ground_truth(
+            symbol=symbol,
+            defining_file=def_file,
+            grep_files=grep_files,
+            repo_sg_name=sg_repo,
+        )
+    else:
+        files, tier_dict = grep_files, {}
+
+    if repo_path is not None and language:
+        from codeprobe.mining.reference_filter import filter_by_import_dependency
+
+        filtered = filter_by_import_dependency(
+            candidate_files=files,
+            defining_file=def_file,
+            repo_path=repo_path,
+            language=language,
+        )
+        if filtered != files:
+            logger.info(
+                "Reference filter: %s dropped %d/%d files without import of %s",
+                symbol,
+                len(files) - len(filtered),
+                len(files),
+                def_file,
+            )
+            files = filtered
+            tier_dict = {k: v for k, v in tier_dict.items() if k in files}
+
     return files, tuple(tier_dict.items())
 
 
@@ -601,7 +631,13 @@ def _mine_symbol_reference_tasks(
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
         enriched_files, oracle_tiers = _maybe_enrich(
-            sg_available, sg_repo, symbol, def_file, ref_files
+            sg_available,
+            sg_repo,
+            symbol,
+            def_file,
+            ref_files,
+            repo_path=repo_paths[0],
+            language=language,
         )
 
         task_id = hashlib.sha256(
@@ -767,7 +803,13 @@ def _mine_change_scope_tasks(
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
         enriched_files, oracle_tiers = _maybe_enrich(
-            sg_available, sg_repo, symbol, def_file, ref_files
+            sg_available,
+            sg_repo,
+            symbol,
+            def_file,
+            ref_files,
+            repo_path=repo_paths[0],
+            language=language,
         )
 
         task_id = hashlib.sha256(
