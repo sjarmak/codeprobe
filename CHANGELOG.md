@@ -1,10 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (2026-04-24)
+
+Point release burning down post-0.7.0 follow-up beads. Highlights:
+
+### Features
+
+- **Tenant collision lock (bead `codeprobe-gq1`, PRD R4).** `mine`, `run`, and `snapshot create` now hold an advisory `fcntl.flock`-based lock at `~/.codeprobe/state/{tenant}/.lock-{command}` for the duration of the invocation. A second invocation in the same tenant + command raises a new `TENANT_IN_USE` diagnostic error naming the live holder PID instead of silently racing on state. Stale PIDs are reclaimed transparently. `CODEPROBE_DISABLE_TENANT_LOCK=1` is an emergency escape hatch; Windows falls back to a no-op with a warning.
+- **User-home skill migration helper (bead `codeprobe-coa`, PRD §13-T5).** New `codeprobe skills migrate` subcommand rewrites the pre-v0.6 user-home skills at `~/.claude/skills/{mine-tasks, run-eval, interpret, check-infra, calibrate}/` as `DEPRECATED:` stubs pointing at the authoritative `.claude/skills/codeprobe-*/SKILL.md`. Idempotent. TTY prompts unless `--yes` is passed; non-TTY refuses without `CODEPROBE_SKILLS_MIGRATE=ack`. `codeprobe doctor` grew a `user-home skills up to date` check that emits the existing `STALE_USER_HOME_SKILL` diagnostic.
+
+### ZFC debt paid
+
+- **Narrative-source selection now delegates to `core/llm.py`** (bead `codeprobe-0vk`, PRD §13-T4). `config/defaults.py:resolve_narrative_source` prompts an LLM under the fixed rubric `_NARRATIVE_RUBRIC_V1` and falls back to the deterministic priority `pr > commits > rfcs > issues` only when `offline=True` or no LLM backend is available — in which case the caller emits an `LLM_UNAVAILABLE` envelope warning. The SLO entry previously tracked in `CLAUDE.md § Known violations` is removed; the self-enforcing guard in `tests/zfc/test_narrative_source_slo.py` now flips to a regression check against re-introduction. Closes before the 2026-10-23 deadline.
+
+### CI / tooling
+
+- **mypy `--strict-optional` passes cleanly** (bead `codeprobe-0ms`). The blocking `ci.yml` gate stops sitting red for the first time since v0.5.5: burned 109 pre-existing errors across 40+ files. Added `scipy-stubs` and `types-requests` to `[dev]` extras.
+- **GitHub Actions bumps** (bead `codeprobe-cyh`). `checkout@v4→v5`, `setup-python@v5→v6` across `ci.yml`, `ci-latest.yml`, and `publish.yml` ahead of the 2026-09-16 Node 20 runner cut-off.
 
 ### Deprecations
 
-- **Exception classes renamed to carry the PEP 8 / ruff N818 ``Error`` suffix** (bead `codeprobe-6c9`). Each old name is preserved as a module-level alias via ``__getattr__`` that emits :class:`DeprecationWarning` on access; the aliases will be removed in **v0.9**. Migration: update your imports to the new name.
+- **Exception classes renamed to carry the PEP 8 / ruff N818 `Error` suffix** (bead `codeprobe-6c9`). Each old name is preserved as a module-level alias via `__getattr__` that emits `DeprecationWarning` on access; the aliases will be removed in **v0.9**. Migration: update your imports to the new name.
 
   | Old | New |
   |-----|-----|
@@ -17,7 +33,12 @@
   | `ScannerUnavailable` | `ScannerUnavailableError` |
   | `TraceBudgetExceeded` | `TraceBudgetExceededError` |
 
-  The ``N818`` ignore has been removed from `pyproject.toml [tool.ruff.lint]`.
+  The `N818` ignore has been removed from `pyproject.toml [tool.ruff.lint]`.
+
+### New envelope error codes
+
+- `TENANT_IN_USE` — terminal diagnostic raised by the new tenant lock.
+- `LLM_UNAVAILABLE` — warning emitted when the narrative-source resolver falls back to the deterministic priority because no LLM backend is available.
 
 ## 0.6.0 (2026-04-23)
 
