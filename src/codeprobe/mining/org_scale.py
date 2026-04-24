@@ -551,14 +551,52 @@ def _maybe_enrich(
     *,
     repo_path: Path | None = None,
     language: str = "",
+    sg_authoritative: bool = False,
 ) -> tuple[frozenset[str], tuple[tuple[str, str], ...]]:
-    """Enrich ground truth via Sourcegraph if available, else return grep-only.
+    """Build ground truth for an org-scale task.
 
-    When *repo_path* and *language* are provided, a final import-dependency
-    filter is applied to drop candidates that cannot plausibly reference the
-    defining symbol (e.g. files that only call the stdlib homonym). See
-    :mod:`codeprobe.mining.reference_filter`.
+    Two modes:
+
+    * ``sg_authoritative=False`` (default, used by change-scope-audit):
+      Union of local grep and SG ``find_references``, then import-dependency
+      filter. Broader set — appropriate for "blast radius" framings that
+      include any file importing the defining package.
+
+    * ``sg_authoritative=True`` (used by symbol-reference-trace): SG's
+      ``find_references`` output IS the ground truth. No grep union, no
+      import filter — the oracle matches exactly what the ``sg_find_references``
+      MCP tool returns, so "find references to X" has a well-defined,
+      tool-testable answer. Falls back to grep+filter if the SG call fails
+      (``None``) or returns an empty set.
+
+    When *repo_path* and *language* are provided (non-authoritative path),
+    :mod:`codeprobe.mining.reference_filter` drops candidates that cannot
+    plausibly reference the defining symbol.
     """
+    if sg_available and sg_authoritative:
+        from codeprobe.mining.sg_ground_truth import _call_find_references
+
+        sg_files = _call_find_references(
+            symbol=symbol,
+            defining_file=def_file,
+            repo_sg_name=sg_repo,
+            sg_url="https://demo.sourcegraph.com",
+        )
+        if sg_files:
+            tier_dict = {f: "required" for f in sg_files}
+            logger.info(
+                "SG-authoritative oracle: %s -> %d refs (no grep/filter)",
+                symbol,
+                len(sg_files),
+            )
+            return frozenset(sg_files), tuple(tier_dict.items())
+        logger.warning(
+            "SG-authoritative requested but SG returned %s for %s; "
+            "falling back to grep+filter",
+            "None (API failure)" if sg_files is None else "empty set",
+            symbol,
+        )
+
     if sg_available:
         from codeprobe.mining.sg_ground_truth import enrich_ground_truth
 
@@ -638,6 +676,7 @@ def _mine_symbol_reference_tasks(
             ref_files,
             repo_path=repo_paths[0],
             language=language,
+            sg_authoritative=True,
         )
 
         task_id = hashlib.sha256(
