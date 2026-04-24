@@ -36,7 +36,7 @@ class JsonLineListener:
     def on_event(self, event: RunEvent) -> None:
         """Serialize *event* as a JSON line and write it to the output stream."""
         try:
-            payload = asdict(event)  # type: ignore[arg-type]
+            payload = asdict(event)
             payload["type"] = event.__class__.__name__
             line = json.dumps(payload, default=str)
             self._file.write(line + "\n")

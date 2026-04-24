@@ -748,7 +748,7 @@ def _extract_symbol_definitions(
         exts = {".go"}
     else:
         patterns = [_DEF_PATTERN_PY, _CLASS_PATTERN]
-        exts = _SOURCE_EXTS
+        exts = set(_SOURCE_EXTS)
 
     exclude_fragments = ("/test", "/vendor/") + extra_exclude_path_fragments
 
@@ -813,7 +813,7 @@ def discover_reference_targets(
     elif language == "go":
         exts = {".go"}
     else:
-        exts = _SOURCE_EXTS
+        exts = set(_SOURCE_EXTS)
 
     logger.info(
         "Reference targets: %d candidate symbols from %d files",

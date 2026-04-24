@@ -54,7 +54,7 @@ def _load_metadata(task_dir: Path) -> tuple[CheckResult, dict | None]:
         try:
             import tomllib
         except ModuleNotFoundError:
-            import tomli as tomllib  # type: ignore[no-redef]
+            import tomli as tomllib  # type: ignore[no-redef,import-not-found]
 
         try:
             with open(toml_path, "rb") as f:

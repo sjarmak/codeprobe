@@ -75,7 +75,7 @@ class BedrockBackend:
             )
 
         try:
-            import boto3
+            import boto3  # type: ignore[import-not-found]
         except ImportError as exc:
             raise BackendUnavailableError(
                 "boto3 not installed (pip install boto3) — required for Bedrock"

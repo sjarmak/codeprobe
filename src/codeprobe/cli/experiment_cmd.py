@@ -382,19 +382,19 @@ def experiment_aggregate(path: str) -> None:
 
     # Per-config summaries
     config_summaries: dict[str, dict] = {}
-    for cfg_label, results in config_results.items():
+    for cfg_label, cfg_rows in config_results.items():
         scores = [
-            r["automated_score"] for r in results if r["automated_score"] is not None
+            r["automated_score"] for r in cfg_rows if r["automated_score"] is not None
         ]
-        costs = [r["cost_usd"] for r in results if r.get("cost_usd") is not None]
+        costs = [r["cost_usd"] for r in cfg_rows if r.get("cost_usd") is not None]
         times = [
             r["duration_seconds"]
-            for r in results
+            for r in cfg_rows
             if r.get("duration_seconds") is not None
         ]
 
         config_summaries[cfg_label] = {
-            "tasks_completed": len(results),
+            "tasks_completed": len(cfg_rows),
             "mean_automated_score": (statistics.mean(scores) if scores else None),
             "stdev_automated_score": (
                 statistics.stdev(scores) if len(scores) > 1 else None

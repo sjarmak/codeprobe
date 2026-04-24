@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from codeprobe.models.task import Task
 
@@ -219,7 +219,10 @@ def _read_ground_truth_json(task_dir: Path) -> dict[str, Any]:
     for path in candidates:
         if path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                return cast(
+                    "dict[str, Any]",
+                    json.loads(path.read_text(encoding="utf-8")),
+                )
             except json.JSONDecodeError as exc:
                 raise ValueError(
                     f"ground_truth.json at {path} is not valid JSON: {exc}"
@@ -242,7 +245,9 @@ def read_task_metadata_json(task_dir: Path) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"metadata.json not found in {task_dir}")
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return cast(
+            "dict[str, Any]", json.loads(path.read_text(encoding="utf-8"))
+        )
     except json.JSONDecodeError as exc:
         raise ValueError(f"metadata.json at {path} is not valid JSON: {exc}") from exc
 

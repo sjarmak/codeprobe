@@ -83,7 +83,7 @@ class OpenAICompatBackend:
         try:
             response = client.chat.completions.create(
                 model=model_id,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 max_tokens=max_tokens,
                 **kwargs,
             )

@@ -54,7 +54,7 @@ def _lazy_diagnostic_error() -> type:
     """
 
     try:
-        from codeprobe.cli.errors import (  # type: ignore[import-not-found]
+        from codeprobe.cli.errors import (
             DiagnosticError as _Real,
         )
 

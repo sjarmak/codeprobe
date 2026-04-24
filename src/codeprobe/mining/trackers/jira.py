@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import urllib.parse
-from typing import Any
+from typing import Any, cast
 
 from codeprobe.mining.trackers.base import Ticket
 from codeprobe.mining.vcs._http import stdlib_get
@@ -84,10 +84,10 @@ class JiraAdapter(RedactingLoggerMixin):
 
     # --------------------------------------------------------------- redact
     def redact_request(self, req: dict[str, Any]) -> dict[str, Any]:
-        return redact(req, self._known_tokens)
+        return cast("dict[str, Any]", redact(req, self._known_tokens))
 
     def redact_response(self, resp: dict[str, Any]) -> dict[str, Any]:
-        return redact(resp, self._known_tokens)
+        return cast("dict[str, Any]", redact(resp, self._known_tokens))
 
     # ------------------------------------------------------------------ api
     def fetch_ticket(self, ref: str) -> Ticket:

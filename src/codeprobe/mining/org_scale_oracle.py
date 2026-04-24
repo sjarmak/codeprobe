@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +331,7 @@ def _weighted_f1(
 def _check_count(
     task_dir: Path,
     gt_data: dict,
-) -> dict[str, float | str | int]:
+) -> dict[str, Any]:
     """Count oracle: exact integer match with optional ±tolerance."""
     expected = gt_data.get("expected")
     if not isinstance(expected, int):
@@ -365,7 +366,7 @@ def _check_count(
 def _check_boolean(
     task_dir: Path,
     gt_data: dict,
-) -> dict[str, float | str | bool]:
+) -> dict[str, Any]:
     """Boolean oracle: normalized true/false comparison."""
     expected = gt_data.get("expected")
     if not isinstance(expected, bool):

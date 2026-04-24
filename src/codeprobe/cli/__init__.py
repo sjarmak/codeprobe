@@ -648,11 +648,16 @@ def mine(
     # the profile loader (to decide which profile keys to honor) and by
     # run_mine's resolve_effective_config (to decide which goal extras to
     # apply).
-    explicitly_set = frozenset(
+    def _is_commandline(name: str | None) -> bool:
+        if not name:
+            return False
+        source = ctx.get_parameter_source(name)
+        return source is not None and source.name == "COMMANDLINE"
+
+    explicitly_set: frozenset[str] = frozenset(
         p.name
         for p in ctx.command.params
-        if ctx.get_parameter_source(p.name) is not None
-        and ctx.get_parameter_source(p.name).name == "COMMANDLINE"
+        if p.name is not None and _is_commandline(p.name)
     )
 
     # --profile: load profile values as defaults for params not set on the CLI.

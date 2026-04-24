@@ -89,7 +89,7 @@ class CodexAdapter:
                     model,
                 )
                 try:
-                    response = client.chat.completions.create(
+                    chat_response = client.chat.completions.create(
                         model=model,
                         messages=[{"role": "user", "content": prompt}],
                     )
@@ -99,11 +99,13 @@ class CodexAdapter:
                         f"Chat Completions API: {exc}"
                     ) from exc
                 content = (
-                    response.choices[0].message.content if response.choices else None
+                    chat_response.choices[0].message.content
+                    if chat_response.choices
+                    else None
                 )
                 stdout = content or ""
                 input_tokens, output_tokens = _usage_fields(
-                    response.usage, "prompt_tokens", "completion_tokens"
+                    chat_response.usage, "prompt_tokens", "completion_tokens"
                 )
         except openai.AuthenticationError as exc:
             raise AdapterSetupError(f"OPENAI_API_KEY invalid: {exc}") from exc

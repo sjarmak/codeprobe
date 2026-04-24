@@ -43,6 +43,7 @@ from codeprobe.core.experiment import (
 )
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+from codeprobe.models.suite import Suite
 from codeprobe.trace.content_policy import ContentPolicy
 from codeprobe.trace.recorder import (
     TraceBudgetExceeded,
@@ -152,7 +153,7 @@ def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:
 
 def _filter_tasks_by_suite(
     task_dirs: list[Path],
-    suite: Suite,  # noqa: F821
+    suite: Suite,
 ) -> list[Path]:
     """Filter task directories according to suite criteria.
 
@@ -281,6 +282,8 @@ def show_prompt_and_exit(
                 detail={"path": str(path)},
             )
 
+    assert experiment is not None  # narrowed above; keep mypy happy
+
     # Resolve repo root
     try:
         repo_root = Path(
@@ -319,7 +322,9 @@ def show_prompt_and_exit(
         )
 
     first_task = task_dirs[0]
-    exp_config = (experiment.configs or [None])[0]
+    exp_config: ExperimentConfig | None = (
+        experiment.configs[0] if experiment.configs else None
+    )
 
     instruction_variant = exp_config.instruction_variant if exp_config else None
     preamble_names = exp_config.preambles if exp_config else ()
@@ -487,6 +492,8 @@ def run_eval(
                 next_steps=[("Initialize", f"codeprobe init {path}")],
                 detail={"path": str(path)},
             )
+
+    assert experiment is not None  # narrowed above; keep mypy happy
 
     try:
         resolve(agent)

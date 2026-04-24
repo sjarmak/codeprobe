@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 __all__ = [
     "load_manifest",
@@ -60,7 +60,7 @@ def load_manifest(snapshot_dir: Path) -> dict[str, Any]:
             f"snapshot manifest not found at {manifest_path}; "
             "run 'codeprobe snapshot create' first"
         )
-    return json.loads(manifest_path.read_text())
+    return cast("dict[str, Any]", json.loads(manifest_path.read_text()))
 
 
 def load_entries(snapshot_dir: Path) -> list[dict[str, Any]]:

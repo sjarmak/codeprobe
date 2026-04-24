@@ -17,6 +17,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from codeprobe.analysis.stats import PASS_THRESHOLD
 from codeprobe.mining.curator import CurationResult
@@ -302,10 +303,11 @@ def generate_org_scale_task(
     if curation_result is not None:
         ground_truth_files = curation_result.matched_files
         oracle_tiers = tuple((cf.path, cf.tier) for cf in curation_result.files)
+    elif multi_hop_files is not None:
+        ground_truth_files = multi_hop_files
+        oracle_tiers = ()
     else:
-        ground_truth_files = (
-            multi_hop_files if is_multi_hop else scan_result.matched_files
-        )
+        ground_truth_files = scan_result.matched_files
         oracle_tiers = ()
 
     if not ground_truth_files:
@@ -852,7 +854,7 @@ def _mine_mcp_families(
     language = _guess_repo_language(tracked_files)
 
     tasks: list[Task] = []
-    miners = [
+    miners: list[Any] = [
         _mine_symbol_reference_tasks,
         _mine_type_hierarchy_tasks,
         _mine_change_scope_tasks,
@@ -861,13 +863,13 @@ def _mine_mcp_families(
         if len(tasks) >= count:
             break
         # Pass sg_repo, strict_sg, and sg_discovery to miners that accept them
-        kwargs: dict[str, object] = {"no_llm": no_llm}
+        kwargs: dict[str, Any] = {"no_llm": no_llm}
         if miner in (_mine_symbol_reference_tasks, _mine_change_scope_tasks):
             kwargs["sg_repo"] = sg_repo
             kwargs["strict_sg"] = bool(sg_repo)
             kwargs["sg_discovery"] = sg_discovery
         new_tasks = miner(
-            repo_paths, tracked_files, language, commit_sha, **kwargs  # type: ignore[arg-type]
+            repo_paths, tracked_files, language, commit_sha, **kwargs
         )
         tasks.extend(new_tasks)
 

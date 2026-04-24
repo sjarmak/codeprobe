@@ -77,7 +77,7 @@ class VertexBackend:
             message = client.messages.create(
                 model=vertex_model,
                 max_tokens=max_tokens,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 **kwargs,
             )
         except Exception as exc:  # pragma: no cover - network path

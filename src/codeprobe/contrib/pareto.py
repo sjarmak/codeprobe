@@ -46,7 +46,7 @@ def pareto_front(configs: list[ConfigResults]) -> list[ParetoPoint]:
         score = (
             sum(1.0 for t in cr.completed if t.automated_score >= _PASS_THRESHOLD) / n
         )
-        cost = sum(t.cost_usd for t in cr.completed)  # type: ignore[arg-type]
+        cost = sum((t.cost_usd or 0.0) for t in cr.completed)
         points.append(ParetoPoint(label=cr.config, score=score, cost=cost))
 
     front: list[ParetoPoint] = []

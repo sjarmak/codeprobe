@@ -1151,7 +1151,7 @@ def write_task_dir(
         ground_truth.get("schema_version", "")
     ).startswith("sdlc-")
 
-    if use_weighted:
+    if use_weighted and ground_truth is not None:
         test_script = _build_weighted_checklist_script(
             task.verification.command,
             repo_path,

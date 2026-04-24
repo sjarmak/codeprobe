@@ -389,12 +389,10 @@ def _mine_callers(
             matched_symbol: str = ""
             for sym in symbols:
                 if retry_tracker is not None:
-                    refs = retry_call(
-                        lambda s=sym: symbol_resolver.find_references(
-                            s, secondary_paths
-                        ),
-                        tracker=retry_tracker,
-                    )
+                    def _find_refs(s: str = sym) -> list[FileRef]:
+                        return symbol_resolver.find_references(s, secondary_paths)
+
+                    refs = retry_call(_find_refs, tracker=retry_tracker)
                 else:
                     refs = symbol_resolver.find_references(sym, secondary_paths)
                 if refs:

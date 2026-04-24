@@ -136,7 +136,12 @@ class MineState:
     def __enter__(self) -> MineState:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object,
+    ) -> None:
         self.close()
 
     # ------------------------------------------------------------------

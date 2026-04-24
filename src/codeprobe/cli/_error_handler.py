@@ -19,7 +19,7 @@ import sys
 import click
 
 from codeprobe.cli._output_helpers import emit_envelope
-from codeprobe.cli._output_mode import resolve_output_mode
+from codeprobe.cli._output_mode import OutputMode, resolve_output_mode
 from codeprobe.cli.envelope import ErrorPayload, NextStep
 from codeprobe.cli.errors import (
     CodeprobeError,
@@ -107,7 +107,7 @@ def _deepest_info_name(ctx: click.Context | None) -> str:
     return "codeprobe"
 
 
-def _resolve_error_output_mode(ctx: click.Context | None):
+def _resolve_error_output_mode(ctx: click.Context | None) -> OutputMode:
     """Resolve the output mode at error time.
 
     Precedence (highest wins):
@@ -131,7 +131,7 @@ def _resolve_error_output_mode(ctx: click.Context | None):
             root = root.parent
         if isinstance(root.obj, dict):
             cached = root.obj.get("codeprobe_output_mode")
-            if cached is not None:
+            if isinstance(cached, OutputMode):
                 return cached
 
     # Step 2: walk params on whatever contexts remain.
@@ -228,7 +228,7 @@ class CodeprobeGroup(click.Group):
     typed-error rendering path rather than surfacing a raw traceback.
     """
 
-    def invoke(self, ctx: click.Context):  # type: ignore[override]
+    def invoke(self, ctx: click.Context) -> object:
         try:
             return super().invoke(ctx)
         except CodeprobeError as exc:

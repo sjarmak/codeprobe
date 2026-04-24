@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -106,7 +106,7 @@ class ModelRegistry:
                 f"Backend {backend!r} not defined for logical model "
                 f"{logical_name!r}. Known backends: {known}"
             )
-        return entry[backend]
+        return cast("str | dict[str, Any]", entry[backend])
 
     def _require_logical(self, logical_name: str) -> dict[str, Any]:
         entry = self._data.models.get(logical_name)

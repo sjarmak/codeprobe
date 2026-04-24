@@ -7,7 +7,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.adapters.telemetry import CLAUDE_PRICING
@@ -74,7 +74,7 @@ def _find_session(
             continue
 
         if session_id and data.get("sessionId") == session_id:
-            return data
+            return cast("dict[Any, Any]", data)
 
         if data.get("cwd") == cwd:
             if best is None or data.get("startedAt", 0) > best.get("startedAt", 0):

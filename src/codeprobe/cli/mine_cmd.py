@@ -9,6 +9,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from codeprobe.mining.curator import CurationBackend
 from collections.abc import Callable
 from dataclasses import is_dataclass, replace
 from pathlib import Path
@@ -887,7 +891,7 @@ def _cold_start_check(repo_path: Path, source_hint: str) -> bool:
 def _comprehension_generator_available() -> bool:
     """Return True when the comprehension generator module is importable."""
     try:
-        from codeprobe.mining import comprehension_generator  # noqa: F401
+        from codeprobe.mining import comprehension_generator  # type: ignore[attr-defined]  # noqa: F401
 
         return True
     except (ImportError, AttributeError):
@@ -1333,7 +1337,7 @@ def _dispatch_by_task_type(
     """
     from codeprobe.mining.task_types import TASK_TYPE_REGISTRY
 
-    common_kwargs = dict(
+    common_kwargs: dict[str, Any] = dict(
         repo_path=repo_path,
         count=count,
         source=source,
@@ -1430,8 +1434,10 @@ def _dispatch_cross_repo(
             secondaries.append(rp)
 
     # Select symbol resolver: prefer Sourcegraph, fall back to ripgrep
+    from codeprobe.mining.multi_repo import SymbolResolver
     from codeprobe.mining.sg_auth import AuthError, get_valid_token
 
+    resolver: SymbolResolver
     try:
         get_valid_token()
         from codeprobe.mining.sg_ground_truth import SourcegraphSymbolResolver
@@ -1463,7 +1469,7 @@ def _dispatch_cross_repo(
 
     tasks = list(result.tasks)
     if dual_verify:
-        tasks = _apply_dual_verification(tasks, result, primary)
+        tasks = _apply_dual_verification(tasks, result, primary)  # type: ignore[arg-type]
 
     tasks_dir = _clear_tasks_dir(primary)
     for task in tasks:
@@ -2615,7 +2621,7 @@ def _run_org_scale_mine(
 def _build_curation_backends(
     backends: tuple[str, ...],
     no_llm: bool,
-) -> list[object]:
+) -> list[CurationBackend]:
     """Build list of CurationBackend instances from backend names.
 
     When *backends* is empty, uses defaults (grep + pr_diff; agent_search
@@ -2628,7 +2634,7 @@ def _build_curation_backends(
         SourcegraphBackend,
     )
 
-    _BACKEND_MAP = {  # noqa: N806
+    _BACKEND_MAP: dict[str, type[CurationBackend]] = {  # noqa: N806
         "grep": GrepBackend,
         "sourcegraph": SourcegraphBackend,
         "pr_diff": PRDiffBackend,
@@ -2639,7 +2645,7 @@ def _build_curation_backends(
         return [_BACKEND_MAP[name]() for name in backends if name in _BACKEND_MAP]
 
     # Defaults: grep + pr_diff; agent_search only if LLM available
-    result: list[object] = [GrepBackend(), PRDiffBackend()]
+    result: list[CurationBackend] = [GrepBackend(), PRDiffBackend()]
     if not no_llm:
         result.append(AgentSearchBackend())
     return result

@@ -1017,7 +1017,7 @@ def execute_config(
                         timestamp=time.time(),
                     )
                 )
-            wt = active_isolation.acquire()  # type: ignore[union-attr]
+            wt = active_isolation.acquire()
             try:
                 # Extract slot index from worktree path name (e.g. "slot-0" → 0)
                 slot_name = wt.name
@@ -1033,7 +1033,7 @@ def execute_config(
                     session_env=sess_env,
                 )
             finally:
-                active_isolation.release(wt)  # type: ignore[union-attr]
+                active_isolation.release(wt)
 
         try:
             with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -1075,7 +1075,7 @@ def execute_config(
                         break
         finally:
             if owns_isolation:
-                active_isolation.cleanup()  # type: ignore[union-attr]
+                active_isolation.cleanup()
 
     # Warn if >30% of tasks have system errors (capacity issues)
     if results:

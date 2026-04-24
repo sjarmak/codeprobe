@@ -85,7 +85,7 @@ class AzureOpenAIBackend:
         try:
             response = client.chat.completions.create(
                 model=deployment,
-                messages=messages,
+                messages=messages,  # type: ignore[arg-type]
                 max_tokens=max_tokens,
                 **kwargs,
             )

@@ -41,6 +41,8 @@ dev = [
     "ruff>=0.4,<1",
     "mypy>=1.10,<2",
     "types-PyYAML>=6.0,<7",
+    "types-requests>=2.31,<3",
+    "scipy-stubs>=1.11",
     "scipy>=1.11,<2",
     # Needed by tests/test_release_gate.py::test_build_and_stage_real_wheel
     # which shells out to ``python -m build --wheel`` to verify the wheel

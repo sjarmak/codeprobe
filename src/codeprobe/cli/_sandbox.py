@@ -47,7 +47,7 @@ def sandbox_options(f: F) -> F:
             "see docs on INV4."
         ),
     )
-    @click.pass_context
+    @click.pass_context  # type: ignore[arg-type]
     @wraps(f)
     def wrapper(
         ctx: click.Context,

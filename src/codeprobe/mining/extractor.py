@@ -647,7 +647,7 @@ def _build_test_command(
         return _DEFAULT_TEST_COMMAND
 
     if language == "python":
-        if validate:
+        if validate and repo_path is not None:
             test_files = [f for f in test_files if (repo_path / f).exists()]
         if not test_files:
             return _DEFAULT_TEST_COMMAND
@@ -666,7 +666,7 @@ def _build_test_command(
             )
             return f"bash -c {shlex.quote(checks)}"
 
-        if validate:
+        if validate and repo_path is not None:
             packages = [p for p in packages if (repo_path / p).is_dir()]
         if not packages:
             return _DEFAULT_TEST_COMMAND

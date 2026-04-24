@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 
-BACKEND_CLASSES: dict[str, type] = {
+BACKEND_CLASSES: dict[str, type[LLMBackend]] = {
     "anthropic": AnthropicBackend,
     "bedrock": BedrockBackend,
     "vertex": VertexBackend,

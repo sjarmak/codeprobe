@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from codeprobe.analysis.stats import PASS_THRESHOLD
 
@@ -468,7 +468,13 @@ class CheckpointScorer:
         checkpoints = loaded
 
         # Validate weights sum to 1.0
-        total_weight = sum(cp.get("weight", 0.0) for cp in checkpoints)
+        total_weight = sum(
+            (
+                float(cp.get("weight", 0.0) or 0.0)  # type: ignore[arg-type]
+                for cp in checkpoints
+            ),
+            0.0,
+        )
         if abs(total_weight - 1.0) > self._WEIGHT_TOLERANCE:
             return ScoreResult(
                 score=0.0,
@@ -484,8 +490,8 @@ class CheckpointScorer:
         checkpoint_weights: dict[str, float] = {}
 
         for cp in checkpoints:
-            weight = cp.get("weight", 0.0)
-            verifier_name = cp.get("verifier", "")
+            weight = float(cp.get("weight", 0.0) or 0.0)  # type: ignore[arg-type]
+            verifier_name = str(cp.get("verifier", "") or "")
             name = str(cp.get("name", verifier_name) or verifier_name)
             verifier_path = task_dir / "tests" / "verifiers" / verifier_name
 
@@ -499,7 +505,7 @@ class CheckpointScorer:
             cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
             weighted_score += cp_score * weight
             checkpoint_scores[name] = cp_score
-            checkpoint_weights[name] = float(weight)
+            checkpoint_weights[name] = weight
 
         clamped = max(0.0, min(1.0, weighted_score))
         return ScoreResult(
@@ -642,7 +648,7 @@ def score_file_list(expected: object, actual: object) -> ScoreResult:
 def score_count(expected: object, actual: object) -> ScoreResult:
     """Exact integer match."""
     try:
-        passed = int(expected) == int(actual)  # type: ignore[arg-type]
+        passed = int(expected) == int(actual)  # type: ignore[call-overload]
     except (ValueError, TypeError):
         return ScoreResult(
             score=0.0,
@@ -780,7 +786,7 @@ def validate_ground_truth(gt: dict) -> str | None:
                 )
         elif answer_type == "count":
             try:
-                int(answer)  # type: ignore[arg-type]
+                int(answer)
             except (ValueError, TypeError):
                 return (
                     f"v1 ground_truth answer_type 'count' requires an int-convertible value, "
@@ -974,7 +980,7 @@ class ArtifactScorer:
             from codeprobe.core.registry import resolve_oracle_scorer
 
             scorer_fn = resolve_oracle_scorer(answer_type)
-            return scorer_fn(expected, actual)
+            return cast(ScoreResult, scorer_fn(expected, actual))
         except KeyError:
             pass
 
@@ -1030,7 +1036,10 @@ def _safe_leg_score(
     exception message exposed via ``error``.
     """
     try:
-        return scorer.score(agent_output, task_dir)  # type: ignore[attr-defined]
+        score_fn = getattr(scorer, "score", None)
+        if score_fn is None:
+            raise AttributeError(f"{type(scorer).__name__!r} has no .score method")
+        return cast(ScoreResult, score_fn(agent_output, task_dir))
     except Exception as exc:  # noqa: BLE001 — both legs must run
         scorer_name = type(scorer).__name__
         logger.exception(
@@ -1087,7 +1096,7 @@ class DualScorer:
         if raw is None:
             return default, None
         try:
-            value = float(raw)
+            value = float(raw)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return default, f"invalid weight value: {raw!r}"
         if not math.isfinite(value):
@@ -1211,7 +1220,7 @@ def get_scorer(
     Raises ValueError for unknown reward types (fail loudly — premortem rule).
     """
     try:
-        return resolve_scorer(reward_type)
+        return cast(Scorer, resolve_scorer(reward_type))
     except KeyError:
         raise ValueError(
             f"Unknown reward_type: {reward_type!r}. "

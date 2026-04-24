@@ -45,7 +45,7 @@ _CLI_ROOT = _REPO_ROOT / "src" / "codeprobe" / "cli"
 
 INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
     {
-        ("src/codeprobe/cli/__init__.py", 1032),
+        ("src/codeprobe/cli/__init__.py", 1037),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),

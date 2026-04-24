@@ -167,8 +167,9 @@ def _build_full_envelope(results: list[CheckResult]) -> dict[str, object]:
         for r in results
     ]
     envelope = _build_compact_envelope(results)
-    envelope["data"] = {  # type: ignore[index]
-        **envelope["data"],  # type: ignore[dict-item]
+    existing_data = envelope.get("data")
+    envelope["data"] = {
+        **(existing_data if isinstance(existing_data, dict) else {}),
         "subsystem_status": subsystem_status,
     }
     envelope["ok"] = not any_failed

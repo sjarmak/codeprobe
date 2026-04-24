@@ -170,7 +170,10 @@ class NarrativeAdapter(Protocol):
     CLI enforces that *some* adapter was explicitly selected.
     """
 
-    name: str
+    @property
+    def name(self) -> str:
+        """Canonical adapter name (``"pr"``, ``"commits"``, ``"rfcs"``)."""
+        ...
 
     def fetch(self, repo: Path, commit_sha: str) -> NarrativeBundle | None:
         """Fetch narrative for ``commit_sha`` in ``repo``.

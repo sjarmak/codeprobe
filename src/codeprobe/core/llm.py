@@ -321,8 +321,8 @@ def _parse_envelope(raw: dict[str, object]) -> LLMResponse:
             else None
         ),
         cost_usd=(
-            raw.get("total_cost_usd")
-            if isinstance(raw.get("total_cost_usd"), (int, float))
+            float(_total)
+            if isinstance(_total := raw.get("total_cost_usd"), (int, float))
             else None
         ),
         duration_ms=(

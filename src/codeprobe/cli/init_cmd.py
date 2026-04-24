@@ -215,7 +215,8 @@ def _prompt_sourcegraph_token() -> str:
         click.echo("    codeprobe auth sourcegraph")
         raise SystemExit(0)
 
-    return click.prompt("  Sourcegraph access token", hide_input=True)
+    token: str = click.prompt("  Sourcegraph access token", hide_input=True)
+    return token
 
 
 def _prompt_sourcegraph_url() -> str | None:

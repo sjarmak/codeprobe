@@ -481,11 +481,12 @@ def _parse_model_assessment(
     """Validate and convert model JSON response to AssessmentScore."""
     from codeprobe.core.llm import LLMParseError
 
-    if not isinstance(parsed.get("dimensions"), list):
+    dimensions = parsed.get("dimensions")
+    if not isinstance(dimensions, list):
         raise LLMParseError("Model response missing 'dimensions' list")
 
     dim_by_name: dict[str, DimensionScore] = {}
-    for item in parsed["dimensions"]:
+    for item in dimensions:
         if not isinstance(item, dict):
             raise LLMParseError(f"Dimension entry is not an object: {item!r}")
         name = item.get("name", "")

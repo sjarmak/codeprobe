@@ -19,7 +19,7 @@ import requests
 from codeprobe.net import guard_offline
 
 if TYPE_CHECKING:
-    from codeprobe.mining.multi_repo import FileRef
+    from codeprobe.mining.multi_repo import FileRef, Symbol
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +59,13 @@ def enrich_ground_truth(
         sg_url=sg_url,
     )
 
+    tier_map: dict[str, str] = {}
     if sg_files is None:
         # API failure — fall back to grep-only
         tier_map = {f: "required" for f in grep_files}
         return grep_files, tier_map
 
     all_files = grep_files | sg_files
-    tier_map: dict[str, str] = {}
     for f in all_files:
         if f in grep_files:
             tier_map[f] = "required"
@@ -199,7 +199,9 @@ class SourcegraphSymbolResolver:
                 refs.append(FileRef(repo=repo_sg_name, path=path))
         return refs
 
-    def resolve_symbol_at(self, repo: str, path: str, line: int) -> object | None:
+    def resolve_symbol_at(
+        self, repo: str, path: str, line: int
+    ) -> Symbol | None:
         """Not implemented for Sourcegraph — returns None.
 
         Call-site resolution via Sourcegraph ``go_to_definition`` is a
