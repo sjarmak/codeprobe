@@ -33,7 +33,6 @@ from codeprobe.mining.sources import (
     select_narrative_adapters,
 )
 
-
 # ---------------------------------------------------------------------------
 # Git-repo fixtures (subprocess-driven so we don't need GitPython)
 # ---------------------------------------------------------------------------

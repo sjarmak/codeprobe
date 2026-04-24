@@ -8,9 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from acceptance.loader import Criterion
 from acceptance.verify import RESULT_SKIP, Verifier
 
 # ---------------------------------------------------------------------------

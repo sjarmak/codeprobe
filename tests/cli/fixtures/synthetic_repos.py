@@ -27,7 +27,6 @@ from typing import Any
 
 from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 
-
 # -- git helpers --------------------------------------------------------------
 
 

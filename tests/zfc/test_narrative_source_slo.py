@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-
 NARRATIVE_SOURCE_SLO_DEADLINE = date(2026, 10, 23)
 ENTRY_MARKER = "config/defaults.py:resolve_narrative_source"
 

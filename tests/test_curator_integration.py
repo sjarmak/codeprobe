@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import click
 import pytest
 
 from codeprobe.mining.curator import CuratedFile, CurationResult, MergeConfig

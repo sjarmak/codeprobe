@@ -22,7 +22,7 @@ def _fake_urlopen(body: bytes, status: int = 200):
             self._body = body
             self.headers = {"Content-Type": "application/octet-stream"}
 
-        def __enter__(self) -> "_Resp":
+        def __enter__(self) -> _Resp:
             return self
 
         def __exit__(self, *exc: Any) -> None:

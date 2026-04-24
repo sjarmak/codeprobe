@@ -14,7 +14,6 @@ from codeprobe.paths import (
     tenant_state_dir,
 )
 
-
 _HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 
 

@@ -53,7 +53,6 @@ from tests.cli.fixtures.synthetic_repos import (
     write_minimal_experiment,
 )
 
-
 BASELINE_PATH = Path(__file__).parent / "baseline_bare_invocation.json"
 
 # Matrix ordering matters for deterministic baseline output.

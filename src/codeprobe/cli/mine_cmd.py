@@ -1578,7 +1578,7 @@ def _mine_tasks_with_progress(
     min_files: int,
     min_quality: float,
     subsystems: tuple[str, ...],
-) -> "MineResult":
+) -> MineResult:
     """Call :func:`mine_tasks` with a click.progressbar when stderr is a TTY.
 
     Falls back to a plain call (no bar) in non-interactive environments so
@@ -2138,11 +2138,16 @@ def run_mine(
     # which renders per output mode.
     goal_source = "flag" if goal is not None else "default"
     narrative_source_source = "flag" if narrative_source else "default"
-    from codeprobe.cli.errors import PrescriptiveError as _PrescriptiveError
     from codeprobe.config.defaults import (
         resolve_goal as _resolve_goal,
+    )
+    from codeprobe.config.defaults import (
         resolve_narrative_source as _resolve_narrative_source,
+    )
+    from codeprobe.config.defaults import (
         scan_repo_shape as _scan_repo_shape,
+    )
+    from codeprobe.config.defaults import (
         use_v07_defaults as _use_v07_defaults,
     )
 

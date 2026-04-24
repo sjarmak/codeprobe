@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Helper script executed in a child process. Uses batch_size=1 so every
 # event is flushed immediately — maximises the number of rows committed
 # before the kill lands.

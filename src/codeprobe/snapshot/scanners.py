@@ -129,7 +129,7 @@ class PatternScanner:
         # Apply all regexes; replacement carries rule_id for traceability.
         out = data
         for rule_id, regex in self.patterns:
-            marker = f"[REDACTED:{rule_id}]".encode("utf-8")
+            marker = f"[REDACTED:{rule_id}]".encode()
             out = regex.sub(marker, out)
         return out
 

@@ -16,7 +16,11 @@ from codeprobe.cli._output_helpers import (
 from codeprobe.cli._tenant import resolve_tenant, tenant_option
 from codeprobe.mining.task_types import (
     TASK_TYPE_REGISTRY as _TASK_TYPE_REGISTRY,
+)
+from codeprobe.mining.task_types import (
     list_task_types as _list_task_types,
+)
+from codeprobe.mining.task_types import (
     task_type_names as _task_type_names,
 )
 

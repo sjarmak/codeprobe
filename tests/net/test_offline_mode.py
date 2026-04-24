@@ -20,7 +20,6 @@ import pytest
 from codeprobe.cli.errors import DiagnosticError
 from codeprobe.net import guard_offline, is_offline_mode
 
-
 # ---------------------------------------------------------------------------
 # is_offline_mode() — env var semantics
 # ---------------------------------------------------------------------------

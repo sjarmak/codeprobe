@@ -9,7 +9,6 @@ default pytest timeout for little extra coverage. The invariant checked
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from pathlib import Path
 

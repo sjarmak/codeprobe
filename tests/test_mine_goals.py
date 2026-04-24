@@ -249,7 +249,6 @@ class TestGoalFlag:
         assert call_args[0][0] == "architecture_comprehension"
 
     def test_invalid_goal_raises_usage_error(self, tmp_path) -> None:
-        import click
 
         from codeprobe.cli.mine_cmd import run_mine
 

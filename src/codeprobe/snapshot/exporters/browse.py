@@ -67,7 +67,7 @@ def _build_table(columns: list[str], rows: list[list[Any]]) -> str:
     for row in rows:
         cells = "".join(f"<td>{_safe_cell(v)}</td>" for v in row)
         body_rows.append(f"<tr>{cells}</tr>")
-    body = "".join(body_rows) or "<tr><td colspan=\"{n}\"><em>No entries in snapshot.</em></td></tr>".format(n=max(len(columns), 1))
+    body = "".join(body_rows) or f"<tr><td colspan=\"{max(len(columns), 1)}\"><em>No entries in snapshot.</em></td></tr>"
     return (
         "<table id=\"snapshot-table\">"
         f"<thead><tr>{header_cells}</tr></thead>"

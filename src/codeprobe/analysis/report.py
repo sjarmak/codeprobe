@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass
 from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
-    PASS_THRESHOLD,
     ConfigSummary,
     PairwiseComparison,
     compare_configs,

@@ -27,8 +27,8 @@ Supported backends (matching ``codeprobe.llm.backends.BACKEND_CLASSES``):
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import os
+from datetime import UTC, datetime, timedelta
 
 __all__ = [
     "CredentialTTLError",
@@ -73,8 +73,8 @@ def _parse_iso_utc(raw: str) -> datetime:
     if dt.tzinfo is None:
         # Naive timestamps are interpreted as UTC — matches AWS/GCP/Azure
         # convention when the suffix was dropped by a downstream tool.
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
 
 
 def _ttl_from_env(env_var: str, *, now: datetime | None = None) -> timedelta | None:
@@ -88,7 +88,7 @@ def _ttl_from_env(env_var: str, *, now: datetime | None = None) -> timedelta | N
     if raw is None or raw == "":
         return None
     expires_at = _parse_iso_utc(raw)
-    current = now if now is not None else datetime.now(tz=timezone.utc)
+    current = now if now is not None else datetime.now(tz=UTC)
     remaining = expires_at - current
     if remaining.total_seconds() <= 0:
         return timedelta(0)

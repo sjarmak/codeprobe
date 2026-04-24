@@ -15,7 +15,6 @@ from click.testing import CliRunner
 
 from codeprobe.cli import main as cli_main
 
-
 SYNTHETIC_ENTRIES: list[dict[str, object]] = [
     {
         "config": "baseline",

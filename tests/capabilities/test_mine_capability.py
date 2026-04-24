@@ -20,7 +20,6 @@ import pytest
 
 from codeprobe.cli import main
 
-
 pytestmark = [pytest.mark.capability]
 
 

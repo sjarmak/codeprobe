@@ -19,7 +19,6 @@ import pytest
 from codeprobe.cli import main
 from tests.capabilities.fixtures import ENTERPRISE_BENCH_ROOT
 
-
 pytestmark = [pytest.mark.capability]
 
 

@@ -29,7 +29,6 @@ from tests.capabilities.fixtures import (
     OracleFixture,
 )
 
-
 pytestmark = [pytest.mark.capability]
 
 

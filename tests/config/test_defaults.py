@@ -9,7 +9,6 @@ correct priority rules + PrescriptiveError raising).
 
 from __future__ import annotations
 
-import os
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -36,7 +35,6 @@ from codeprobe.config.defaults import (
     scan_repo_shape,
     use_v07_defaults,
 )
-
 
 # ---------------------------------------------------------------------------
 # Feature flag

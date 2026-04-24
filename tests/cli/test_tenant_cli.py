@@ -17,7 +17,6 @@ Covers the Phase E atomic rollout (tenant-cli-integration work unit):
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path

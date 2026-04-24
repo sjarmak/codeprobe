@@ -42,7 +42,6 @@ import pytest
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.protocol import AgentConfig
 
-
 # ---------------------------------------------------------------------------
 # Fixture-replay MCP server (real subprocess, speaks JSON-RPC over stdio).
 # ---------------------------------------------------------------------------

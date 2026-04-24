@@ -27,8 +27,8 @@ import fcntl
 import logging
 import sqlite3
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from codeprobe.paths import DEFAULT_TENANT, tenant_state_dir
 
@@ -82,7 +82,7 @@ class MineState:
         tenant_id: str = DEFAULT_TENANT,
         repo_hash: str,
         sweep: bool = True,
-    ) -> "MineState":
+    ) -> MineState:
         """Open (or create) the mine.db for a (tenant_id, repo_hash) pair.
 
         When *sweep* is True (default) a startup sweep promotes any
@@ -133,7 +133,7 @@ class MineState:
         except sqlite3.Error as exc:  # pragma: no cover - defensive
             logger.debug("MineState.close error: %s", exc)
 
-    def __enter__(self) -> "MineState":
+    def __enter__(self) -> MineState:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
