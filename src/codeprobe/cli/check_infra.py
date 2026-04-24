@@ -29,11 +29,13 @@ from pathlib import Path
 
 import click
 
+from codeprobe.cli._error_handler import CodeprobeGroup
 from codeprobe.cli._output_helpers import (
     add_json_flags,
     emit_envelope,
     resolve_mode,
 )
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.mcp.capabilities import CAPABILITIES
 from codeprobe.net.credential_ttl import (
     KNOWN_BACKENDS,
@@ -54,12 +56,22 @@ def _load_snapshot(metadata_path: Path) -> tuple[str, ...]:
     fixtures and older mined tasks both work.
     """
     if not metadata_path.is_file():
-        raise click.ClickException(f"metadata.json not found at {metadata_path}")
+        raise DiagnosticError(
+            code="METADATA_MISSING",
+            message=f"metadata.json not found at {metadata_path}",
+            diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+            terminal=True,
+            detail={"metadata_path": str(metadata_path)},
+        )
     try:
         data = json.loads(metadata_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise click.ClickException(
-            f"metadata.json at {metadata_path} is not valid JSON: {exc}"
+        raise DiagnosticError(
+            code="METADATA_INVALID",
+            message=f"metadata.json at {metadata_path} is not valid JSON: {exc}",
+            diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+            terminal=True,
+            detail={"metadata_path": str(metadata_path)},
         ) from exc
 
     # Prefer the nested metadata.<field> layout produced by the writer.
@@ -73,13 +85,21 @@ def _load_snapshot(metadata_path: Path) -> tuple[str, ...]:
         raw = []
 
     if not isinstance(raw, list):
-        raise click.ClickException(
-            "metadata.mcp_capabilities_at_mine_time must be a JSON array"
+        raise DiagnosticError(
+            code="METADATA_INVALID",
+            message="metadata.mcp_capabilities_at_mine_time must be a JSON array",
+            diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+            terminal=True,
+            detail={"metadata_path": str(metadata_path)},
         )
     for item in raw:
         if not isinstance(item, str):
-            raise click.ClickException(
-                "metadata.mcp_capabilities_at_mine_time entries must be strings"
+            raise DiagnosticError(
+                code="METADATA_INVALID",
+                message="metadata.mcp_capabilities_at_mine_time entries must be strings",
+                diagnose_cmd=f"codeprobe check-infra drift {metadata_path.parent} --json",
+                terminal=True,
+                detail={"metadata_path": str(metadata_path)},
             )
     return tuple(sorted(raw))
 
@@ -117,21 +137,32 @@ def _run_drift_check(
     added, removed = _format_diff(snapshot, live)
     has_drift = snapshot != live
 
+    drift_detail = {
+        "task_dir": task_dir,
+        "has_drift": has_drift,
+        "snapshot_count": len(snapshot),
+        "live_count": len(live),
+        "added": list(added),
+        "removed": list(removed),
+    }
+
     if mode.mode != "pretty":
+        if has_drift and fail_on_capability_drift and not allow_capability_drift:
+            raise DiagnosticError(
+                code="CAPABILITY_DRIFT",
+                message=(
+                    f"Capability drift detected for {task_dir}: "
+                    f"{len(added)} added, {len(removed)} removed since mine."
+                ),
+                diagnose_cmd=f"codeprobe check-infra drift {task_dir} --json",
+                terminal=True,
+                detail={"_envelope_data": drift_detail},
+            )
         emit_envelope(
             command=command_name,
-            ok=not (has_drift and fail_on_capability_drift and not allow_capability_drift),
-            data={
-                "task_dir": task_dir,
-                "has_drift": has_drift,
-                "snapshot_count": len(snapshot),
-                "live_count": len(live),
-                "added": list(added),
-                "removed": list(removed),
-            },
+            ok=True,
+            data=drift_detail,
         )
-        if has_drift and fail_on_capability_drift and not allow_capability_drift:
-            raise SystemExit(1)
         return
 
     if not has_drift:
@@ -153,13 +184,19 @@ def _run_drift_check(
         return
 
     if fail_on_capability_drift:
-        raise click.ClickException(message)
+        raise DiagnosticError(
+            code="CAPABILITY_DRIFT",
+            message=message,
+            diagnose_cmd=f"codeprobe check-infra drift {task_dir} --json",
+            terminal=True,
+            detail=drift_detail,
+        )
 
     click.echo(f"WARNING: {message}", err=True)
 
 
 
-@click.group(name="check-infra")
+@click.group(name="check-infra", cls=CodeprobeGroup)
 def check_infra() -> None:
     """Diagnostics for mined-task infrastructure (capability drift, etc.)."""
 
@@ -327,16 +364,28 @@ def run_offline_preflight(
         requested = {name.strip().lower() for name in backend_filter if name.strip()}
         unknown = sorted(requested - set(KNOWN_BACKENDS))
         if unknown:
-            raise click.ClickException(
-                f"Unknown backend(s): {', '.join(unknown)}. "
-                f"Known: {', '.join(KNOWN_BACKENDS)}"
+            first_known = KNOWN_BACKENDS[0] if KNOWN_BACKENDS else ""
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=(
+                    f"Unknown backend(s): {', '.join(unknown)}. "
+                    f"Known: {', '.join(KNOWN_BACKENDS)}"
+                ),
+                next_try_flag="--backend",
+                next_try_value=first_known,
+                detail={"unknown": unknown, "known": list(KNOWN_BACKENDS)},
             )
         configured = tuple(b for b in configured if b in requested)
 
     if not configured:
-        raise click.ClickException(
-            "No LLM backends configured for offline pre-flight. "
-            "Check model_registry.yaml or pass --backend explicitly."
+        raise DiagnosticError(
+            code="NO_BACKENDS_CONFIGURED",
+            message=(
+                "No LLM backends configured for offline pre-flight. "
+                "Check model_registry.yaml or pass --backend explicitly."
+            ),
+            diagnose_cmd="codeprobe doctor --json",
+            terminal=True,
         )
 
     failures: list[str] = []
@@ -379,7 +428,13 @@ def run_offline_preflight(
 
     if failures:
         banner = "Offline pre-flight failed:"
-        raise click.ClickException("\n  ".join([banner, *failures]))
+        raise DiagnosticError(
+            code="OFFLINE_PREFLIGHT_FAILED",
+            message="\n  ".join([banner, *failures]),
+            diagnose_cmd="codeprobe check-infra offline --json",
+            terminal=True,
+            detail={"failures": list(failures)},
+        )
 
     if echo:
         click.echo(

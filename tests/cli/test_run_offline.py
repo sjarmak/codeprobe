@@ -165,12 +165,13 @@ def test_run_offline_failed_preflight_exits_before_adapter(
         stdout="ok", cost_usd=0.0, cost_model="unknown", duration=0.0
     )
 
-    import click
-
     from codeprobe.cli import run_cmd as run_cmd_mod
+    from codeprobe.cli.errors import DiagnosticError
 
     with patch.object(run_cmd_mod, "resolve", return_value=adapter):
-        with pytest.raises(click.ClickException) as excinfo:
+        # Preflight failures now surface as the typed DiagnosticError
+        # with code OFFLINE_PREFLIGHT_FAILED (see error_migration unit).
+        with pytest.raises(DiagnosticError) as excinfo:
             run_cmd_mod.run_eval(
                 str(exp_dir),
                 agent="fake",
@@ -187,6 +188,7 @@ def test_run_offline_failed_preflight_exits_before_adapter(
     )
     # The error message names the failing backend.
     assert "bedrock" in str(excinfo.value.message).lower()
+    assert excinfo.value.code == "OFFLINE_PREFLIGHT_FAILED"
     # CODEPROBE_OFFLINE must NOT be set when preflight fails.
     assert os.environ.get("CODEPROBE_OFFLINE") is None
 

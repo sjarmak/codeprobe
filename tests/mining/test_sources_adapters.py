@@ -443,19 +443,19 @@ def test_resolve_narrative_source_explicit_selection(tmp_path: Path) -> None:
 def test_resolve_narrative_source_raises_when_no_pr_and_no_flag(
     tmp_path: Path,
 ) -> None:
-    import click
-
+    from codeprobe.cli.errors import PrescriptiveError
     from codeprobe.cli.mine_cmd import _resolve_narrative_source
 
     with patch(
         "codeprobe.mining.sources.subprocess.run",
         side_effect=_fake_subprocess_run("[]"),
     ):
-        with pytest.raises(click.UsageError) as exc_info:
+        with pytest.raises(PrescriptiveError) as exc_info:
             _resolve_narrative_source((), tmp_path, tasks_mined=True)
     msg = str(exc_info.value)
     assert "--narrative-source" in msg
     assert "commits+rfcs" in msg
+    assert exc_info.value.code == "NARRATIVE_SOURCE_UNDETECTABLE"
 
 
 def test_resolve_narrative_source_defaults_to_pr_when_available(
@@ -484,11 +484,10 @@ def test_resolve_narrative_source_skips_check_when_no_tasks(
 def test_resolve_narrative_source_invalid_name_raises_usage_error(
     tmp_path: Path,
 ) -> None:
-    import click
-
+    from codeprobe.cli.errors import PrescriptiveError
     from codeprobe.cli.mine_cmd import _resolve_narrative_source
 
-    with pytest.raises(click.UsageError, match="Unknown narrative source"):
+    with pytest.raises(PrescriptiveError, match="Unknown narrative source"):
         _resolve_narrative_source(("bogus",), tmp_path, tasks_mined=True)
 
 
@@ -541,8 +540,7 @@ def test_mine_on_squash_only_repo_fails_loudly(
     repo_with_squash_only: tuple[Path, str],
 ) -> None:
     """Running ``_dispatch_sdlc`` on a squash-only repo with no flag raises."""
-    import click
-
+    from codeprobe.cli.errors import PrescriptiveError
     from codeprobe.cli.mine_cmd import _dispatch_sdlc
     from codeprobe.mining.extractor import MineResult
     from codeprobe.models.task import Task, TaskMetadata, TaskVerification
@@ -568,7 +566,7 @@ def test_mine_on_squash_only_repo_fails_loudly(
         "codeprobe.mining.sources.subprocess.run",
         side_effect=_fake_subprocess_run("[]"),
     ):
-        with pytest.raises(click.UsageError) as exc_info:
+        with pytest.raises(PrescriptiveError) as exc_info:
             _dispatch_sdlc(
                 repo_path=repo,
                 count=1,

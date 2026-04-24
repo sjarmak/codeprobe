@@ -117,7 +117,9 @@ class TestDoctorCLI:
 
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--no-json"])
-        assert result.exit_code == 1
+        # Migrated to DiagnosticError(code=DOCTOR_CHECKS_FAILED) whose
+        # catalog-declared exit code is 2.
+        assert result.exit_code == 2
         assert "FAIL" in result.output
 
     def test_doctor_does_not_print_key_values(self, monkeypatch: object) -> None:
