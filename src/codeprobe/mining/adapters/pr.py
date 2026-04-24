@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from codeprobe.mining.sources import NarrativeBundle
+from codeprobe.net import guard_offline
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,10 @@ class PRAdapter:
     name: str = field(default="pr")
 
     def fetch(self, repo: Path, commit_sha: str) -> NarrativeBundle | None:
+        # Offline gate: ``gh pr list`` hits the GitHub API. In offline
+        # mode we fail loud rather than masking as "no PR available".
+        guard_offline("adapters.pr.PRAdapter.fetch (github via gh)")
+
         try:
             result = subprocess.run(
                 [

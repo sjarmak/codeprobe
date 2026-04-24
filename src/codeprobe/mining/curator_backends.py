@@ -34,6 +34,7 @@ from codeprobe.mining.org_scale_scanner import (
     matches_glob,
     scan_repo_for_family,
 )
+from codeprobe.net import guard_offline
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,12 @@ class SourcegraphBackend:
             "Authorization": f"token {token}",
             "Content-Type": "application/json",
         }
+
+        # Offline gate: fail loud before spending retries against
+        # ``endpoint`` when the operator explicitly asked for no network.
+        guard_offline(
+            f"curator_backends.SourcegraphGraphQLBackend -> {endpoint}"
+        )
 
         for attempt in range(_SG_MAX_RETRIES):
             req = urllib.request.Request(
