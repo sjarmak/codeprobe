@@ -59,6 +59,7 @@ This project is AI-orchestration code — ZFC applies at two levels:
 - `cli/mine_cmd.py:_quality_review()` — three heuristics: length+keyword check for "thin instructions" (desc < 50 chars), hardcoded 0.7 threshold for "low diversity", stub command keyword match. These are UI warnings, not scoring judgments, so lower priority for refactoring
 - `mining/org_scale_families.py` — `min_hits` thresholds (3-5) are hardcoded. Structural file-counting is OK per ZFC, but the thresholds are arbitrary. Acceptable as tunable parameters
 - `mining/curator_tiers.py:assign_ground_truth_tiers()` — the `use_llm=False` branch (line ~410) returns the pure mechanical heuristic tiers without any LLM call. This is a documented offline fallback mode; callers that opt in accept the ZFC trade-off. Not a drift bug — refactor would instead tighten the docstring/labeling so consumers know when they're seeing heuristic-only tiers
+- `config/defaults.py:resolve_narrative_source()` — priority rule `pr > commits > rfcs > issues` is a semantic tiebreaker. Replace with model-assessed selection via `core/llm.py` before 2026-10-23 (Q5 + T4 follow-up bead). Self-enforced by `tests/zfc/test_narrative_source_slo.py`.
 
 ### Justified exceptions
 

@@ -6,6 +6,12 @@ from pathlib import Path
 
 import click
 
+from codeprobe.config.defaults import (
+    PrescriptiveError,
+    resolve_experiment_config,
+    use_v07_defaults,
+)
+
 
 def _count_expected_tasks(tasks_dir: Path) -> int | None:
     """Count the number of task directories in the tasks manifest.
@@ -65,6 +71,19 @@ def run_interpret(path: str, fmt: str = "text") -> None:
     from codeprobe.core.experiment import load_config_results, load_experiment
 
     exp_dir = Path(path).resolve()
+
+    # Under v0.7, attempt the deterministic auto-discovery resolver
+    # before falling back to the pre-PRD discovery logic below. When
+    # the resolver raises AMBIGUOUS_EXPERIMENT we still let the classic
+    # loader try — it handles explicit paths fine — and surface a
+    # prescriptive message if everything fails.
+    if use_v07_defaults():
+        try:
+            resolved, _ = resolve_experiment_config(exp_dir)
+            exp_dir = resolved.parent
+        except PrescriptiveError:
+            pass
+
     try:
         experiment = load_experiment(exp_dir)
     except (FileNotFoundError, ValueError):

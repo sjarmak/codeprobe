@@ -2003,6 +2003,61 @@ def run_mine(
     global _MINE_START_TIME
     _MINE_START_TIME = time.monotonic()
 
+    # v0.7 gate-on-context defaults — opt-in via CODEPROBE_DEFAULTS=v0.7.
+    # We compute (goal, narrative_source) defaults from structural repo
+    # signals when the user did not pass explicit values. Pre-v0.7 paths
+    # remain byte-identical.
+    goal_source = "flag" if goal is not None else "default"
+    narrative_source_source = "flag" if narrative_source else "default"
+    from codeprobe.config.defaults import (
+        PrescriptiveError as _PrescriptiveError,
+        resolve_goal as _resolve_goal,
+        resolve_narrative_source as _resolve_narrative_source,
+        scan_repo_shape as _scan_repo_shape,
+        use_v07_defaults as _use_v07_defaults,
+    )
+
+    if _use_v07_defaults() and refresh_dir is None:
+        try:
+            _repo_path = Path(path).resolve()
+            if _repo_path.is_dir():
+                _shape = _scan_repo_shape(_repo_path)
+                if goal is None and "goal" not in explicit_set:
+                    try:
+                        goal, goal_source = _resolve_goal(_shape)
+                    except _PrescriptiveError as exc:
+                        click.echo(
+                            f"error[{exc.code}]: {exc.message}",
+                            err=True,
+                        )
+                        raise click.UsageError(exc.message) from exc
+                if (
+                    not narrative_source
+                    and "narrative_source" not in explicit_set
+                ):
+                    try:
+                        (
+                            narrative_source,
+                            narrative_source_source,
+                        ) = _resolve_narrative_source(_shape)
+                    except _PrescriptiveError as exc:
+                        click.echo(
+                            f"error[{exc.code}]: {exc.message}",
+                            err=True,
+                        )
+                        raise click.UsageError(exc.message) from exc
+                click.echo(
+                    "v0.7 defaults: "
+                    f"goal={goal} ({goal_source}) "
+                    f"narrative_source={list(narrative_source)} "
+                    f"({narrative_source_source})",
+                    err=True,
+                )
+        except click.UsageError:
+            raise
+        except Exception:  # pragma: no cover - defensive: never break v0.7 resolve
+            pass
+
     # Refresh dispatch: runs before any other mining path so users don't
     # accidentally re-mine a whole tasks dir when they only meant to
     # refresh a single task.
