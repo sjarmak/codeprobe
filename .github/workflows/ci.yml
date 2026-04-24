@@ -52,6 +52,11 @@ jobs:
 
       - name: pytest (coverage floor 80%)
         run: pytest tests/ -x --cov=src/codeprobe --cov-fail-under=80
+        env:
+          # INV2 tenant guard: derive_tenant() fail-louds when CI=true and no
+          # tenant is set. Set it explicitly so the guard fires only for user
+          # error, not for our own test suite.
+          CODEPROBE_TENANT: ci-${{ github.sha }}
 
       - name: lint_zfc (blocking)
         run: python3 scripts/lint_zfc.py src/codeprobe/ --allowlist scripts/lint_zfc.allowlist.toml

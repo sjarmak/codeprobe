@@ -16,7 +16,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[all,dev]"
+      # INV2 tenant guard: derive_tenant() fail-louds when CI=true and no tenant
+      # is set. Set it explicitly so the guard fires only for user error, not
+      # for our own test suite. Tests that exercise the guard itself override
+      # via monkeypatch and are unaffected.
       - run: pytest --cov=src/codeprobe --cov-report=term-missing --cov-fail-under=80
+        env:
+          CODEPROBE_TENANT: ci-${{ github.sha }}
 
   publish:
     needs: [test]
