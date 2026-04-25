@@ -1292,6 +1292,27 @@ class TestIsolateSession:
             env1 = adapter.isolate_session(1)
         assert env0["CLAUDE_CONFIG_DIR"] != env1["CLAUDE_CONFIG_DIR"]
 
+    def test_claude_isolate_session_namespaces_same_slot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = ClaudeAdapter()
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        (fake_home / ".claude" / ".credentials.json").write_text("{}")
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            env0 = adapter.isolate_session(0, namespace="baseline-1234")
+            env1 = adapter.isolate_session(0, namespace="with-mcp-5678")
+        assert env0["CLAUDE_CONFIG_DIR"] != env1["CLAUDE_CONFIG_DIR"]
+        assert "/baseline-1234/slot-0" in env0["CLAUDE_CONFIG_DIR"]
+        assert "/with-mcp-5678/slot-0" in env1["CLAUDE_CONFIG_DIR"]
+
     def test_claude_isolate_session_skips_when_no_creds(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

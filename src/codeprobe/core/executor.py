@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json as _json
+import inspect
 import logging
 import shutil
 import subprocess
@@ -160,6 +161,39 @@ def _classify_error(exc: BaseException) -> str:
     if isinstance(exc, (OSError, MemoryError)):
         return "system"
     return "agent"
+
+
+def _build_session_namespace(config_label: str) -> str:
+    """Return a unique namespace for one config execution."""
+    return f"{config_label}-{uuid.uuid4().hex[:8]}"
+
+
+def _call_isolate_session(
+    adapter: AgentAdapter,
+    slot_id: int,
+    *,
+    namespace: str | None = None,
+) -> dict[str, str]:
+    """Call ``adapter.isolate_session`` with namespace support when available."""
+    isolate = getattr(adapter, "isolate_session")
+    try:
+        params = inspect.signature(isolate).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "namespace" in params:
+        return isolate(slot_id, namespace=namespace)
+    return isolate(slot_id)
+
+
+def _cleanup_session_namespace(
+    adapter: AgentAdapter,
+    namespace: str | None,
+) -> None:
+    """Best-effort cleanup for adapter-specific session temp dirs."""
+    cleanup = getattr(adapter, "cleanup_session_namespace", None)
+    if not callable(cleanup):
+        return
+    cleanup(namespace)
 
 
 @dataclass(frozen=True)
@@ -1028,6 +1062,7 @@ def execute_config(
             len(pending_work),
             workers,
         )
+        session_namespace = _build_session_namespace(experiment_config.label)
         # Auto-create isolation when parallel > 1 and none provided
         owns_isolation = False
         active_isolation = isolation
@@ -1055,7 +1090,11 @@ def execute_config(
                     slot_id = int(slot_name.rsplit("-", 1)[-1])
                 except (ValueError, IndexError):
                     slot_id = 0
-                sess_env = adapter.isolate_session(slot_id)
+                sess_env = _call_isolate_session(
+                    adapter,
+                    slot_id,
+                    namespace=session_namespace,
+                )
                 return _run_one(
                     task_dir,
                     repeat_index=repeat_index,
@@ -1104,6 +1143,7 @@ def execute_config(
                             f.cancel()
                         break
         finally:
+            _cleanup_session_namespace(adapter, session_namespace)
             if owns_isolation:
                 active_isolation.cleanup()
 

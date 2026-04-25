@@ -53,6 +53,7 @@ _MUTABLE_DIR_NAMES: frozenset[str] = frozenset(
     }
 )
 _MUTABLE_FILE_NAMES: frozenset[str] = frozenset({"history.jsonl"})
+_SAFE_NAMESPACE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _normalize_model_for_cli(model: str) -> str:
@@ -112,7 +113,19 @@ def _credentials_file_status(config_dir: Path) -> str:
     return "missing"
 
 
-def _build_mirror_slot_env(real_config: Path, slot_id: int) -> dict[str, str]:
+def _sanitize_namespace(namespace: str | None) -> str | None:
+    """Return a filesystem-safe namespace component for temp dirs."""
+    if not namespace:
+        return None
+    cleaned = _SAFE_NAMESPACE_CHARS.sub("-", namespace).strip(".-")
+    return cleaned or None
+
+
+def _build_mirror_slot_env(
+    real_config: Path,
+    slot_id: int,
+    namespace: str | None = None,
+) -> dict[str, str]:
     """Build a per-slot ``CLAUDE_CONFIG_DIR`` that mirrors ``real_config``.
 
     Read-mostly entries (credentials file, settings.json, skills/, agents/,
@@ -128,7 +141,11 @@ def _build_mirror_slot_env(real_config: Path, slot_id: int) -> dict[str, str]:
     running in the same slot so intra-slot session continuity is not
     broken.
     """
-    slot_dir = Path(tempfile.gettempdir()) / "codeprobe-claude" / f"slot-{slot_id}"
+    slot_root = Path(tempfile.gettempdir()) / "codeprobe-claude"
+    safe_namespace = _sanitize_namespace(namespace)
+    if safe_namespace:
+        slot_root = slot_root / safe_namespace
+    slot_dir = slot_root / f"slot-{slot_id}"
     slot_dir.mkdir(parents=True, exist_ok=True)
 
     seen: set[str] = set()
@@ -347,7 +364,11 @@ class ClaudeAdapter(BaseAdapter):
 
         return cmd
 
-    def isolate_session(self, slot_id: int) -> dict[str, str]:
+    def isolate_session(
+        self,
+        slot_id: int,
+        namespace: str | None = None,
+    ) -> dict[str, str]:
         """Return a per-slot ``CLAUDE_CONFIG_DIR`` for session isolation.
 
         Mirrors the real Claude config directory (honoring the
@@ -368,9 +389,26 @@ class ClaudeAdapter(BaseAdapter):
         """
         real_config = _effective_claude_config_dir()
         if any((real_config / name).is_file() for name in _FILE_CRED_NAMES):
-            return _build_mirror_slot_env(real_config, slot_id)
+            return _build_mirror_slot_env(
+                real_config,
+                slot_id,
+                namespace=namespace,
+            )
 
         return {}
+
+    def cleanup_session_namespace(self, namespace: str | None) -> None:
+        """Remove a namespaced temp CLAUDE_CONFIG_DIR tree after a run."""
+        safe_namespace = _sanitize_namespace(namespace)
+        if not safe_namespace:
+            return
+        slot_root = Path(tempfile.gettempdir()) / "codeprobe-claude" / safe_namespace
+        try:
+            shutil.rmtree(slot_root)
+        except FileNotFoundError:
+            return
+        except OSError:
+            pass
 
     def parse_output(self, result: subprocess.CompletedProcess[str], duration: float) -> AgentOutput:
         """Parse Claude CLI JSON envelope into AgentOutput.
