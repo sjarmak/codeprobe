@@ -10,7 +10,12 @@ from click.testing import CliRunner
 from codeprobe.cli import main
 
 
-def _setup_experiment(tmp_path: Path, *, preambles: tuple[str, ...] = ()) -> Path:
+def _setup_experiment(
+    tmp_path: Path,
+    *,
+    preambles: tuple[str, ...] = (),
+    metadata: dict | None = None,
+) -> Path:
     """Create a minimal experiment directory with one task."""
     exp_dir = tmp_path / ".codeprobe" / "my-exp"
     tasks_dir = exp_dir / "tasks" / "task-001"
@@ -18,6 +23,14 @@ def _setup_experiment(tmp_path: Path, *, preambles: tuple[str, ...] = ()) -> Pat
 
     instruction = "Fix the bug in main.py by handling the KeyError."
     (tasks_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+    if metadata is not None:
+        payload = {
+            "id": "task-001",
+            "metadata": metadata,
+        }
+        (tasks_dir / "metadata.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
 
     configs = [
         {
@@ -86,6 +99,29 @@ def test_show_prompt_with_preamble(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "Fix the bug in main.py" in result.output
     assert "You have access to repository at" in result.output
+
+
+def test_show_prompt_sourcegraph_uses_task_specific_guidance(tmp_path: Path) -> None:
+    """--show-prompt should render task-aware Sourcegraph guidance."""
+    exp_dir = _setup_experiment(
+        tmp_path,
+        preambles=("sourcegraph",),
+        metadata={
+            "category": "symbol-reference-trace",
+            "sg_repo": "github.com/acme/widgets",
+        },
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["run", str(exp_dir), "--show-prompt"], catch_exceptions=False
+    )
+
+    assert result.exit_code == 0
+    assert "github.com/acme/widgets" in result.output
+    assert "treat `sg_find_references` as authoritative" in result.output
+    assert "do not replace it with a grep union" in result.output
+    assert "maximum recall" not in result.output
 
 
 def test_show_prompt_no_tasks(tmp_path: Path) -> None:

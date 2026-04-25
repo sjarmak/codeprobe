@@ -345,6 +345,9 @@ def show_prompt_and_exit(
     instruction = load_instruction(first_task, variant=instruction_variant)
 
     if preamble_names:
+        from codeprobe.core.preamble import task_preamble_context
+        from codeprobe.core.scoring import read_task_metadata
+
         resolver = DefaultPreambleResolver(
             task_dir=first_task,
             project_dir=repo_root,
@@ -356,6 +359,7 @@ def show_prompt_and_exit(
             preamble_names=list(preamble_names),
             resolver=resolver,
             task_id=first_task.name,
+            extra_context=task_preamble_context(read_task_metadata(first_task)) or None,
         )
     else:
         prompt = base_prompt(instruction, repo_root)

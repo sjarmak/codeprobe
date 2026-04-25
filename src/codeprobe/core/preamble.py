@@ -17,6 +17,8 @@ __all__ = [
     "task_preamble_context",
 ]
 
+_SYMBOL_REFERENCE_TRACE_CATEGORY = "symbol-reference-trace"
+
 
 @runtime_checkable
 class PreambleResolver(Protocol):
@@ -121,7 +123,7 @@ _base_prompt = base_prompt
 
 
 def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[str, str]:
-    """Extract task metadata values that preamble templates can reference."""
+    """Extract task-aware context values that preamble templates can reference."""
     if not isinstance(task_metadata, Mapping):
         return {}
 
@@ -133,6 +135,57 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
     sg_repo = metadata_block.get("sg_repo")
     if isinstance(sg_repo, str) and sg_repo:
         extra_context["sg_repo"] = sg_repo
+
+    category = metadata_block.get("category")
+    if isinstance(category, str) and category:
+        extra_context["task_category"] = category
+
+    if extra_context.get("task_category") == _SYMBOL_REFERENCE_TRACE_CATEGORY:
+        extra_context.update(
+            {
+                "sg_task_search_guidance": (
+                    "For `symbol-reference-trace`, treat "
+                    "`sg_find_references` as authoritative. Use local Grep "
+                    "only to locate the definition site or sanity-check a "
+                    "suspicious gap."
+                ),
+                "sg_find_references_guidance": (
+                    "For `symbol-reference-trace`, this is the source of "
+                    "truth; do not replace it with a grep union."
+                ),
+                "sg_local_search_step": (
+                    "**Use local Grep narrowly** only when you need to find "
+                    "the definition site or investigate a mismatch."
+                ),
+                "sg_result_synthesis_step": (
+                    "**Prefer authoritative references** — report the "
+                    "`sg_find_references` result set instead of unioning in "
+                    "extra grep matches."
+                ),
+            }
+        )
+        return extra_context
+
+    extra_context.update(
+        {
+            "sg_task_search_guidance": (
+                "Use Sourcegraph tools FIRST, then supplement with local "
+                "Grep when broader recall helps."
+            ),
+            "sg_find_references_guidance": (
+                "For symbol-relationship questions, prefer this over "
+                "heuristic text matches."
+            ),
+            "sg_local_search_step": (
+                "**Supplement with local Grep** to catch anything Sourcegraph "
+                "may have missed."
+            ),
+            "sg_result_synthesis_step": (
+                "**Union results when recall matters** — combine indexed "
+                "search and local Grep for broader coverage."
+            ),
+        }
+    )
     return extra_context
 
 

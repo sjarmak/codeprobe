@@ -99,12 +99,21 @@ def _setup_experiment(
     return exp_dir, task_id
 
 
-def _write_task_metadata(task_dir: Path, *, sg_repo: str) -> None:
+def _write_task_metadata(
+    task_dir: Path,
+    *,
+    sg_repo: str,
+    category: str | None = None,
+) -> None:
+    metadata = {
+        "sg_repo": sg_repo,
+    }
+    if category is not None:
+        metadata["category"] = category
+
     payload = {
         "id": task_dir.name,
-        "metadata": {
-            "sg_repo": sg_repo,
-        },
+        "metadata": metadata,
     }
     (task_dir / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
 
@@ -259,7 +268,11 @@ def test_resolved_instruction_renders_task_preamble_context(
         ],
     )
     task_dir = exp_dir / "tasks" / task_id
-    _write_task_metadata(task_dir, sg_repo="github.com/acme/widgets")
+    _write_task_metadata(
+        task_dir,
+        sg_repo="github.com/acme/widgets",
+        category="symbol-reference-trace",
+    )
 
     adapter = FakeAdapter(stdout="ok", cost_usd=0.0, cost_model="unknown", duration=0.0)
 
@@ -281,3 +294,6 @@ def test_resolved_instruction_renders_task_preamble_context(
     assert prompt_text == adapter.run_calls[0][0]
     assert "github.com/acme/widgets" in prompt_text
     assert "{{sg_repo}}" not in prompt_text
+    assert "treat `sg_find_references` as authoritative" in prompt_text
+    assert "do not replace it with a grep union" in prompt_text
+    assert "maximum recall" not in prompt_text

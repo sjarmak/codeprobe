@@ -169,7 +169,7 @@ def test_resolver_rejects_path_traversal(tmp_path: Path):
 
 # -- compose_instruction tests -----------------------------------------------
 
-from codeprobe.core.preamble import compose_instruction  # noqa: E402
+from codeprobe.core.preamble import compose_instruction, task_preamble_context  # noqa: E402
 
 
 def test_compose_instruction_empty_preambles(tmp_path: Path):
@@ -249,6 +249,64 @@ def test_compose_instruction_returns_resolved_content(tmp_path: Path):
     assert len(resolved) == 1
     assert resolved[0]["name"] == "hint"
     assert resolved[0]["content"] == "Be careful."
+
+
+def test_compose_instruction_sourcegraph_symbol_reference_is_authoritative(
+    tmp_path: Path,
+):
+    """symbol-reference-trace prompts should prefer authoritative references."""
+    task_dir = tmp_path / "task-001"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Trace all references to MkdirAll.",
+        repo_path=Path("/repo"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="task-001",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "symbol-reference-trace",
+                    "sg_repo": "github.com/acme/widgets",
+                }
+            }
+        ),
+    )
+
+    assert "treat `sg_find_references` as authoritative" in prompt
+    assert "do not replace it with a grep union" in prompt
+    assert "maximum recall" not in prompt
+
+
+def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
+    tmp_path: Path,
+):
+    """Non-authoritative families should keep the broad-recall guidance."""
+    task_dir = tmp_path / "task-001"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Find the blast radius.",
+        repo_path=Path("/repo"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="task-001",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "change-scope-audit",
+                    "sg_repo": "github.com/acme/widgets",
+                }
+            }
+        ),
+    )
+
+    assert "supplement with local Grep" in prompt
+    assert "Union results when recall matters" in prompt
+    assert "treat `sg_find_references` as authoritative" not in prompt
 
 
 # -- Built-in preamble tests --------------------------------------------------
