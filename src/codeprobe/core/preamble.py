@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -13,6 +14,7 @@ __all__ = [
     "DefaultPreambleResolver",
     "base_prompt",
     "compose_instruction",
+    "task_preamble_context",
 ]
 
 
@@ -116,6 +118,22 @@ def base_prompt(
 
 # Backward-compatible private alias. Callers should use ``base_prompt``.
 _base_prompt = base_prompt
+
+
+def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[str, str]:
+    """Extract task metadata values that preamble templates can reference."""
+    if not isinstance(task_metadata, Mapping):
+        return {}
+
+    metadata_block = task_metadata.get("metadata")
+    if not isinstance(metadata_block, Mapping):
+        return {}
+
+    extra_context: dict[str, str] = {}
+    sg_repo = metadata_block.get("sg_repo")
+    if isinstance(sg_repo, str) and sg_repo:
+        extra_context["sg_repo"] = sg_repo
+    return extra_context
 
 
 def compose_instruction(

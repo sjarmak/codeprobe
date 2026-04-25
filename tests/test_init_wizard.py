@@ -205,6 +205,20 @@ class TestAskMcpComparison:
         mcp_config = next(c for c in configs if c.label == "with-mcp")
         assert mcp_config.mcp_config == mcp_data
 
+    def test_with_mcp_sets_instruction_variant(self, tmp_path: Path) -> None:
+        """Goal 1 MCP configs should default to instruction_mcp.md."""
+        mcp_file = tmp_path / "mcp.json"
+        mcp_file.write_text(json.dumps({"mcpServers": {"test": {"command": "echo"}}}))
+
+        evalrc, configs = ask_mcp_comparison(
+            experiment_name="mcp-test",
+            agent="claude",
+            model=None,
+            mcp_config_path=str(mcp_file),
+        )
+        mcp_config = next(c for c in configs if c.label == "with-mcp")
+        assert mcp_config.instruction_variant == "instruction_mcp.md"
+
     def test_baseline_has_no_mcp(self, tmp_path: Path) -> None:
         mcp_file = tmp_path / "mcp.json"
         mcp_file.write_text(json.dumps({"mcpServers": {}}))
@@ -520,6 +534,7 @@ class TestInitCliIntegration:
         data = json.loads(exp_json.read_text())
         mcp_cfg = next(c for c in data["configs"] if c["label"] == "with-mcp")
         assert mcp_cfg["mcp_config"]["mcpServers"]["sourcegraph"]["type"] == "http"
+        assert mcp_cfg["instruction_variant"] == "instruction_mcp.md"
         assert "sourcegraph" in mcp_cfg["preambles"]
 
     def test_goal2_model_flow(self, tmp_path: Path) -> None:

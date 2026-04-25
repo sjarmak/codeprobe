@@ -34,7 +34,12 @@ from codeprobe.core.events import (
     RunFinished,
     TaskScored,
 )
-from codeprobe.core.executor import DryRunEstimate, dry_run_estimate, execute_config
+from codeprobe.core.executor import (
+    DryRunEstimate,
+    dry_run_estimate,
+    execute_config,
+    resolve_instruction_variant,
+)
 from codeprobe.core.experiment import (
     Experiment,
     load_experiment,
@@ -326,7 +331,15 @@ def show_prompt_and_exit(
         experiment.configs[0] if experiment.configs else None
     )
 
-    instruction_variant = exp_config.instruction_variant if exp_config else None
+    instruction_variant = (
+        resolve_instruction_variant(
+            first_task,
+            variant=exp_config.instruction_variant,
+            mcp_config=exp_config.mcp_config,
+        )
+        if exp_config
+        else None
+    )
     preamble_names = exp_config.preambles if exp_config else ()
 
     instruction = load_instruction(first_task, variant=instruction_variant)
@@ -778,17 +791,29 @@ def run_eval(
                 # R6: persist resolved instruction per task before adapter runs.
                 # Write is fail-loud (INV1) — any OSError aborts the run.
                 from codeprobe.core.executor import load_instruction
-                from codeprobe.core.preamble import base_prompt, compose_instruction
+                from codeprobe.core.preamble import (
+                    base_prompt,
+                    compose_instruction,
+                    task_preamble_context,
+                )
+                from codeprobe.core.scoring import read_task_metadata
 
                 for _td in task_dirs:
-                    _instr = load_instruction(_td, variant=exp_config.instruction_variant)
+                    _variant = resolve_instruction_variant(
+                        _td,
+                        variant=exp_config.instruction_variant,
+                        mcp_config=exp_config.mcp_config,
+                    )
+                    _instr = load_instruction(_td, variant=_variant)
                     if exp_config.preambles and preamble_resolver is not None:
+                        _extra_context = task_preamble_context(read_task_metadata(_td))
                         _prompt, _ = compose_instruction(
                             _instr,
                             repo_root,
                             preamble_names=list(exp_config.preambles),
                             resolver=preamble_resolver,
                             task_id=_td.name,
+                            extra_context=_extra_context or None,
                         )
                     else:
                         _prompt = base_prompt(_instr, repo_root)

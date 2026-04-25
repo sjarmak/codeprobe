@@ -34,7 +34,12 @@ from codeprobe.core.isolation import (
     git_restore_clean,
     setup_multi_repo_workspace,
 )
-from codeprobe.core.preamble import PreambleResolver, base_prompt, compose_instruction
+from codeprobe.core.preamble import (
+    PreambleResolver,
+    base_prompt,
+    compose_instruction,
+    task_preamble_context,
+)
 from codeprobe.core.scoring import (
     _COPYTREE_IGNORE,
     get_scorer,
@@ -51,6 +56,7 @@ if TYPE_CHECKING:
 
 # Per-run agent artifacts that must not leak across task runs.
 _STALE_ANSWER_FILES = ("answer.txt", "answer.json", "reward.txt")
+_MCP_INSTRUCTION_VARIANT = "instruction_mcp.md"
 
 
 def _drop_stale_answers(base: Path) -> None:
@@ -185,6 +191,26 @@ def load_instruction(task_dir: Path, variant: str | None = None) -> str:
     raise FileNotFoundError(f"No instruction file found in {task_dir}")
 
 
+def resolve_instruction_variant(
+    task_dir: Path,
+    *,
+    variant: str | None = None,
+    mcp_config: dict | None = None,
+) -> str | None:
+    """Return the effective instruction variant for *task_dir*.
+
+    Explicit config wins. For MCP-enabled configs over mined tasks, default to
+    ``instruction_mcp.md`` when that task-specific prompt exists.
+    """
+    if variant is not None:
+        return variant
+    if not mcp_config:
+        return None
+    if (task_dir / _MCP_INSTRUCTION_VARIANT).is_file():
+        return _MCP_INSTRUCTION_VARIANT
+    return None
+
+
 def execute_task(
     adapter: AgentAdapter,
     task_dir: Path,
@@ -213,6 +239,11 @@ def execute_task(
     # preamble context (e.g. sg_repo for Sourcegraph preamble).
     _task_meta = read_task_metadata(task_dir)
     _verification = _task_meta.get("verification") or {}
+    effective_instruction_variant = resolve_instruction_variant(
+        task_dir,
+        variant=instruction_variant,
+        mcp_config=agent_config.mcp_config,
+    )
 
     # Verification-mode override — top level and unconditional. A task whose
     # metadata declares ``verification_mode == 'dual'`` forces the dual
@@ -283,7 +314,10 @@ def execute_task(
 
     try:
         try:
-            instruction = load_instruction(task_dir, variant=instruction_variant)
+            instruction = load_instruction(
+                task_dir,
+                variant=effective_instruction_variant,
+            )
         except FileNotFoundError as exc:
             return _error_result(str(exc))
 
@@ -295,11 +329,7 @@ def execute_task(
             )
 
         if preamble_names and preamble_resolver is not None:
-            # Build extra context from task metadata for preamble templates
-            extra_ctx: dict[str, str] = {}
-            sg_repo = (_task_meta.get("metadata") or {}).get("sg_repo", "")
-            if sg_repo:
-                extra_ctx["sg_repo"] = sg_repo
+            extra_ctx = task_preamble_context(_task_meta)
 
             try:
                 prompt, resolved_preambles = compose_instruction(

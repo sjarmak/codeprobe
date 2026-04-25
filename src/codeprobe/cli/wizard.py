@@ -84,6 +84,7 @@ def ask_mcp_comparison(
         agent=agent,
         model=model,
         mcp_config=mcp_data,
+        instruction_variant="instruction_mcp.md",
         preambles=preambles,
     )
 
