@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json as _json
 import inspect
 import logging
@@ -33,6 +34,7 @@ from codeprobe.core.isolation import (
     cleanup_multi_repo_workspace,
     git_pin_commit,
     git_restore_clean,
+    quarantine_sibling_experiments,
     setup_multi_repo_workspace,
 )
 from codeprobe.core.preamble import (
@@ -149,6 +151,33 @@ def get_concurrency_semaphore() -> threading.Semaphore | None:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _find_active_experiment_dir(
+    task_dirs: list[Path],
+    repo_path: Path,
+) -> Path | None:
+    """Return the closest ancestor of *task_dirs[0]* containing experiment.json.
+
+    Walks up from the first task directory toward *repo_path* until it finds a
+    directory with an ``experiment.json``.  Returns ``None`` when no such
+    ancestor is reachable inside the repo (e.g. tests that bypass the standard
+    ``.codeprobe/`` layout) — callers should treat ``None`` as "skip
+    quarantine."
+    """
+    if not task_dirs:
+        return None
+    try:
+        repo_resolved = repo_path.resolve()
+        cur = task_dirs[0].resolve().parent
+    except OSError:
+        return None
+    while True:
+        if (cur / "experiment.json").is_file():
+            return cur
+        if cur == repo_resolved or cur == cur.parent:
+            return None
+        cur = cur.parent
 
 
 def _classify_error(exc: BaseException) -> str:
@@ -1019,133 +1048,144 @@ def execute_config(
     # Capture original HEAD so we can restore it after commit pinning.
     original_ref = _get_head_ref(repo_path)
 
-    if workers <= 1:
-        # Sequential — preserves original behavior and budget checks
-        for idx, (task_dir, repeat_index) in enumerate(pending_work):
-            if _budget_exceeded():
-                _budget_msg(
-                    f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                    f"${max_cost_usd:.2f} — halting"
-                )
-                break
-            # Emit TaskStarted event
-            if event_dispatcher is not None:
-                event_dispatcher.emit(
-                    TaskStarted(
-                        task_id=task_dir.name,
-                        config_label=experiment_config.label,
-                        timestamp=time.time(),
+    # Quarantine sibling experiment dirs at the repo root for the duration of
+    # the dispatch.  Without this, an agent in a slot worktree can ``cd ../..``
+    # to the repo root and read another experiment's ground_truth.json.
+    active_exp_dir = _find_active_experiment_dir(task_dirs, repo_path)
+    quarantine_cm: contextlib.AbstractContextManager[None] = (
+        quarantine_sibling_experiments(repo_path, active_exp_dir)
+        if active_exp_dir is not None
+        else contextlib.nullcontext()
+    )
+
+    with quarantine_cm:
+        if workers <= 1:
+            # Sequential — preserves original behavior and budget checks
+            for idx, (task_dir, repeat_index) in enumerate(pending_work):
+                if _budget_exceeded():
+                    _budget_msg(
+                        f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                        f"${max_cost_usd:.2f} — halting"
                     )
-                )
-            # Reset working directory between tasks so leftovers from
-            # task N don't corrupt task N+1's results.  Also restores
-            # the original branch/HEAD in case the previous task pinned
-            # to a specific commit.
-            if idx > 0:
-                _git_reset_workdir(
-                    repo_path,
-                    extra_excludes=clean_excludes,
-                    restore_ref=original_ref,
-                )
-            task_result = _run_one(task_dir, repeat_index=repeat_index)
-            _handle_result(task_result)
-        # Restore original HEAD after all sequential tasks complete so
-        # the repo isn't left on a detached commit from the last task.
-        _git_reset_workdir(
-            repo_path, extra_excludes=clean_excludes, restore_ref=original_ref
-        )
-    else:
-        # Parallel — dispatch all pending tasks to thread pool
-        logger.info(
-            "[%s] Dispatching %d work items with %d workers",
-            experiment_config.label,
-            len(pending_work),
-            workers,
-        )
-        session_namespace = _build_session_namespace(experiment_config.label)
-        # Auto-create isolation when parallel > 1 and none provided
-        owns_isolation = False
-        active_isolation = isolation
-        if active_isolation is None:
-            active_isolation = WorktreeIsolation(
-                repo_path, pool_size=workers, namespace=experiment_config.label
+                    break
+                # Emit TaskStarted event
+                if event_dispatcher is not None:
+                    event_dispatcher.emit(
+                        TaskStarted(
+                            task_id=task_dir.name,
+                            config_label=experiment_config.label,
+                            timestamp=time.time(),
+                        )
+                    )
+                # Reset working directory between tasks so leftovers from
+                # task N don't corrupt task N+1's results.  Also restores
+                # the original branch/HEAD in case the previous task pinned
+                # to a specific commit.
+                if idx > 0:
+                    _git_reset_workdir(
+                        repo_path,
+                        extra_excludes=clean_excludes,
+                        restore_ref=original_ref,
+                    )
+                task_result = _run_one(task_dir, repeat_index=repeat_index)
+                _handle_result(task_result)
+            # Restore original HEAD after all sequential tasks complete so
+            # the repo isn't left on a detached commit from the last task.
+            _git_reset_workdir(
+                repo_path, extra_excludes=clean_excludes, restore_ref=original_ref
             )
-            owns_isolation = True
+        else:
+            # Parallel — dispatch all pending tasks to thread pool
+            logger.info(
+                "[%s] Dispatching %d work items with %d workers",
+                experiment_config.label,
+                len(pending_work),
+                workers,
+            )
+            session_namespace = _build_session_namespace(experiment_config.label)
+            # Auto-create isolation when parallel > 1 and none provided
+            owns_isolation = False
+            active_isolation = isolation
+            if active_isolation is None:
+                active_isolation = WorktreeIsolation(
+                    repo_path, pool_size=workers, namespace=experiment_config.label
+                )
+                owns_isolation = True
 
-        def _run_isolated(task_dir: Path, repeat_index: int) -> TaskResult:
-            # Emit TaskStarted event
-            if event_dispatcher is not None:
-                event_dispatcher.emit(
-                    TaskStarted(
-                        task_id=task_dir.name,
-                        config_label=experiment_config.label,
-                        timestamp=time.time(),
+            def _run_isolated(task_dir: Path, repeat_index: int) -> TaskResult:
+                # Emit TaskStarted event
+                if event_dispatcher is not None:
+                    event_dispatcher.emit(
+                        TaskStarted(
+                            task_id=task_dir.name,
+                            config_label=experiment_config.label,
+                            timestamp=time.time(),
+                        )
                     )
-                )
-            wt = active_isolation.acquire()
-            try:
-                # Extract slot index from worktree path name (e.g. "slot-0" → 0)
-                slot_name = wt.name
+                wt = active_isolation.acquire()
                 try:
-                    slot_id = int(slot_name.rsplit("-", 1)[-1])
-                except (ValueError, IndexError):
-                    slot_id = 0
-                sess_env = _call_isolate_session(
-                    adapter,
-                    slot_id,
-                    namespace=session_namespace,
-                )
-                return _run_one(
-                    task_dir,
-                    repeat_index=repeat_index,
-                    worktree_path=wt,
-                    session_env=sess_env,
-                )
-            finally:
-                active_isolation.release(wt)
-
-        try:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                future_to_work = {
-                    pool.submit(_run_isolated, td, ri): (td, ri)
-                    for td, ri in pending_work
-                }
-                for future in as_completed(future_to_work):
-                    task_dir, repeat_index = future_to_work[future]
+                    # Extract slot index from worktree path name (e.g. "slot-0" → 0)
+                    slot_name = wt.name
                     try:
-                        task_result = future.result()
-                    except Exception as exc:
-                        logger.error(
-                            "[%s] %s repeat %d raised: %s",
-                            experiment_config.label,
-                            task_dir.name,
-                            repeat_index,
-                            exc,
-                        )
-                        task_result = TaskResult(
-                            completed=CompletedTask(
-                                task_id=task_dir.name,
-                                automated_score=0.0,
-                                repeat_index=repeat_index,
-                                status="error",
-                                error_category=_classify_error(exc),
-                                metadata={"error": str(exc)},
-                            ),
-                        )
-                    _handle_result(task_result)
+                        slot_id = int(slot_name.rsplit("-", 1)[-1])
+                    except (ValueError, IndexError):
+                        slot_id = 0
+                    sess_env = _call_isolate_session(
+                        adapter,
+                        slot_id,
+                        namespace=session_namespace,
+                    )
+                    return _run_one(
+                        task_dir,
+                        repeat_index=repeat_index,
+                        worktree_path=wt,
+                        session_env=sess_env,
+                    )
+                finally:
+                    active_isolation.release(wt)
 
-                    if _budget_exceeded():
-                        _budget_msg(
-                            f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                            f"${max_cost_usd:.2f} — halting"
-                        )
-                        for f in future_to_work:
-                            f.cancel()
-                        break
-        finally:
-            _cleanup_session_namespace(adapter, session_namespace)
-            if owns_isolation:
-                active_isolation.cleanup()
+            try:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    future_to_work = {
+                        pool.submit(_run_isolated, td, ri): (td, ri)
+                        for td, ri in pending_work
+                    }
+                    for future in as_completed(future_to_work):
+                        task_dir, repeat_index = future_to_work[future]
+                        try:
+                            task_result = future.result()
+                        except Exception as exc:
+                            logger.error(
+                                "[%s] %s repeat %d raised: %s",
+                                experiment_config.label,
+                                task_dir.name,
+                                repeat_index,
+                                exc,
+                            )
+                            task_result = TaskResult(
+                                completed=CompletedTask(
+                                    task_id=task_dir.name,
+                                    automated_score=0.0,
+                                    repeat_index=repeat_index,
+                                    status="error",
+                                    error_category=_classify_error(exc),
+                                    metadata={"error": str(exc)},
+                                ),
+                            )
+                        _handle_result(task_result)
+
+                        if _budget_exceeded():
+                            _budget_msg(
+                                f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                                f"${max_cost_usd:.2f} — halting"
+                            )
+                            for f in future_to_work:
+                                f.cancel()
+                            break
+            finally:
+                _cleanup_session_namespace(adapter, session_namespace)
+                if owns_isolation:
+                    active_isolation.cleanup()
 
     # Warn if >30% of tasks have system errors (capacity issues)
     if results:

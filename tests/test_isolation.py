@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 from codeprobe.core.isolation import (
     RepoRef,
     cleanup_multi_repo_workspace,
+    quarantine_sibling_experiments,
     setup_multi_repo_workspace,
 )
 
@@ -177,3 +179,206 @@ class TestCleanupMultiRepoWorkspace:
     def test_noop_when_absent(self, tmp_path: Path) -> None:
         # Should not raise
         cleanup_multi_repo_workspace(tmp_path)
+
+
+def _make_experiment_dir(repo: Path, name: str, sentinel: str) -> Path:
+    """Create a fake top-level experiment dir with experiment.json + sentinel."""
+    exp_dir = repo / name
+    exp_dir.mkdir(parents=True)
+    (exp_dir / "experiment.json").write_text(json.dumps({"name": name}))
+    (exp_dir / "ground_truth.json").write_text(sentinel)
+    return exp_dir
+
+
+class TestQuarantineSiblingExperiments:
+    """Regression — see codeprobe-gy5p (gascity ground-truth leak 2026-04-25)."""
+
+    def test_sibling_hidden_during_block_and_restored_after(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        active = _make_experiment_dir(repo, ".codeprobe", "ACTIVE")
+        sibling = _make_experiment_dir(repo, ".codeprobe-other", "LEAKED")
+
+        sibling_sentinel = sibling / "ground_truth.json"
+        active_sentinel = active / "ground_truth.json"
+
+        with quarantine_sibling_experiments(repo, active):
+            # Active dir is still readable.
+            assert active_sentinel.read_text() == "ACTIVE"
+            # Sibling sentinel is gone for the duration of the run.
+            assert not sibling_sentinel.exists()
+            with pytest.raises(FileNotFoundError):
+                sibling_sentinel.open()
+
+        # Restored after block.
+        assert sibling_sentinel.exists()
+        assert sibling_sentinel.read_text() == "LEAKED"
+        assert active_sentinel.read_text() == "ACTIVE"
+
+    def test_sibling_restored_on_exception(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        active = _make_experiment_dir(repo, ".codeprobe", "ACTIVE")
+        sibling = _make_experiment_dir(repo, ".codeprobe-other", "LEAKED")
+        sibling_sentinel = sibling / "ground_truth.json"
+
+        class _Boom(RuntimeError):
+            pass
+
+        with pytest.raises(_Boom):
+            with quarantine_sibling_experiments(repo, active):
+                assert not sibling_sentinel.exists()
+                raise _Boom("agent crashed")
+
+        # Sibling restored even though the with-block exited via exception.
+        assert sibling_sentinel.exists()
+        assert sibling_sentinel.read_text() == "LEAKED"
+
+    def test_active_dir_preserved_when_it_has_experiment_json(
+        self, tmp_path: Path
+    ) -> None:
+        """Top-level active dir (Case A: .codeprobe/experiment.json) must NOT
+        be quarantined — that would break the run we're trying to protect.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        active = _make_experiment_dir(repo, ".codeprobe", "ACTIVE")
+
+        with quarantine_sibling_experiments(repo, active):
+            assert (active / "experiment.json").is_file()
+            assert (active / "ground_truth.json").read_text() == "ACTIVE"
+
+    def test_no_siblings_is_noop(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        active = _make_experiment_dir(repo, ".codeprobe", "ACTIVE")
+
+        # No siblings — no quarantine dir should be created.
+        with quarantine_sibling_experiments(repo, active):
+            quarantine_dirs = [
+                p
+                for p in repo.iterdir()
+                if p.name.startswith(".codeprobe-quarantine-")
+            ]
+            assert quarantine_dirs == []
+
+    def test_quarantine_dir_removed_after_block(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        active = _make_experiment_dir(repo, ".codeprobe", "ACTIVE")
+        _make_experiment_dir(repo, ".codeprobe-other", "LEAKED")
+
+        with quarantine_sibling_experiments(repo, active):
+            pass
+
+        leftover = [
+            p for p in repo.iterdir() if p.name.startswith(".codeprobe-quarantine-")
+        ]
+        assert leftover == []
+
+    def test_active_dir_outside_repo_skips_quarantine(self, tmp_path: Path) -> None:
+        """Defensive: if the active experiment dir doesn't resolve under the
+        repo (unusual layout), don't blindly hide every top-level experiment
+        dir — log a warning and yield without quarantining.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        sibling = _make_experiment_dir(repo, ".codeprobe-other", "LEAKED")
+        outside = tmp_path / "outside-experiment"
+        outside.mkdir()
+        (outside / "experiment.json").write_text("{}")
+
+        with quarantine_sibling_experiments(repo, outside):
+            # Sibling is NOT moved because we cannot safely identify the
+            # active top-level component.
+            assert (sibling / "ground_truth.json").exists()
+
+
+class TestExecuteConfigQuarantinesSiblings:
+    """End-to-end regression — execute_config must wire the quarantine.
+
+    Reproduces the codeprobe-gy5p leak: a stub agent inspecting the repo root
+    during ``run()`` MUST NOT see another experiment's ground_truth.json.
+    """
+
+    def test_sibling_hidden_during_dispatch_and_restored_after(
+        self, tmp_path: Path
+    ) -> None:
+        import stat
+
+        from codeprobe.adapters.protocol import AgentConfig, AgentOutput
+        from codeprobe.core.executor import execute_config
+        from codeprobe.models.experiment import ExperimentConfig
+
+        # Lay out repo/.codeprobe/experiment.json + tasks/task-001/
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        active_exp = repo / ".codeprobe"
+        active_exp.mkdir()
+        (active_exp / "experiment.json").write_text("{}")
+        task_dir = active_exp / "tasks" / "task-001"
+        task_dir.mkdir(parents=True)
+        (task_dir / "instruction.md").write_text("Do the thing.")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
+
+        # Sibling experiment dir at the repo root with the leaking sentinel.
+        sibling = _make_experiment_dir(repo, ".codeprobe-other", "LEAKED")
+        sibling_sentinel = sibling / "ground_truth.json"
+
+        observations: dict[str, bool] = {}
+
+        class _PeekingAdapter:
+            name = "fake-peeker"
+            run_calls: list[tuple[str, object]] = []
+
+            def find_binary(self) -> str | None:
+                return "/usr/bin/fake-agent"
+
+            def preflight(self, config: AgentConfig) -> list[str]:
+                return []
+
+            def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+                return ["fake-agent"]
+
+            def run(
+                self,
+                prompt: str,
+                config: AgentConfig,
+                session_env: dict[str, str] | None = None,
+            ) -> AgentOutput:
+                # Inspect the sibling sentinel from inside the "agent run".
+                observations["sibling_visible_during_run"] = sibling_sentinel.exists()
+                return AgentOutput(
+                    stdout="ok",
+                    stderr=None,
+                    exit_code=0,
+                    duration_seconds=0.1,
+                )
+
+            def isolate_session(self, slot_id: int) -> dict[str, str]:
+                return {}
+
+        adapter = _PeekingAdapter()
+
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=[task_dir],
+            repo_path=repo,
+            experiment_config=ExperimentConfig(label="baseline"),
+            agent_config=AgentConfig(),
+        )
+
+        assert len(results) == 1
+        assert observations.get("sibling_visible_during_run") is False, (
+            "sibling experiment dir was visible to the agent during run() — "
+            "quarantine did not activate"
+        )
+        # Sibling restored after dispatch.
+        assert sibling_sentinel.exists()
+        assert sibling_sentinel.read_text() == "LEAKED"

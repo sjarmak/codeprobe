@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import shutil
 import subprocess
 import threading
+import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -52,6 +55,127 @@ def _discover_experiment_dirs(workdir: Path) -> list[str]:
     except OSError:
         pass
     return excludes
+
+
+def _active_top_level_name(repo_path: Path, active_experiment_dir: Path) -> str | None:
+    """Return the name of the top-level child of *repo_path* that contains
+    *active_experiment_dir*, or ``None`` if it does not resolve under *repo_path*.
+    """
+    try:
+        repo_resolved = repo_path.resolve()
+        active_resolved = active_experiment_dir.resolve()
+        rel = active_resolved.relative_to(repo_resolved)
+    except (OSError, ValueError):
+        return None
+    parts = rel.parts
+    if not parts:
+        return None
+    return parts[0]
+
+
+@contextlib.contextmanager
+def quarantine_sibling_experiments(
+    repo_path: Path,
+    active_experiment_dir: Path,
+) -> Iterator[None]:
+    """Hide sibling experiment directories from the agent during a run.
+
+    Sibling experiment dirs (top-level entries of *repo_path* that contain an
+    ``experiment.json`` other than the one belonging to *active_experiment_dir*)
+    are atomically moved to a temporary quarantine directory on enter and
+    restored on exit, including on exception.
+
+    Without this, an agent running inside a slot worktree under
+    ``<repo>/.codeprobe-worktrees-*/slot-N`` can still ``cd ../../`` to the
+    real repo root and read another experiment's ``ground_truth.json`` —
+    leaking the answer key for the active run.
+    """
+    repo_resolved = repo_path.resolve()
+    if not repo_resolved.is_dir():
+        yield
+        return
+
+    active_top = _active_top_level_name(repo_resolved, active_experiment_dir)
+    if active_top is None:
+        logger.warning(
+            "quarantine_sibling_experiments: active experiment %s is not under "
+            "repo %s; skipping quarantine to avoid hiding unrelated dirs",
+            active_experiment_dir,
+            repo_path,
+        )
+        yield
+        return
+
+    sibling_names = [
+        name
+        for name in _discover_experiment_dirs(repo_resolved)
+        if name != active_top
+    ]
+    if not sibling_names:
+        yield
+        return
+
+    quarantine_dir = repo_resolved / f".codeprobe-quarantine-{uuid.uuid4().hex[:8]}"
+    moved: list[tuple[Path, Path]] = []  # (original, quarantined)
+
+    def _restore() -> None:
+        for original, quarantined in moved:
+            try:
+                if quarantined.exists() and not original.exists():
+                    shutil.move(str(quarantined), str(original))
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to restore quarantined experiment dir %s -> %s: %s",
+                    quarantined,
+                    original,
+                    exc,
+                )
+        if quarantine_dir.exists():
+            try:
+                shutil.rmtree(quarantine_dir)
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to remove quarantine dir %s: %s", quarantine_dir, exc
+                )
+
+    try:
+        quarantine_dir.mkdir(parents=True, exist_ok=False)
+    except OSError as exc:
+        logger.warning(
+            "quarantine_sibling_experiments: cannot create quarantine dir %s: %s; "
+            "siblings will remain visible",
+            quarantine_dir,
+            exc,
+        )
+        yield
+        return
+
+    try:
+        for name in sibling_names:
+            src = repo_resolved / name
+            dst = quarantine_dir / name
+            try:
+                shutil.move(str(src), str(dst))
+                moved.append((src, dst))
+            except OSError as exc:
+                logger.warning(
+                    "quarantine_sibling_experiments: failed to move %s -> %s: %s; "
+                    "rolling back partial quarantine",
+                    src,
+                    dst,
+                    exc,
+                )
+                _restore()
+                yield
+                return
+    except BaseException:
+        _restore()
+        raise
+
+    try:
+        yield
+    finally:
+        _restore()
 
 
 def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) -> None:
