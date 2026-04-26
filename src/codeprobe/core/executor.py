@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import contextlib
-import json as _json
 import inspect
+import json as _json
 import logging
 import shutil
 import subprocess

@@ -224,13 +224,13 @@ class TestQuarantineSiblingExperiments:
         sibling = _make_experiment_dir(repo, ".codeprobe-other", "LEAKED")
         sibling_sentinel = sibling / "ground_truth.json"
 
-        class _Boom(RuntimeError):
+        class _BoomError(RuntimeError):
             pass
 
-        with pytest.raises(_Boom):
+        with pytest.raises(_BoomError):
             with quarantine_sibling_experiments(repo, active):
                 assert not sibling_sentinel.exists()
-                raise _Boom("agent crashed")
+                raise _BoomError("agent crashed")
 
         # Sibling restored even though the with-block exited via exception.
         assert sibling_sentinel.exists()
