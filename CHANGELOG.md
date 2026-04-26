@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.8.0 (2026-04-26)
+
+Release driven by the gascity-mcp-comparison validation: with-mcp now
+beats baseline by +0.265 on the 5-task suite (was −0.048), with
+`mcp__sourcegraph__find_references` actually invoked on
+symbol-reference-trace tasks for the first time. The fixes that
+unlocked it span mining-quality, prompt rendering, and (most
+importantly) two run-isolation holes that were silently corrupting
+benchmark results.
+
+### Mining quality
+
+- **Org-scale ground truth filtered to importers of the defining
+  package** (commit `12a7965`). Prevents over-broad reference candidates
+  from leaking into ground truth and inflating "missed reference" tail
+  scores.
+- **`symbol-reference-trace` ground truth uses Sourcegraph
+  `find_references` as the oracle** (commit `e64577d`). Previously the
+  oracle was grep-based, which couldn't catch aliases / re-exports /
+  interface dispatch — exactly the cases the task type is supposed to
+  measure.
+
+### Prompt rendering
+
+- **Persisted `instruction.resolved.md` matches the runtime prompt**
+  (commit `133c042`). Earlier the persisted prompt could drift from
+  what the agent actually saw, making post-hoc behavior analysis
+  unreliable.
+- **Sourcegraph preamble is task-aware** (commit `66ee294`). For
+  `symbol-reference-trace` tasks the preamble now states
+  `sg_find_references` is authoritative and explicitly tells the agent
+  not to substitute a grep union. For other task types the preamble
+  stays neutral.
+
+### Run isolation (CRITICAL — fixes silent benchmark corruption)
+
+- **Per-config-run namespace for Claude session temp dirs** (commit
+  `412b1cd`). Parallel `baseline` and `with-mcp` configs were both
+  writing to `/tmp/codeprobe-claude/slot-N`, racing on the mirrored
+  `~/.claude` config tree and producing `SameFileError` /
+  `[Errno 17] File exists` setup failures. Slot dirs are now
+  `/tmp/codeprobe-claude/<namespace>/slot-N` with namespace cleanup on
+  run completion.
+- **Quarantine sibling experiment dirs during run** (commit `57aa1ef`).
+  When the test repo contains multiple top-level dirs with their own
+  `experiment.json` (e.g. an active `.codeprobe/` and a leftover
+  `.codeprobe-verify/` from a prior harness check), an agent in a
+  slot worktree could `cd ../..` and read another experiment's
+  `tasks/<id>/ground_truth.json` as a cheat sheet. New
+  `quarantine_sibling_experiments` context manager in
+  `core/isolation.py` atomically moves siblings to a quarantine
+  subdirectory for the duration of the run and restores them on exit
+  (including on exception). Wired into
+  `core/executor.py::execute_config`. Discovered when a baseline
+  rerun was visibly hitting `ground_truth.json` on 3 of 5 tasks in
+  trace events. Regression test under
+  `tests/test_isolation.py::TestQuarantineSiblingExperiments`.
+
+### Upgrade notes
+
+- No public API changes; safe drop-in for 0.7.x users.
+- If you have leftover `.codeprobe-*` sibling dirs in a test repo from
+  prior harness verifications, they're now harmless during a run, but
+  cleaning them up is still recommended for clarity.
+
 ## 0.7.1 (2026-04-24)
 
 Point release burning down post-0.7.0 follow-up beads. Highlights:
