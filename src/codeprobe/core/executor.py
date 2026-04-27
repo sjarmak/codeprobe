@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -206,12 +206,14 @@ def _call_isolate_session(
     """Call ``adapter.isolate_session`` with namespace support when available."""
     isolate = getattr(adapter, "isolate_session")
     try:
-        params = inspect.signature(isolate).parameters
+        params: Mapping[str, inspect.Parameter] = inspect.signature(isolate).parameters
     except (TypeError, ValueError):
         params = {}
     if "namespace" in params:
-        return isolate(slot_id, namespace=namespace)
-    return isolate(slot_id)
+        result: dict[str, str] = isolate(slot_id, namespace=namespace)
+    else:
+        result = isolate(slot_id)
+    return result
 
 
 def _cleanup_session_namespace(

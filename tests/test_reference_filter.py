@@ -18,7 +18,6 @@ from pathlib import Path
 
 from codeprobe.mining.reference_filter import filter_by_import_dependency
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

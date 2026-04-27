@@ -20,7 +20,6 @@ import pytest
 from codeprobe.mining.org_scale import _maybe_enrich
 from codeprobe.mining.sg_auth import CachedToken
 
-
 _FAKE_TOKEN = CachedToken(
     access_token="test-token",
     refresh_token=None,

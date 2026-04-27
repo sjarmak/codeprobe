@@ -78,6 +78,10 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "codeprobe.preambles" = ["*.md", "*.j2"]
+# Subpackage holding Jinja preamble templates loaded at runtime via
+# FileSystemLoader (see codeprobe/preambles/templates/__init__.py). Must be
+# listed explicitly — setuptools package-data is per-package, not recursive.
+"codeprobe.preambles.templates" = ["*.j2", "*.md.j2"]
 "codeprobe.templates" = ["*.yaml"]
 "codeprobe.llm" = ["*.yaml"]
 "codeprobe.cli" = ["error_codes.json"]
