@@ -46,6 +46,7 @@ from codeprobe.core.experiment import (
     save_config_results,
     save_experiment,
 )
+from codeprobe.core.mcp_policy import resolve_tool_policy
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from codeprobe.models.suite import Suite
@@ -704,13 +705,19 @@ def run_eval(
                 "CLI override" if timeout is not None else "experiment.json",
             )
 
+            policy = resolve_tool_policy(exp_config)
+            if policy.warning is not None:
+                click.echo(
+                    f"  [{exp_config.label}] Warning: {policy.warning}",
+                    err=True,
+                )
             agent_config = AgentConfig(
                 model=resolved_model,
                 permission_mode=perm,
                 timeout_seconds=resolved_timeout,
                 mcp_config=exp_config.mcp_config,
-                allowed_tools=exp_config.allowed_tools,
-                disallowed_tools=exp_config.disallowed_tools,
+                allowed_tools=policy.allowed_tools,
+                disallowed_tools=policy.disallowed_tools,
                 cwd=str(repo_root),
             )
 

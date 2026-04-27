@@ -106,6 +106,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
             mcp_config=c.get("mcp_config"),
             allowed_tools=c.get("allowed_tools"),
             disallowed_tools=c.get("disallowed_tools"),
+            mcp_mode=c.get("mcp_mode", "strict"),
             instruction_variant=c.get("instruction_variant"),
             preambles=tuple(c.get("preambles", ())),
             reward_type=c.get("reward_type", "binary"),

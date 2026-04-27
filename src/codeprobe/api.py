@@ -32,6 +32,7 @@ from codeprobe.analysis.stats import task_passed
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.executor import execute_config
 from codeprobe.core.experiment import load_experiment, save_config_results
+from codeprobe.core.mcp_policy import resolve_tool_policy
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import ConfigResults, ExperimentConfig
 
@@ -52,6 +53,9 @@ def _build_experiment_config(raw: dict) -> ExperimentConfig:
         model=raw.get("model"),
         permission_mode=raw.get("permission_mode", "default"),
         mcp_config=raw.get("mcp_config"),
+        allowed_tools=raw.get("allowed_tools"),
+        disallowed_tools=raw.get("disallowed_tools"),
+        mcp_mode=raw.get("mcp_mode", "strict"),
         instruction_variant=raw.get("instruction_variant"),
         preambles=tuple(raw.get("preambles", ())),
         reward_type=raw.get("reward_type", "binary"),
@@ -146,13 +150,16 @@ def run_experiment(
         adapter = resolve(exp_config.agent)
 
         timeout = exp_config.extra.get("timeout_seconds", 3600)
+        policy = resolve_tool_policy(exp_config)
+        if policy.warning is not None:
+            logger.warning("[%s] %s", exp_config.label, policy.warning)
         agent_config = AgentConfig(
             model=exp_config.model,
             permission_mode=perm,
             timeout_seconds=timeout,
             mcp_config=exp_config.mcp_config,
-            allowed_tools=exp_config.allowed_tools,
-            disallowed_tools=exp_config.disallowed_tools,
+            allowed_tools=policy.allowed_tools,
+            disallowed_tools=policy.disallowed_tools,
             cwd=str(experiment_dir.resolve()),
         )
 

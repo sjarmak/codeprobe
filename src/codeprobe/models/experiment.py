@@ -16,6 +16,19 @@ class ExperimentConfig:
     / ``--tools``). Set ``allowed_tools=[]`` to disable all built-in tools
     for an MCP-only comparison — MCP tools are still reachable because
     they come from ``mcp_config``.
+
+    ``mcp_mode`` controls how the executor restricts the tool surface
+    when ``mcp_config`` is set (see :mod:`codeprobe.core.mcp_policy`):
+
+    * ``"strict"`` (default): MCP tools + ``Write`` only; ``Grep``,
+      ``Bash``, ``Glob`` and ``Read`` are blocked. Pure MCP signal.
+    * ``"pragmatic"``: MCP tools + ``Read`` + ``Write``; ``Grep``,
+      ``Bash``, ``Glob`` are blocked.
+    * ``"loose"``: dual-surface (mirrors pre-0.9.0 behavior); emits a
+      runtime warning that comparison validity is compromised.
+
+    Explicit ``allowed_tools`` or ``disallowed_tools`` on the config
+    override ``mcp_mode`` — the user-supplied surface always wins.
     """
 
     label: str
@@ -25,6 +38,7 @@ class ExperimentConfig:
     mcp_config: dict | None = None
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
+    mcp_mode: str = "strict"
     instruction_variant: str | None = None
     preambles: tuple[str, ...] = ()
     reward_type: str = "binary"
@@ -41,6 +55,7 @@ class ExperimentConfig:
             f"mcp_config={redacted_mcp!r}, "
             f"allowed_tools={self.allowed_tools!r}, "
             f"disallowed_tools={self.disallowed_tools!r}, "
+            f"mcp_mode={self.mcp_mode!r}, "
             f"instruction_variant={self.instruction_variant!r}, "
             f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
             f"extra={self.extra!r})"

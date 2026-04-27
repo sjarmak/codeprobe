@@ -1087,6 +1087,19 @@ def init_experiment(
         "(e.g. 'Bash,Write'). Applies on top of --allowed-tools."
     ),
 )
+@click.option(
+    "--mcp-mode",
+    type=click.Choice(["strict", "pragmatic", "loose"]),
+    default="strict",
+    show_default=True,
+    help=(
+        "Tool-surface policy when --mcp-config is set. "
+        "strict: MCP tools + Write only (Grep/Bash/Glob/Read blocked). "
+        "pragmatic: MCP tools + Read + Write (Grep/Bash/Glob blocked). "
+        "loose: dual-surface, no auto-restriction (warns at runtime). "
+        "Ignored when --allowed-tools or --disallowed-tools is set."
+    ),
+)
 def add_config(
     path: str,
     label: str,
@@ -1098,6 +1111,7 @@ def add_config(
     preambles: tuple[str, ...],
     allowed_tools: str | None,
     disallowed_tools: str | None,
+    mcp_mode: str,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
@@ -1120,6 +1134,7 @@ def add_config(
         preambles=preambles,
         allowed_tools=_parse_tools(allowed_tools),
         disallowed_tools=_parse_tools(disallowed_tools),
+        mcp_mode=mcp_mode,
     )
 
 
