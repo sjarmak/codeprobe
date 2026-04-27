@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.1 (2026-04-27)
+
+Two MCP-mining hotfixes discovered while running 0.8.0 against the gascity
+test repo. Both block users from running the MCP comparison flow on a
+clean `pip install codeprobe` and warrant a patch release.
+
+### Fixes
+
+- **Ship preamble templates in the wheel** (commit `847b15c`,
+  `codeprobe-ku8u`). `mcp_base.md.j2` and other Jinja templates under
+  `codeprobe/preambles/templates/` were missing from the published 0.8.0
+  wheel because `[tool.setuptools.package-data]` didn't include `*.j2` /
+  `*.md.j2` for the subpackage. Mining with `--mcp-config` crashed with
+  `TemplateNotFound: mcp_base.md.j2` on any non-editable install. Fixed by
+  declaring the subpackage explicitly. Editable installs were unaffected.
+- **Preserve `$VAR` (no-braces) form in MCP config redactor** (commit
+  `9607256`, `codeprobe-nij7`). `codeprobe experiment add-config
+  --mcp-config '...$SOURCEGRAPH_TOKEN...'` was overwriting bare
+  `$SOURCEGRAPH_TOKEN` references with `[REDACTED]` because the redactor
+  regex only recognized braced `${VAR}` form. Bare `$VAR` is the POSIX/
+  envsubst-compatible spelling and was the form documented in the
+  `/experiment` skill template, so following the docs produced silently
+  broken configs. The redactor now accepts both `$VAR` and `${VAR}` across
+  headers, args, and env dicts. Bare-`$` literals followed by a non-
+  identifier (e.g. `"$123notvalid"`) still redact. The `/experiment` skill
+  template and README were also patched to use the universally-safe
+  `${VAR}` form regardless of redactor behavior.
+
+### Upgrade notes
+
+No public API changes; safe drop-in for 0.8.0 users. Anyone who hit
+`TemplateNotFound: mcp_base.md.j2` or saw `[REDACTED]` strings in their
+persisted MCP configs should upgrade.
+
 ## 0.8.0 (2026-04-26)
 
 Release driven by the gascity-mcp-comparison validation: with-mcp now
