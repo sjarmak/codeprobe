@@ -146,7 +146,7 @@ codeprobe experiment add-config /path/to/repo/mcp-comparison \
 codeprobe experiment add-config /path/to/repo/mcp-comparison \
   --label with-sourcegraph --agent claude --model claude-haiku-4-5-20251001 \
   --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/v1","headers":{"Authorization":"token $SOURCEGRAPH_TOKEN"}}}}'
+  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/v1","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
 
 # Run and interpret
 codeprobe run /path/to/repo/mcp-comparison --agent claude --max-cost-usd 5.00

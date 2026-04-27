@@ -269,7 +269,7 @@ codeprobe experiment add-config ./my-experiment --label baseline --model claude-
 codeprobe experiment add-config ./my-experiment --label with-sourcegraph \
   --model claude-sonnet-4-6 \
   --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/v1","headers":{"Authorization":"token $SOURCEGRAPH_TOKEN"}}}}'
+  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/v1","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
 
 # Add GitHub MCP config (different preamble + different MCP server)
 codeprobe experiment add-config ./my-experiment --label with-github \

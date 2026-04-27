@@ -411,3 +411,118 @@ class TestEnvVarReferencesPreserved:
         assert (
             result["mcpServers"]["srv"]["env"]["SG_TOKEN_VAL"] == "${SG_TOKEN}"
         )
+
+
+class TestBareEnvVarReferencesPreserved:
+    """Bare ``$VAR`` env-var references must round-trip through redaction.
+
+    Regression for codeprobe-nij7 — POSIX/envsubst-style bare ``$VAR`` is a
+    valid expansion form, so the redactor must preserve both ``$VAR`` and
+    ``${VAR}``. Persisted config previously stored bare ``$VAR`` as the
+    literal string ``[REDACTED]``.
+    """
+
+    def test_bare_var_in_authorization_header_preserved(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "sourcegraph": {
+                    "headers": {"Authorization": "token $SG_TOKEN"},
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["sourcegraph"]["headers"]["Authorization"]
+            == "token $SG_TOKEN"
+        )
+
+    def test_bare_var_in_args_header_flag_preserved(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "srv": {
+                    "args": [
+                        "--header",
+                        "Authorization: token $SG_TOKEN",
+                    ],
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["srv"]["args"][1]
+            == "Authorization: token $SG_TOKEN"
+        )
+
+    def test_bare_var_in_env_dict_preserved(self) -> None:
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "srv": {
+                    "env": {"SG_TOKEN_VAL": "$SG_TOKEN"},
+                },
+            },
+        }
+        result = redact_mcp_headers(cfg)
+        assert result["mcpServers"]["srv"]["env"]["SG_TOKEN_VAL"] == "$SG_TOKEN"
+
+    def test_repro_from_bug_report(self) -> None:
+        """End-to-end reproducer from codeprobe-nij7."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "sg": {
+                    "url": "$SG_URL",
+                    "headers": {"Authorization": "token $SG_TOKEN"},
+                }
+            }
+        }
+        result = redact_mcp_headers(cfg)
+        # url is not redacted by this utility, but verify it round-trips
+        assert result["mcpServers"]["sg"]["url"] == "$SG_URL"
+        assert (
+            result["mcpServers"]["sg"]["headers"]["Authorization"]
+            == "token $SG_TOKEN"
+        )
+        # And no [REDACTED] marker leaked in
+        assert "[REDACTED]" not in json.dumps(result)
+
+    def test_mixed_var_forms_preserved(self) -> None:
+        """``$VAR`` and ``${VAR}`` can coexist in the same config."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        cfg = {
+            "mcpServers": {
+                "a": {"headers": {"Authorization": "token $SG_TOKEN"}},
+                "b": {"headers": {"Authorization": "token ${SG_TOKEN}"}},
+            }
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["a"]["headers"]["Authorization"]
+            == "token $SG_TOKEN"
+        )
+        assert (
+            result["mcpServers"]["b"]["headers"]["Authorization"]
+            == "token ${SG_TOKEN}"
+        )
+
+    def test_dollar_without_identifier_still_redacted(self) -> None:
+        """A literal ``$`` without an env-var-shaped identifier is treated as a secret."""
+        from codeprobe.config.redact import redact_mcp_headers
+
+        # ``$`` followed by digits or punctuation is not a valid shell var.
+        cfg = {
+            "mcpServers": {
+                "sg": {"headers": {"Authorization": "token $123notvalid"}},
+            }
+        }
+        result = redact_mcp_headers(cfg)
+        assert (
+            result["mcpServers"]["sg"]["headers"]["Authorization"] == "[REDACTED]"
+        )

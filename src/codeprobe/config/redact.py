@@ -39,6 +39,16 @@ _AUTH_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Shell-style env-var references: ``${VAR}`` (POSIX braced) or ``$VAR`` (bare).
+# Both forms are valid expansion sites (envsubst, bash, sh) and must round-trip
+# through redaction so the runtime can substitute the real value at exec time.
+_ENV_VAR_RE = re.compile(r"\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _has_env_var_ref(value: str) -> bool:
+    """True if *value* contains a shell-style env-var reference (``$VAR`` or ``${VAR}``)."""
+    return bool(_ENV_VAR_RE.search(value))
+
 
 def _is_secret(value: str) -> bool:
     """Heuristic: does *value* look like a secret token?"""
@@ -87,10 +97,10 @@ def redact_mcp_headers(mcp_config: dict | None) -> dict | None:
             for key in list(headers):
                 if key.lower() in _SENSITIVE_HEADER_NAMES:
                     if isinstance(headers[key], str):
-                        # Preserve env-var references (e.g. "token ${VAR}") —
+                        # Preserve env-var references (``$VAR`` or ``${VAR}``) —
                         # they aren't secrets themselves, and redacting them
                         # breaks round-tripping through save/load.
-                        if "${" in headers[key]:
+                        if _has_env_var_ref(headers[key]):
                             continue
                         headers[key] = "[REDACTED]"
 
@@ -100,8 +110,9 @@ def redact_mcp_headers(mcp_config: dict | None) -> dict | None:
             for i, arg in enumerate(args):
                 if not isinstance(arg, str):
                     continue
-                if "${" in arg:
-                    # Env-var reference — not a secret; preserve for expansion.
+                if _has_env_var_ref(arg):
+                    # Env-var reference (``$VAR`` or ``${VAR}``) — not a secret;
+                    # preserve verbatim so the runtime can expand it.
                     continue
                 if _AUTH_HEADER_RE.match(arg):
                     args[i] = _redact_auth_arg(arg)
@@ -115,7 +126,7 @@ def redact_mcp_headers(mcp_config: dict | None) -> dict | None:
                 val = env[key]
                 if not isinstance(val, str):
                     continue
-                if "${" in val:
+                if _has_env_var_ref(val):
                     continue
                 if _is_secret(val):
                     env[key] = "[REDACTED]"
