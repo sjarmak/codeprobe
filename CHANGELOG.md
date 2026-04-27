@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
+Behavioral change to the `with-mcp` config semantic, prompted by the
+gascity-mcp-comparison rerun analysis (`codeprobe-p6vw`). When an
+experiment config sets `mcp_config`, the executor now restricts the
+agent's tool surface so the run actually exercises MCP instead of
+silently grepping the workspace via the agent's built-ins. This
+removes the largest source of variance in MCP A/B comparisons.
+
+### MCP tool-surface enforcement
+
+- **`mcp_mode` field on `ExperimentConfig`** controls the auto-policy
+  applied when `mcp_config` is set:
+  - `strict` (default) — `allowed_tools` becomes
+    `["mcp__<server>" for each server, "Write"]` and `disallowed_tools`
+    becomes `["Grep", "Bash", "Glob", "Read"]`. Pure MCP signal: the
+    agent must use the MCP transport to investigate the repo.
+  - `pragmatic` — same allowlist plus `Read`; only `Grep`, `Bash`,
+    `Glob` are blocked. Lets the agent verify MCP results against
+    local files without enabling full-text search or shell escapes.
+  - `loose` — no auto-restriction; mirrors pre-0.9.0 behavior. Emits a
+    runtime warning that comparison validity is compromised because
+    runs can silently degenerate into baseline.
+- **Explicit `allowed_tools` / `disallowed_tools` on the config wins.**
+  Auto-restriction only runs when neither field is set on the
+  experiment config — users who already pinned the surface keep their
+  pin.
+- **CLI flag**: `codeprobe experiment add-config --mcp-mode {strict,
+  pragmatic,loose}` exposes the policy to the wizard / scripted
+  workflows.
+- New module: `codeprobe.core.mcp_policy` (function
+  `resolve_tool_policy`, dataclass `MCPToolPolicy`).
+
+### Upgrade notes
+
+This is a **behavioral change**: existing `with-mcp` configs persisted
+in `experiment.json` without an explicit `mcp_mode` will load with the
+new `strict` default and lose access to `Grep`, `Bash`, `Glob`, and
+`Read`. Tasks that previously relied on the agent grep'ing the
+workspace will fail under strict mode.
+
+If you need the pre-0.9.0 dual-surface behavior (e.g. you accept that
+some runs will skip MCP and want to keep them in your average), set
+`mcp_mode: loose` on the affected configs and accept the runtime
+warning. If you want a middle ground that still allows local file
+reads alongside MCP, use `mcp_mode: pragmatic`.
+
+Configs with explicit `allowed_tools` or `disallowed_tools` are
+unaffected — the user surface always wins over the auto-policy.
+
 ## 0.8.1 (2026-04-27)
 
 Two MCP-mining hotfixes discovered while running 0.8.0 against the gascity
