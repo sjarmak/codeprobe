@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.9.0 (2026-04-27)
 
 Behavioral change to the `with-mcp` config semantic, prompted by the
 gascity-mcp-comparison rerun analysis (`codeprobe-p6vw`). When an
