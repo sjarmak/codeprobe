@@ -16,7 +16,11 @@
 | `sg_list_files`       | List files/directories in the repo                                |
 | `sg_commit_search`    | Search commit messages and history                                |
 | `sg_diff_search`      | Search code changes (added/removed lines)                         |
-| `sg_deepsearch`       | Complex cross-file questions requiring multi-step reasoning       |
+
+> Note: `sg_deepsearch` and `sg_deepsearch_read` exist on the server but are
+> **not recommended for these tasks** — they are slow multi-step searches that
+> duplicate work the primitive tools above already do directly. Prefer
+> `sg_find_references` + `sg_keyword_search`.
 
 ## Tool Selection
 
@@ -24,7 +28,7 @@
 2. **Use `sg_nls_search`** when you need semantic matching ("error handling code", "authentication logic")
 3. **Use `sg_find_references`** to trace all callers/usages of a specific symbol — this catches aliases, re-exports, and indirect imports that grep misses. {{sg_find_references_guidance}}
 4. **Use `sg_go_to_definition`** to navigate from a usage to its definition
-5. **Fall back to `sg_deepsearch`** for complex cross-file questions
+5. **Avoid `sg_deepsearch`** — if `sg_find_references` plus a couple of `sg_keyword_search` calls don't answer the question, the question is malformed; don't escalate to deepsearch.
 
 ## Scoping
 

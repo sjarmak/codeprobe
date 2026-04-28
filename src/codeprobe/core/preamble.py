@@ -147,11 +147,15 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
                     "For `symbol-reference-trace`, treat "
                     "`sg_find_references` as authoritative. Use local Grep "
                     "only to locate the definition site or sanity-check a "
-                    "suspicious gap."
+                    "suspicious gap. **DO NOT call `sg_deepsearch` or "
+                    "`sg_deepsearch_read`** — they are slow multi-step "
+                    "searches that duplicate work `sg_find_references` "
+                    "already does correctly."
                 ),
                 "sg_find_references_guidance": (
                     "For `symbol-reference-trace`, this is the source of "
-                    "truth; do not replace it with a grep union."
+                    "truth; do not replace it with a grep union and do not "
+                    "second-guess it with `sg_deepsearch`."
                 ),
                 "sg_local_search_step": (
                     "**Use local Grep narrowly** only when you need to find "
@@ -160,7 +164,9 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
                 "sg_result_synthesis_step": (
                     "**Prefer authoritative references** — report the "
                     "`sg_find_references` result set instead of unioning in "
-                    "extra grep matches."
+                    "extra grep matches. If `sg_find_references` returns a "
+                    "non-empty set, write the answer; do not escalate to "
+                    "`sg_deepsearch`."
                 ),
             }
         )

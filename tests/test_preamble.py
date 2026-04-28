@@ -278,6 +278,11 @@ def test_compose_instruction_sourcegraph_symbol_reference_is_authoritative(
     assert "treat `sg_find_references` as authoritative" in prompt
     assert "do not replace it with a grep union" in prompt
     assert "maximum recall" not in prompt
+    # Regression: symbol-reference-trace must explicitly forbid sg_deepsearch.
+    # We saw an Opus 4.7 run burn 3 deepsearch calls (most of the cost) on
+    # a task that find_references answered correctly on the first call.
+    assert "DO NOT call `sg_deepsearch`" in prompt
+    assert "do not escalate to `sg_deepsearch`" in prompt
 
 
 def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
