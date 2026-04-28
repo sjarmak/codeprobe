@@ -10,9 +10,32 @@ structured error envelope (per the Agent-Friendly CLI PRD §12.Q9).
 Design notes
 ------------
 
-* Socket-level interception is intentionally out of scope (PRD NG6) — the
-  gate is opt-in, placed at each known network call site, rather than a
-  blanket monkeypatch of ``socket.socket``.
+* Socket-level interception is intentionally out of scope (Agent-Friendly
+  CLI PRD §NG6) — the gate is opt-in, placed at each known network call
+  site, rather than a blanket monkeypatch of ``socket.socket``.
+* **NG6 resolution (2026-04-28, bead codeprobe-k67): won't-fix.** The
+  follow-up PRD was deferred and re-evaluated. Socket-level enforcement
+  is not pursued because:
+
+  1. The call-site gate covers every known network entrypoint —
+     :func:`guard_offline` is invoked at all eight HTTP call sites in
+     ``src/codeprobe/mining/`` (``sources.py``, ``curator_backends.py``,
+     ``vcs/_http.py``, ``adapters/pr.py``, ``extractor.py`` ×3,
+     ``sg_ground_truth.py``) and ``OFFLINE_NET_ATTEMPT`` is a terminal
+     :class:`~codeprobe.cli.errors.DiagnosticError`.
+  2. Adapters are subprocess-based (``gh``, sourcegraph CLI, agent
+     binaries), so the agent process owns its own network IO. A
+     Python-level ``socket.socket`` monkeypatch would not intercept it.
+  3. Python-side socket interception is fragile across IO paths
+     (``urllib3``, ``asyncio`` transports, raw sockets, ``ssl``); any
+     sound implementation would have to be OS-level (network namespaces
+     or iptables), which is outside codeprobe's runtime contract.
+  4. No offline-mode leaks have been observed in production since v0.7.0.
+
+  Re-open NG6 only if a concrete leak is observed that the call-site
+  gate cannot cover. New network-touching code paths MUST add a
+  :func:`guard_offline` call at the boundary; that is the contract this
+  module enforces.
 * ``DiagnosticError`` is imported lazily inside :func:`guard_offline` to
   avoid a circular import: ``codeprobe.net`` must be importable from
   ``codeprobe.cli.errors`` transitively, and importing at module load
