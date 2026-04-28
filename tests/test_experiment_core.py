@@ -108,6 +108,77 @@ def test_load_config_results_missing_raises(tmp_path: Path):
         load_config_results(exp_dir, "nonexistent")
 
 
+def test_save_config_results_aggregates_oracle_metrics(tmp_path: Path):
+    """Per-config summary must surface mean precision/recall/f1 when present.
+
+    Oracle-scored tasks (file_list, symbol_list, etc.) emit precision and
+    recall via scoring_details. The summary block in results.json now means
+    these — without this, an aggregate report can show two configs at the
+    same F1 while one has P=0.26/R=1.0 (brute-force) and the other has
+    P=0.7/R=0.6 (careful), and there's no way to tell from the JSON.
+    """
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    completed = [
+        CompletedTask(
+            task_id="t-001",
+            automated_score=0.4092,
+            duration_seconds=77.0,
+            cost_usd=0.84,
+            scoring_details={
+                "f1": 0.4092,
+                "precision": 0.2571,
+                "recall": 1.0,
+                "matched": 80,
+                "expected_count": 80,
+                "agent_files_count": 311,
+            },
+        ),
+        CompletedTask(
+            task_id="t-002",
+            automated_score=0.6,
+            duration_seconds=50.0,
+            cost_usd=0.5,
+            scoring_details={
+                "f1": 0.6,
+                "precision": 0.55,
+                "recall": 0.66,
+                "matched": 33,
+                "expected_count": 50,
+                "agent_files_count": 60,
+            },
+        ),
+    ]
+
+    path = save_config_results(exp_dir, "baseline", completed)
+    payload = json.loads(path.read_text())
+    summary = payload["summary"]
+
+    # F1 stays the headline number alongside the score mean
+    assert summary["mean_automated_score"] == pytest.approx((0.4092 + 0.6) / 2, abs=1e-3)
+    assert summary["mean_precision"] == pytest.approx((0.2571 + 0.55) / 2, abs=1e-4)
+    assert summary["mean_recall"] == pytest.approx((1.0 + 0.66) / 2, abs=1e-4)
+    assert summary["mean_f1"] == pytest.approx((0.4092 + 0.6) / 2, abs=1e-3)
+
+
+def test_save_config_results_omits_metrics_when_no_oracle_data(tmp_path: Path):
+    """Backward compat: tasks without scoring_details produce no P/R fields."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    completed = [
+        CompletedTask(task_id="t-001", automated_score=1.0, duration_seconds=2.5),
+        CompletedTask(task_id="t-002", automated_score=0.0, duration_seconds=1.0),
+    ]
+    path = save_config_results(exp_dir, "baseline", completed)
+    summary = json.loads(path.read_text())["summary"]
+
+    assert "mean_precision" not in summary
+    assert "mean_recall" not in summary
+    assert "mean_f1" not in summary
+
+
 def test_save_and_load_task_ids(tmp_path: Path):
     """Experiment.task_ids round-trips through save/load."""
     exp = Experiment(

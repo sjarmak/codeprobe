@@ -332,6 +332,84 @@ class TestContinuousScorer:
         assert result.score == 0.0
         assert result.passed is False
 
+    def test_metrics_json_is_propagated_to_details(self, tmp_path: Path) -> None:
+        """Oracle metrics.json must be merged into ScoreResult.details.
+
+        The oracle script writes a structured breakdown (precision, recall,
+        matched, etc.) alongside reward.txt. Without this plumbing, callers
+        only see the headline F1 and can't tell a brute-force grep
+        (P=0.26, R=1.0, F1=0.41) apart from a careful answer
+        (P=0.7, R=0.6, F1=0.65).
+        """
+        script = (
+            "#!/bin/bash\n"
+            'echo "0.4092" > "$PWD/reward.txt"\n'
+            'cat > "$PWD/metrics.json" <<\'JSON\'\n'
+            '{"score": 0.4092, "metric": "f1", "f1": 0.4092, '
+            '"precision": 0.2571, "recall": 1.0, '
+            '"matched": 80, "expected_count": 80, '
+            '"agent_files_count": 311, "weighted_recall": null}\n'
+            "JSON\n"
+            "exit 0\n"
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-metrics", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == pytest.approx(0.4092)
+        assert result.passed is True
+        # Whitelisted fields are surfaced, headline score is unchanged.
+        assert result.details["precision"] == pytest.approx(0.2571)
+        assert result.details["recall"] == pytest.approx(1.0)
+        assert result.details["f1"] == pytest.approx(0.4092)
+        assert result.details["matched"] == 80
+        assert result.details["expected_count"] == 80
+        assert result.details["agent_files_count"] == 311
+        assert result.details["metric"] == "f1"
+
+    def test_metrics_json_missing_does_not_affect_score(
+        self, tmp_path: Path
+    ) -> None:
+        """Backward compat: older oracles without metrics.json still work."""
+        script = "#!/bin/bash\n" 'echo "0.5" > "$PWD/reward.txt"\n' "exit 0\n"
+        task_dir = _make_task_dir(tmp_path, "cont-no-metrics", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == pytest.approx(0.5)
+        assert result.passed is True
+        assert result.error is None
+        assert result.details == {}
+
+    def test_metrics_json_malformed_is_ignored(self, tmp_path: Path) -> None:
+        """A broken metrics.json must not crash scoring or change the score."""
+        script = (
+            "#!/bin/bash\n"
+            'echo "0.7" > "$PWD/reward.txt"\n'
+            'echo "{not valid json" > "$PWD/metrics.json"\n'
+            "exit 0\n"
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-bad-metrics", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.score == pytest.approx(0.7)
+        assert result.passed is True
+        assert result.details == {}
+
+    def test_metrics_json_unknown_keys_are_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """Only whitelisted keys propagate — prevents schema drift."""
+        script = (
+            "#!/bin/bash\n"
+            'echo "0.6" > "$PWD/reward.txt"\n'
+            'cat > "$PWD/metrics.json" <<\'JSON\'\n'
+            '{"f1": 0.6, "precision": 0.5, "recall": 0.7, '
+            '"secret_internal_state": "leaked", "debug_info": [1,2,3]}\n'
+            "JSON\n"
+            "exit 0\n"
+        )
+        task_dir = _make_task_dir(tmp_path, "cont-extra-keys", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert "secret_internal_state" not in result.details
+        assert "debug_info" not in result.details
+        assert result.details["f1"] == pytest.approx(0.6)
+
 
 # ---------------------------------------------------------------------------
 # CheckpointScorer

@@ -376,6 +376,10 @@ def experiment_aggregate(path: str) -> None:
                     "automated_score": t.automated_score,
                     "duration_seconds": t.duration_seconds,
                     "cost_usd": t.cost_usd,
+                    # Oracle metrics surfaced via scoring_details (Option 1
+                    # plumbing: precision/recall/f1 don't change scoring,
+                    # they just stop being hidden).
+                    "scoring_details": dict(t.scoring_details or {}),
                 }
                 for t in results.completed
             ]
@@ -395,6 +399,21 @@ def experiment_aggregate(path: str) -> None:
             if r.get("duration_seconds") is not None
         ]
 
+        # Oracle metrics from scoring_details — only present for tasks scored
+        # via the oracle (file_list / symbol_list / etc). Tasks without these
+        # fields are excluded from the mean rather than counted as zero.
+        def _detail_values(key: str) -> list[float]:
+            out: list[float] = []
+            for r in cfg_rows:
+                v = (r.get("scoring_details") or {}).get(key)
+                if isinstance(v, (int, float)):
+                    out.append(float(v))
+            return out
+
+        precisions = _detail_values("precision")
+        recalls = _detail_values("recall")
+        f1s = _detail_values("f1")
+
         config_summaries[cfg_label] = {
             "tasks_completed": len(cfg_rows),
             "mean_automated_score": (statistics.mean(scores) if scores else None),
@@ -409,6 +428,11 @@ def experiment_aggregate(path: str) -> None:
                 if scores and costs and statistics.mean(costs) > 0
                 else None
             ),
+            "mean_precision": (
+                statistics.mean(precisions) if precisions else None
+            ),
+            "mean_recall": statistics.mean(recalls) if recalls else None,
+            "mean_f1": statistics.mean(f1s) if f1s else None,
         }
 
     # Pairwise deltas
@@ -467,12 +491,30 @@ def experiment_aggregate(path: str) -> None:
     out_path = reports_dir / "aggregate.json"
     out_path.write_text(json.dumps(aggregate, indent=2) + "\n", encoding="utf-8")
 
-    # Print summary table
-    click.echo(f"Experiment: {experiment.name}")
-    click.echo(
-        f"\n{'Configuration':<25} {'Score (auto)':<14} {'Cost/Task':<12} {'Score/$':<10}"
+    # Print summary table. Only render P/R columns if at least one config
+    # exposed them — keeps the table compact for non-oracle experiments.
+    has_pr = any(
+        s.get("mean_precision") is not None or s.get("mean_recall") is not None
+        for s in config_summaries.values()
     )
-    click.echo(f"{'-' * 25} {'-' * 14} {'-' * 12} {'-' * 10}")
+    click.echo(f"Experiment: {experiment.name}")
+    if has_pr:
+        click.echo(
+            f"\n{'Configuration':<25} {'Score (auto)':<14} "
+            f"{'Precision':<11} {'Recall':<8} "
+            f"{'Cost/Task':<12} {'Score/$':<10}"
+        )
+        click.echo(
+            f"{'-' * 25} {'-' * 14} "
+            f"{'-' * 11} {'-' * 8} "
+            f"{'-' * 12} {'-' * 10}"
+        )
+    else:
+        click.echo(
+            f"\n{'Configuration':<25} {'Score (auto)':<14} "
+            f"{'Cost/Task':<12} {'Score/$':<10}"
+        )
+        click.echo(f"{'-' * 25} {'-' * 14} {'-' * 12} {'-' * 10}")
 
     ranked = sorted(
         config_summaries.items(),
@@ -495,7 +537,24 @@ def experiment_aggregate(path: str) -> None:
             if s["score_per_dollar"] is not None
             else "--"
         )
-        click.echo(f"{label:<25} {auto:<14} {cost:<12} {spd:<10}")
+        if has_pr:
+            prec = (
+                f"{s['mean_precision']:.2f}"
+                if s.get("mean_precision") is not None
+                else "--"
+            )
+            rec = (
+                f"{s['mean_recall']:.2f}"
+                if s.get("mean_recall") is not None
+                else "--"
+            )
+            click.echo(
+                f"{label:<25} {auto:<14} "
+                f"{prec:<11} {rec:<8} "
+                f"{cost:<12} {spd:<10}"
+            )
+        else:
+            click.echo(f"{label:<25} {auto:<14} {cost:<12} {spd:<10}")
 
     if pairwise:
         click.echo("\nPairwise Comparisons:")

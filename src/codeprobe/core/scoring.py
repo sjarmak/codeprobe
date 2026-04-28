@@ -344,7 +344,24 @@ class ContinuousScorer:
     3. Look for reward.txt in the sandbox task dir
     4. Fallback: parse last non-empty line of stdout
     5. Clamp to [0.0, 1.0]
+    6. If the oracle wrote ``metrics.json`` (precision/recall/matched/etc.),
+       merge it into the result's ``details`` so callers can inspect the
+       breakdown without changing the headline F1 score.
     """
+
+    # Whitelist of metrics.json keys we propagate into ScoreResult.details.
+    # Anything else the oracle writes is ignored — we don't want a future
+    # oracle change to silently widen the result schema.
+    _METRICS_WHITELIST = (
+        "f1",
+        "precision",
+        "recall",
+        "matched",
+        "expected_count",
+        "agent_files_count",
+        "metric",
+        "weighted_recall",
+    )
 
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
         test_sh = task_dir / "tests" / "test.sh"
@@ -376,6 +393,13 @@ class ContinuousScorer:
                 )
 
             clamped = max(0.0, min(1.0, raw_score))
+            details = self._read_metrics_json(run.sandbox_task)
+            if details:
+                return ScoreResult(
+                    score=clamped,
+                    passed=clamped > 0.0,
+                    details=details,
+                )
             return ScoreResult(score=clamped, passed=clamped > 0.0)
         finally:
             if run.sandbox_dir is not None:
@@ -389,6 +413,28 @@ class ContinuousScorer:
         if not reward_file.is_file():
             return None
         return _parse_float_score(reward_file.read_text(encoding="utf-8"))
+
+    @classmethod
+    def _read_metrics_json(cls, sandbox_task: Path | None) -> dict:
+        """Pick whitelisted oracle metrics out of ``metrics.json``, if present.
+
+        Returns an empty dict on missing / unreadable / malformed files —
+        scoring must stay robust if the oracle script is older or the
+        metrics file is absent. We never let metrics-extraction failure
+        change the headline score.
+        """
+        if sandbox_task is None:
+            return {}
+        metrics_file = sandbox_task / "metrics.json"
+        if not metrics_file.is_file():
+            return {}
+        try:
+            payload = json.loads(metrics_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return {k: payload[k] for k in cls._METRICS_WHITELIST if k in payload}
 
     @staticmethod
     def _parse_stdout(stdout: str) -> float | None:

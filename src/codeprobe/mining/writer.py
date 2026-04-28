@@ -138,7 +138,8 @@ _ORACLE_PY = '''\
 Usage: python3 oracle.py <task_dir>
 
 Reads answer.txt and ground_truth.json from task_dir, computes F1,
-writes reward.txt, and exits 0 on success (any score) or 1 on error.
+writes reward.txt + metrics.json, and exits 0 on success (any score)
+or 1 on error.
 
 Scoring:
 - When ground_truth.json has an ``oracle_tiers`` map (schema v2), the
@@ -151,6 +152,14 @@ Scoring:
   2. repo-prefix stripped match (handles ``kubernetes/pkg/foo.go`` and
      ``/home/user/kubernetes/pkg/foo.go`` against oracle ``pkg/foo.go``),
      requires ``repo`` field in ground_truth.json.
+
+metrics.json shape:
+  {"score": float, "metric": "f1"|"weighted_f1",
+   "f1": float, "precision": float, "recall": float,
+   "matched": int, "expected_count": int, "agent_files_count": int,
+   "weighted_recall": float|null}
+The host scorer (ContinuousScorer) merges this into scoring_details so
+F1 stays the headline number while precision/recall remain inspectable.
 """
 import json, sys
 from pathlib import Path
@@ -208,10 +217,23 @@ def main():
         for k, v in tiers_raw.items()
     }
 
+    def write_metrics(payload):
+        (task_dir / "metrics.json").write_text(
+            json.dumps(payload, sort_keys=True) + "\\n",
+            encoding="utf-8",
+        )
+
     answer_file = task_dir / "answer.txt"
     if not answer_file.exists():
         print("FAIL: no answer.txt")
         (task_dir / "reward.txt").write_text("0.0\\n")
+        write_metrics({
+            "score": 0.0, "metric": "f1", "f1": 0.0,
+            "precision": 0.0, "recall": 0.0,
+            "matched": 0, "expected_count": len(expected_set),
+            "agent_files_count": 0, "weighted_recall": None,
+            "error": "no_answer_file",
+        })
         sys.exit(0)
 
     lines = answer_file.read_text().splitlines()
@@ -223,6 +245,13 @@ def main():
     if not agent_set:
         print("FAIL: empty answer")
         (task_dir / "reward.txt").write_text("0.0\\n")
+        write_metrics({
+            "score": 0.0, "metric": "f1", "f1": 0.0,
+            "precision": 0.0, "recall": 0.0,
+            "matched": 0, "expected_count": len(expected_set),
+            "agent_files_count": 0, "weighted_recall": None,
+            "error": "empty_answer",
+        })
         sys.exit(0)
 
     matched = expected_set & agent_set
@@ -245,6 +274,17 @@ def main():
         weighted_recall = None
 
     (task_dir / "reward.txt").write_text(f"{primary:.4f}\\n")
+    write_metrics({
+        "score": round(primary, 6),
+        "metric": metric,
+        "f1": round(f1, 6),
+        "precision": round(precision, 6),
+        "recall": round(recall, 6),
+        "matched": intersection,
+        "expected_count": len(expected_set),
+        "agent_files_count": len(agent_set),
+        "weighted_recall": round(weighted_recall, 6) if weighted_recall is not None else None,
+    })
     msg = (
         f"score={primary:.4f} metric={metric} f1={f1:.4f} "
         f"precision={precision:.4f} recall={recall:.4f} "

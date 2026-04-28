@@ -153,6 +153,12 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
     cache_sum = 0
     has_cache = False
     dur_sum = 0.0
+    # Optional oracle metrics (precision/recall/f1) — only present when the
+    # scorer surfaced them via ScoreResult.details. Tasks without these
+    # fields are excluded from the mean rather than counted as zero, so a
+    # mixed batch (some oracle-scored, some not) reports the means honestly.
+    metric_sums: dict[str, float] = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+    metric_counts: dict[str, int] = {"precision": 0, "recall": 0, "f1": 0}
 
     for t in completed:
         n += 1
@@ -170,6 +176,12 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         if t.cache_read_tokens is not None:
             cache_sum += t.cache_read_tokens
             has_cache = True
+        details = t.scoring_details or {}
+        for key in metric_sums:
+            value = details.get(key)
+            if isinstance(value, (int, float)):
+                metric_sums[key] += float(value)
+                metric_counts[key] += 1
 
     mean_score = score_sum / n
     total_cost = cost_sum if has_cost else None
@@ -185,6 +197,10 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         },
         "total_cost_usd": round(total_cost, 6) if total_cost is not None else None,
     }
+
+    for key in ("precision", "recall", "f1"):
+        if metric_counts[key]:
+            summary[f"mean_{key}"] = round(metric_sums[key] / metric_counts[key], 4)
 
     if total_cost and total_cost > 0:
         summary["score_per_dollar"] = round(mean_score / (total_cost / n), 2)
