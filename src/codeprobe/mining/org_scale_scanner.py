@@ -721,6 +721,29 @@ _MAX_REFERENCE_TARGETS = 3
 _MAX_REF_GT = 300
 
 
+def _is_language_test_file(file_path: str, language: str) -> bool:
+    """Detect language-convention test files for definition-extraction skip.
+
+    Path-substring filters like ``("/test", "/vendor/")`` only catch directory
+    layouts (``/tests/foo.py``); they miss Go's ``foo_test.go`` and Python's
+    ``test_foo.py``/``foo_test.py`` conventions where test files live next to
+    source. A mock implementation in a test file (e.g.
+    ``func (m mockFS) MkdirAll(...)``) must not be recorded as the definition
+    site for the production symbol.
+    """
+    name = file_path.rsplit("/", 1)[-1]
+    if language == "go":
+        return name.endswith("_test.go")
+    if language == "python":
+        return name.startswith("test_") or name.endswith("_test.py")
+    # Mixed/unknown: be conservative and exclude both conventions.
+    return (
+        name.endswith("_test.go")
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )
+
+
 def _extract_symbol_definitions(
     repo_paths: list[Path],
     tracked_files: frozenset[str],
@@ -756,6 +779,11 @@ def _extract_symbol_definitions(
     for rp in repo_paths:
         for file_path in tracked_files:
             if not any(file_path.endswith(e) for e in exts):
+                continue
+            # Skip language-convention test files (Go _test.go,
+            # Python test_*.py / *_test.py). A mock impl in a test file
+            # must not shadow the real definition.
+            if _is_language_test_file(file_path, language):
                 continue
             # Prepend a slash so top-level paths (e.g. ``staging/src/...``)
             # match fragments like ``/staging/`` without needing a separate

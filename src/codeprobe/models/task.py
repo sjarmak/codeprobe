@@ -118,6 +118,12 @@ class TaskMetadata:
     # (not list) so TaskMetadata remains hashable. Enables drift detection —
     # see ``codeprobe check-infra --fail-on-capability-drift``.
     mcp_capabilities_at_mine_time: tuple[str, ...] = ()
+    # Backends that contributed at least one item to this task's curated
+    # ground truth. Populated by the multi-backend oracle curator (see
+    # mining/oracle_curator.py); empty for tasks that were not curated
+    # through the consensus path. Downstream bias-warning code compares
+    # this against the agent's MCP surface to detect oracle/tool tautology.
+    oracle_backends_consensus: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

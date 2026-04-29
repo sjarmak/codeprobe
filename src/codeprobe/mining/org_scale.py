@@ -137,11 +137,55 @@ def _strip_fences(text: str) -> str:
 
 
 @dataclass(frozen=True)
+class ConsensusConfig:
+    """User-configured consensus mining knobs.
+
+    Materialised by the CLI from ``--consensus-backends`` /
+    ``--consensus-threshold`` / ``--consensus-mode`` and passed straight
+    through ``mine_org_scale_tasks`` → the per-family miners. Storing the
+    settings here (instead of fanning out kwargs) keeps the call sites
+    short and makes the consensus mode easy to identify in stack traces.
+    """
+
+    backends: tuple[str, ...]
+    threshold: float
+    mode: str  # "intersection" | "union"
+
+
+@dataclass(frozen=True)
+class QuarantinedCandidate:
+    """A symbol-reference task candidate that failed the consensus gate.
+
+    Carries enough state for the writer to drop a folder under
+    ``tasks_quarantined/`` containing the divergence report and the
+    intended task instruction so a reviewer can decide whether to keep,
+    drop, or hand-curate the candidate.
+    """
+
+    task_id: str
+    family: str  # "symbol-reference-trace" / "change-scope-audit"
+    repo: str
+    symbol: str
+    defining_file: str
+    instruction_title: str
+    instruction_body: str
+    divergence_report: dict
+
+
+@dataclass(frozen=True)
 class OrgScaleMineResult:
     """Result of mine_org_scale_tasks()."""
 
     tasks: list[Task]
     scan_results: list[FamilyScanResult]
+    quarantined: list[QuarantinedCandidate] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        # Frozen dataclasses can't take a default mutable list directly;
+        # this avoids the "mutable default" trap while keeping the field
+        # optional for older callers.
+        if self.quarantined is None:
+            object.__setattr__(self, "quarantined", [])
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +676,108 @@ def _maybe_enrich(
     return files, tuple(tier_dict.items())
 
 
+def _consensus_ground_truth(
+    *,
+    consensus_config: ConsensusConfig,
+    symbol: str,
+    defining_file: str,
+    repo_paths: list[Path],
+    sg_repo: str,
+    use_llm: bool = True,
+) -> tuple[
+    frozenset[str],
+    tuple[tuple[str, str], ...],
+    bool,
+    dict,
+    tuple[str, ...],
+]:
+    """Run consensus + per-file curation for one candidate symbol.
+
+    ``compute_consensus`` is the F1 gate that decides whether to ship the
+    task. When the gate passes, the multi-backend oracle curator
+    (``oracle_curator.curate_consensus``) builds the per-file answer key:
+
+    - files reported by >= 2 distinct backends → tier ``"required"``
+    - files reported by exactly one backend → LLM curator votes
+      keep / reject; approved items are ``"supplementary"``
+    - single-backend fallback (only one backend ran) → all kept as
+      ``"required"`` (no consensus filter possible)
+
+    Returns ``(consensus_files, oracle_tiers, shipped, divergence_report,
+    oracle_backends_consensus)``. The last element is the sorted tuple of
+    backend names that contributed >= 1 kept file — downstream
+    bias-warning code reads it to detect oracle/tool tautology
+    (codeprobe-zat9).
+    """
+    from codeprobe.mining.consensus import compute_consensus
+    from codeprobe.mining.oracle_curator import curate_consensus_decision
+
+    decision = compute_consensus(
+        symbol=symbol,
+        defining_file=defining_file,
+        repo_paths=repo_paths,
+        backends=tuple(consensus_config.backends),  # type: ignore[arg-type]
+        threshold=consensus_config.threshold,
+        mode=consensus_config.mode,  # type: ignore[arg-type]
+        sg_repo=sg_repo,
+    )
+
+    if not decision.shipped:
+        # Gate failed — return empty curated payload; the caller
+        # quarantines the whole task using the divergence report.
+        return (
+            decision.consensus_files,
+            (),
+            False,
+            decision.divergence_report,
+            (),
+        )
+
+    curated = curate_consensus_decision(
+        decision,
+        symbol=symbol,
+        defining_file=defining_file,
+        repo_paths=repo_paths,
+        use_llm=use_llm,
+    )
+    oracle_tiers = tuple(
+        (item.path, item.tier) for item in curated.items
+    )
+    consensus_files = frozenset(item.path for item in curated.items)
+
+    # Surface curator quarantine and LLM-review stats inside the
+    # divergence report so a reviewer can audit the full decision trail.
+    divergence_report = dict(decision.divergence_report)
+    divergence_report["curator"] = {
+        "schema_version": "oracle_curator.v1",
+        "min_backends": curated.min_backends,
+        "llm_used": curated.llm_used,
+        "n_items": len(curated.items),
+        "n_quarantined": len(curated.quarantined),
+        "quarantined": [
+            {"path": p, "reason": r} for p, r in curated.quarantined
+        ],
+        "items": [
+            {
+                "path": item.path,
+                "backends": list(item.backends),
+                "tier": item.tier,
+                "via_llm_review": item.via_llm_review,
+                "llm_rationale": item.llm_rationale,
+            }
+            for item in curated.items
+        ],
+    }
+
+    return (
+        consensus_files,
+        oracle_tiers,
+        decision.shipped,
+        divergence_report,
+        curated.backends_consensus,
+    )
+
+
 # ---------------------------------------------------------------------------
 # MCP-advantaged family mining
 # ---------------------------------------------------------------------------
@@ -647,8 +793,16 @@ def _mine_symbol_reference_tasks(
     sg_repo: str = "",
     strict_sg: bool = False,
     sg_discovery: bool = False,
+    consensus_config: "ConsensusConfig | None" = None,
+    quarantined_out: list["QuarantinedCandidate"] | None = None,
 ) -> list[Task]:
-    """Generate symbol-reference-trace tasks from high-fan-out public symbols."""
+    """Generate symbol-reference-trace tasks from high-fan-out public symbols.
+
+    When *consensus_config* is provided, every candidate runs all configured
+    backends; only candidates whose pairwise F1 meets the threshold are
+    returned. Quarantined candidates are appended to *quarantined_out* if
+    given so the caller can write a divergence report.
+    """
     if sg_discovery and sg_repo:
         from codeprobe.mining.org_scale_scanner import (
             discover_reference_targets_via_sg,
@@ -662,22 +816,67 @@ def _mine_symbol_reference_tasks(
     if not targets:
         return []
 
-    # Optional Sourcegraph enrichment
-    (sg_available,) = _get_sg_config(sg_repo, strict=strict_sg)
+    # Optional Sourcegraph enrichment (only relevant on the legacy
+    # single-backend path; consensus mode runs SG as one backend among many).
+    sg_available = False
+    if consensus_config is None:
+        (sg_available,) = _get_sg_config(sg_repo, strict=strict_sg)
 
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
-        enriched_files, oracle_tiers = _maybe_enrich(
-            sg_available,
-            sg_repo,
-            symbol,
-            def_file,
-            ref_files,
-            repo_path=repo_paths[0],
-            language=language,
-            sg_authoritative=True,
-        )
+        oracle_backends_consensus: tuple[str, ...] = ()
+        if consensus_config is not None:
+            (
+                decision_files,
+                oracle_tiers,
+                shipped,
+                divergence,
+                oracle_backends_consensus,
+            ) = _consensus_ground_truth(
+                consensus_config=consensus_config,
+                symbol=symbol,
+                defining_file=def_file,
+                repo_paths=repo_paths,
+                sg_repo=sg_repo,
+                use_llm=not no_llm,
+            )
+            if not shipped:
+                if quarantined_out is not None:
+                    task_id = hashlib.sha256(
+                        f"sym-ref-{symbol}-{commit_sha[:8]}".encode()
+                    ).hexdigest()[:8]
+                    quarantined_out.append(
+                        QuarantinedCandidate(
+                            task_id=task_id,
+                            family="symbol-reference-trace",
+                            repo=repo_name,
+                            symbol=symbol,
+                            defining_file=def_file,
+                            instruction_title=(
+                                f"Find references to {symbol} in {repo_name}"
+                            ),
+                            instruction_body=(
+                                f"Find all files that reference `{symbol}` "
+                                f"(defined in `{def_file}`), including through "
+                                "aliases, re-exports, and wildcard imports."
+                            ),
+                            divergence_report=divergence,
+                        )
+                    )
+                continue
+            enriched_files = decision_files
+        else:
+            enriched_files, oracle_tiers = _maybe_enrich(
+                sg_available,
+                sg_repo,
+                symbol,
+                def_file,
+                ref_files,
+                repo_path=repo_paths[0],
+                language=language,
+                sg_authoritative=True,
+            )
 
         task_id = hashlib.sha256(
             f"sym-ref-{symbol}-{commit_sha[:8]}".encode()
@@ -707,6 +906,7 @@ def _mine_symbol_reference_tasks(
                     issue_body=question,
                     ground_truth_commit=commit_sha,
                     sg_repo=sg_repo,
+                    oracle_backends_consensus=oracle_backends_consensus,
                 ),
                 verification=TaskVerification(
                     type="oracle",
@@ -719,12 +919,21 @@ def _mine_symbol_reference_tasks(
                 instruction_variant_path=None,
             )
         )
-        logger.info(
-            "Symbol-reference-trace: %s referenced by %d files%s",
-            symbol,
-            len(enriched_files),
-            " (SG-enriched)" if sg_available else "",
-        )
+        if consensus_config is not None:
+            logger.info(
+                "Symbol-reference-trace: %s shipped via consensus "
+                "(%d files, %d backends agreed)",
+                symbol,
+                len(enriched_files),
+                len(consensus_config.backends),
+            )
+        else:
+            logger.info(
+                "Symbol-reference-trace: %s referenced by %d files%s",
+                symbol,
+                len(enriched_files),
+                " (SG-enriched)" if sg_available else "",
+            )
 
     return tasks
 
@@ -816,11 +1025,17 @@ def _mine_change_scope_tasks(
     sg_repo: str = "",
     strict_sg: bool = False,
     sg_discovery: bool = False,
+    consensus_config: "ConsensusConfig | None" = None,
+    quarantined_out: list["QuarantinedCandidate"] | None = None,
 ) -> list[Task]:
     """Generate change-scope-audit tasks from high-fan-out public symbols.
 
     Reuses ``discover_reference_targets`` to find symbols with many dependents,
     then frames the task as a blast-radius audit rather than a reference trace.
+
+    When *consensus_config* is set, ground truth is built from multi-backend
+    agreement (see :mod:`codeprobe.mining.consensus`); candidates that fail
+    the consensus gate are appended to *quarantined_out*.
     """
     if sg_discovery and sg_repo:
         from codeprobe.mining.org_scale_scanner import (
@@ -835,21 +1050,64 @@ def _mine_change_scope_tasks(
     if not targets:
         return []
 
-    # Optional Sourcegraph enrichment
-    (sg_available,) = _get_sg_config(sg_repo, strict=strict_sg)
+    sg_available = False
+    if consensus_config is None:
+        (sg_available,) = _get_sg_config(sg_repo, strict=strict_sg)
 
     repo_name = repo_paths[0].name
     tasks: list[Task] = []
     for symbol, def_file, ref_files in targets:
-        enriched_files, oracle_tiers = _maybe_enrich(
-            sg_available,
-            sg_repo,
-            symbol,
-            def_file,
-            ref_files,
-            repo_path=repo_paths[0],
-            language=language,
-        )
+        oracle_backends_consensus: tuple[str, ...] = ()
+        if consensus_config is not None:
+            (
+                decision_files,
+                oracle_tiers,
+                shipped,
+                divergence,
+                oracle_backends_consensus,
+            ) = _consensus_ground_truth(
+                consensus_config=consensus_config,
+                symbol=symbol,
+                defining_file=def_file,
+                repo_paths=repo_paths,
+                sg_repo=sg_repo,
+                use_llm=not no_llm,
+            )
+            if not shipped:
+                if quarantined_out is not None:
+                    task_id = hashlib.sha256(
+                        f"change-scope-{symbol}-{commit_sha[:8]}".encode()
+                    ).hexdigest()[:8]
+                    quarantined_out.append(
+                        QuarantinedCandidate(
+                            task_id=task_id,
+                            family="change-scope-audit",
+                            repo=repo_name,
+                            symbol=symbol,
+                            defining_file=def_file,
+                            instruction_title=(
+                                f"Blast radius of changing {symbol} in {repo_name}"
+                            ),
+                            instruction_body=(
+                                f"The symbol `{symbol}` (defined in `{def_file}`) "
+                                "is about to change its signature. Find all "
+                                "files that depend on it and would need review."
+                            ),
+                            divergence_report=divergence,
+                        )
+                    )
+                continue
+            enriched_files = decision_files
+        else:
+            enriched_files, oracle_tiers = _maybe_enrich(
+                sg_available,
+                sg_repo,
+                symbol,
+                def_file,
+                ref_files,
+                repo_path=repo_paths[0],
+                language=language,
+            )
 
         task_id = hashlib.sha256(
             f"change-scope-{symbol}-{commit_sha[:8]}".encode()
@@ -879,6 +1137,7 @@ def _mine_change_scope_tasks(
                     issue_body=question,
                     ground_truth_commit=commit_sha,
                     sg_repo=sg_repo,
+                    oracle_backends_consensus=oracle_backends_consensus,
                 ),
                 verification=TaskVerification(
                     type="oracle",
@@ -894,12 +1153,20 @@ def _mine_change_scope_tasks(
                 instruction_variant_path=None,
             )
         )
-        logger.info(
-            "Change-scope-audit: %s affects %d files%s",
-            symbol,
-            len(enriched_files),
-            " (SG-enriched)" if sg_available else "",
-        )
+        if consensus_config is not None:
+            logger.info(
+                "Change-scope-audit: %s shipped via consensus "
+                "(%d files)",
+                symbol,
+                len(enriched_files),
+            )
+        else:
+            logger.info(
+                "Change-scope-audit: %s affects %d files%s",
+                symbol,
+                len(enriched_files),
+                " (SG-enriched)" if sg_available else "",
+            )
 
     return tasks
 
@@ -912,22 +1179,31 @@ def _mine_mcp_families(
     no_llm: bool,
     sg_repo: str = "",
     sg_discovery: bool = False,
+    consensus_config: ConsensusConfig | None = None,
+    quarantined_out: list[QuarantinedCandidate] | None = None,
 ) -> list[Task]:
     """Generate tasks from all MCP-advantaged families.
 
-    When ``sg_repo`` is provided, Sourcegraph auth is required. Missing auth
-    raises immediately (before the expensive scan) so users don't wait hours
-    for a degraded grep-only result.
+    When ``sg_repo`` is provided AND consensus mode is off, Sourcegraph auth
+    is required. Missing auth raises immediately (before the expensive scan)
+    so users don't wait hours for a degraded grep-only result. Under
+    consensus mode SG is just one backend among several, so we let the
+    consensus runner decide whether SG counted toward agreement.
 
     When ``sg_discovery`` is True, candidate symbols are ranked via
     Sourcegraph ``sg_find_references`` MCP calls instead of the local
     grep-based Phase 2 scan — cuts wall-clock from hours to minutes on
     large repos.
+
+    When *consensus_config* is set, the symbol-reference and change-scope
+    miners run all configured backends per candidate and ship only those
+    above the agreement threshold; quarantined candidates are appended to
+    *quarantined_out* if provided.
     """
-    # Fail fast on missing auth when the user has declared MCP intent.
-    # This runs before any scanning so we don't burn hours on grep-only
-    # ground truth that will bias the MCP comparison.
-    if sg_repo:
+    # Fail fast on missing auth when the user declared MCP intent and is
+    # NOT using consensus mode (consensus mode tolerates missing SG auth
+    # by treating SG as an unavailable backend).
+    if sg_repo and consensus_config is None:
         _get_sg_config(sg_repo, strict=True)
 
     primary_repo = repo_paths[0]
@@ -947,8 +1223,12 @@ def _mine_mcp_families(
         kwargs: dict[str, Any] = {"no_llm": no_llm}
         if miner in (_mine_symbol_reference_tasks, _mine_change_scope_tasks):
             kwargs["sg_repo"] = sg_repo
-            kwargs["strict_sg"] = bool(sg_repo)
+            # Under consensus mode SG missing auth is tolerable; the
+            # consensus gate will still require ≥2 backends to agree.
+            kwargs["strict_sg"] = bool(sg_repo) and consensus_config is None
             kwargs["sg_discovery"] = sg_discovery
+            kwargs["consensus_config"] = consensus_config
+            kwargs["quarantined_out"] = quarantined_out
         new_tasks = miner(
             repo_paths, tracked_files, language, commit_sha, **kwargs
         )
@@ -969,6 +1249,7 @@ def mine_org_scale_tasks(
     scan_timeout: int = 60,
     sg_repo: str = "",
     sg_discovery: bool = False,
+    consensus_config: ConsensusConfig | None = None,
 ) -> OrgScaleMineResult:
     """Mine org-scale comprehension tasks from one or more repositories.
 
@@ -1014,6 +1295,7 @@ def mine_org_scale_tasks(
     commits = tuple((rp.name, get_head_sha(rp)) for rp in repo_paths)
 
     tasks: list[Task] = []
+    quarantined: list[QuarantinedCandidate] = []
 
     # MCP-advantaged families first when requested — these are the primary
     # signal for MCP comparison experiments and are always hard difficulty.
@@ -1025,6 +1307,8 @@ def mine_org_scale_tasks(
             no_llm=no_llm,
             sg_repo=sg_repo,
             sg_discovery=sg_discovery,
+            consensus_config=consensus_config,
+            quarantined_out=quarantined,
         )
         if len(repo_paths) > 1:
             mcp_tasks = [_stamp_multi_repo_commits(t, commits) for t in mcp_tasks]
@@ -1063,7 +1347,11 @@ def mine_org_scale_tasks(
     if not tasks:
         logger.info("No org-scale tasks generated from %s", repo_paths)
 
-    return OrgScaleMineResult(tasks=tasks[:count], scan_results=scan_results)
+    return OrgScaleMineResult(
+        tasks=tasks[:count],
+        scan_results=scan_results,
+        quarantined=quarantined,
+    )
 
 
 def _stamp_multi_repo_commits(task: Task, commits: tuple[tuple[str, str], ...]) -> Task:

@@ -548,6 +548,84 @@ class TestWriteOracleTask:
         assert meta["metadata"]["org_scale"] is True
         assert meta["verification"]["type"] == "oracle"
 
+    def test_oracle_backends_consensus_round_trips_to_ground_truth(
+        self, tmp_path: Path
+    ) -> None:
+        """codeprobe-zat9: ground_truth.json includes oracle_backends_consensus
+        when the task was built through the multi-backend curator path.
+        """
+        task = Task(
+            id="org98765",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="org-org98765",
+                difficulty="hard",
+                description="symbol-reference-trace: Foo (3 files)",
+                language="python",
+                category="symbol-reference-trace",
+                org_scale=True,
+                issue_title="Find references to Foo in myrepo",
+                issue_body="Find all files that reference `Foo`...",
+                ground_truth_commit="deadbeef",
+                oracle_backends_consensus=("ast", "grep", "sourcegraph"),
+            ),
+            verification=TaskVerification(
+                type="oracle",
+                command="bash tests/test.sh",
+                reward_type="continuous",
+                oracle_type="file_list",
+                oracle_answer=("a.py", "b.py", "c.py"),
+                oracle_tiers=(
+                    ("a.py", "required"),
+                    ("b.py", "required"),
+                    ("c.py", "supplementary"),
+                ),
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+
+        result_path = write_task_dir(task, base_dir, repo_path)
+
+        gt = json.loads((result_path / "ground_truth.json").read_text())
+        assert gt["oracle_backends_consensus"] == [
+            "ast",
+            "grep",
+            "sourcegraph",
+        ]
+        # oracle_tiers is preserved separately and remains the per-file
+        # weight source for weighted F1 scoring.
+        assert gt["oracle_tiers"]["a.py"] == "required"
+        assert gt["oracle_tiers"]["c.py"] == "supplementary"
+
+    def test_oracle_backends_consensus_omitted_when_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """Tasks not built through the curator path don't get the field."""
+        task = Task(
+            id="org11111",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="org-org11111",
+                difficulty="medium",
+                language="python",
+                category="migration-inventory",
+                org_scale=True,
+                ground_truth_commit="abc123",
+                # oracle_backends_consensus left at default ()
+            ),
+            verification=TaskVerification(
+                type="oracle",
+                oracle_type="file_list",
+                oracle_answer=("a.py",),
+            ),
+        )
+        result_path = write_task_dir(
+            task, tmp_path / "tasks", tmp_path / "myrepo"
+        )
+        gt = json.loads((result_path / "ground_truth.json").read_text())
+        assert "oracle_backends_consensus" not in gt
+
 
 # ---------------------------------------------------------------------------
 # End-to-end integration test (premortem P0)
@@ -1122,3 +1200,98 @@ class TestSgDiscovery:
         names = [t[0] for t in targets]
         assert "HandlerAlpha" not in names
         assert "HandlerBeta" in names
+
+
+class TestExtractSymbolDefinitions:
+    """Tests for ``_extract_symbol_definitions`` — language-aware test-file exclusion."""
+
+    def _make_repo(self, tmp_path: Path, files: dict[str, str]) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        for path, content in files.items():
+            fp = repo / path
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(content)
+        return repo
+
+    def test_go_test_files_do_not_shadow_real_definitions(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: Go ``_test.go`` files must never be picked as definition sites.
+
+        Before the fix, the path-substring filter ``("/test", "/vendor/")`` only
+        matched directory paths like ``/test/`` and missed Go's ``_test.go``
+        convention where test files live next to source. A mock implementation
+        in ``foo_test.go`` (e.g. ``func (m mockFS) MkdirAll(...)``) could be
+        recorded as the definition site for ``MkdirAll``, polluting downstream
+        instructions and triggering wasteful verification loops in agents.
+        """
+        from codeprobe.mining.org_scale_scanner import (
+            _extract_symbol_definitions,
+        )
+
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "internal/fsys/fsys.go": (
+                    "package fsys\n"
+                    "type FS interface {\n"
+                    "\tMkdirAll(path string, perm os.FileMode) error\n"
+                    "}\n"
+                    "func MkdirAll(path string, perm os.FileMode) error { return nil }\n"
+                ),
+                "internal/fsys/atomic_internal_test.go": (
+                    "package fsys\n"
+                    "type identityChangingFS struct{}\n"
+                    "func (f *identityChangingFS) MkdirAll(string, os.FileMode) error { return nil }\n"
+                ),
+            },
+        )
+        tracked = frozenset([
+            "internal/fsys/fsys.go",
+            "internal/fsys/atomic_internal_test.go",
+        ])
+
+        defs = _extract_symbol_definitions([repo], tracked, language="go")
+
+        assert "MkdirAll" in defs, "MkdirAll should still be discovered"
+        assert defs["MkdirAll"] == "internal/fsys/fsys.go", (
+            f"Expected fsys.go but got {defs['MkdirAll']}; Go _test.go files "
+            "must not be picked as definition sites"
+        )
+
+    def test_python_test_files_do_not_shadow_real_definitions(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: Python ``test_*.py`` and ``*_test.py`` must not shadow."""
+        from codeprobe.mining.org_scale_scanner import (
+            _extract_symbol_definitions,
+        )
+
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "pkg/handler.go": "ignore",  # not python
+                "pkg/handler.py": (
+                    "def process_payment(amount):\n    return amount\n"
+                ),
+                "pkg/test_handler.py": (
+                    "def process_payment(amount):\n    return None  # mock\n"
+                ),
+                "pkg/handler_test.py": (
+                    "def process_payment(amount):\n    return None  # mock\n"
+                ),
+            },
+        )
+        tracked = frozenset([
+            "pkg/handler.py",
+            "pkg/test_handler.py",
+            "pkg/handler_test.py",
+        ])
+
+        defs = _extract_symbol_definitions([repo], tracked, language="python")
+
+        assert defs.get("process_payment") == "pkg/handler.py", (
+            f"Expected handler.py but got {defs.get('process_payment')}; "
+            "Python test files must not be picked as definition sites"
+        )

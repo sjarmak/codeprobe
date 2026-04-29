@@ -10,8 +10,26 @@ import shlex
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
+from codeprobe.mining.confidence import (
+    score_task_confidence,
+    write_confidence_file,
+)
 from codeprobe.mining.extractor import _is_safe_relative_path
 from codeprobe.models.task import Task
+
+
+def _emit_confidence(task_dir: Path) -> None:
+    """Score the freshly-written task and persist confidence.json.
+
+    Cross-validation signal is neutral at mining time — it requires a
+    cross-validation report which is generated post-mining. Callers can
+    re-score later via :func:`mining.confidence.score_tasks_dir`.
+    """
+    try:
+        score = score_task_confidence(task_dir)
+        write_confidence_file(score, task_dir)
+    except (OSError, ValueError) as exc:
+        logger.warning("Failed to write confidence.json for %s: %s", task_dir, exc)
 
 logger = logging.getLogger(__name__)
 
@@ -1074,6 +1092,84 @@ def _write_checkpoints(
     )
 
 
+def write_quarantined_task(
+    *,
+    task_id: str,
+    family: str,
+    repo: str,
+    symbol: str,
+    defining_file: str,
+    instruction_title: str,
+    instruction_body: str,
+    divergence_report: dict,
+    base_dir: Path,
+) -> Path:
+    """Drop a quarantined consensus candidate under *base_dir*.
+
+    The quarantine directory does NOT contain ``ground_truth.json`` or
+    ``test.sh`` — by construction the backends could not agree on what the
+    answer should be. It contains only the artifacts a reviewer needs to
+    triage the candidate:
+
+    - ``divergence_report.json`` — full per-backend file lists and pairwise
+      F1; the same schema written for shipped consensus tasks.
+    - ``instruction.md`` — the question that *would* have been asked, so
+      the reviewer can decide whether to keep the candidate.
+    - ``metadata.json`` — task_id, family, repo, symbol, defining_file.
+
+    Returns the directory path. Raises :class:`ValueError` if *task_id* is
+    unsafe for filesystem use (matches :func:`write_task_dir`).
+    """
+    safe_id = Path(task_id).name
+    if not safe_id or safe_id != task_id:
+        raise ValueError(
+            f"Invalid task id for quarantine output: {task_id!r}"
+        )
+
+    task_dir = base_dir / safe_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    instruction = (
+        f"# {instruction_title}\n\n"
+        f"**Repository:** {repo}\n"
+        f"**Family:** {family}\n"
+        f"**Symbol:** `{symbol}` (defined in `{defining_file}`)\n\n"
+        "## Question\n\n"
+        f"{instruction_body}\n\n"
+        "## Quarantine Reason\n\n"
+        "This task was quarantined by consensus mining because the "
+        "configured backends did not agree above the F1 threshold on "
+        "what the ground truth should be. See `divergence_report.json` "
+        "for the per-backend file lists and pairwise metrics.\n"
+    )
+    (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+
+    (task_dir / "divergence_report.json").write_text(
+        json.dumps(divergence_report, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    (task_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "family": family,
+                "repo": repo,
+                "symbol": symbol,
+                "defining_file": defining_file,
+                "status": "quarantined",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    logger.info("Quarantined %s/%s -> %s", family, symbol, task_dir)
+    return task_dir
+
+
 def write_task_dir(
     task: Task,
     base_dir: Path,
@@ -1124,12 +1220,14 @@ def write_task_dir(
             curation_backends=curation_backends,
         )
         _write_checkpoints(task, tests_dir, checkpoint_scripts)
+        _emit_confidence(task_dir)
         return task_dir
 
     # Dual-verification tasks: direct test.sh + artifact answer.json
     if task.verification.verification_mode == "dual":
         _write_dual_task(task, task_dir, tests_dir, repo_path, safe_id)
         _write_checkpoints(task, tests_dir, checkpoint_scripts)
+        _emit_confidence(task_dir)
         return task_dir
 
     if task.metadata.issue_title:
@@ -1232,6 +1330,8 @@ def write_task_dir(
     # Per-checkpoint verifier scripts + tests/checkpoints.json. Gated
     # behind task.verification.checkpoints (R17 acceptance #4).
     _write_checkpoints(task, tests_dir, checkpoint_scripts)
+
+    _emit_confidence(task_dir)
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir
@@ -1642,6 +1742,16 @@ def _write_oracle_task(
             ),
             "file_count": len(task.verification.oracle_tiers),
         }
+
+    # Oracle-curator backend consensus (codeprobe-zat9). Surfaces which
+    # backends contributed to the curated answer key so downstream
+    # bias-warning code can detect oracle/tool tautology by comparing
+    # against the agent's MCP surface. Empty for tasks not built through
+    # the multi-backend consensus path.
+    if task.metadata.oracle_backends_consensus:
+        ground_truth["oracle_backends_consensus"] = list(
+            task.metadata.oracle_backends_consensus
+        )
     (task_dir / "ground_truth.json").write_text(
         json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
