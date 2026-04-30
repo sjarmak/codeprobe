@@ -655,6 +655,13 @@ def execute_task(
             scoring_details["scorer_family"] = score_result.scorer_family
         if score_result.sub_scores:
             scoring_details["sub_scores"] = dict(score_result.sub_scores)
+        if score_result.diagnostics:
+            # Carry the IR-metrics diagnostics into scoring_details so
+            # aggregate.json and downstream consumers see the same shape
+            # the scorer emitted. The serialiser in _save_task_artifacts
+            # adds run-level fields (task_time_seconds / token_cost_usd)
+            # on top.
+            scoring_details["diagnostics"] = dict(score_result.diagnostics)
 
         return TaskResult(
             completed=CompletedTask(
@@ -797,12 +804,26 @@ def _save_task_artifacts(
             sanitize_secrets(task_result.agent_stderr), encoding="utf-8"
         )
 
-    # Scoring details
+    # Scoring details — emit the unified ScoreResult contract: ``reward``
+    # mirrors ``score`` (codeprobe / EB / CSB read either name) and
+    # ``diagnostics`` carries run-level cost / time alongside the IR
+    # breakdown the scorer already populated. Existing top-level fields
+    # (score, status, scorer_family, sub_scores, …) stay so older
+    # consumers keep working.
     scoring = {
         "score": completed.automated_score,
+        "reward": completed.automated_score,
         "status": completed.status,
         **completed.scoring_details,
     }
+    diagnostics: dict = {}
+    existing_diag = completed.scoring_details.get("diagnostics")
+    if isinstance(existing_diag, dict):
+        diagnostics.update(existing_diag)
+    diagnostics["task_time_seconds"] = float(completed.duration_seconds)
+    if completed.cost_usd is not None:
+        diagnostics["token_cost_usd"] = float(completed.cost_usd)
+    scoring["diagnostics"] = diagnostics
     (task_dir / "scoring.json").write_text(
         _json.dumps(scoring, indent=2) + "\n", encoding="utf-8"
     )

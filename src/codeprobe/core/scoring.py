@@ -104,6 +104,12 @@ class ScoreResult:
     triage tasks can opt into a recall-tilted family where over-shipping is
     free.
 
+    ``reward`` mirrors ``score`` and exposes the unified ScoreResult
+    contract field name. The two are always equal by definition; keep
+    ``score`` as the legacy field for the executor / aggregate consumers
+    that read it directly, and read ``reward`` when working against the
+    multi-rig contract (codeprobe / EB / CSB).
+
     ``scorer_family`` is the registered rubric name. See
     :data:`SCORER_FAMILIES` for the canonical set. Empty string means the
     scorer didn't declare one (treat as opaque).
@@ -115,10 +121,13 @@ class ScoreResult:
     diagnostics.
 
     ``diagnostics`` is a free-form bag of run-time observations that don't
-    affect reward but are useful for debugging — currently scoped to
-    ``ir_metrics`` (mirror of the IR breakdown for callers that want a
-    single canonical IR view). Cost / time live on
-    :class:`~codeprobe.models.experiment.CompletedTask`, not here.
+    affect reward but are useful for debugging. The unified contract
+    surfaces ``ir_metrics`` here (mirror of the IR breakdown for callers
+    that want a single canonical IR view); the executor injects
+    ``task_time_seconds`` and ``token_cost_usd`` into the serialised
+    ``scoring_details.diagnostics`` block at scoring.json write time so
+    the per-task contract is self-contained without forcing the scorer
+    to know about run-level metadata.
 
     ``ir_metrics`` is kept at the top level for back-compat with existing
     aggregate consumers (``cli/experiment_cmd.py`` reads
@@ -149,6 +158,14 @@ class ScoreResult:
     scorer_family: str = ""
     sub_scores: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
+    reward: float | None = None
+
+    def __post_init__(self) -> None:
+        # ``reward`` mirrors ``score`` when callers don't pass it explicitly.
+        # Frozen dataclass requires ``object.__setattr__`` to populate the
+        # default after init.
+        if self.reward is None:
+            object.__setattr__(self, "reward", self.score)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +187,7 @@ SCORER_FAMILIES: frozenset[str] = frozenset(
     {
         # IR-style — oracle is a set of expected files / symbols
         "oracle_overlap_f1",  # symbol-reference-trace, file-list-tight (default)
+        "oracle_overlap_fbeta",  # F-beta with per-task beta from verification.fbeta_beta
         "oracle_overlap_recall",  # file-discovery / triage (opt-in)
         "oracle_weighted_f1",  # org-scale tier-weighted oracle
         "oracle_weighted_recall",  # tier-weighted oracle, recall-tilted
@@ -192,6 +210,41 @@ SCORER_FAMILIES: frozenset[str] = frozenset(
 # Tasks where dump-and-filter is fine (file-discovery / triage) opt into
 # ``oracle_overlap_recall`` via ``verification.scorer_family``.
 DEFAULT_IR_FAMILY: str = "oracle_overlap_f1"
+
+# Default F-beta value when a task selects ``oracle_overlap_fbeta`` but
+# doesn't pin ``verification.fbeta_beta``. ``beta=1.0`` makes the family
+# numerically identical to F1; tasks that want over-ship penalised harder
+# (symbol-reference-trace) configure beta < 1.0 (e.g. 0.5 weights
+# precision twice as heavily as recall).
+DEFAULT_FBETA_BETA: float = 1.0
+
+
+def _read_fbeta_beta(task_dir: Path | None) -> float:
+    """Resolve the per-task ``beta`` parameter for ``oracle_overlap_fbeta``.
+
+    Reads ``verification.fbeta_beta`` from ``task_dir/metadata.json``.
+    Falls back to :data:`DEFAULT_FBETA_BETA` (=1.0, F1-equivalent) when:
+      * ``task_dir`` is None
+      * the metadata field is absent / non-numeric / non-finite
+      * the value is non-positive (F-beta is undefined for ``beta <= 0``)
+
+    The fallback is silent — F1-equivalent behaviour is the documented
+    default and surfacing a finding here would force tests that don't care
+    about beta to set the field.
+    """
+    if task_dir is None:
+        return DEFAULT_FBETA_BETA
+    verification = read_task_verification(task_dir)
+    raw = verification.get("fbeta_beta")
+    if raw is None:
+        return DEFAULT_FBETA_BETA
+    try:
+        beta = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_FBETA_BETA
+    if not math.isfinite(beta) or beta <= 0.0:
+        return DEFAULT_FBETA_BETA
+    return beta
 
 
 def _select_ir_family(task_dir: Path | None, *, weighted: bool = False) -> str:
@@ -555,8 +608,9 @@ class ContinuousScorer:
                     details.get("weighted_recall"), (int, float)
                 ) and math.isfinite(float(details["weighted_recall"]))
                 family = _select_ir_family(task_dir, weighted=weighted)
+                beta = _read_fbeta_beta(task_dir)
                 reward, ir_metrics, sub_scores = self._derive_reward_and_metrics(
-                    details, fallback=clamped, family=family
+                    details, fallback=clamped, family=family, beta=beta
                 )
                 return ScoreResult(
                     score=reward,
@@ -600,6 +654,7 @@ class ContinuousScorer:
         *,
         fallback: float,
         family: str,
+        beta: float = DEFAULT_FBETA_BETA,
     ) -> tuple[float, dict, dict]:
         """Derive ``(reward, ir_metrics, sub_scores)`` from an oracle
         ``metrics.json`` under the given scorer ``family``.
@@ -610,6 +665,9 @@ class ContinuousScorer:
           and missing. The default for symbol-reference-trace style tasks
           where shipping every file in the repo is "didn't solve". Over-ship
           and under-ship asymmetry shows in sub_scores.
+        * ``oracle_overlap_fbeta`` — reward = F-beta(precision, recall;
+          beta from ``verification.fbeta_beta``). Equivalent to F1 when
+          beta=1; beta<1 favours precision (over-ship costs more).
         * ``oracle_overlap_recall`` — reward = recall. Over-shipping is
           free. The opt-in family for file-discovery / triage tasks.
         * ``oracle_weighted_f1`` — reward = weighted_f1 (read from
@@ -658,6 +716,14 @@ class ContinuousScorer:
         # Pick reward by family
         if family == "oracle_overlap_recall":
             reward = recall if recall is not None else max(0.0, min(1.0, fallback))
+        elif family == "oracle_overlap_fbeta":
+            if precision is not None and recall is not None:
+                reward = _fbeta(precision, recall, beta)
+            elif f1 is not None and beta == DEFAULT_FBETA_BETA:
+                # beta=1 collapses to F1; honour the precomputed value.
+                reward = f1
+            else:
+                reward = max(0.0, min(1.0, fallback))
         elif family == "oracle_weighted_recall":
             if weighted_recall is not None:
                 reward = weighted_recall
@@ -701,6 +767,8 @@ class ContinuousScorer:
         if weighted_recall is not None:
             sub_scores["weighted_recall"] = weighted_recall
         sub_scores["reward"] = reward
+        if family == "oracle_overlap_fbeta":
+            sub_scores["fbeta_beta"] = beta
 
         return reward, ir_metrics, sub_scores
 
@@ -989,6 +1057,7 @@ def score_file_list(
     actual: object,
     *,
     family: str = DEFAULT_IR_FAMILY,
+    beta: float = DEFAULT_FBETA_BETA,
 ) -> ScoreResult:
     """Score a file_list answer_type under the given scorer ``family``.
 
@@ -1000,7 +1069,8 @@ def score_file_list(
     The family routing usually happens upstream in
     :class:`ArtifactScorer` from ``verification.scorer_family``; passing
     ``family`` directly is supported for tests and for callers that score
-    bare lists outside the artifact-scorer flow.
+    bare lists outside the artifact-scorer flow. ``beta`` only matters
+    when ``family == "oracle_overlap_fbeta"``; defaults to 1.0 (≡ F1).
     """
     if not isinstance(expected, list):
         return ScoreResult(
@@ -1020,8 +1090,12 @@ def score_file_list(
     actual_set = frozenset(_normalize_path(p) for p in actual if p)
     precision, recall, f1 = _ir_metrics(expected_set, actual_set)
     ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
-    reward = _ir_reward_from_family(family, precision=precision, recall=recall, f1=f1)
+    reward = _ir_reward_from_family(
+        family, precision=precision, recall=recall, f1=f1, beta=beta
+    )
     sub_scores = {**ir_metrics, "reward": reward}
+    if family == "oracle_overlap_fbeta":
+        sub_scores["fbeta_beta"] = beta
     return ScoreResult(
         score=reward,
         passed=reward >= PASS_THRESHOLD,
@@ -1034,12 +1108,29 @@ def score_file_list(
     )
 
 
+def _fbeta(precision: float, recall: float, beta: float) -> float:
+    """Compute the F-beta score from precision and recall.
+
+    F-beta = (1 + β²) · P · R / (β² · P + R), with the standard convention
+    that an empty intersection (precision = recall = 0) returns 0. Same
+    convention as :func:`_ir_metrics`.
+    """
+    if beta <= 0.0 or not math.isfinite(beta):
+        beta = DEFAULT_FBETA_BETA
+    beta_sq = beta * beta
+    denom = beta_sq * precision + recall
+    if denom <= 0.0:
+        return 0.0
+    return (1.0 + beta_sq) * precision * recall / denom
+
+
 def _ir_reward_from_family(
     family: str,
     *,
     precision: float,
     recall: float,
     f1: float,
+    beta: float = DEFAULT_FBETA_BETA,
 ) -> float:
     """Derive an IR reward from precision/recall/f1 under ``family``.
 
@@ -1047,12 +1138,19 @@ def _ir_reward_from_family(
     the legacy file-list scorer share one formula table. Falls back to F1
     for any unrecognised family — the conservative choice since over-
     shipping should generally cost something.
+
+    ``beta`` is consumed only by the ``oracle_overlap_fbeta`` family. The
+    default (1.0) makes that family numerically equivalent to F1; callers
+    that want a different bias supply the value resolved from per-task
+    metadata via :func:`_read_fbeta_beta`.
     """
     if family == "oracle_overlap_recall":
         return recall
     if family == "oracle_weighted_recall":
         return recall  # IR list scorers don't see tier weights; tier-weight
         # families surface via ContinuousScorer over the on-disk oracle
+    if family == "oracle_overlap_fbeta":
+        return _fbeta(precision, recall, beta)
     return f1
 
 
@@ -1104,11 +1202,13 @@ def score_symbol_list(
     actual: object,
     *,
     family: str = DEFAULT_IR_FAMILY,
+    beta: float = DEFAULT_FBETA_BETA,
 ) -> ScoreResult:
     """Score a symbol_list answer_type under the given scorer ``family``.
 
     Same family routing as :func:`score_file_list` — see that docstring
-    for rationale. The default is ``oracle_overlap_f1``.
+    for rationale. The default is ``oracle_overlap_f1``. ``beta`` only
+    matters under ``oracle_overlap_fbeta``.
     """
     exp = expected if isinstance(expected, list) else []
     act = actual if isinstance(actual, list) else []
@@ -1116,6 +1216,9 @@ def score_symbol_list(
     act_set = frozenset(_normalize_symbol(str(s)) for s in act if s)
     if not exp_set or not act_set:
         empty = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+        sub_scores: dict = {**empty, "reward": 0.0}
+        if family == "oracle_overlap_fbeta":
+            sub_scores["fbeta_beta"] = beta
         return ScoreResult(
             score=0.0,
             passed=False,
@@ -1123,13 +1226,17 @@ def score_symbol_list(
             reward_score=0.0,
             ir_metrics=empty,
             scorer_family=family,
-            sub_scores={**empty, "reward": 0.0},
+            sub_scores=sub_scores,
             diagnostics={"ir_metrics": dict(empty)},
         )
     precision, recall, f1 = _ir_metrics(exp_set, act_set)
     ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
-    reward = _ir_reward_from_family(family, precision=precision, recall=recall, f1=f1)
+    reward = _ir_reward_from_family(
+        family, precision=precision, recall=recall, f1=f1, beta=beta
+    )
     sub_scores = {**ir_metrics, "reward": reward}
+    if family == "oracle_overlap_fbeta":
+        sub_scores["fbeta_beta"] = beta
     return ScoreResult(
         score=reward,
         passed=reward >= PASS_THRESHOLD,
@@ -1334,14 +1441,26 @@ class ArtifactScorer:
         # symbol_list / legacy file-list); non-IR scorers (count / boolean
         # / text / dependency_chain) ignore it.
         ir_family = _select_ir_family(task_dir)
+        ir_beta = _read_fbeta_beta(task_dir)
         if "checks" in gt:
-            return self._score_v2_checks(gt, answer_data, ir_family=ir_family)
+            return self._score_v2_checks(
+                gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
+            )
         if "answer_type" in gt:
-            return self._score_new_format(gt, answer_data, ir_family=ir_family)
-        return self._score_legacy_format(gt, answer_data, ir_family=ir_family)
+            return self._score_new_format(
+                gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
+            )
+        return self._score_legacy_format(
+            gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
+        )
 
     def _score_v2_checks(
-        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+        self,
+        gt: dict,
+        answer_data: dict,
+        *,
+        ir_family: str = DEFAULT_IR_FAMILY,
+        ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
         """Score using v2 multi-check format with weighted composite."""
         checks: list[dict] = gt.get("checks", [])
@@ -1399,8 +1518,12 @@ class ArtifactScorer:
                 check_result = ScoreResult(score=0.0, passed=False)
             elif answer_type in _IR_LIST_ANSWER_TYPES:
                 # IR scorers take a family kwarg so the v2 multi-check
-                # composite respects per-task scorer routing.
-                check_result = scorer_fn(expected, actual, family=ir_family)
+                # composite respects per-task scorer routing. ``beta`` is
+                # only consumed by ``oracle_overlap_fbeta`` but threading
+                # it unconditionally keeps the dispatch table simple.
+                check_result = scorer_fn(
+                    expected, actual, family=ir_family, beta=ir_beta
+                )
             else:
                 check_result = scorer_fn(expected, actual)
 
@@ -1425,7 +1548,12 @@ class ArtifactScorer:
         )
 
     def _score_new_format(
-        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+        self,
+        gt: dict,
+        answer_data: dict,
+        *,
+        ir_family: str = DEFAULT_IR_FAMILY,
+        ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
         answer_type = gt.get("answer_type", "")
         expected = gt.get("answer")
@@ -1458,7 +1586,7 @@ class ArtifactScorer:
         scorer_fn = _ORACLE_TYPE_SCORERS.get(answer_type)
         if scorer_fn is not None:
             if answer_type in _IR_LIST_ANSWER_TYPES:
-                return scorer_fn(expected, actual, family=ir_family)
+                return scorer_fn(expected, actual, family=ir_family, beta=ir_beta)
             return scorer_fn(expected, actual)
 
         # Fall back to entry_point registry for extensibility
@@ -1477,7 +1605,12 @@ class ArtifactScorer:
         )
 
     def _score_legacy_format(
-        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+        self,
+        gt: dict,
+        answer_data: dict,
+        *,
+        ir_family: str = DEFAULT_IR_FAMILY,
+        ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
         """Legacy format: treat 'expected' as a file_list.
 
@@ -1504,8 +1637,11 @@ class ArtifactScorer:
         precision, recall, f1 = _ir_metrics(expected_set, actual_set)
         ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
         reward = _ir_reward_from_family(
-            ir_family, precision=precision, recall=recall, f1=f1
+            ir_family, precision=precision, recall=recall, f1=f1, beta=ir_beta
         )
+        sub_scores: dict = {**ir_metrics, "reward": reward}
+        if ir_family == "oracle_overlap_fbeta":
+            sub_scores["fbeta_beta"] = ir_beta
         return ScoreResult(
             score=reward,
             passed=reward >= PASS_THRESHOLD,
@@ -1513,7 +1649,7 @@ class ArtifactScorer:
             reward_score=reward,
             ir_metrics=ir_metrics,
             scorer_family=ir_family,
-            sub_scores={**ir_metrics, "reward": reward},
+            sub_scores=sub_scores,
             diagnostics={"ir_metrics": dict(ir_metrics)},
         )
 

@@ -428,8 +428,61 @@ def _check_verification_mode(vm: str) -> CheckResult:
     )
 
 
-def run_validate(task_dir: Path, *, strict: bool = False) -> list[CheckResult]:
+def _check_qa(task_dir: Path) -> list[CheckResult]:
+    """Run benchmark_qa_core checks, mapping each finding to a CheckResult.
+
+    Findings of severity ``error`` produce a failed CheckResult; ``warning``
+    and ``info`` findings surface as passed CheckResults whose detail
+    string starts with ``"warn: "`` / ``"info: "`` so the UI signals the
+    advisory level without aborting.
+
+    Class-D (path scope) findings are suppressed inside ``verify_task_qa``
+    by default — codeprobe's scoring contract already weights off-scope
+    answers via reward, so re-emitting them as QA errors creates noise.
+    """
+    from codeprobe.qa.verify import verify_task_qa
+
+    qa_result = verify_task_qa(task_dir)
+    results: list[CheckResult] = []
+    for finding in qa_result.findings:
+        loc = f" [{finding.location}]" if finding.location else ""
+        if finding.severity == "error":
+            results.append(
+                CheckResult(
+                    name=f"qa:{finding.code}",
+                    passed=False,
+                    detail=f"{finding.message}{loc}",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name=f"qa:{finding.code}",
+                    passed=True,
+                    detail=f"{finding.severity}: {finding.message}{loc}",
+                )
+            )
+    if not qa_result.findings:
+        results.append(
+            CheckResult(
+                name="qa checks",
+                passed=True,
+                detail="benchmark_qa_core: 0 findings",
+            )
+        )
+    return results
+
+
+def run_validate(
+    task_dir: Path, *, strict: bool = False, qa: bool = False
+) -> list[CheckResult]:
     """Run all structural validation checks on a task directory.
+
+    When ``qa=True``, also run the ``benchmark_qa_core`` lib's three
+    schema-agnostic checks (oracle coherence, scoring honesty, aux-file
+    leakage) and append one CheckResult per finding. Off by default to
+    keep the legacy validate semantics intact for callers that haven't
+    opted in.
 
     Returns a list of CheckResult objects.
     """
@@ -468,6 +521,10 @@ def run_validate(task_dir: Path, *, strict: bool = False) -> list[CheckResult]:
     # 6. Scoring policy / weight sum checks (always, regardless of mode)
     results.extend(_check_scoring_policy(meta))
 
+    # 7. QA library checks — opt-in.
+    if qa:
+        results.extend(_check_qa(task_dir))
+
     return results
 
 
@@ -500,7 +557,16 @@ def _list_child_task_dirs(path: Path) -> list[Path]:
     default=False,
     help="Enable strict mode with LLM spot-check (placeholder).",
 )
-def validate(task_dir: str, strict: bool) -> None:
+@click.option(
+    "--qa",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also run benchmark_qa_core checks (oracle coherence, scoring "
+        "honesty, aux-file leakage)."
+    ),
+)
+def validate(task_dir: str, strict: bool, qa: bool) -> None:
     """Validate structural correctness of a task directory.
 
     Checks that instruction.md, metadata, test scripts, and ground truth
@@ -525,7 +591,7 @@ def validate(task_dir: str, strict: bool) -> None:
             total = len(children)
             passed_count = 0
             for child in children:
-                child_results = run_validate(child, strict=strict)
+                child_results = run_validate(child, strict=strict, qa=qa)
                 child_ok = all(r.passed for r in child_results)
                 marker = "PASS" if child_ok else "FAIL"
                 click.echo(f"{marker}  {child.name}")
@@ -544,7 +610,7 @@ def validate(task_dir: str, strict: bool) -> None:
                 raise SystemExit(1)
             return
 
-    results = run_validate(path, strict=strict)
+    results = run_validate(path, strict=strict, qa=qa)
 
     any_failed = False
     for r in results:
