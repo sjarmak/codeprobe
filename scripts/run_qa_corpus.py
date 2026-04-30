@@ -42,13 +42,8 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--no-repo-root-hint",
-        action="store_true",
-        help="Skip the repo_root override for mined tasks (surfaces the "
-        "out-of-the-box default-repo_root false-positive class).",
-    )
     args = parser.parse_args()
+    del args  # no flags — auto-detection in verify_task_qa replaces the prior --no-repo-root-hint workaround
 
     repo_root = Path.cwd()
     all_tasks: list[Path] = []
@@ -64,20 +59,8 @@ def main() -> int:
     warnings: list[tuple[Path, list[str]]] = []
 
     for task_dir in all_tasks:
-        # Mined codeprobe-self tasks reference src/ files at the repo root.
-        # Pass repo_root explicitly for those; otherwise default
-        # (task_dir-relative) is fine for synthetic example tasks that
-        # carry their oracle files inside the bundle.
         rel = task_dir.relative_to(repo_root)
-        rel_root_parts = rel.parts
-        is_mined = (
-            rel_root_parts[:1] == ("e2e-codeprobe-self",)
-            or rel_root_parts[:1] == (".codeprobe",)
-        )
-        explicit_root = (
-            repo_root if (is_mined and not args.no_repo_root_hint) else None
-        )
-        result = verify_task_qa(task_dir, repo_root=explicit_root)
+        result = verify_task_qa(task_dir)
         for f in result.findings:
             if f.severity == "error":
                 error_counter[f.code] += 1

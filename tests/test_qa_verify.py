@@ -391,6 +391,86 @@ class TestDefaultTierTable:
 # ---------------------------------------------------------------------------
 
 
+class TestRepoRootAutoDetect:
+    """When ``repo_root`` is None, mined tasks (metadata carries ``repo`` /
+    ``repo_path``) must resolve oracle paths against the nearest ancestor
+    project root (pyproject.toml or .git), not against task_dir.
+    Synthetic tasks (no repo hint) keep the legacy task_dir default.
+    """
+
+    def test_mined_fixture_resolves_against_repo_root(self) -> None:
+        # The committed fixture under tests/fixtures/qa_mined_task references
+        # src/codeprobe/qa/verify.py, which exists at the repo root. Without
+        # auto-detect this would A1; with it, the call should be clean.
+        fixture_dir = Path(__file__).parent / "fixtures" / "qa_mined_task"
+        result = verify_task_qa(fixture_dir)
+        a1 = [f for f in result.findings if f.code == "A1"]
+        assert a1 == [], f"Expected zero A1, got: {a1}"
+        assert result.ok
+
+    def test_synthetic_task_keeps_task_dir_default(self, tmp_path: Path) -> None:
+        # No repo / repo_path → fall back to task_dir. The oracle file
+        # exists *inside* the task bundle, which is the synthetic-task
+        # contract. With the old default (task_dir-relative) this passes;
+        # with auto-detect it must also pass and not climb up to a
+        # surrounding pyproject.toml.
+        toml = textwrap.dedent(
+            """
+            [task]
+            id = "synthetic"
+            [verification]
+            reward_type = "binary"
+            """
+        )
+        task_dir = _write_task(
+            tmp_path,
+            task_id="synthetic",
+            task_toml=toml,
+            ground_truth={
+                "answer_type": "file_list",
+                "answer": ["bundled.py"],
+            },
+            oracle_files_to_create=["bundled.py"],
+        )
+        result = verify_task_qa(task_dir)
+        a1 = [f for f in result.findings if f.code == "A1"]
+        assert a1 == [], f"Expected zero A1, got: {a1}"
+
+    def test_repo_path_in_metadata_resolves_to_subdir(self, tmp_path: Path) -> None:
+        # repo_path names a relative subdir of the project root; auto-detect
+        # should descend into it to resolve oracles.
+        # Layout:
+        #   tmp_path/pyproject.toml  (boundary marker)
+        #   tmp_path/sub/oracle.py   (the actual oracle file)
+        #   tmp_path/tasks/t/        (the task dir, with repo_path = "sub")
+        (tmp_path / "pyproject.toml").write_text("# stub\n")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "oracle.py").write_text("# oracle\n")
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir()
+        toml = textwrap.dedent(
+            """
+            [task]
+            id = "t"
+            repo_path = "sub"
+            [verification]
+            reward_type = "binary"
+            """
+        )
+        task_dir = _write_task(
+            tasks_dir,
+            task_id="t",
+            task_toml=toml,
+            ground_truth={
+                "answer_type": "file_list",
+                "answer": ["oracle.py"],
+            },
+        )
+        result = verify_task_qa(task_dir)
+        a1 = [f for f in result.findings if f.code == "A1"]
+        assert a1 == [], f"Expected zero A1, got: {a1}"
+
+
 class TestQAVerifyResultFlags:
     def test_ok_true_when_only_warnings(self) -> None:
         from codeprobe.qa.benchmark_qa_core import Finding

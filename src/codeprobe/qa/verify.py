@@ -172,11 +172,13 @@ def verify_task_qa(
 
     Args:
         task_dir: Path to the task directory to verify.
-        repo_root: Repo to resolve oracle file paths against. Falls back to
-            ``task_dir`` itself when None — the conservative default for
-            codeprobe layouts where the agent's working dir is the task
-            sandbox. Mined tasks that need to resolve against the original
-            repo should pass it explicitly.
+        repo_root: Repo to resolve oracle file paths against. When None,
+            the function auto-detects: mined tasks (metadata carries a
+            ``repo_path`` or ``repo`` field) resolve against the nearest
+            ancestor of ``task_dir`` containing ``pyproject.toml`` or
+            ``.git``; synthetic tasks (no such metadata) keep the
+            conservative ``task_dir``-relative default for bundles that
+            ship their oracle files inside the task directory.
         aux_files: Files visible to the agent during the task. The leakage
             check reads each one looking for oracle tokens. Defaults to a
             short list of standard codeprobe context files (instruction.md,
@@ -223,6 +225,12 @@ def verify_task_qa(
         require_symbols_resolve=require_symbols_resolve,
     )
 
+    resolved_repo_root = (
+        Path(repo_root)
+        if repo_root is not None
+        else _resolve_default_repo_root(task_dir, meta_flat)
+    )
+
     findings: list[Finding] = []
 
     findings.extend(
@@ -230,7 +238,7 @@ def verify_task_qa(
             instruction_text=instruction_text,
             oracle_files=oracle_files,
             oracle_symbols=oracle_symbols,
-            repo_root=Path(repo_root) if repo_root is not None else task_dir,
+            repo_root=resolved_repo_root,
             constraints=constraints,
         )
     )
@@ -256,6 +264,73 @@ def verify_task_qa(
         findings = [f for f in findings if f.code not in {"D1", "D2"}]
 
     return QAVerifyResult(task_dir=task_dir, findings=findings)
+
+
+def _find_repo_boundary(start: Path) -> Path | None:
+    """Walk up from ``start`` to find a directory containing ``pyproject.toml``
+    or ``.git``. Returns ``None`` when no such ancestor exists.
+    """
+    try:
+        current = start.resolve()
+    except OSError:
+        current = start
+    for candidate in (current, *current.parents):
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _resolve_default_repo_root(task_dir: Path, meta_flat: dict) -> Path:
+    """Pick a sensible ``repo_root`` for ``task_dir`` when the caller didn't
+    pass one.
+
+    Mined tasks carry a ``repo_path`` or ``repo`` field in their metadata
+    and store oracle paths relative to the original repo. For those, we
+    resolve to the nearest ancestor of ``task_dir`` that looks like a
+    project root (``pyproject.toml`` or ``.git`` present), optionally
+    descending into ``repo_path`` / ``repo`` when those name a real
+    relative subdirectory. Synthetic tasks (no repo hint) keep the legacy
+    ``task_dir``-relative default — they bundle their oracle files inside
+    the task bundle.
+    """
+    repo_path_value = meta_flat.get("repo_path")
+    repo_value = meta_flat.get("repo")
+    has_repo_hint = isinstance(repo_path_value, str) and repo_path_value.strip()
+    has_repo_name = isinstance(repo_value, str) and repo_value.strip()
+    if not (has_repo_hint or has_repo_name):
+        return task_dir
+
+    boundary = _find_repo_boundary(task_dir)
+
+    if has_repo_hint:
+        candidate = Path(repo_path_value)  # type: ignore[arg-type]
+        if candidate.is_absolute() and candidate.is_dir():
+            return candidate
+        if boundary is not None:
+            resolved = boundary / candidate
+            if resolved.is_dir():
+                return resolved
+
+    if has_repo_name:
+        candidate = Path(repo_value)  # type: ignore[arg-type]
+        # Only treat ``repo`` as a path when it actually contains a
+        # separator (e.g. ``org/repo`` or ``./subdir``). Bare names like
+        # ``codeprobe`` are repo identifiers, not paths.
+        looks_like_path = "/" in repo_value or "\\" in repo_value  # type: ignore[operator]
+        if looks_like_path:
+            if candidate.is_absolute() and candidate.is_dir():
+                return candidate
+            if boundary is not None:
+                resolved = boundary / candidate
+                if resolved.is_dir():
+                    return resolved
+
+    if boundary is not None:
+        return boundary
+
+    return task_dir
 
 
 def _flatten_sections(data: dict) -> dict:

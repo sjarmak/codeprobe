@@ -1,0 +1,19 @@
+{
+  "id": "qa-mined-fixture",
+  "repo": "codeprobe",
+  "metadata": {
+    "name": "qa-mined-fixture",
+    "description": "Fixture for qa/verify auto-detect repo_root tests",
+    "language": "python",
+    "task_type": "sdlc_code_change"
+  },
+  "verification": {
+    "type": "oracle",
+    "command": "bash tests/test.sh",
+    "reward_type": "continuous",
+    "oracle_type": "file_list",
+    "oracle_answer": [
+      "src/codeprobe/qa/verify.py"
+    ]
+  }
+}
