@@ -72,8 +72,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         ("src/codeprobe/cli/scaffold_cmd.py", 100),
         ("src/codeprobe/cli/scaffold_cmd.py", 123),
         ("src/codeprobe/cli/trace_cmd.py", 36),
-        ("src/codeprobe/cli/validate_cmd.py", 610),
-        ("src/codeprobe/cli/validate_cmd.py", 624),
+        ("src/codeprobe/cli/validate_cmd.py", 912),
+        ("src/codeprobe/cli/validate_cmd.py", 926),
     }
 )
 
