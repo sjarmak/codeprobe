@@ -1,0 +1,70 @@
+{
+  "all_pass": false,
+  "declared_scorer_family": null,
+  "error": null,
+  "fixtures": [
+    {
+      "agent_output_preview": "",
+      "band": [
+        0.0,
+        0.1
+      ],
+      "band_pass": false,
+      "diagnostics": {},
+      "duration_seconds": 0.0011,
+      "error": null,
+      "family": "null",
+      "ir_metrics": {},
+      "passed": true,
+      "reward": 1.0,
+      "score": 1.0,
+      "scorer_family": "binary_test",
+      "sub_scores": {
+        "exit_code": 0
+      }
+    },
+    {
+      "agent_output_preview": "result",
+      "band": [
+        0.9,
+        1.0
+      ],
+      "band_pass": true,
+      "diagnostics": {},
+      "duration_seconds": 0.0011,
+      "error": null,
+      "family": "golden",
+      "ir_metrics": {},
+      "passed": true,
+      "reward": 1.0,
+      "score": 1.0,
+      "scorer_family": "binary_test",
+      "sub_scores": {
+        "exit_code": 0
+      }
+    },
+    {
+      "agent_output_preview": "src/_unrelated/component_000.py\nsrc/_unrelated/component_001.py\nsrc/_unrelated/component_002.py\nsrc/_unrelated/component_003.py\nsrc/_unrelated/component_004.py\nsrc/_unrelated/component_005.py\nsrc/_unrelated/component_006.py\nsrc/_unrelated/component_007.py\nsrc/_unrelated/component_008.py\nsrc/_unrelated/component_009.py\nsrc/_unrelated/component_010.py\nsrc/_unrelated/component_011.py\nsrc/_unrelated/\u2026",
+      "band": [
+        0.0,
+        0.5
+      ],
+      "band_pass": false,
+      "diagnostics": {},
+      "duration_seconds": 0.0012,
+      "error": null,
+      "family": "adversarial",
+      "ir_metrics": {},
+      "passed": true,
+      "reward": 1.0,
+      "score": 1.0,
+      "scorer_family": "binary_test",
+      "sub_scores": {
+        "exit_code": 0
+      }
+    }
+  ],
+  "reward_type": "binary",
+  "task_dir": "/home/ds/projects/codeprobe/examples/dual/sdlc/rename-variable",
+  "task_id": "rename-variable"
+}

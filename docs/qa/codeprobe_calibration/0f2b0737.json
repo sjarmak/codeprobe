@@ -1,0 +1,70 @@
+{
+  "all_pass": true,
+  "declared_scorer_family": null,
+  "error": null,
+  "fixtures": [
+    {
+      "agent_output_preview": "",
+      "band": [
+        0.0,
+        0.1
+      ],
+      "band_pass": true,
+      "diagnostics": {},
+      "duration_seconds": 0.0171,
+      "error": null,
+      "family": "null",
+      "ir_metrics": {},
+      "passed": false,
+      "reward": 0.0,
+      "score": 0.0,
+      "scorer_family": "continuous",
+      "sub_scores": {
+        "raw_score": 0.0
+      }
+    },
+    {
+      "agent_output_preview": "src/codeprobe/api.py\nsrc/codeprobe/cli/experiment_cmd.py\nsrc/codeprobe/cli/init_cmd.py\nsrc/codeprobe/cli/run_cmd.py\nsrc/codeprobe/cli/wizard.py\nsrc/codeprobe/config/loader.py\nsrc/codeprobe/core/executor.py\nsrc/codeprobe/core/experiment.py\nsrc/codeprobe/models/__init__.py\ntests/test_config_loader.py\ntests/test_executor.py\ntests/test_executor_events.py\ntests/test_experiment_cmd.py\ntests/test_experi\u2026",
+      "band": [
+        0.9,
+        1.0
+      ],
+      "band_pass": true,
+      "diagnostics": {},
+      "duration_seconds": 0.0181,
+      "error": null,
+      "family": "golden",
+      "ir_metrics": {},
+      "passed": true,
+      "reward": 1.0,
+      "score": 1.0,
+      "scorer_family": "continuous",
+      "sub_scores": {
+        "raw_score": 1.0
+      }
+    },
+    {
+      "agent_output_preview": "src/_unrelated/component_000.py\nsrc/_unrelated/component_001.py\nsrc/_unrelated/component_002.py\nsrc/_unrelated/component_003.py\nsrc/_unrelated/component_004.py\nsrc/_unrelated/component_005.py\nsrc/_unrelated/component_006.py\nsrc/_unrelated/component_007.py\nsrc/_unrelated/component_008.py\nsrc/_unrelated/component_009.py\nsrc/_unrelated/component_010.py\nsrc/_unrelated/component_011.py\nsrc/_unrelated/\u2026",
+      "band": [
+        0.0,
+        0.5
+      ],
+      "band_pass": true,
+      "diagnostics": {},
+      "duration_seconds": 0.0175,
+      "error": null,
+      "family": "adversarial",
+      "ir_metrics": {},
+      "passed": true,
+      "reward": 0.3103,
+      "score": 0.3103,
+      "scorer_family": "continuous",
+      "sub_scores": {
+        "raw_score": 0.3103
+      }
+    }
+  ],
+  "reward_type": "continuous",
+  "task_dir": "/home/ds/projects/codeprobe/e2e-codeprobe-self/tasks/0f2b0737",
+  "task_id": "0f2b0737"
+}

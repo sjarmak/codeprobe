@@ -1477,6 +1477,11 @@ from codeprobe.cli.calibrate_cmd import calibrate  # noqa: E402
 
 main.add_command(calibrate)
 
+# Register the calibrate-triad command (null/golden/adversarial fixture gates)
+from codeprobe.cli.calibrate_triad_cmd import calibrate_triad  # noqa: E402
+
+main.add_command(calibrate_triad)
+
 # Register the snapshot command group
 from codeprobe.cli.snapshot_cmd import snapshot  # noqa: E402
 
