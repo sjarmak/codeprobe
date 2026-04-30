@@ -97,26 +97,47 @@ class ScoreResult:
     """Result of scoring a task's agent output.
 
     ``score`` is the headline reward — the number that drives ranking,
-    pass/fail, and ``mean_automated_score`` in aggregate.json. For IR-style
-    scorers (``file_list``, ``symbol_list``, oracle continuous) reward is
-    oracle-matching (recall, or weighted_recall when the oracle uses tier
-    weights); precision and F1 are computed alongside but do **not** drag
-    the reward down.
+    pass/fail, and ``mean_automated_score`` in aggregate.json. The exact
+    rubric used to compute it is declared in ``scorer_family`` so reviewers
+    can interpret the number. Per-task families let symbol-reference-trace
+    use F1 (penalises both over-shipping and missing) while file-discovery
+    triage tasks can opt into a recall-tilted family where over-shipping is
+    free.
 
-    ``ir_metrics`` exposes those IR diagnostics (``precision`` / ``recall``
-    / ``f1`` and optional ``weighted_recall``) so callers can inspect the
-    over-shipping vs under-shipping shape without re-computing it. Empty
-    for non-IR scorers (binary, exact_match, count, etc.).
+    ``scorer_family`` is the registered rubric name. See
+    :data:`SCORER_FAMILIES` for the canonical set. Empty string means the
+    scorer didn't declare one (treat as opaque).
 
-    ``reward_score`` mirrors ``score`` for now and is provided so future
-    schema migrations can disambiguate "score the user reads" from
-    "headline metric for ranking" without another contract break. Today
-    the two are equal by definition.
+    ``sub_scores`` exposes the rubric breakdown that produced the reward —
+    e.g. ``{"recall": 0.94, "precision": 0.24, "f1": 0.38}`` for an IR
+    family, or ``{"exit_code": 0}`` for binary. Callers MUST NOT use
+    ``sub_scores`` to derive a different headline number; treat it as
+    diagnostics.
+
+    ``diagnostics`` is a free-form bag of run-time observations that don't
+    affect reward but are useful for debugging — currently scoped to
+    ``ir_metrics`` (mirror of the IR breakdown for callers that want a
+    single canonical IR view). Cost / time live on
+    :class:`~codeprobe.models.experiment.CompletedTask`, not here.
+
+    ``ir_metrics`` is kept at the top level for back-compat with existing
+    aggregate consumers (``cli/experiment_cmd.py`` reads
+    ``scoring_details["recall"]`` / ``"precision"`` / ``"f1"`` directly).
+    It mirrors ``diagnostics["ir_metrics"]``.
+
+    ``reward_score`` mirrors ``score`` and is preserved so older callers
+    that distinguish "human-shown score" from "ranking number" keep
+    working. Today the two are equal by definition.
 
     ``details`` continues to carry the precision/recall/f1 fields for
     backward compatibility with aggregate.json consumers that read
-    ``scoring_details["f1"]`` directly. Treat ``ir_metrics`` as the
-    canonical source going forward.
+    ``scoring_details["f1"]`` directly. Treat ``sub_scores`` /
+    ``ir_metrics`` as the canonical source going forward.
+
+    ``passed`` is preserved for back-compat (``score_passed`` in
+    ``analysis/stats.py`` still consults it). For continuous rewards
+    callers should compare ``score`` to a context-specific threshold
+    rather than read this flag.
     """
 
     score: float
@@ -125,6 +146,77 @@ class ScoreResult:
     details: dict = field(default_factory=dict)
     reward_score: float | None = None
     ir_metrics: dict = field(default_factory=dict)
+    scorer_family: str = ""
+    sub_scores: dict = field(default_factory=dict)
+    diagnostics: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Scorer family registry — names + rubric signature
+# ---------------------------------------------------------------------------
+#
+# Each family is a label declaring how the reward was computed. The family
+# is recorded on every ScoreResult so downstream tooling can interpret the
+# number (e.g. "this F1 came from oracle_overlap_f1, not oracle_overlap_recall").
+# Routing for IR-style tasks reads ``verification.scorer_family`` from
+# task metadata; non-IR scorers (binary, continuous-without-metrics,
+# exact_match, etc.) declare a fixed family at the scorer class.
+#
+# Adding a new family: update SCORER_FAMILIES, register a sub_scores shape
+# in docs/scoring_model.md, and add a fixture-backed test in
+# tests/test_scoring_reward.py.
+
+SCORER_FAMILIES: frozenset[str] = frozenset(
+    {
+        # IR-style — oracle is a set of expected files / symbols
+        "oracle_overlap_f1",  # symbol-reference-trace, file-list-tight (default)
+        "oracle_overlap_recall",  # file-discovery / triage (opt-in)
+        "oracle_weighted_f1",  # org-scale tier-weighted oracle
+        "oracle_weighted_recall",  # tier-weighted oracle, recall-tilted
+        # Sequence-style — order matters
+        "sequence_lcs",  # dependency_chain
+        # Equality / scalar
+        "exact_match",  # count, boolean, text
+        # Test-script style — verifier emits reward directly
+        "binary_test",  # test.sh exit code
+        "continuous",  # reward.txt or stdout float, no IR
+        # Composite
+        "weighted_checkpoints",  # CheckpointScorer
+        "dual_composite",  # DualScorer (direct + artifact)
+    }
+)
+
+# Default IR family when a task does not declare one. F1 is the
+# conservative choice — symbol-reference-trace style tasks where shipping
+# every file in the repo is "didn't solve" rather than "found everything".
+# Tasks where dump-and-filter is fine (file-discovery / triage) opt into
+# ``oracle_overlap_recall`` via ``verification.scorer_family``.
+DEFAULT_IR_FAMILY: str = "oracle_overlap_f1"
+
+
+def _select_ir_family(task_dir: Path | None, *, weighted: bool = False) -> str:
+    """Resolve the scorer family for an IR scorer.
+
+    Routing order:
+      1. ``verification.scorer_family`` in ``task_dir/metadata.json`` —
+         explicit override always wins.
+      2. ``oracle_weighted_f1`` when the oracle reports tier weights
+         (caller passes ``weighted=True``).
+      3. ``DEFAULT_IR_FAMILY`` otherwise.
+
+    Unknown family strings are passed through as-is — the registry is
+    advisory, not enforced. New per-task rubrics that haven't been added
+    to ``SCORER_FAMILIES`` yet still flow through, so users aren't blocked
+    by registry churn.
+    """
+    if task_dir is not None:
+        verification = read_task_verification(task_dir)
+        explicit = verification.get("scorer_family")
+        if isinstance(explicit, str) and explicit:
+            return explicit
+    if weighted:
+        return "oracle_weighted_f1"
+    return DEFAULT_IR_FAMILY
 
 
 # ---------------------------------------------------------------------------
@@ -327,20 +419,39 @@ def score_task_output(agent_output: str, task_dir: Path) -> ScoreResult:
 class BinaryScorer:
     """Binary pass/fail scorer — exit 0 = 1.0, anything else = 0.0."""
 
+    SCORER_FAMILY = "binary_test"
+
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
         test_sh = task_dir / "tests" / "test.sh"
         if not test_sh.is_file():
-            return ScoreResult(score=0.0, passed=False, error="tests/test.sh not found")
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="tests/test.sh not found",
+                scorer_family=self.SCORER_FAMILY,
+            )
 
         run = _run_in_sandbox(test_sh, agent_output, task_dir)
         if run.error is not None:
-            return ScoreResult(score=0.0, passed=False, error=run.error)
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=run.error,
+                scorer_family=self.SCORER_FAMILY,
+            )
         if run.returncode == 0:
-            return ScoreResult(score=1.0, passed=True)
+            return ScoreResult(
+                score=1.0,
+                passed=True,
+                scorer_family=self.SCORER_FAMILY,
+                sub_scores={"exit_code": 0},
+            )
         return ScoreResult(
             score=0.0,
             passed=False,
             error=sanitize_secrets(run.stderr.strip()) if run.stderr else None,
+            scorer_family=self.SCORER_FAMILY,
+            sub_scores={"exit_code": run.returncode},
         )
 
 
@@ -391,17 +502,29 @@ class ContinuousScorer:
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
         test_sh = task_dir / "tests" / "test.sh"
         if not test_sh.is_file():
-            return ScoreResult(score=0.0, passed=False, error="tests/test.sh not found")
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="tests/test.sh not found",
+                scorer_family="continuous",
+            )
 
         run = _run_in_sandbox(test_sh, agent_output, task_dir, cleanup=False)
         try:
             if run.error is not None:
-                return ScoreResult(score=0.0, passed=False, error=run.error)
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=run.error,
+                    scorer_family="continuous",
+                )
             if run.returncode != 0:
                 return ScoreResult(
                     score=0.0,
                     passed=False,
                     error=sanitize_secrets(run.stderr.strip()) if run.stderr else None,
+                    scorer_family="continuous",
+                    sub_scores={"exit_code": run.returncode},
                 )
 
             # Try reward.txt first
@@ -415,31 +538,48 @@ class ContinuousScorer:
                     score=0.0,
                     passed=False,
                     error="No valid score found in reward.txt or stdout",
+                    scorer_family="continuous",
                 )
 
             clamped = max(0.0, min(1.0, raw_score))
             details = self._read_metrics_json(run.sandbox_task)
             if details:
-                # IR-style oracle (file_list / weighted file_list): reward
-                # is recall (or weighted_recall when the oracle uses tier
-                # weights). The headline ``score`` shifts off F1 onto
-                # oracle-matching so over-shipping no longer drags the
-                # reward down. F1 / precision stay in ``ir_metrics`` for
-                # diagnostics. See docs/scoring_model.md.
-                reward, ir_metrics = self._derive_reward_and_metrics(
-                    details, fallback=clamped
+                # IR-style oracle (file_list / weighted file_list). Family
+                # routing reads ``verification.scorer_family`` from
+                # task metadata so symbol-reference-trace defaults to F1
+                # (over-shipping penalised) while file-discovery tasks can
+                # opt into ``oracle_overlap_recall`` (over-shipping is
+                # free). See :func:`_select_ir_family` and
+                # docs/scoring_model.md for the rubric registry.
+                weighted = isinstance(
+                    details.get("weighted_recall"), (int, float)
+                ) and math.isfinite(float(details["weighted_recall"]))
+                family = _select_ir_family(task_dir, weighted=weighted)
+                reward, ir_metrics, sub_scores = self._derive_reward_and_metrics(
+                    details, fallback=clamped, family=family
                 )
                 return ScoreResult(
                     score=reward,
-                    passed=reward > 0.0,
+                    passed=reward >= PASS_THRESHOLD,
                     details=details,
                     reward_score=reward,
                     ir_metrics=ir_metrics,
+                    scorer_family=family,
+                    sub_scores=sub_scores,
+                    diagnostics={"ir_metrics": dict(ir_metrics)} if ir_metrics else {},
                 )
+            # Non-IR continuous: preserve the legacy ``passed = score > 0.0``
+            # semantic for tasks whose verifier emits a raw float without
+            # an oracle metrics.json. IR scorers use the stricter
+            # ``>= PASS_THRESHOLD`` rule above; mixing the two would break
+            # custom continuous tasks that intentionally emit sub-threshold
+            # rewards as "partial credit, treat as pass".
             return ScoreResult(
                 score=clamped,
                 passed=clamped > 0.0,
                 reward_score=clamped,
+                scorer_family="continuous",
+                sub_scores={"raw_score": clamped},
             )
         finally:
             if run.sandbox_dir is not None:
@@ -456,26 +596,42 @@ class ContinuousScorer:
 
     @staticmethod
     def _derive_reward_and_metrics(
-        details: dict, *, fallback: float
-    ) -> tuple[float, dict]:
-        """Derive ``(reward, ir_metrics)`` from an oracle ``metrics.json``.
+        details: dict,
+        *,
+        fallback: float,
+        family: str,
+    ) -> tuple[float, dict, dict]:
+        """Derive ``(reward, ir_metrics, sub_scores)`` from an oracle
+        ``metrics.json`` under the given scorer ``family``.
 
-        The oracle today writes ``reward.txt = f1`` (or ``weighted_f1``)
-        for legacy reasons. We pivot to oracle-matching here so the
-        scoring contract stays decoupled from the on-disk script:
+        Family-specific reward formulas:
 
-        * If ``weighted_recall`` is present and finite → reward = it
-          (matches the org-scale weighted oracle's intent that "tier-A
-          hits matter more than tier-C hits, and over-shipping is free").
-        * Otherwise if ``recall`` is present → reward = recall.
-        * Otherwise fall back to the parsed reward.txt value (``fallback``)
-          so older mined tasks without recall in their metrics still get
-          a sensible score.
+        * ``oracle_overlap_f1`` — reward = f1. Penalises both over-shipping
+          and missing. The default for symbol-reference-trace style tasks
+          where shipping every file in the repo is "didn't solve". Over-ship
+          and under-ship asymmetry shows in sub_scores.
+        * ``oracle_overlap_recall`` — reward = recall. Over-shipping is
+          free. The opt-in family for file-discovery / triage tasks.
+        * ``oracle_weighted_f1`` — reward = weighted_f1 (read from
+          ``f1`` when the oracle is in weighted mode, since the on-disk
+          oracle stores its primary score there). Tier weights affect the
+          per-file contribution but the rubric still penalises noise.
+        * ``oracle_weighted_recall`` — reward = weighted_recall. The tier-
+          weighted recall family (was the post-voxa default; now opt-in).
+        * Anything else — fall back to ``fallback`` (whatever reward.txt
+          said) and surface the family unchanged so the result is still
+          interpretable.
 
         ``ir_metrics`` echoes the precision/recall/f1 (and weighted_recall
         when present) for downstream diagnostics. Values are coerced to
         float and clamped to [0, 1] — defensive, since the oracle script
         is user-modifiable.
+
+        ``sub_scores`` is the rubric breakdown that produced the headline
+        — exposes the reward formula's inputs so reviewers can see WHY a
+        score landed where it did. Mirrors ``ir_metrics`` for IR families
+        but is family-scoped (e.g. doesn't include keys that aren't
+        load-bearing for this family).
         """
 
         def _num(key: str) -> float | None:
@@ -489,13 +645,6 @@ class ContinuousScorer:
         f1 = _num("f1")
         weighted_recall = _num("weighted_recall")
 
-        if weighted_recall is not None:
-            reward = weighted_recall
-        elif recall is not None:
-            reward = recall
-        else:
-            reward = max(0.0, min(1.0, fallback))
-
         ir_metrics: dict[str, float] = {}
         if precision is not None:
             ir_metrics["precision"] = precision
@@ -505,7 +654,55 @@ class ContinuousScorer:
             ir_metrics["f1"] = f1
         if weighted_recall is not None:
             ir_metrics["weighted_recall"] = weighted_recall
-        return reward, ir_metrics
+
+        # Pick reward by family
+        if family == "oracle_overlap_recall":
+            reward = recall if recall is not None else max(0.0, min(1.0, fallback))
+        elif family == "oracle_weighted_recall":
+            if weighted_recall is not None:
+                reward = weighted_recall
+            elif recall is not None:
+                reward = recall
+            else:
+                reward = max(0.0, min(1.0, fallback))
+        elif family == "oracle_weighted_f1":
+            # On-disk oracle stores weighted_f1 in the ``f1`` field when
+            # ``metric == "weighted_f1"`` (see mining/writer.py:_ORACLE_PY).
+            # Fall back to recall, then to reward.txt, in that order.
+            if f1 is not None:
+                reward = f1
+            elif weighted_recall is not None:
+                reward = weighted_recall
+            elif recall is not None:
+                reward = recall
+            else:
+                reward = max(0.0, min(1.0, fallback))
+        else:
+            # Default IR family — F1 (penalises over-ship and under-ship)
+            if f1 is not None:
+                reward = f1
+            elif recall is not None and precision is not None:
+                # Compute on the fly when oracle didn't precompute F1
+                reward = (
+                    2 * precision * recall / (precision + recall)
+                    if (precision + recall) > 0
+                    else 0.0
+                )
+            else:
+                reward = max(0.0, min(1.0, fallback))
+
+        sub_scores: dict[str, float] = {}
+        if precision is not None:
+            sub_scores["precision"] = precision
+        if recall is not None:
+            sub_scores["recall"] = recall
+        if f1 is not None:
+            sub_scores["f1"] = f1
+        if weighted_recall is not None:
+            sub_scores["weighted_recall"] = weighted_recall
+        sub_scores["reward"] = reward
+
+        return reward, ir_metrics, sub_scores
 
     @classmethod
     def _read_metrics_json(cls, sandbox_task: Path | None) -> dict:
@@ -649,10 +846,15 @@ class CheckpointScorer:
         clamped = max(0.0, min(1.0, weighted_score))
         return ScoreResult(
             score=clamped,
-            passed=clamped > 0.0,
+            passed=clamped >= PASS_THRESHOLD,
             details={
                 "checkpoint_scores": checkpoint_scores,
                 "checkpoint_weights": checkpoint_weights,
+            },
+            scorer_family="weighted_checkpoints",
+            sub_scores={
+                "composite": clamped,
+                "checkpoint_scores": dict(checkpoint_scores),
             },
         )
 
@@ -782,37 +984,76 @@ def _compute_f1(expected: list[str], actual: list[str]) -> float:
     return f1 if f1 > 0.0 else _ZERO_SCORE
 
 
-def score_file_list(expected: object, actual: object) -> ScoreResult:
-    """Score a file_list answer_type.
+def score_file_list(
+    expected: object,
+    actual: object,
+    *,
+    family: str = DEFAULT_IR_FAMILY,
+) -> ScoreResult:
+    """Score a file_list answer_type under the given scorer ``family``.
 
-    Reward is oracle-matching (recall): did the agent find every expected
-    file?  Precision and F1 are reported alongside in ``ir_metrics`` for
-    diagnostics but do not drag the reward down. Over-shipping shows up as
-    low precision, not as a reward penalty.
+    Default family is ``oracle_overlap_f1`` — F1 penalises both over-
+    shipping (low precision) and under-shipping (low recall). Tasks where
+    dump-and-filter is fine (file-discovery / triage) opt into
+    ``oracle_overlap_recall`` and reward becomes pure recall.
+
+    The family routing usually happens upstream in
+    :class:`ArtifactScorer` from ``verification.scorer_family``; passing
+    ``family`` directly is supported for tests and for callers that score
+    bare lists outside the artifact-scorer flow.
     """
     if not isinstance(expected, list):
         return ScoreResult(
             score=0.0,
             passed=False,
             error=f"file_list expected answer must be a list, got {type(expected).__name__}",
+            scorer_family=family,
         )
     if not isinstance(actual, list):
         return ScoreResult(
             score=0.0,
             passed=False,
             error=f"file_list actual answer must be a list, got {type(actual).__name__}",
+            scorer_family=family,
         )
     expected_set = frozenset(_normalize_path(p) for p in expected if p)
     actual_set = frozenset(_normalize_path(p) for p in actual if p)
     precision, recall, f1 = _ir_metrics(expected_set, actual_set)
     ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
+    reward = _ir_reward_from_family(family, precision=precision, recall=recall, f1=f1)
+    sub_scores = {**ir_metrics, "reward": reward}
     return ScoreResult(
-        score=recall,
-        passed=recall >= PASS_THRESHOLD,
+        score=reward,
+        passed=reward >= PASS_THRESHOLD,
         details=dict(ir_metrics),
-        reward_score=recall,
+        reward_score=reward,
         ir_metrics=ir_metrics,
+        scorer_family=family,
+        sub_scores=sub_scores,
+        diagnostics={"ir_metrics": dict(ir_metrics)},
     )
+
+
+def _ir_reward_from_family(
+    family: str,
+    *,
+    precision: float,
+    recall: float,
+    f1: float,
+) -> float:
+    """Derive an IR reward from precision/recall/f1 under ``family``.
+
+    Centralised so :func:`score_file_list`, :func:`score_symbol_list`, and
+    the legacy file-list scorer share one formula table. Falls back to F1
+    for any unrecognised family — the conservative choice since over-
+    shipping should generally cost something.
+    """
+    if family == "oracle_overlap_recall":
+        return recall
+    if family == "oracle_weighted_recall":
+        return recall  # IR list scorers don't see tier weights; tier-weight
+        # families surface via ContinuousScorer over the on-disk oracle
+    return f1
 
 
 def score_count(expected: object, actual: object) -> ScoreResult:
@@ -824,14 +1065,27 @@ def score_count(expected: object, actual: object) -> ScoreResult:
             score=0.0,
             passed=False,
             error="count values must be convertible to int",
+            scorer_family="exact_match",
         )
-    return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
+    score_val = 1.0 if passed else 0.0
+    return ScoreResult(
+        score=score_val,
+        passed=passed,
+        scorer_family="exact_match",
+        sub_scores={"match": score_val},
+    )
 
 
 def score_exact_match(expected: object, actual: object) -> ScoreResult:
     """Normalised exact match (strip + lowercase). Used for boolean and text."""
     passed = str(expected).strip().lower() == str(actual).strip().lower()
-    return ScoreResult(score=1.0 if passed else 0.0, passed=passed)
+    score_val = 1.0 if passed else 0.0
+    return ScoreResult(
+        score=score_val,
+        passed=passed,
+        scorer_family="exact_match",
+        sub_scores={"match": score_val},
+    )
 
 
 def _normalize_symbol(s: str) -> str:
@@ -845,11 +1099,16 @@ def _normalize_symbol(s: str) -> str:
     return s.strip().lower()
 
 
-def score_symbol_list(expected: object, actual: object) -> ScoreResult:
-    """Score a symbol_list answer_type.
+def score_symbol_list(
+    expected: object,
+    actual: object,
+    *,
+    family: str = DEFAULT_IR_FAMILY,
+) -> ScoreResult:
+    """Score a symbol_list answer_type under the given scorer ``family``.
 
-    Reward is recall over normalized symbol names; precision and F1 are
-    reported in ``ir_metrics``. See :func:`score_file_list` for rationale.
+    Same family routing as :func:`score_file_list` — see that docstring
+    for rationale. The default is ``oracle_overlap_f1``.
     """
     exp = expected if isinstance(expected, list) else []
     act = actual if isinstance(actual, list) else []
@@ -863,15 +1122,23 @@ def score_symbol_list(expected: object, actual: object) -> ScoreResult:
             details=dict(empty),
             reward_score=0.0,
             ir_metrics=empty,
+            scorer_family=family,
+            sub_scores={**empty, "reward": 0.0},
+            diagnostics={"ir_metrics": dict(empty)},
         )
     precision, recall, f1 = _ir_metrics(exp_set, act_set)
     ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
+    reward = _ir_reward_from_family(family, precision=precision, recall=recall, f1=f1)
+    sub_scores = {**ir_metrics, "reward": reward}
     return ScoreResult(
-        score=recall,
-        passed=recall >= PASS_THRESHOLD,
+        score=reward,
+        passed=reward >= PASS_THRESHOLD,
         details=dict(ir_metrics),
-        reward_score=recall,
+        reward_score=reward,
         ir_metrics=ir_metrics,
+        scorer_family=family,
+        sub_scores=sub_scores,
+        diagnostics={"ir_metrics": dict(ir_metrics)},
     )
 
 
@@ -901,13 +1168,28 @@ def score_dependency_chain(expected: object, actual: object) -> ScoreResult:
     act = [str(s).strip().lower() for s in actual] if isinstance(actual, list) else []
     max_len = max(len(exp), len(act))
     if max_len == 0:
-        return ScoreResult(score=0.0, passed=False)
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            scorer_family="sequence_lcs",
+            sub_scores={"lcs_length": 0, "max_len": 0},
+        )
     lcs = _lcs_length(exp, act)
     score = lcs / max_len
-    return ScoreResult(score=score, passed=score >= PASS_THRESHOLD)
+    return ScoreResult(
+        score=score,
+        passed=score >= PASS_THRESHOLD,
+        scorer_family="sequence_lcs",
+        sub_scores={
+            "lcs_length": lcs,
+            "expected_len": len(exp),
+            "actual_len": len(act),
+            "max_len": max_len,
+        },
+    )
 
 
-_ORACLE_TYPE_SCORERS: dict[str, Callable[[object, object], ScoreResult]] = {
+_ORACLE_TYPE_SCORERS: dict[str, Callable[..., ScoreResult]] = {
     "file_list": score_file_list,
     "count": score_count,
     "boolean": score_exact_match,
@@ -915,6 +1197,11 @@ _ORACLE_TYPE_SCORERS: dict[str, Callable[[object, object], ScoreResult]] = {
     "symbol_list": score_symbol_list,
     "dependency_chain": score_dependency_chain,
 }
+
+# answer_types whose scorer signature accepts the ``family`` keyword. Used
+# by ArtifactScorer to pass the per-task IR family through; everything else
+# uses the (expected, actual) signature unchanged.
+_IR_LIST_ANSWER_TYPES: frozenset[str] = frozenset({"file_list", "symbol_list"})
 
 
 _WEIGHT_TOLERANCE = 1e-6
@@ -1042,14 +1329,20 @@ class ArtifactScorer:
                 error="answer.json is invalid JSON",
             )
 
-        # Detect format and dispatch
+        # Detect format and dispatch. The IR family declared in
+        # task metadata applies to all IR-style sub-scorers (file_list /
+        # symbol_list / legacy file-list); non-IR scorers (count / boolean
+        # / text / dependency_chain) ignore it.
+        ir_family = _select_ir_family(task_dir)
         if "checks" in gt:
-            return self._score_v2_checks(gt, answer_data)
+            return self._score_v2_checks(gt, answer_data, ir_family=ir_family)
         if "answer_type" in gt:
-            return self._score_new_format(gt, answer_data)
-        return self._score_legacy_format(gt, answer_data)
+            return self._score_new_format(gt, answer_data, ir_family=ir_family)
+        return self._score_legacy_format(gt, answer_data, ir_family=ir_family)
 
-    def _score_v2_checks(self, gt: dict, answer_data: dict) -> ScoreResult:
+    def _score_v2_checks(
+        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+    ) -> ScoreResult:
         """Score using v2 multi-check format with weighted composite."""
         checks: list[dict] = gt.get("checks", [])
 
@@ -1104,6 +1397,10 @@ class ArtifactScorer:
             elif actual is None:
                 # Agent didn't provide an answer for this type
                 check_result = ScoreResult(score=0.0, passed=False)
+            elif answer_type in _IR_LIST_ANSWER_TYPES:
+                # IR scorers take a family kwarg so the v2 multi-check
+                # composite respects per-task scorer routing.
+                check_result = scorer_fn(expected, actual, family=ir_family)
             else:
                 check_result = scorer_fn(expected, actual)
 
@@ -1123,9 +1420,13 @@ class ArtifactScorer:
             score=composite,
             passed=composite >= PASS_THRESHOLD,
             details={"check_scores": check_scores},
+            scorer_family="weighted_checkpoints",
+            sub_scores={"composite": composite, "ir_family": ir_family},
         )
 
-    def _score_new_format(self, gt: dict, answer_data: dict) -> ScoreResult:
+    def _score_new_format(
+        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+    ) -> ScoreResult:
         answer_type = gt.get("answer_type", "")
         expected = gt.get("answer")
         actual = answer_data.get("answer")
@@ -1156,6 +1457,8 @@ class ArtifactScorer:
         # Look up in builtin registry first
         scorer_fn = _ORACLE_TYPE_SCORERS.get(answer_type)
         if scorer_fn is not None:
+            if answer_type in _IR_LIST_ANSWER_TYPES:
+                return scorer_fn(expected, actual, family=ir_family)
             return scorer_fn(expected, actual)
 
         # Fall back to entry_point registry for extensibility
@@ -1173,11 +1476,14 @@ class ArtifactScorer:
             error=f"Unknown answer_type: {answer_type!r}",
         )
 
-    def _score_legacy_format(self, gt: dict, answer_data: dict) -> ScoreResult:
+    def _score_legacy_format(
+        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+    ) -> ScoreResult:
         """Legacy format: treat 'expected' as a file_list.
 
-        Same reward shape as :func:`score_file_list` — recall is the headline,
-        precision/F1 are diagnostics in ``ir_metrics``.
+        Honors the same scorer_family routing as :func:`score_file_list`.
+        Default family is ``oracle_overlap_f1`` (F1 reward); tasks opt
+        into recall-tilted via ``verification.scorer_family``.
         """
         expected = gt.get("expected", [])
         actual = answer_data.get("answer", [])
@@ -1197,12 +1503,18 @@ class ArtifactScorer:
         actual_set = frozenset(_normalize_path(p) for p in actual if p)
         precision, recall, f1 = _ir_metrics(expected_set, actual_set)
         ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
+        reward = _ir_reward_from_family(
+            ir_family, precision=precision, recall=recall, f1=f1
+        )
         return ScoreResult(
-            score=recall,
-            passed=recall > 0.0,
+            score=reward,
+            passed=reward >= PASS_THRESHOLD,
             details=dict(ir_metrics),
-            reward_score=recall,
+            reward_score=reward,
             ir_metrics=ir_metrics,
+            scorer_family=ir_family,
+            sub_scores={**ir_metrics, "reward": reward},
+            diagnostics={"ir_metrics": dict(ir_metrics)},
         )
 
     # Delegate to module-level functions (kept for backward compat)
@@ -1396,6 +1708,13 @@ class DualScorer:
             passed=passed,
             error=combined_error,
             details=details,
+            scorer_family="dual_composite",
+            sub_scores={
+                "composite": composite,
+                "score_direct": direct_result.score,
+                "score_artifact": artifact_result.score,
+                "scoring_policy": scoring_policy,
+            },
         )
 
 

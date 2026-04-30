@@ -1,21 +1,19 @@
-"""Reward vs IR diagnostics — codeprobe-voxa.
+"""Reward + scorer_family contract — codeprobe-voxa (revised 2026-04-30).
 
-The IR scorers (``score_file_list`` / ``score_symbol_list`` / legacy
-file-list / ContinuousScorer over an oracle ``metrics.json``) report
-reward as **oracle-matching** (recall, or ``weighted_recall`` when the
-oracle uses tier weights). Precision and F1 are computed alongside but
-live in ``ir_metrics`` so over-shipping no longer drags the reward down.
+Pins the per-task scorer_family routing landed in the reopened voxa pass:
 
-These tests pin the contract for the cases called out in the bead:
+* Default IR reward is **F1** (`oracle_overlap_f1`) — agents that dump
+  the entire repo no longer score 1.0. Recall stays in
+  ``sub_scores`` / ``ir_metrics`` for diagnostics.
+* File-discovery / triage tasks opt into ``oracle_overlap_recall`` and
+  recover the recall-tilted reward where over-shipping is free.
+* The on-disk continuous oracle routes via
+  ``verification.scorer_family`` from ``metadata.json``.
+* ``ScoreResult`` carries ``scorer_family`` + ``sub_scores`` +
+  ``diagnostics.ir_metrics`` for every IR-style result.
 
-* exact match (recall = precision = 1.0)
-* pure-recall match (recall = 1.0, precision low — over-ship extreme)
-* over-ship modest (recall = 1.0, precision moderate)
-* under-ship (recall < 1.0, precision = 1.0)
-* ContinuousScorer pivots reward off ``reward.txt = f1`` to the recall
-  it reads from ``metrics.json``
-* ContinuousScorer prefers ``weighted_recall`` over ``recall`` when both
-  are present
+Per A6 each registered family has null / golden / adversarial-dump
+fixtures so a future contract change has to face the canonical cases.
 """
 
 from __future__ import annotations
@@ -28,158 +26,246 @@ from pathlib import Path
 import pytest
 
 from codeprobe.core.scoring import (
+    DEFAULT_IR_FAMILY,
+    SCORER_FAMILIES,
+    ArtifactScorer,
+    BinaryScorer,
+    CheckpointScorer,
     ContinuousScorer,
+    DualScorer,
+    ScoreResult,
+    score_count,
+    score_dependency_chain,
+    score_exact_match,
     score_file_list,
     score_symbol_list,
 )
 
 
 # ---------------------------------------------------------------------------
-# score_file_list — bead acceptance cases
+# Default IR family is F1 — adversarial dump must NOT score 1.0
 # ---------------------------------------------------------------------------
 
 
-class TestScoreFileListReward:
+class TestScoreFileListDefaultFamilyIsF1:
+    def test_default_family_label(self) -> None:
+        result = score_file_list(["a.py", "b.py"], ["a.py", "b.py"])
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.scorer_family in SCORER_FAMILIES
+
     def test_exact_match_reward_is_one(self) -> None:
         result = score_file_list(["a.py", "b.py"], ["a.py", "b.py"])
         assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
-        assert result.ir_metrics == {
-            "precision": pytest.approx(1.0),
-            "recall": pytest.approx(1.0),
-            "f1": pytest.approx(1.0),
-        }
         assert result.passed is True
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+        assert result.sub_scores["precision"] == pytest.approx(1.0)
+        assert result.sub_scores["f1"] == pytest.approx(1.0)
+        assert result.sub_scores["reward"] == pytest.approx(1.0)
+        assert result.diagnostics["ir_metrics"]["f1"] == pytest.approx(1.0)
 
-    def test_pure_recall_extreme_overship_keeps_full_reward(self) -> None:
-        """Agent dumps 100 files including all 2 expected → recall=1.0.
-
-        Reward should be 1.0 (it found everything). Precision = 0.02 and
-        F1 ≈ 0.04 stay in ir_metrics so reviewers can see the noisy answer.
+    def test_adversarial_dump_drops_below_pass_threshold(self) -> None:
+        """A6 / A3 acceptance: agent dumps 98 noise files alongside the
+        2 correct ones → recall=1.0, F1≈0.039. Reward MUST be the F1
+        under the default family so the dump doesn't fake a 1.0.
         """
         expected = ["a.py", "b.py"]
         actual = expected + [f"noise_{i}.py" for i in range(98)]
         result = score_file_list(expected, actual)
-        assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.score == pytest.approx(0.0392, abs=1e-3)
+        assert result.score < 0.5  # A3
+        assert result.passed is False
+        # Recall is still surfaced in diagnostics so reviewers can see
+        # the agent did "find everything" — they just shipped noise.
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+        assert result.sub_scores["precision"] == pytest.approx(0.02)
         assert result.ir_metrics["recall"] == pytest.approx(1.0)
-        assert result.ir_metrics["precision"] == pytest.approx(0.02)
-        assert result.ir_metrics["f1"] == pytest.approx(0.0392, abs=1e-3)
+        assert result.diagnostics["ir_metrics"]["recall"] == pytest.approx(1.0)
+
+    def test_modest_overship_lands_at_f1(self) -> None:
+        """Two extra files on top of the two expected → F1 = 0.667."""
+        result = score_file_list(["a.py", "b.py"], ["a.py", "b.py", "c.py", "d.py"])
+        assert result.score == pytest.approx(2 / 3)
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+        assert result.sub_scores["precision"] == pytest.approx(0.5)
         assert result.passed is True
 
-    def test_modest_overship_keeps_full_reward(self) -> None:
-        """Two extra files on top of the two expected → recall still 1.0."""
-        result = score_file_list(["a.py", "b.py"], ["a.py", "b.py", "c.py", "d.py"])
-        assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
-        assert result.ir_metrics["recall"] == pytest.approx(1.0)
-        assert result.ir_metrics["precision"] == pytest.approx(0.5)
-        assert result.ir_metrics["f1"] == pytest.approx(2 / 3)
-
-    def test_undership_drops_reward(self) -> None:
-        """Agent finds only half the oracle → reward = 0.5."""
+    def test_undership_lands_at_f1(self) -> None:
+        """Agent finds 2 of 4 (recall=0.5, precision=1.0) → F1=0.667."""
         result = score_file_list(
             ["a.py", "b.py", "c.py", "d.py"],
             ["a.py", "b.py"],
         )
-        assert result.score == pytest.approx(0.5)
-        assert result.reward_score == pytest.approx(0.5)
-        assert result.ir_metrics["recall"] == pytest.approx(0.5)
-        assert result.ir_metrics["precision"] == pytest.approx(1.0)
-        assert result.ir_metrics["f1"] == pytest.approx(2 / 3)
+        assert result.score == pytest.approx(2 / 3)
+        assert result.sub_scores["recall"] == pytest.approx(0.5)
+        assert result.sub_scores["precision"] == pytest.approx(1.0)
 
-    def test_no_overlap_zero_reward(self) -> None:
+    def test_null_input_zero_reward(self) -> None:
         result = score_file_list(["a.py"], ["z.py"])
         assert result.score == pytest.approx(0.0)
-        assert result.reward_score == pytest.approx(0.0)
-        assert result.ir_metrics["recall"] == pytest.approx(0.0)
         assert result.passed is False
+        assert result.scorer_family == "oracle_overlap_f1"
 
-    def test_empty_expected_returns_zero(self) -> None:
-        result = score_file_list([], ["a.py"])
-        # No oracle to match → recall undefined → zero, no IR data.
+    def test_empty_actual_keeps_family_label(self) -> None:
+        result = score_file_list(["a.py"], [])
+        assert result.scorer_family == "oracle_overlap_f1"
         assert result.score == pytest.approx(0.0)
-        assert result.reward_score == pytest.approx(0.0)
-        assert result.ir_metrics == {
-            "precision": pytest.approx(0.0),
-            "recall": pytest.approx(0.0),
-            "f1": pytest.approx(0.0),
-        }
 
 
 # ---------------------------------------------------------------------------
-# score_symbol_list — same shape over normalized symbol names
+# Opt-in family override — oracle_overlap_recall recovers recall reward
 # ---------------------------------------------------------------------------
 
 
-class TestScoreSymbolListReward:
-    def test_exact_match_reward_is_one(self) -> None:
-        result = score_symbol_list(["Foo", "Bar"], ["Foo", "Bar"])
-        assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
-        assert result.ir_metrics["recall"] == pytest.approx(1.0)
-        assert result.ir_metrics["precision"] == pytest.approx(1.0)
+class TestScoreFileListRecallFamily:
+    def test_recall_family_label(self) -> None:
+        result = score_file_list(
+            ["a.py"], ["a.py"], family="oracle_overlap_recall"
+        )
+        assert result.scorer_family == "oracle_overlap_recall"
 
-    def test_overship_keeps_full_reward(self) -> None:
-        result = score_symbol_list(["Foo"], ["Foo", "Bar", "Baz"])
+    def test_recall_family_keeps_full_reward_on_extreme_overship(self) -> None:
+        """Discovery / triage task: dump-and-filter is fine. Reward = recall."""
+        expected = ["a.py", "b.py"]
+        actual = expected + [f"noise_{i}.py" for i in range(98)]
+        result = score_file_list(expected, actual, family="oracle_overlap_recall")
         assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
-        assert result.ir_metrics["recall"] == pytest.approx(1.0)
-        assert result.ir_metrics["precision"] == pytest.approx(1 / 3)
+        assert result.passed is True
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+        assert result.sub_scores["precision"] == pytest.approx(0.02)
 
-    def test_undership_drops_reward(self) -> None:
-        result = score_symbol_list(["Foo", "Bar"], ["Foo"])
+    def test_recall_family_undership_drops_reward(self) -> None:
+        result = score_file_list(
+            ["a.py", "b.py"], ["a.py"], family="oracle_overlap_recall"
+        )
         assert result.score == pytest.approx(0.5)
-        assert result.reward_score == pytest.approx(0.5)
-        assert result.ir_metrics["recall"] == pytest.approx(0.5)
-        assert result.ir_metrics["precision"] == pytest.approx(1.0)
+        assert result.sub_scores["recall"] == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------------------
-# ContinuousScorer — reward derivation from oracle metrics.json
+# score_symbol_list — same routing
 # ---------------------------------------------------------------------------
 
 
-def _make_oracle_task(tmp_path: Path, name: str, script: str) -> Path:
+class TestScoreSymbolListFamily:
+    def test_default_is_f1_and_adversarial_drops(self) -> None:
+        expected = ["Foo", "Bar"]
+        actual = expected + [f"Noise{i}" for i in range(50)]
+        result = score_symbol_list(expected, actual)
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.score < 0.5
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+
+    def test_recall_family_recovers_full_reward_on_overship(self) -> None:
+        result = score_symbol_list(
+            ["Foo"], ["Foo", "Bar", "Baz"], family="oracle_overlap_recall"
+        )
+        assert result.scorer_family == "oracle_overlap_recall"
+        assert result.score == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# 38223444-style honest-score case — A4
+# ---------------------------------------------------------------------------
+
+
+class TestUr8dHonestScoreSurvives:
+    def test_38223444_with_sg_keeps_honest_score_under_default_family(self) -> None:
+        """A4: precision=1.0, recall≈0.333 → F1≈0.5.
+
+        38223444 with-sg shipped 2 correct files out of 6 expected
+        (precision=1.0, recall=0.333). Under the new default, F1=0.5 —
+        an honest "found 1/3 of what was asked, didn't oversell" score.
+        Crucially it's NOT 1.0 (which the old recall-only family would
+        have said since precision is moot under recall) and NOT 0.04
+        (which the original F1-only family pre-voxa would have said for
+        an over-shipping agent).
+        """
+        expected = ["x1.py", "x2.py", "x3.py", "x4.py", "x5.py", "x6.py"]
+        actual = ["x1.py", "x2.py"]
+        result = score_file_list(expected, actual)
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.score == pytest.approx(0.5)
+        assert result.sub_scores["recall"] == pytest.approx(1 / 3)
+        assert result.sub_scores["precision"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# ContinuousScorer — family routing via metadata.json
+# ---------------------------------------------------------------------------
+
+
+def _make_oracle_task(
+    tmp_path: Path,
+    name: str,
+    script: str,
+    *,
+    metadata: dict | None = None,
+) -> Path:
     task_dir = tmp_path / name
     tests_dir = task_dir / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
     test_sh = tests_dir / "test.sh"
     test_sh.write_text(script, encoding="utf-8")
     test_sh.chmod(test_sh.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    if metadata is not None:
+        (task_dir / "metadata.json").write_text(
+            json.dumps(metadata), encoding="utf-8"
+        )
     return task_dir
 
 
-class TestContinuousScorerReward:
-    def test_extreme_overship_reward_is_recall_not_f1(self, tmp_path: Path) -> None:
-        """Mirrors the e5d7a4e7 case from the codeprobe-wo7n run.
+_E5D7A4E7_SCRIPT = (
+    "#!/bin/bash\n"
+    'echo "0.4092" > "$PWD/reward.txt"\n'
+    'cat > "$PWD/metrics.json" <<\'JSON\'\n'
+    '{"score": 0.4092, "metric": "f1", "f1": 0.4092, '
+    '"precision": 0.2571, "recall": 1.0, '
+    '"matched": 80, "expected_count": 80, '
+    '"agent_files_count": 311, "weighted_recall": null}\n'
+    "JSON\n"
+    "exit 0\n"
+)
 
-        Oracle wrote reward.txt = 0.4092 (F1) and metrics.json with
-        recall = 1.0 / precision = 0.2571. Reward should pivot to 1.0
-        (the recall) so over-shipping doesn't fake a quality gap.
-        """
-        script = (
-            "#!/bin/bash\n"
-            'echo "0.4092" > "$PWD/reward.txt"\n'
-            'cat > "$PWD/metrics.json" <<\'JSON\'\n'
-            '{"score": 0.4092, "metric": "f1", "f1": 0.4092, '
-            '"precision": 0.2571, "recall": 1.0, '
-            '"matched": 80, "expected_count": 80, '
-            '"agent_files_count": 311, "weighted_recall": null}\n'
-            "JSON\n"
-            "exit 0\n"
-        )
-        task_dir = _make_oracle_task(tmp_path, "extreme-overship", script)
+
+class TestContinuousScorerFamilyRouting:
+    def test_default_family_is_f1_overship_drops_below_pass(
+        self, tmp_path: Path
+    ) -> None:
+        """A3: e5d7a4e7-style overship → F1=0.41 < 0.5 under default family."""
+        task_dir = _make_oracle_task(tmp_path, "default", _E5D7A4E7_SCRIPT)
         result = ContinuousScorer().score("output", task_dir)
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.score == pytest.approx(0.4092)
+        assert result.score < 0.5
+        assert result.passed is False
+        assert result.sub_scores["f1"] == pytest.approx(0.4092)
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+        assert result.diagnostics["ir_metrics"]["recall"] == pytest.approx(1.0)
+
+    def test_explicit_recall_family_keeps_full_reward(self, tmp_path: Path) -> None:
+        """Opt-in via metadata.json — recall is the reward, not F1."""
+        task_dir = _make_oracle_task(
+            tmp_path,
+            "recall",
+            _E5D7A4E7_SCRIPT,
+            metadata={
+                "verification": {"scorer_family": "oracle_overlap_recall"}
+            },
+        )
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.scorer_family == "oracle_overlap_recall"
         assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
-        assert result.ir_metrics["precision"] == pytest.approx(0.2571)
-        assert result.ir_metrics["recall"] == pytest.approx(1.0)
-        assert result.ir_metrics["f1"] == pytest.approx(0.4092)
         assert result.passed is True
 
-    def test_weighted_recall_takes_precedence(self, tmp_path: Path) -> None:
-        """Org-scale weighted oracle: reward = weighted_recall, not raw recall."""
+    def test_weighted_oracle_routes_to_weighted_f1(self, tmp_path: Path) -> None:
+        """Org-scale weighted oracle — reward = weighted F1 (stored in `f1`).
+
+        The on-disk oracle stores the weighted primary score in the ``f1``
+        field when ``metric == "weighted_f1"``. Family routing picks
+        ``oracle_weighted_f1`` automatically when ``weighted_recall`` is
+        present and finite.
+        """
         script = (
             "#!/bin/bash\n"
             'echo "0.55" > "$PWD/reward.txt"\n'
@@ -193,20 +279,45 @@ class TestContinuousScorerReward:
         )
         task_dir = _make_oracle_task(tmp_path, "weighted", script)
         result = ContinuousScorer().score("output", task_dir)
-        assert result.score == pytest.approx(0.85)
-        assert result.reward_score == pytest.approx(0.85)
-        assert result.ir_metrics["weighted_recall"] == pytest.approx(0.85)
-        assert result.ir_metrics["recall"] == pytest.approx(0.7)
-        assert result.ir_metrics["precision"] == pytest.approx(0.6)
-        assert result.ir_metrics["f1"] == pytest.approx(0.55)
+        assert result.scorer_family == "oracle_weighted_f1"
+        assert result.score == pytest.approx(0.55)
+        assert result.sub_scores["weighted_recall"] == pytest.approx(0.85)
+        assert result.sub_scores["f1"] == pytest.approx(0.55)
 
-    def test_legacy_oracle_without_recall_falls_back_to_reward_txt(
+    def test_explicit_weighted_recall_family_recovers_recall_tilt(
         self, tmp_path: Path
     ) -> None:
-        """No ``recall`` in metrics.json → score stays whatever reward.txt says.
+        """Opt-in tier-weighted recall family for triage-style org-scale
+        tasks where finding the high-tier files matters more than precision.
+        """
+        script = (
+            "#!/bin/bash\n"
+            'echo "0.55" > "$PWD/reward.txt"\n'
+            'cat > "$PWD/metrics.json" <<\'JSON\'\n'
+            '{"score": 0.55, "metric": "weighted_f1", "f1": 0.55, '
+            '"precision": 0.6, "recall": 0.7, '
+            '"weighted_recall": 0.85}\n'
+            "JSON\n"
+            "exit 0\n"
+        )
+        task_dir = _make_oracle_task(
+            tmp_path,
+            "weighted-recall",
+            script,
+            metadata={
+                "verification": {"scorer_family": "oracle_weighted_recall"}
+            },
+        )
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.scorer_family == "oracle_weighted_recall"
+        assert result.score == pytest.approx(0.85)
 
-        Older mined tasks may emit a continuous score without IR metadata
-        (custom test.sh scripts). We must not break those.
+    def test_legacy_oracle_without_metrics_json_falls_back_to_reward_txt(
+        self, tmp_path: Path
+    ) -> None:
+        """No ``metrics.json`` → no IR data → score stays whatever
+        ``reward.txt`` says, and the scorer_family becomes ``continuous``
+        (no IR rubric was applied).
         """
         script = (
             "#!/bin/bash\n"
@@ -215,14 +326,159 @@ class TestContinuousScorerReward:
         )
         task_dir = _make_oracle_task(tmp_path, "legacy", script)
         result = ContinuousScorer().score("output", task_dir)
+        assert result.scorer_family == "continuous"
         assert result.score == pytest.approx(0.5)
-        assert result.reward_score == pytest.approx(0.5)
-        # No IR metrics surfaced when the oracle didn't emit them.
         assert result.ir_metrics == {}
+        assert result.sub_scores == {"raw_score": pytest.approx(0.5)}
+
+    def test_null_oracle_metrics_zeros_pass(self, tmp_path: Path) -> None:
+        """Adversarial / null oracle — empty-set match → reward = 0."""
+        script = (
+            "#!/bin/bash\n"
+            'echo "0" > "$PWD/reward.txt"\n'
+            'cat > "$PWD/metrics.json" <<\'JSON\'\n'
+            '{"f1": 0.0, "precision": 0.0, "recall": 0.0}\n'
+            "JSON\n"
+            "exit 0\n"
+        )
+        task_dir = _make_oracle_task(tmp_path, "null", script)
+        result = ContinuousScorer().score("output", task_dir)
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is False
 
 
 # ---------------------------------------------------------------------------
-# Aggregate schema — mean_reward + ir_diagnostics block
+# ArtifactScorer — family routing via metadata.json verification block
+# ---------------------------------------------------------------------------
+
+
+def _make_artifact_task(
+    tmp_path: Path,
+    name: str,
+    *,
+    expected: list[str],
+    actual: list[str],
+    metadata: dict | None = None,
+) -> Path:
+    task_dir = tmp_path / name
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    (tests_dir / "ground_truth.json").write_text(
+        json.dumps(
+            {
+                "answer_type": "file_list",
+                "answer": expected,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "answer.json").write_text(
+        json.dumps({"answer_type": "file_list", "answer": actual}),
+        encoding="utf-8",
+    )
+    if metadata is not None:
+        (task_dir / "metadata.json").write_text(
+            json.dumps(metadata), encoding="utf-8"
+        )
+    return task_dir
+
+
+class TestArtifactScorerFamilyRouting:
+    def test_default_family_is_f1_for_file_list_oracle(
+        self, tmp_path: Path
+    ) -> None:
+        task_dir = _make_artifact_task(
+            tmp_path,
+            "default",
+            expected=["a.py", "b.py"],
+            actual=["a.py", "b.py"] + [f"n{i}.py" for i in range(48)],
+        )
+        result = ArtifactScorer().score("", task_dir)
+        assert result.scorer_family == "oracle_overlap_f1"
+        assert result.score < 0.5
+
+    def test_metadata_override_routes_to_recall_family(
+        self, tmp_path: Path
+    ) -> None:
+        task_dir = _make_artifact_task(
+            tmp_path,
+            "recall-opt-in",
+            expected=["a.py", "b.py"],
+            actual=["a.py", "b.py"] + [f"n{i}.py" for i in range(48)],
+            metadata={"verification": {"scorer_family": "oracle_overlap_recall"}},
+        )
+        result = ArtifactScorer().score("", task_dir)
+        assert result.scorer_family == "oracle_overlap_recall"
+        assert result.score == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Non-IR families — null + golden coverage
+# ---------------------------------------------------------------------------
+
+
+class TestExactMatchFamily:
+    def test_count_match(self) -> None:
+        result = score_count(5, 5)
+        assert result.scorer_family == "exact_match"
+        assert result.score == pytest.approx(1.0)
+        assert result.sub_scores["match"] == pytest.approx(1.0)
+
+    def test_count_mismatch(self) -> None:
+        result = score_count(5, 7)
+        assert result.scorer_family == "exact_match"
+        assert result.score == pytest.approx(0.0)
+
+    def test_text_match(self) -> None:
+        result = score_exact_match("Yes", "yes")
+        assert result.scorer_family == "exact_match"
+        assert result.score == pytest.approx(1.0)
+
+
+class TestSequenceLcsFamily:
+    def test_exact_chain_match(self) -> None:
+        result = score_dependency_chain(["a", "b", "c"], ["a", "b", "c"])
+        assert result.scorer_family == "sequence_lcs"
+        assert result.score == pytest.approx(1.0)
+        assert result.sub_scores["lcs_length"] == 3
+
+    def test_partial_chain_match(self) -> None:
+        result = score_dependency_chain(["a", "b", "c"], ["a", "c"])
+        assert result.scorer_family == "sequence_lcs"
+        assert result.score == pytest.approx(2 / 3)
+
+    def test_empty_chain(self) -> None:
+        result = score_dependency_chain([], [])
+        assert result.scorer_family == "sequence_lcs"
+        assert result.score == pytest.approx(0.0)
+
+
+class TestBinaryTestFamily:
+    def test_exit_zero_is_one(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "binary"
+        (task_dir / "tests").mkdir(parents=True)
+        test_sh = task_dir / "tests" / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+        test_sh.chmod(0o755)
+        result = BinaryScorer().score("", task_dir)
+        assert result.scorer_family == "binary_test"
+        assert result.score == pytest.approx(1.0)
+        assert result.sub_scores["exit_code"] == 0
+
+    def test_exit_nonzero_is_zero(self, tmp_path: Path) -> None:
+        task_dir = tmp_path / "binary-fail"
+        (task_dir / "tests").mkdir(parents=True)
+        test_sh = task_dir / "tests" / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 1\n", encoding="utf-8")
+        test_sh.chmod(0o755)
+        result = BinaryScorer().score("", task_dir)
+        assert result.scorer_family == "binary_test"
+        assert result.score == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# Aggregate schema — mean_reward + ir_diagnostics block (back-compat)
 # ---------------------------------------------------------------------------
 
 
@@ -253,19 +509,20 @@ def test_aggregate_emits_mean_reward_and_ir_diagnostics(tmp_path: Path) -> None:
     completed = [
         CompletedTask(
             task_id="t1",
-            automated_score=1.0,
+            automated_score=0.40,
             duration_seconds=1.0,
             cost_usd=0.01,
             scoring_details={
-                "passed": True,
+                "passed": False,
                 "precision": 0.25,
                 "recall": 1.0,
                 "f1": 0.40,
+                "scorer_family": "oracle_overlap_f1",
             },
         ),
         CompletedTask(
             task_id="t2",
-            automated_score=0.5,
+            automated_score=0.667,
             duration_seconds=1.0,
             cost_usd=0.01,
             scoring_details={
@@ -273,6 +530,7 @@ def test_aggregate_emits_mean_reward_and_ir_diagnostics(tmp_path: Path) -> None:
                 "precision": 1.0,
                 "recall": 0.5,
                 "f1": 2 / 3,
+                "scorer_family": "oracle_overlap_f1",
             },
         ),
     ]
@@ -287,8 +545,8 @@ def test_aggregate_emits_mean_reward_and_ir_diagnostics(tmp_path: Path) -> None:
     )
     summary = aggregate["config_summaries"]["baseline"]
     # Headline reward
-    assert summary["mean_reward"] == pytest.approx(0.75)
-    assert summary["mean_automated_score"] == pytest.approx(0.75)
+    assert summary["mean_reward"] == pytest.approx((0.40 + 0.667) / 2)
+    assert summary["mean_automated_score"] == pytest.approx((0.40 + 0.667) / 2)
     # ir_diagnostics block
     assert summary["ir_diagnostics"]["mean_precision"] == pytest.approx(0.625)
     assert summary["ir_diagnostics"]["mean_recall"] == pytest.approx(0.75)
@@ -301,9 +559,33 @@ def test_aggregate_emits_mean_reward_and_ir_diagnostics(tmp_path: Path) -> None:
     assert summary["mean_f1"] == pytest.approx((0.40 + 2 / 3) / 2)
 
 
+def test_score_result_carries_full_contract() -> None:
+    """A1 acceptance: every IR ScoreResult has reward + scorer_family +
+    sub_scores + diagnostics with ir_metrics."""
+    result = score_file_list(["a.py"], ["a.py"])
+    # reward (mirrored on score and reward_score)
+    assert isinstance(result.score, float)
+    assert result.reward_score == result.score
+    # scorer_family — registered
+    assert result.scorer_family in SCORER_FAMILIES
+    # sub_scores — rubric breakdown
+    assert isinstance(result.sub_scores, dict)
+    assert "reward" in result.sub_scores
+    # diagnostics — IR view
+    assert "ir_metrics" in result.diagnostics
+    assert "f1" in result.diagnostics["ir_metrics"]
+
+
 __all__ = [
-    "TestScoreFileListReward",
-    "TestScoreSymbolListReward",
-    "TestContinuousScorerReward",
+    "TestScoreFileListDefaultFamilyIsF1",
+    "TestScoreFileListRecallFamily",
+    "TestScoreSymbolListFamily",
+    "TestUr8dHonestScoreSurvives",
+    "TestContinuousScorerFamilyRouting",
+    "TestArtifactScorerFamilyRouting",
+    "TestExactMatchFamily",
+    "TestSequenceLcsFamily",
+    "TestBinaryTestFamily",
     "test_aggregate_emits_mean_reward_and_ir_diagnostics",
+    "test_score_result_carries_full_contract",
 ]

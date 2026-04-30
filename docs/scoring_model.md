@@ -1,76 +1,148 @@
-# Scoring model — reward vs IR diagnostics
+# Scoring model — reward, scorer_family, and IR diagnostics
 
-> codeprobe-voxa (2026-04-29). Pairs with the multi-backend oracle curator
-> (codeprobe-zat9). Re-run validator: `codeprobe-3ljz`.
+> codeprobe-voxa (revised 2026-04-30). Pairs with the multi-backend
+> oracle curator (codeprobe-zat9) and the bias-detection severity gate
+> (codeprobe-9re9). Replaces the original 2026-04-29 voxa pass that
+> used recall-as-reward universally.
 
 ## TL;DR
 
-For information-retrieval (IR) tasks — `file_list`, `symbol_list`, the
-legacy file-list, and the org-scale weighted oracle — the **headline
-reward is recall**, not F1. Precision and F1 are still computed and
-reported, but they live in an **IR diagnostics** view alongside the
-reward; they no longer suppress the score when an agent over-ships.
+Every `ScoreResult` now carries a **`scorer_family`** declaring *which
+rubric produced the reward*. The default IR family is
+`oracle_overlap_f1` — F1 penalises both over-shipping (low precision)
+and under-shipping (low recall), so an agent that dumps every file in
+the repo no longer scores 1.0. File-discovery / triage tasks where dump-
+and-filter is appropriate opt into `oracle_overlap_recall` per-task via
+`metadata.json#verification.scorer_family`.
 
-| Concept            | Question it answers                                     | Where to find it                                         |
-| ------------------ | ------------------------------------------------------- | -------------------------------------------------------- |
-| **Reward**         | Did the agent find what the oracle expected?            | `ScoreResult.score` / `ScoreResult.reward_score` / `mean_automated_score` (alias `mean_reward`) |
-| **IR diagnostics** | How clean was the answer? Over-ship vs miss vs balanced | `ScoreResult.ir_metrics` / `ir_diagnostics.{mean_precision,mean_recall,mean_f1}` |
+| Concept            | Question it answers                                        | Where to find it                                                                            |
+| ------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| **Reward**         | Did the agent solve the task under its declared rubric?    | `ScoreResult.score` / `ScoreResult.reward_score` / `mean_automated_score` / `mean_reward`   |
+| **scorer_family**  | Which rubric was used? Why does this number mean what it does? | `ScoreResult.scorer_family` / `scoring_details.scorer_family` / `scorer_family_distribution` |
+| **sub_scores**     | What inputs produced the reward? (e.g. `{recall, precision, f1, reward}`) | `ScoreResult.sub_scores` / `scoring_details.sub_scores`                                     |
+| **Diagnostics**    | Run-time observations that don't change reward             | `ScoreResult.diagnostics.ir_metrics` (mirrors `ir_metrics`) and `ScoreResult.ir_metrics`    |
 
-## Why split them
+## Why per-task scorer_family
 
-Before codeprobe-voxa, IR scorers returned `score = F1`. F1 punishes
-over-shipping the same way it punishes missing the answer — a fast,
-imprecise tool that returns "every file in the repo, including all 80
-the oracle wanted" was scored 0.04 on a real task we re-ran (e5d7a4e7),
-even though it had recall = 1.0 (it found everything).
+The original voxa pass made `score = recall` for every IR scorer. That
+fixed one failure mode (over-shipping not penalised) by introducing
+another (no per-task rubric). Under recall-only, an agent that dumps
+the entire repository scores 1.0 — the recall is genuinely 1.0, but the
+agent didn't solve anything in any meaningful sense, and any tooling
+decision based on that headline ("does MCP help? which agent is
+better?") would be wrong.
 
-That conflated two distinct things:
+The reopen ships a **per-task scorer_family registry**:
 
-1. **Did the agent solve the task?** → oracle-matching → reward
-2. **How tight was the answer?** → IR shape → diagnostics
+* `symbol-reference-trace` style tasks (and any IR task where the
+  oracle's answer set is the answer) use **`oracle_overlap_f1`** by
+  default. Reward is F1 — it goes up when the agent finds the truth,
+  down when it ships noise, and down when it misses. Recall stays in
+  `sub_scores` so reviewers can still see "found everything" vs "found
+  nothing."
+* Tasks where dumping a wide net is the *expected behavior*
+  (file-discovery, triage, exploratory codebase search) opt into
+  **`oracle_overlap_recall`** — over-shipping is free, only missing
+  costs.
+* The org-scale tier-weighted oracle uses **`oracle_weighted_f1`** by
+  default (weighted F1, where the on-disk oracle stores the weighted
+  primary score in the `f1` field when `metric == "weighted_f1"`).
+  Tasks that prefer the recall-tilted variant pick
+  **`oracle_weighted_recall`**.
 
-A tool boundary (this agent doesn't have a precise index) showed up in
-the score table as a quality gap, which is misleading. Splitting reward
-from IR diagnostics fixes that without losing any information.
+The family is recorded on every `ScoreResult` and propagated into
+`completed.json#scoring_details` and the per-config
+`scorer_family_distribution` block in `aggregate.json`. Mixed-family
+configs (e.g. half a run on `oracle_overlap_f1`, half on
+`oracle_overlap_recall`) are visible in the aggregate, and reviewers can
+reason about whether the comparison is apples-to-apples.
 
-## The reward formula
+## The full registry
+
+```python
+SCORER_FAMILIES = frozenset({
+    # IR-style — oracle is a set of expected files / symbols
+    "oracle_overlap_f1",        # default for symbol-reference-trace, file-list-tight
+    "oracle_overlap_recall",    # opt-in for file-discovery / triage
+    "oracle_weighted_f1",       # default for org-scale tier-weighted oracle
+    "oracle_weighted_recall",   # opt-in for tier-weighted recall-tilted
+
+    # Sequence-style — order matters
+    "sequence_lcs",             # dependency_chain (LCS / max_len)
+
+    # Equality / scalar
+    "exact_match",              # count, boolean, text
+
+    # Test-script style — verifier emits reward directly
+    "binary_test",              # test.sh exit code → 0.0/1.0
+    "continuous",               # reward.txt or stdout float, no IR
+
+    # Composite
+    "weighted_checkpoints",     # CheckpointScorer
+    "dual_composite",           # DualScorer (direct + artifact)
+})
+```
+
+Adding a new family: extend `SCORER_FAMILIES`, document the rubric and
+sub_scores keys here, and add a fixture-backed test in
+`tests/test_scoring_reward.py` covering null / golden / adversarial
+inputs.
+
+## Reward formulas by family
 
 ```
-reward = weighted_recall  if oracle has tier weights and emits weighted_recall
-       = recall           otherwise
+oracle_overlap_f1        → reward = f1   (= 2·P·R / (P+R))
+oracle_overlap_recall    → reward = recall
+oracle_weighted_f1       → reward = f1 (weighted on-disk; falls back to weighted_recall, then recall)
+oracle_weighted_recall   → reward = weighted_recall (falls back to recall)
+sequence_lcs             → reward = LCS(expected, actual) / max(len(expected), len(actual))
+exact_match              → reward = 1.0 if equal else 0.0
+binary_test              → reward = 1.0 if exit==0 else 0.0
+continuous               → reward = clamped reward.txt (or last stdout line)
+weighted_checkpoints     → reward = Σ (weight_i · checkpoint_score_i)
+dual_composite           → reward depends on scoring_policy:
+                              ""        → reward_direct
+                              "min"     → min(direct, artifact)
+                              "mean"    → (direct + artifact) / 2
+                              "gate"    → 1.0 if both passed else 0.0
+                              "weighted"→ weight_d·direct + weight_a·artifact
 ```
 
-Both values live in `[0.0, 1.0]`. The reward is computed mechanically
-from set overlap — no thresholds, no soft-clipping, no judgment. Pure
-arithmetic on `expected ∩ actual / |expected|` (or its weighted
-counterpart for tiered oracles).
+All values live in `[0.0, 1.0]`. Reward computation is mechanical — no
+thresholds, no soft-clipping, no judgment. The family declares which
+formula to apply; the formula itself is pure arithmetic on the inputs.
 
-### Why recall, not F1 or thresholded F1
+### Why F1 is the default for IR
 
-We considered three formulas during the codeprobe-voxa design:
+We considered three rubric shapes during design:
 
-* **A. recall-only** — over-shipping is free.
-* **B. thresholded F1** — soft-clip F1 to `[0, 1]` with a piecewise
-  ramp.
-* **C. containment** — recall, but zeroed out when precision drops
-  below some floor.
+* **A. F1** — penalises over-shipping AND missing. `oracle_overlap_f1`.
+* **B. F-beta with β > 1** — recall-tilted but still penalises over-
+  shipping at scale. Rejected: introduces a hidden parameter that
+  reviewers have to remember; the e5d7a4e7 acceptance case (β=2 →
+  F2 ≈ 0.59) lands above the pass threshold which contradicts the
+  "didn't solve" framing.
+* **C. recall-only** — only missing costs. `oracle_overlap_recall`.
 
-Option **A (recall-only)** was chosen because:
+**A is the default** because:
 
-* It matches the user-stated framing literally: "the reward should be
-  related to oracle matching".
-* B and C smuggle precision back into the reward — exactly the bug the
-  bead was filed to fix.
-* Pathological "agent dumps the entire repo" is visible via low
-  precision in IR diagnostics. Reviewers can see it; it just doesn't
-  pollute the reward.
-* Simplest formula → fewest hidden parameters → fewest places for ZFC
-  drift.
+* It penalises the adversarial-dump pathology (recall=1.0,
+  precision≈0.02 → F1≈0.04) at the headline level. Reviewers don't have
+  to dig into IR diagnostics to spot "this score is fake."
+* It's the conservative choice — symbol-reference-trace tasks
+  *typically* care about both finding the truth and not shipping noise,
+  and the cost of mis-routing one to recall-only is "an agent that
+  dumps the repo wins" (loud-failure). Mis-routing the other way costs
+  "a discovery task agent has to be more selective" (quiet false-fail
+  but reviewers can spot it via `sub_scores.recall`).
+* Per-task opt-in to `oracle_overlap_recall` is one line of metadata;
+  no global fork is needed.
 
-The formula lives in a single helper (`ContinuousScorer._derive_reward_and_metrics`,
-plus the inline IR scorers in `core/scoring.py`) and is trivial to swap
-if a future task family wants a different shape — e.g. per-task-type
-overrides could ride on `answer_type`.
+The default applies to the on-disk continuous oracle
+(`mining/writer.py:_ORACLE_PY` writes F1 / weighted F1 to `reward.txt`)
+and to the in-process `score_file_list` / `score_symbol_list`. The
+existing oracle script writes F1 today — we just stopped throwing it
+away in favour of recall.
 
 ## What gets emitted
 
@@ -79,66 +151,112 @@ overrides could ride on `answer_type`.
 ```python
 @dataclass(frozen=True)
 class ScoreResult:
-    score: float                # = reward (unchanged contract field)
-    passed: bool                # reward >= PASS_THRESHOLD
+    score: float                           # = reward (canonical headline)
+    passed: bool                           # back-compat (>= PASS_THRESHOLD for IR)
     error: str | None = None
-    details: dict = ...         # back-compat: still carries precision/recall/f1
-    reward_score: float | None  # explicit reward field (mirrors `score`)
-    ir_metrics: dict            # canonical IR view: {precision, recall, f1, weighted_recall?}
+    details: dict = ...                    # back-compat: precision/recall/f1/etc.
+    reward_score: float | None             # mirrors score
+    ir_metrics: dict                       # back-compat IR view: {precision, recall, f1, weighted_recall?}
+    scorer_family: str = ""                # NEW: declared rubric
+    sub_scores: dict = ...                 # NEW: rubric breakdown {recall, precision, f1, reward, ...}
+    diagnostics: dict = ...                # NEW: {"ir_metrics": {...}}
 ```
 
 `details` continues to carry `precision`/`recall`/`f1` so older code
-that reads `scoring_details["f1"]` keeps working. New code should treat
-`ir_metrics` as the canonical source.
+that reads `scoring_details["f1"]` keeps working. `sub_scores` is the
+canonical source for the rubric breakdown going forward.
 
-### `aggregate.json`
+### `completed.json#scoring_details` (per task)
 
 ```jsonc
 {
-  "config_summaries": {
-    "baseline": {
-      "tasks_completed": 80,
-      "mean_automated_score": 1.0,   // headline reward
-      "mean_reward": 1.0,            // alias for clarity
-      "stdev_automated_score": 0.0,
-      "total_cost_usd": 4.20,
-      "mean_cost_per_task": 0.05,
-      "score_per_dollar": 20.0,
-      // back-compat: kept at top level for older consumers
-      "mean_precision": 0.26,
-      "mean_recall":    1.0,
-      "mean_f1":        0.41,
-      // canonical IR view going forward
-      "ir_diagnostics": {
-        "mean_precision": 0.26,
-        "mean_recall":    1.0,
-        "mean_f1":        0.41
-      }
-    }
+  "passed": false,
+  "error": null,
+  // back-compat IR fields (still populated)
+  "precision": 0.2571,
+  "recall": 1.0,
+  "f1": 0.4092,
+  // NEW: declared rubric
+  "scorer_family": "oracle_overlap_f1",
+  // NEW: rubric breakdown
+  "sub_scores": {
+    "precision": 0.2571,
+    "recall":    1.0,
+    "f1":        0.4092,
+    "reward":    0.4092
   }
 }
 ```
 
-The flat `mean_precision` / `mean_recall` / `mean_f1` are kept at the
-top level so existing dashboards and CI gates don't break. New code
-should read them from `ir_diagnostics`.
+### `aggregate.json#config_summaries[label]`
 
-## Bias detection — informational over-shipping
+```jsonc
+{
+  "tasks_completed": 80,
+  "mean_automated_score": 0.41,    // headline reward
+  "mean_reward": 0.41,             // alias for clarity
+  "stdev_automated_score": 0.18,
+  "total_cost_usd": 4.20,
+  "mean_cost_per_task": 0.05,
+  "score_per_dollar": 9.8,
 
-`detect_overshipping_anti_pattern` no longer triggers on a low-score /
-high-recall pair (because the reward is now recall, the loser-vs-winner
-score gap collapses for an over-ship case). It now fires informationally
-when:
+  // back-compat: kept at the top level so older consumers don't break
+  "mean_precision": 0.26,
+  "mean_recall":    1.0,
+  "mean_f1":        0.41,
 
-* both configs achieved recall ≥ 0.95 on the same task, AND
-* one config's precision ≤ 0.5, AND
-* the precision delta between the two ≥ 0.3.
+  // canonical IR view going forward
+  "ir_diagnostics": {
+    "mean_precision": 0.26,
+    "mean_recall":    1.0,
+    "mean_f1":        0.41
+  },
 
-The warning message states explicitly that the **reward is unaffected**
-— it surfaces a *behavioural* difference (one config dumps many extra
-files; the other ships a tight answer) without implying a quality gap.
+  // NEW: which rubric produced each task's reward
+  "scorer_family_distribution": {
+    "oracle_overlap_f1": 78,
+    "oracle_overlap_recall": 2
+  }
+}
+```
 
-## Bias detection — backend_overlap severity
+A config that mixes families is immediately visible — and because the
+flat `mean_recall` is still computed across every IR-family task, you
+can compare it against the headline reward to see how much room
+recall-tilted tasks could buy.
+
+## Routing — how the family is chosen
+
+`ContinuousScorer` and `ArtifactScorer` resolve the family at score
+time via `_select_ir_family`:
+
+1. **Explicit override:** `metadata.json` carries
+   `verification.scorer_family = "..."`. If present, it wins. Mining
+   writers MAY populate this when emitting tasks; missing key is fine.
+2. **Weighted oracle:** if the on-disk `metrics.json` reports a finite
+   `weighted_recall`, the family becomes `oracle_weighted_f1`.
+3. **Default:** `oracle_overlap_f1`.
+
+Non-IR scorers declare their family at the class level
+(`BinaryScorer.SCORER_FAMILY = "binary_test"`, etc.) and ignore
+metadata routing.
+
+In-process API callers can pass a `family=` kwarg directly to
+`score_file_list` / `score_symbol_list` for tests and ad-hoc scoring
+outside the artifact-scorer flow.
+
+## Bias detection — informational over-shipping (preserved)
+
+`detect_overshipping_anti_pattern` keeps its informational role.
+Triggers: same task scored by two configs, both with recall ≥ 0.95, one
+with precision ≤ 0.5, precision delta ≥ 0.3. Under the new default
+family the F1 reward already captures the precision penalty, so the
+warning is redundant for `oracle_overlap_f1` configs — it's still
+emitted as informational because it's useful when comparing a
+default-family config against an `oracle_overlap_recall` config (same
+recall, very different precision, very different reward).
+
+## Bias detection — backend_overlap severity (unchanged)
 
 > codeprobe-9re9 (2026-04-29). Pairs with codeprobe-zat9 (multi-backend
 > oracle curator).
@@ -177,104 +295,68 @@ independent   = gt_backends − cfg_backends
   measurement bias.
 * **`quality_metrics.flag_counts`** — the per-trial flag is
   `backend_overlap` for warning severity (back-compat) and
-  `backend_overlap_informational` for the informational variant. A
-  dashboard filtering for true tautology risks reads `backend_overlap`;
-  the informational stream lives under its own key.
-
-### Motivating example
-
-The 2026-04-29 gascity validation run (5 tasks, baseline vs.
-with-sourcegraph) emitted a `backend_overlap` warning on every task.
-After codeprobe-zat9 the curator records `oracle_backends_consensus =
-["ast", "grep", "sourcegraph"]` for each task. The with-sourcegraph
-config has only `sourcegraph` in its MCP surface, so `independent =
-{ast, grep}` ≠ ∅ — the curator has independent corroboration of every
-file in the answer key. Under the severity gate the five warnings are
-re-classified `informational`, the `Bias warnings:` panel goes silent,
-and the run reads as a clean comparison.
+  `backend_overlap_informational` for the informational variant.
 
 ## Reading scoring outputs in practice
 
 * **Ranking configs?** Use `mean_reward` (or its alias
   `mean_automated_score`).
-* **Diagnosing why a config wins or loses?** Look at
-  `ir_diagnostics.mean_precision` vs `ir_diagnostics.mean_recall`. A
-  high-recall / low-precision config solves the task but ships noise; a
-  high-precision / low-recall config gives clean answers that miss
-  things; a balanced config wins on both.
-* **Auditing a single task?** `scoring_details.precision` /
-  `scoring_details.recall` / `scoring_details.f1` per task in
-  `<exp>/results/<config>/completed.json` (or read `ir_metrics` directly
-  off the `ScoreResult`).
+* **Diagnosing why a config wins or loses?** Look at the per-task
+  `scoring_details.sub_scores` — the rubric breakdown shows whether the
+  loss came from low precision (over-shipping) or low recall
+  (under-shipping). Aggregate-level `ir_diagnostics.mean_precision` vs
+  `ir_diagnostics.mean_recall` tells the same story across the whole
+  run.
+* **Auditing a single task?** Read `scoring_details.scorer_family` to
+  know which rubric scored it, then `scoring_details.sub_scores` for
+  the inputs.
+* **Comparing two configs?** Check
+  `scorer_family_distribution` — if the two configs scored under
+  different families, the headline reward isn't directly comparable
+  without knowing how many tasks landed in each family.
 * **Investigating an over-shipping pattern?** Look for `overshipping`
-  warnings in `aggregate.json#bias_warnings` — they include the
-  per-config precision split and the affected `task_id`.
+  warnings in `aggregate.json#bias_warnings`. Under the new default
+  family the warning is informational; the F1 reward already reflects
+  the penalty.
 
-## Worked example: before/after voxa on gascity
+## Worked example: e5d7a4e7 + 38223444 under the new default
 
-> codeprobe-ur8d (2026-04-29). N=3 repeat re-run of the codeprobe-3ljz
-> validator. 5 tasks × 2 configs (baseline vs. with-sourcegraph) ×
-> 3 repeats = 30 trials, $48.46 total.
+Two acceptance cases from the codeprobe-ur8d N=3 repeat run that exposed
+the original recall-only bug:
 
-The same 5 gascity tasks, scored under three reward formulas, demonstrate
-why the voxa pivot is doing real work. `mean_delta` is `with-sg − baseline`:
+| Task        | family             | precision | recall | reward (F1) | sub_scores       |
+| ----------- | ------------------ | --------: | -----: | ----------: | ---------------- |
+| e5d7a4e7    | oracle_overlap_f1  | 0.26      | 1.00   | **0.41**    | `{p:0.26, r:1.0, f1:0.41, reward:0.41}` |
+| 38223444    | oracle_overlap_f1  | 1.00      | 0.33   | **0.50**    | `{p:1.0, r:0.33, f1:0.50, reward:0.50}` |
 
-| Run            | Reward formula | GT source        | mean_delta | Cohen's d | wins (B/SG/tie) |
-| -------------- | -------------- | ---------------- | ---------: | --------: | --------------- |
-| `wo7n` (old)   | F1             | sg-only          |    +0.265  |   +0.40   | 1 / 3 / 1       |
-| `gcwk` (mid)   | F1             | multi-backend GT |    +0.141  |   +0.74   | 1 / 3 / 1       |
-| `ur8d` (this)  | **recall**     | multi-backend GT |  **−0.211**| **−0.975**| **3 / 0 / 2**   |
+* **A3 satisfied** — e5d7a4e7's adversarial dump (the agent shipped
+  ≈300 files including all 80 in the answer key) scores 0.41, below
+  the 0.5 pass threshold. The reward correctly says "didn't solve"
+  even though recall is 1.0.
+* **A4 satisfied** — 38223444's "found 1/3 with precision=1.0" agent
+  scores 0.5, exactly at the threshold. The reward correctly captures
+  "found a tight slice but missed two-thirds." Under the original
+  recall-only contract this would have been 0.33 (overstated as
+  "shipped few but not enough"); under the F1 default the precision
+  reward credits the agent for not over-shipping and the recall
+  penalty captures the missed truth.
 
-Same agent, same tasks, same MCP surface. Only the reward formula and
-oracle backends changed. The headline conclusion flipped sign — and the
-per-task numbers explain why:
-
-| Task        | baseline (recall, mean ±sd, N=3) | with-sg (recall, mean ±sd, N=3) | with-sg precision | delta  |
-| ----------- | -------------------------------: | ------------------------------: | ----------------: | -----: |
-| 38223444    | 0.833 ±0.167                     | 0.333 ±0.000                    | 1.00              | −0.500 |
-| 6cf61fea    | 0.889 ±0.096                     | 0.667 ±0.000                    | ≈0.21             | −0.222 |
-| b826fa9d    | 0.667 ±0.000                     | 0.667 ±0.000                    | 1.00              |  0.000 |
-| d9fee4ae    | 0.833 ±0.000                     | 0.833 ±0.000                    | ≈0.31             |  0.000 |
-| e5d7a4e7    | 0.944 ±0.096                     | 0.611 ±0.096                    | ≈0.22             | −0.333 |
-
-**Within-task variance is near zero.** with-sg's stdev is exactly 0.0 on 4
-of 5 tasks; baseline tops out at 0.167. The N=3 repeats confirm that
-recall is highly stable per `(config, task)` — the gap between runs is
-between-task heterogeneity, not within-run noise. (The 95% CI on the
-per-task delta of means is `[−0.48, +0.06]` — it straddles zero only
-because n=5 tasks, not because the per-trial signal is noisy.)
-
-**Why F1 said the opposite story.** Look at 38223444 with-sg: the agent
-writes 2 files, both correct (precision = 1.0, recall = 0.333). F1 = 0.5.
-Baseline writes ~16–22 files, finds 4–6 of the 6 correct (precision ≈
-0.30, recall ≈ 0.83). F1 ≈ 0.43. Under F1, with-sg wins because its
-answer is tighter — even though it found fewer of the files the user
-asked for. Under recall, baseline wins because it actually solved the
-task. F1 was rewarding tool-shape, not task completion.
-
-**This is the over-ship/under-ship asymmetry codeprobe-voxa was filed to
-fix.** The sourcegraph keyword index returns a few precise hits per
-query; the agent over-trusts that answer and stops searching. Without sg
-the agent falls back to grep/Read/Bash and casts a wider net — noisy,
-but it finds the files. Under "did you find what was asked?" semantics
-(recall), the wider-net agent wins. Under F1 the headline reads as a
-sourcegraph quality story; under recall it reads as exactly what it is —
-a tool-capability artifact at the precision/recall trade-off.
-
-The voxa fix surfaces this honestly: the headline reward (recall) tells
-you who solved the task, and the IR diagnostics
-(`ir_diagnostics.mean_precision`, the `overshipping` informational
-warning) tell you who shipped a tighter answer. Reviewers see both
-without one being smuggled into the other.
+Reviewers who want a recall-tilted view of either task add
+`{"verification": {"scorer_family": "oracle_overlap_recall"}}` to that
+task's metadata and re-score. Both views live alongside in
+`scoring_details.sub_scores`.
 
 ## Out of scope
 
-* Binary scorers (test.sh exit code) and continuous scorers whose
-  `metrics.json` does not emit `recall` continue to use their own score
-  shape — there's no IR data to surface, and `ScoreResult.ir_metrics`
-  is empty for those tasks.
-* The on-disk oracle script (`mining/writer.py:_ORACLE_PY`) still
-  writes `reward.txt = f1` for backward compatibility with already-mined
-  task directories. The reward pivot happens in the codeprobe runner
-  (`ContinuousScorer`), not in the per-task oracle, so existing tasks
-  do not need to be re-mined.
+* The on-disk oracle script (`mining/writer.py:_ORACLE_PY`) writes
+  `reward.txt = f1` (or `weighted_f1`) — same as before. The runner-
+  side family routing decides which value becomes the headline reward
+  without re-mining tasks.
+* Cost/time live on `CompletedTask`, not on `ScoreResult.diagnostics`.
+  The `diagnostics` block on a `ScoreResult` carries scorer-side
+  observations only (currently the IR metrics view); telemetry merges
+  in cost/time at the aggregate level.
+* `pass` thresholds are preserved on `ScoreResult.passed` for back-
+  compat — `score_passed` in `analysis/stats.py` reads it. New
+  consumers should compare `score` to a context-specific threshold
+  rather than read this flag.

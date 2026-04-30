@@ -642,13 +642,19 @@ def execute_task(
 
         # Propagate ScoreResult.details into CompletedTask.scoring_details
         # as a plain dict, keeping the backward-compatible passed/error
-        # fields so existing consumers continue to work.
+        # fields so existing consumers continue to work. The new voxa
+        # contract surfaces scorer_family and sub_scores too so the
+        # aggregate report can show which rubric drove each task's reward.
         scoring_details: dict = {
             "passed": score_result.passed,
             "error": score_result.error,
         }
         if score_result.details:
             scoring_details.update(dict(score_result.details))
+        if score_result.scorer_family:
+            scoring_details["scorer_family"] = score_result.scorer_family
+        if score_result.sub_scores:
+            scoring_details["sub_scores"] = dict(score_result.sub_scores)
 
         return TaskResult(
             completed=CompletedTask(

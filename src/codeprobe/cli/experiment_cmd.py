@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import statistics
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -481,6 +482,21 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
         recalls = _detail_values("recall")
         f1s = _detail_values("f1")
 
+        # Per-task scorer_family distribution — surfaces which rubric
+        # drove each task's reward so reviewers can spot mixed-family
+        # configs (e.g. an experiment that opted half its tasks into
+        # oracle_overlap_recall would not be comparable to a default
+        # oracle_overlap_f1 config). Tasks scored before scorer_family
+        # was wired contribute "" / unknown which we map to ``unspecified``.
+        family_counts: Counter[str] = Counter()
+        for r in cfg_rows:
+            details = r.get("scoring_details") or {}
+            fam = details.get("scorer_family")
+            if isinstance(fam, str) and fam:
+                family_counts[fam] += 1
+            else:
+                family_counts["unspecified"] += 1
+
         # ``mean_automated_score`` is the headline reward (recall-based for
         # IR scorers post-codeprobe-voxa). ``mean_reward`` is an alias for
         # callers who want an unambiguous name. ``ir_diagnostics`` carries
@@ -516,6 +532,10 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
                 "mean_recall": mean_r,
                 "mean_f1": mean_f,
             },
+            # codeprobe-voxa (revised): which rubric produced each
+            # task's reward. Sorted alphabetically so JSON diffs stay
+            # stable across runs.
+            "scorer_family_distribution": dict(sorted(family_counts.items())),
         }
 
     # Pairwise deltas

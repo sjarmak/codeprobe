@@ -58,10 +58,12 @@ class TestFileList:
             {"answer": ["a.py", "b.py"]},
         )
         result = scorer.score("", tmp_path)
-        # codeprobe-voxa: reward is recall (oracle-matching), not F1.
-        # recall = 2/3 ≈ 0.667; F1 ≈ 0.8 stays in ir_metrics.
-        assert result.score == pytest.approx(2 / 3, abs=0.01)
-        assert result.reward_score == pytest.approx(2 / 3, abs=0.01)
+        # codeprobe-voxa (revised): default family is oracle_overlap_f1,
+        # so F1 ≈ 0.8 is the headline reward. recall = 2/3 stays in
+        # sub_scores / ir_metrics for diagnostics.
+        assert result.score == pytest.approx(0.8, abs=0.01)
+        assert result.reward_score == pytest.approx(0.8, abs=0.01)
+        assert result.scorer_family == "oracle_overlap_f1"
         assert result.ir_metrics["recall"] == pytest.approx(2 / 3, abs=0.01)
         assert result.ir_metrics["precision"] == pytest.approx(1.0)
         assert result.ir_metrics["f1"] == pytest.approx(0.8, abs=0.01)
@@ -238,13 +240,16 @@ class TestLegacyFormat:
         )
         _write_json(tmp_path / "answer.json", {"answer": ["a.py"]})
         result = scorer.score("", tmp_path)
-        # codeprobe-voxa: reward is recall = 1/3 ≈ 0.333; F1 = 0.5 stays
-        # in ir_metrics for diagnostics.
-        assert result.score == pytest.approx(1 / 3, abs=0.01)
-        assert result.reward_score == pytest.approx(1 / 3, abs=0.01)
+        # codeprobe-voxa (revised): legacy IR format honors the same
+        # default family. Reward = F1 = 0.5 (recall=1/3, precision=1.0).
+        # Recall stays in sub_scores / ir_metrics.
+        assert result.score == pytest.approx(0.5, abs=0.01)
+        assert result.reward_score == pytest.approx(0.5, abs=0.01)
+        assert result.scorer_family == "oracle_overlap_f1"
         assert result.ir_metrics["recall"] == pytest.approx(1 / 3, abs=0.01)
         assert result.ir_metrics["precision"] == pytest.approx(1.0)
         assert result.ir_metrics["f1"] == pytest.approx(0.5, abs=0.01)
+        # 0.5 is exactly at PASS_THRESHOLD — passed is True under >= semantics
         assert result.passed is True
 
 

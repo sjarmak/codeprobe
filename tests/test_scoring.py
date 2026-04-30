@@ -334,13 +334,13 @@ class TestContinuousScorer:
 
     def test_metrics_json_is_propagated_to_details(self, tmp_path: Path) -> None:
         """Oracle metrics.json must be merged into ScoreResult.details
-        AND drive the reward (codeprobe-voxa).
+        AND drive the reward.
 
-        The oracle script writes precision/recall/f1 alongside reward.txt.
-        Reward is now oracle-matching (recall) — a brute-force grep with
-        recall=1.0 / precision=0.26 scores 1.0 reward (it found everything),
-        while a careful answer with recall=0.6 / precision=0.7 scores 0.6.
-        F1 stays in details/ir_metrics so callers can tell the two apart.
+        Under the revised codeprobe-voxa contract, default IR family is
+        ``oracle_overlap_f1`` — the brute-force grep with recall=1.0 /
+        precision=0.26 scores F1=0.41 (over-shipping IS reflected in the
+        reward). Recall stays in sub_scores / ir_metrics so reviewers can
+        still see "found everything but shipped noise".
         """
         script = (
             "#!/bin/bash\n"
@@ -355,12 +355,13 @@ class TestContinuousScorer:
         )
         task_dir = _make_task_dir(tmp_path, "cont-metrics", script)
         result = ContinuousScorer().score("output", task_dir)
-        # Reward is recall, not the f1 in reward.txt — over-shipping
-        # (precision=0.26) no longer drags the score down.
-        assert result.score == pytest.approx(1.0)
-        assert result.reward_score == pytest.approx(1.0)
-        assert result.passed is True
-        # IR diagnostics still surfaced via details + ir_metrics.
+        # Reward is F1 under the default IR family — over-shipping
+        # (precision=0.26) drags the score below the pass threshold.
+        assert result.score == pytest.approx(0.4092)
+        assert result.reward_score == pytest.approx(0.4092)
+        assert result.passed is False
+        assert result.scorer_family == "oracle_overlap_f1"
+        # IR diagnostics still surfaced via details + ir_metrics + sub_scores.
         assert result.details["precision"] == pytest.approx(0.2571)
         assert result.details["recall"] == pytest.approx(1.0)
         assert result.details["f1"] == pytest.approx(0.4092)
@@ -372,6 +373,10 @@ class TestContinuousScorer:
         assert result.ir_metrics["precision"] == pytest.approx(0.2571)
         assert result.ir_metrics["recall"] == pytest.approx(1.0)
         assert result.ir_metrics["f1"] == pytest.approx(0.4092)
+        # sub_scores exposes the rubric breakdown that produced the reward.
+        assert result.sub_scores["f1"] == pytest.approx(0.4092)
+        assert result.sub_scores["recall"] == pytest.approx(1.0)
+        assert result.sub_scores["reward"] == pytest.approx(0.4092)
 
     def test_metrics_json_missing_does_not_affect_score(
         self, tmp_path: Path

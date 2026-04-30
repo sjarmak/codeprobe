@@ -118,13 +118,14 @@ class TestArtifactScorerFileListThreshold:
     def test_f1_equal_threshold_is_pass(self, tmp_path: Path) -> None:
         """Reward exactly 0.5 must be passed=True (>= semantic).
 
-        Post-codeprobe-voxa reward is recall — pick a fixture where
-        recall == 0.5 to exercise the threshold boundary.
-        expected=[a,b], actual=[a] → recall = 1/2 = 0.5.
+        Under the revised codeprobe-voxa contract, default IR family is
+        ``oracle_overlap_f1``. Pick a fixture where F1 lands at exactly
+        0.5 to exercise the threshold boundary.
+        expected=[a,b,c], actual=[a] → precision=1.0, recall=1/3, F1=0.5.
         """
         task_dir = _make_file_list_task(
             tmp_path,
-            expected=["a.py", "b.py"],
+            expected=["a.py", "b.py", "c.py"],
             actual=["a.py"],
         )
         result = ArtifactScorer().score("", task_dir)
