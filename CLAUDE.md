@@ -71,6 +71,26 @@ This project is AI-orchestration code — ZFC applies at two levels:
 
 Update ZFC compliance notes when: new heuristic code is introduced, a known violation is refactored to use model calls, or a new justified exception is added. Not per-commit — only when the heuristic landscape changes.
 
+## Verifier-honesty lint (`tests/lint/test_scorer_honesty.py`)
+
+A pytest-based lint over `core/scoring.py` and `core/bias_detection.py` that catches four classes of *verifier dishonesty*:
+
+1. **`missing-scorer-family`** — every `ScoreResult(...)` constructor must declare which rubric produced the reward. Empty strings are accepted (the field is documented as "opaque" in that case); the kwarg must be present.
+2. **`quiet-recall-fallback`** — F1-family branches (`oracle_overlap_f1`, `oracle_overlap_fbeta`, `oracle_weighted_f1`) that fall back to `reward = recall` / `reward = weighted_recall`. The voxa-class regression: caller asked for a precision-sensitive reward and got recall.
+3. **`hardcoded-threshold`** — both inline float literals in compares (`if x < 0.7`) and module-level threshold-named constants (`_FOO_THRESHOLD = 0.5`). Named constants are honest documentation but still not config-plumbed.
+4. **`bare-except`** — bare `except:` and `except Exception:` without `# noqa` annotation in scorer code.
+
+### Adding a new scorer family
+
+1. Register the family name in `SCORER_FAMILIES` (`core/scoring.py`).
+2. Document the rubric (sub_scores shape) in `docs/scoring_model.md`.
+3. Every `ScoreResult` your scorer emits must declare `scorer_family=` (the lint enforces this).
+4. Add a fixture-backed test in `tests/test_scoring_reward.py`.
+
+### Allowing a known violation
+
+Pre-existing offenders are tracked in `_KNOWN_OFFENDERS` in `tests/lint/test_scorer_honesty.py`. Each entry pins the file path, line range, rule code, reason, and a follow-up bead ID. Adding a new entry needs reviewer sign-off; the lint is a CI gate, not a suggestion. When an offender is fixed, delete the matching entry — the `test_scorer_honesty_known_offenders_still_present` test flags stale allowlist entries so cleanup is enforced.
+
 ## Release Process
 
 1. Bump `version` in `pyproject.toml`

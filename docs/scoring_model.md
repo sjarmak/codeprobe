@@ -346,6 +346,37 @@ Reviewers who want a recall-tilted view of either task add
 task's metadata and re-score. Both views live alongside in
 `scoring_details.sub_scores`.
 
+## Verifier-honesty lint
+
+`tests/lint/test_scorer_honesty.py` is a pytest-based AST lint over
+`core/scoring.py` and `core/bias_detection.py`. It catches four
+classes of *verifier dishonesty* and runs as part of the standard
+`pytest` invocation (no separate CLI step):
+
+* **`missing-scorer-family`** — every `ScoreResult(...)` must declare
+  `scorer_family=`. Empty strings are allowed (the field is opaque
+  in that case); the kwarg has to be present.
+* **`quiet-recall-fallback`** — F1-family branches that fall back to
+  `reward = recall` / `weighted_recall`. The voxa-class regression.
+* **`hardcoded-threshold`** — inline float literals in compares AND
+  module-level threshold-named constants that are not config-plumbed.
+* **`bare-except`** — `except:` / `except Exception:` without a
+  `# noqa` annotation in scorer code.
+
+### Adding a new scorer family
+
+1. Add the name to `SCORER_FAMILIES` in `core/scoring.py`.
+2. Document the rubric and `sub_scores` shape in this file.
+3. Make sure every `ScoreResult` your scorer emits passes the lint
+   — declare `scorer_family=` on success AND error paths.
+4. Add a fixture-backed test under `tests/test_scoring_reward.py`.
+
+Pre-existing offenders are tracked in `_KNOWN_OFFENDERS` in the lint
+file with explicit follow-up bead IDs. Adding a new entry needs
+reviewer sign-off; deleting an entry once the offender is fixed is
+mandatory (the `test_scorer_honesty_known_offenders_still_present`
+test flags stale entries).
+
 ## Out of scope
 
 * The on-disk oracle script (`mining/writer.py:_ORACLE_PY`) writes

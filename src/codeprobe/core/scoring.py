@@ -851,6 +851,7 @@ class CheckpointScorer:
                 score=0.0,
                 passed=False,
                 error="tests/checkpoints.json not found",
+                scorer_family="weighted_checkpoints",
             )
 
         try:
@@ -862,6 +863,7 @@ class CheckpointScorer:
                 score=0.0,
                 passed=False,
                 error=f"Invalid checkpoints.json: {exc}",
+                scorer_family="weighted_checkpoints",
             )
         return checkpoints  # type: ignore[no-any-return]
 
@@ -884,6 +886,7 @@ class CheckpointScorer:
                 score=0.0,
                 passed=False,
                 error=f"Checkpoint weights must sum to 1.0, got {total_weight:.4f}",
+                scorer_family="weighted_checkpoints",
             )
 
         weighted_score = 0.0
@@ -904,6 +907,7 @@ class CheckpointScorer:
                     score=0.0,
                     passed=False,
                     error=f"Verifier not found: {verifier_name}",
+                    scorer_family="weighted_checkpoints",
                 )
 
             cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
@@ -977,6 +981,12 @@ def _normalize_path(p: str) -> str:
 
 
 _MAX_GROUND_TRUTH_BYTES = 10 * 1024 * 1024  # 10 MB
+
+# Confidence below which we log a warning about low-confidence ground
+# truth in :class:`ArtifactScorer`. Promoted from an inline literal so
+# verifier-honesty lint sees a named, documented constant rather than a
+# bare ``< 0.5`` in scoring code (see tests/lint/test_scorer_honesty.py).
+_LOW_CONFIDENCE_THRESHOLD: float = 0.5
 
 
 def _load_json_file(path: Path) -> dict | list | None:
@@ -1398,6 +1408,13 @@ class ArtifactScorer:
     """
 
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+        # Resolve the IR family up front so error-path ScoreResults can
+        # declare the rubric the caller requested. Verifier-honesty lint
+        # (tests/lint/test_scorer_honesty.py) requires every ScoreResult
+        # constructor to carry a scorer_family declaration.
+        ir_family = _select_ir_family(task_dir)
+        ir_beta = _read_fbeta_beta(task_dir)
+
         # Load ground truth — check tests/ subdir first (standard location),
         # then task_dir root (legacy). Keep in sync with mining/writer._ORACLE_PY.
         gt_path = task_dir / "tests" / "ground_truth.json"
@@ -1409,11 +1426,12 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="ground_truth.json not found or invalid",
+                scorer_family=ir_family,
             )
 
         # Warn on low-confidence ground truth
         confidence = gt.get("confidence")
-        if confidence is not None and confidence < 0.5:
+        if confidence is not None and confidence < _LOW_CONFIDENCE_THRESHOLD:
             logger.warning(
                 "Low confidence ground truth (%.2f) in %s",
                 confidence,
@@ -1427,6 +1445,7 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="answer.json not found",
+                scorer_family=ir_family,
             )
         answer_data = _load_json_file(answer_path)
         if answer_data is None or not isinstance(answer_data, dict):
@@ -1434,14 +1453,13 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="answer.json is invalid JSON",
+                scorer_family=ir_family,
             )
 
         # Detect format and dispatch. The IR family declared in
         # task metadata applies to all IR-style sub-scorers (file_list /
         # symbol_list / legacy file-list); non-IR scorers (count / boolean
         # / text / dependency_chain) ignore it.
-        ir_family = _select_ir_family(task_dir)
-        ir_beta = _read_fbeta_beta(task_dir)
         if "checks" in gt:
             return self._score_v2_checks(
                 gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
@@ -1468,7 +1486,12 @@ class ArtifactScorer:
         # Validate structure
         validation_error = validate_ground_truth(gt)
         if validation_error is not None:
-            return ScoreResult(score=0.0, passed=False, error=validation_error)
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=validation_error,
+                scorer_family="weighted_checkpoints",
+            )
 
         # Build answer lookup: {answer_type: answer_value} from agent answers.
         # Use the first occurrence of each answer_type (spec: "first match").
@@ -1507,15 +1530,22 @@ class ArtifactScorer:
             actual = answer_lookup.get(answer_type)
 
             if scorer_fn is None:
-                # Unknown answer_type — scores 0.0 for this check
+                # Unknown answer_type — scores 0.0 for this check. The
+                # family is the answer_type itself so callers can see
+                # which check failed.
                 check_result = ScoreResult(
                     score=0.0,
                     passed=False,
                     error=f"Unknown answer_type: {answer_type!r}",
+                    scorer_family=str(answer_type),
                 )
             elif actual is None:
                 # Agent didn't provide an answer for this type
-                check_result = ScoreResult(score=0.0, passed=False)
+                check_result = ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    scorer_family=str(answer_type),
+                )
             elif answer_type in _IR_LIST_ANSWER_TYPES:
                 # IR scorers take a family kwarg so the v2 multi-check
                 # composite respects per-task scorer routing. ``beta`` is
@@ -1568,11 +1598,22 @@ class ArtifactScorer:
                 agent_answer_type,
             )
 
+        # Family for this scoring path: the answer_type's natural family
+        # when known (file_list / symbol_list use ir_family; non-IR types
+        # use exact_match), otherwise the answer_type itself.
+        if answer_type in _IR_LIST_ANSWER_TYPES:
+            error_family = ir_family
+        elif isinstance(answer_type, str) and answer_type:
+            error_family = str(answer_type)
+        else:
+            error_family = ""
+
         if expected is None:
             return ScoreResult(
                 score=0.0,
                 passed=False,
                 error="ground_truth.json missing 'answer' field",
+                scorer_family=error_family,
             )
 
         if actual is None:
@@ -1580,6 +1621,7 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="answer.json missing 'answer' field",
+                scorer_family=error_family,
             )
 
         # Look up in builtin registry first
@@ -1602,6 +1644,7 @@ class ArtifactScorer:
             score=0.0,
             passed=False,
             error=f"Unknown answer_type: {answer_type!r}",
+            scorer_family=error_family,
         )
 
     def _score_legacy_format(
@@ -1625,12 +1668,14 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="Legacy ground_truth.json 'expected' is not a list",
+                scorer_family=ir_family,
             )
         if not isinstance(actual, list):
             return ScoreResult(
                 score=0.0,
                 passed=False,
                 error="answer.json 'answer' is not a list",
+                scorer_family=ir_family,
             )
         expected_set = frozenset(_normalize_path(p) for p in expected if p)
         actual_set = frozenset(_normalize_path(p) for p in actual if p)
@@ -1695,6 +1740,7 @@ def _safe_leg_score(
             score=0.0,
             passed=False,
             error=f"scorer raised: {type(exc).__name__}: {exc}",
+            scorer_family="dual_composite",
         )
 
 
@@ -1764,6 +1810,7 @@ class DualScorer:
                     "absent, unparseable, or has no verification key"
                 ),
                 details={"error_metadata": "verification_block_empty"},
+                scorer_family="dual_composite",
             )
         reward_type = verification.get("reward_type", "binary") or "binary"
         scoring_policy = verification.get("scoring_policy", "") or ""
