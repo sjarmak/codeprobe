@@ -47,6 +47,7 @@ from codeprobe.snapshot.scanners import Scanner
 
 __all__ = [
     "CsbLayout",
+    "FairnessLeakError",
     "SymlinkEscapeError",
     "create_snapshot",
     "preflight_symlink_containment",
@@ -55,6 +56,14 @@ __all__ = [
 
 class SymlinkEscapeError(RuntimeError):
     """Raised when a symlink target would escape the containing root."""
+
+
+class FairnessLeakError(RuntimeError):
+    """Raised when ``create_snapshot`` is invoked with ``fairness_check=True``
+    and the corpus contains oracle leaks. The snapshot is not produced; the
+    caller fixes the leaking agent-facing file (or removes the offending
+    task) and retries.
+    """
 
 
 @dataclass(frozen=True)
@@ -276,12 +285,22 @@ def create_snapshot(
     signing_key: str | None = None,
     canary_proof: CanaryResult | None = None,
     allow_source_in_export: bool = False,
+    *,
+    fairness_check: bool = False,
+    fairness_repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Create a CSB-layout snapshot of ``experiment_dir`` at ``out_dir``.
 
     Parameters mirror :func:`codeprobe.snapshot.redact.redact` so the CLI can
     pass through user flags directly. The return value is a status dict
     suitable for JSON emission.
+
+    When ``fairness_check`` is True, run :func:`check_fairness` against any
+    task directories under ``experiment_dir`` before writing the snapshot.
+    Leaks raise :class:`FairnessLeakError` and the snapshot is not produced.
+    Use ``fairness_repo_root`` to point the static scan at a different repo
+    (typically the codeprobe checkout); when None, ``experiment_dir`` is
+    scanned for agent-facing files.
     """
     experiment_dir = Path(experiment_dir)
     out_dir = Path(out_dir)
@@ -290,6 +309,26 @@ def create_snapshot(
     # output directories so a malicious experiment can't half-populate a
     # snapshot.
     preflight_symlink_containment(experiment_dir)
+
+    if fairness_check:
+        # Lazy import to avoid pulling the QA stack into snapshot.create's
+        # import cycle when callers don't opt into fairness scanning.
+        from codeprobe.snapshot.fairness import check_fairness
+
+        repo_root = fairness_repo_root if fairness_repo_root else experiment_dir
+        fairness_result = check_fairness(
+            task_roots=[experiment_dir],
+            repo_root=repo_root,
+        )
+        if not fairness_result.ok:
+            raise FairnessLeakError(
+                f"Class E fairness scan found {len(fairness_result.leaks)} "
+                f"leak(s) across {fairness_result.tasks_scanned} task(s); "
+                "refusing to publish snapshot. "
+                f"First leak: token={fairness_result.leaks[0].token!r} "
+                f"location={fairness_result.leaks[0].location!r} "
+                f"task_id={fairness_result.leaks[0].task_id!r}."
+            )
 
     layout = _ensure_layout(out_dir)
 

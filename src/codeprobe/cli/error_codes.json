@@ -288,6 +288,14 @@
       "since": "0.7.1",
       "description": "Another codeprobe process holds the tenant lock for the same command (mine/run/snapshot). Only one such invocation may run per tenant at a time.",
       "remediation_pattern": "Run `ps -p <holder_pid>` to inspect the live holder, or remove the stale lockfile at ~/.codeprobe/state/{tenant}/.lock-<command> if you are sure the holder is dead."
+    },
+    {
+      "code": "FAIRNESS_LEAK_DETECTED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.9.0",
+      "description": "The Class E fairness scan found one or more oracle paths or symbols leaking into agent-facing files (CLAUDE.md, AGENTS.md, README, .cursor/rules) or rendered preambles. Agents reading those files would receive an unfair hint about the answer.",
+      "remediation_pattern": "Run `codeprobe snapshot fairness <task_root> --report fairness.json` to inspect the leaks, then either redact the offending agent-facing file or remove the leaking task from the corpus before retrying."
     }
   ]
 }

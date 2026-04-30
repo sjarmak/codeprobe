@@ -21,10 +21,18 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from codeprobe.snapshot.fairness import (
+    FairnessLeak,
+    FairnessResult,
+    check_fairness,
+)
 from codeprobe.snapshot.redact import VerificationResult, verify_snapshot
 
 __all__ = [
     "ExtendedVerificationResult",
+    "FairnessLeak",
+    "FairnessResult",
+    "check_fairness",
     "verify_snapshot_extended",
 ]
 

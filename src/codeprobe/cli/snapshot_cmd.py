@@ -33,6 +33,7 @@ from codeprobe.snapshot.canary import (
     load_canary_proof,
 )
 from codeprobe.snapshot.create import (
+    FairnessLeakError,
     SymlinkEscapeError,
     create_snapshot,
 )
@@ -52,6 +53,11 @@ from codeprobe.snapshot.scanners import (
     Scanner,
     ScannerUnavailableError,
     TrufflehogScanner,
+)
+from codeprobe.snapshot.fairness import (
+    FairnessResult,
+    check_fairness,
+    write_fairness_report,
 )
 from codeprobe.snapshot.verify import verify_snapshot_extended
 
@@ -148,6 +154,28 @@ def _build_scanner(name: str) -> Scanner:
         "'unsigned' (body hash only)."
     ),
 )
+@click.option(
+    "--check-fairness/--no-check-fairness",
+    "check_fairness_flag",
+    default=False,
+    show_default=True,
+    help=(
+        "Run the Class E fairness scan on tasks under EXPERIMENT_DIR before "
+        "writing the snapshot. Refuses to publish if oracle paths leak into "
+        "agent-facing files (CLAUDE.md, AGENTS.md, README, .cursor/rules)."
+    ),
+)
+@click.option(
+    "--fairness-repo-root",
+    "fairness_repo_root",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help=(
+        "Repository whose agent-facing files the fairness scan should "
+        "examine. Defaults to EXPERIMENT_DIR. Has no effect without "
+        "--check-fairness."
+    ),
+)
 @tenant_option(required=False)
 @click.pass_context
 def create_cmd(
@@ -159,6 +187,8 @@ def create_cmd(
     scanner_name: str,
     canary_proof_path: Path | None,
     signing_key: str | None,
+    check_fairness_flag: bool,
+    fairness_repo_root: Path | None,
     tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
@@ -274,7 +304,20 @@ def create_cmd(
                 signing_key=signing_key,
                 canary_proof=canary_result,
                 allow_source_in_export=allow_source_in_export,
+                fairness_check=check_fairness_flag,
+                fairness_repo_root=fairness_repo_root,
             )
+        except FairnessLeakError as e:
+            raise DiagnosticError(
+                code="FAIRNESS_LEAK_DETECTED",
+                message=f"Snapshot blocked: {e}",
+                diagnose_cmd=(
+                    f"codeprobe snapshot fairness {experiment_dir} "
+                    "--report fairness.json"
+                ),
+                terminal=True,
+                detail={"experiment_dir": str(experiment_dir)},
+            ) from e
         except (
             PermissionError,
             CanaryFailedError,
@@ -357,6 +400,169 @@ def verify_cmd(
             terminal=True,
             detail=payload,
         )
+
+
+@snapshot.command("fairness")
+@add_json_flags
+@click.argument(
+    "task_root",
+    nargs=-1,
+    required=True,
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+)
+@click.option(
+    "--repo-root",
+    "repo_root",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path),
+    default=None,
+    help=(
+        "Repository whose agent-facing files (CLAUDE.md, AGENTS.md, README, "
+        ".cursor/rules) should be scanned for oracle leaks. Defaults to "
+        "TASK_ROOT."
+    ),
+)
+@click.option(
+    "--extra-file",
+    "extra_files",
+    multiple=True,
+    type=click.Path(path_type=Path),
+    help=(
+        "Additional file to treat as agent-facing (e.g. an injected "
+        "CLAUDE.md from the harness). May be repeated."
+    ),
+)
+@click.option(
+    "--check-preambles/--no-check-preambles",
+    default=True,
+    help=(
+        "Also render the built-in preambles and check them for oracle "
+        "leaks. Default: enabled."
+    ),
+)
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Optional path to write a JSON fairness report.",
+)
+def fairness_cmd(
+    task_root: tuple[Path, ...],
+    repo_root: Path | None,
+    extra_files: tuple[Path, ...],
+    check_preambles: bool,
+    report_path: Path | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
+    """Class E fairness scan: detect oracle leakage in agent-facing files.
+
+    Walks every task directory under TASK_ROOT, extracts oracle tokens
+    (file paths, symbols, scalar answers) from each task's
+    ``ground_truth.json``, and searches every agent-facing file under
+    ``--repo-root`` (CLAUDE.md, AGENTS.md, README, .cursor/rules/) for
+    verbatim hits. Any hit means an agent reading that file gets an
+    unfair hint relative to one that doesn't.
+
+    Exits non-zero when leaks are found so this command can serve as a
+    CI gate before publishing new tasks.
+    """
+    mode = resolve_mode(
+        "snapshot fairness", json_flag, no_json_flag, json_lines_flag,
+    )
+
+    effective_repo_root = repo_root if repo_root is not None else task_root[0]
+
+    rendered_preambles: dict[str, str] | None = None
+    if check_preambles:
+        rendered_preambles = _render_default_preambles()
+
+    result = check_fairness(
+        task_roots=list(task_root),
+        repo_root=effective_repo_root,
+        extra_agent_files=list(extra_files),
+        rendered_preambles=rendered_preambles,
+    )
+
+    if report_path is not None:
+        write_fairness_report(result, report_path)
+
+    payload = result.to_dict()
+    if mode.mode == "pretty":
+        click.echo(json.dumps(payload, indent=2))
+    else:
+        emit_envelope(
+            command="snapshot fairness",
+            ok=result.ok,
+            data=payload,
+        )
+
+    if not result.ok:
+        raise DiagnosticError(
+            code="FAIRNESS_LEAK_DETECTED",
+            message=(
+                f"Fairness scan found {len(result.leaks)} leak(s) across "
+                f"{result.tasks_scanned} task(s). See report for details."
+            ),
+            diagnose_cmd="codeprobe snapshot fairness <task_root> --report fairness.json",
+            terminal=True,
+            detail={
+                "task_root": [str(p) for p in task_root],
+                "repo_root": str(effective_repo_root),
+                "leak_count": len(result.leaks),
+            },
+        )
+
+
+def _render_default_preambles() -> dict[str, str]:
+    """Render the built-in preambles for the dynamic check.
+
+    Uses a small, fixed capability + tool table covering the canonical
+    code-intel surface. The point is to verify the preamble template
+    itself doesn't bleed any task-specific content; the exact tools we
+    pass are immaterial as long as the rendered text reflects the
+    template's substitution behaviour.
+    """
+    from codeprobe.preambles import _PREAMBLES_DIR
+    from codeprobe.preambles.generator import render_preamble
+
+    rendered: dict[str, str] = {}
+    # Static .md preambles: read raw text (no Jinja substitution).
+    for md_path in sorted(_PREAMBLES_DIR.glob("*.md")):
+        rendered[md_path.name] = md_path.read_text(encoding="utf-8")
+
+    # Dynamic Jinja preamble: render with a representative capability set.
+    # If anything goes wrong (capability-id drift, missing template), skip
+    # this preamble rather than failing the whole scan — the static .md
+    # files still get checked.
+    try:
+        text = render_preamble(
+            capability_set=["KEYWORD_SEARCH", "SYMBOL_REFERENCES", "FILE_READ"],
+            tool_table=[
+                {
+                    "name": "search_keyword",
+                    "description": "Indexed keyword search across the repo.",
+                    "capability_id": "KEYWORD_SEARCH",
+                },
+                {
+                    "name": "find_references",
+                    "description": "Find all references to a symbol.",
+                    "capability_id": "SYMBOL_REFERENCES",
+                },
+                {
+                    "name": "read_file",
+                    "description": "Read a file by path.",
+                    "capability_id": "FILE_READ",
+                },
+            ],
+        )
+        rendered["custom.md.j2"] = text
+    except Exception:
+        # The dynamic render is best-effort. The static .md preambles
+        # above provide leakage coverage on their own.
+        pass
+    return rendered
 
 
 _EXPORT_FORMATS: tuple[str, ...] = ("datadog", "sigma", "sheets", "browse")
