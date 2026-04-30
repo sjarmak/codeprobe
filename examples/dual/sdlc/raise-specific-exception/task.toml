@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Replace bare except with specific exception"
 language = "python"
 task_type = "sdlc_code_change"
+synthetic = true
 
 [verification]
 type = "test_script"

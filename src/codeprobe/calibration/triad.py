@@ -57,6 +57,7 @@ __all__ = [
     "FixtureOutcome",
     "TriadResult",
     "discover_calibration_tasks",
+    "is_synthetic_task",
     "run_triad",
     "synthesize_adversarial_output",
     "synthesize_golden_output",
@@ -434,6 +435,8 @@ def _score_fixture(
 
 def discover_calibration_tasks(
     roots: Iterable[Path] | None = None,
+    *,
+    include_synthetic: bool = False,
 ) -> list[Path]:
     """Walk ``roots`` and return every directory that looks like a task.
 
@@ -446,6 +449,12 @@ def discover_calibration_tasks(
 
     Passing ``None`` uses the in-repo defaults (examples/, .codeprobe/,
     e2e-codeprobe-self/, tests/fixtures).
+
+    Tasks whose metadata sets ``synthetic = true`` are skipped by default.
+    The flag marks illustrative example tasks (e.g. ``examples/dual/*``)
+    whose ``tests/test.sh`` is intentionally a placeholder ``exit 0`` and
+    therefore breaches the null/adversarial bands. Pass
+    ``include_synthetic=True`` to include them anyway.
     """
     if roots is None:
         repo = _detect_repo_root()
@@ -463,8 +472,24 @@ def discover_calibration_tasks(
             if resolved in seen:
                 continue
             seen.add(resolved)
+            if not include_synthetic and is_synthetic_task(path):
+                continue
             found.append(path)
     return sorted(found, key=lambda p: str(p))
+
+
+def is_synthetic_task(task_dir: Path) -> bool:
+    """Return True iff the task's metadata sets ``synthetic = true``.
+
+    Reads ``task.toml`` first, then ``metadata.json``. Unparseable files
+    return False — discovery surfaces the breakage through the regular
+    scoring path rather than silently dropping the task.
+    """
+    try:
+        meta = load_task_meta(task_dir)
+    except Exception:  # pragma: no cover — defensive
+        return False
+    return bool(meta.get("synthetic"))
 
 
 def _walk_tasks(root: Path) -> Iterator[Path]:

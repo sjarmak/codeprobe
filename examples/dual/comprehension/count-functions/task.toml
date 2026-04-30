@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Count the number of top-level function definitions"
 language = "python"
 task_type = "architecture_comprehension"
+synthetic = true
 
 [verification]
 type = "test_script"

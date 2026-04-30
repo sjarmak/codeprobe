@@ -8,6 +8,7 @@ name = "dual-task-001"
 difficulty = "medium"
 description = "Dual-verification task fixture"
 language = "python"
+synthetic = true
 
 [verification]
 type = "test_script"

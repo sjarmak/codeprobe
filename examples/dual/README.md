@@ -85,4 +85,16 @@ Its `test.sh` checks that the file's first AST node is a string literal (i.e. a 
 - **Scoring policies vary.** Some examples use `min` (strictest), some `mean` (balanced), some `weighted` (asymmetric). This shows the configuration surface.
 - **Languages vary.** Most examples use Python or shell, but the dual format is language-agnostic.
 
+## `synthetic = true` flag
+
+Every example task's `task.toml` declares `synthetic = true` under `[metadata]`. This flag tells codeprobe's auto-discovery (`codeprobe calibrate-triad` and similar) to skip these tasks by default — their placeholder `tests/test.sh` would otherwise breach the null/adversarial reward bands and create false positives in the corpus.
+
+To include synthetic tasks in a calibration run, pass `--include-synthetic`:
+
+```bash
+uv run codeprobe calibrate-triad --include-synthetic
+```
+
+When you copy an example directory to bootstrap a real task, **remove the `synthetic = true` line** in `task.toml` once the task does meaningful verification — otherwise it will be silently skipped from default corpora.
+
 To create your own dual task, copy one of these directories as a starting point and replace the contents.

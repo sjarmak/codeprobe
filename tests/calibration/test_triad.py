@@ -14,6 +14,7 @@ from codeprobe.calibration.triad import (
     BAND_LIMITS,
     FAMILIES,
     discover_calibration_tasks,
+    is_synthetic_task,
     run_triad,
     synthesize_adversarial_output,
     synthesize_golden_output,
@@ -392,6 +393,70 @@ def test_discover_skips_non_task_dirs(tmp_path: Path) -> None:
     assert discover_calibration_tasks([tmp_path]) == []
 
 
+def _make_synthetic_task(parent: Path, name: str) -> Path:
+    """Create a minimal task dir flagged ``synthetic = true``."""
+    task = parent / name
+    (task / "tests").mkdir(parents=True)
+    (task / "task.toml").write_text(
+        textwrap.dedent(
+            f"""
+            [task]
+            id = "{name}"
+            repo = "synthetic"
+
+            [metadata]
+            name = "{name}"
+            synthetic = true
+
+            [verification]
+            type = "test_script"
+            command = "bash tests/test.sh"
+            reward_type = "binary"
+            """
+        ).strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (task / "instruction.md").write_text("noop", encoding="utf-8")
+    test_sh = task / "tests" / "test.sh"
+    test_sh.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    _make_executable(test_sh)
+    (task / "tests" / "ground_truth.json").write_text(
+        json.dumps({"answer_type": "text", "answer": "ok"}), encoding="utf-8"
+    )
+    return task
+
+
+def test_discover_skips_synthetic_tasks_by_default(
+    tmp_path: Path,
+    binary_count_task: Path,
+) -> None:
+    """Tasks with ``synthetic = true`` must be omitted from default discovery."""
+    _make_synthetic_task(tmp_path, "synthetic-noop")
+    found = discover_calibration_tasks([tmp_path])
+    names = {p.name for p in found}
+    assert names == {"count-things"}, found
+
+
+def test_discover_includes_synthetic_when_flag_set(
+    tmp_path: Path,
+    binary_count_task: Path,
+) -> None:
+    _make_synthetic_task(tmp_path, "synthetic-noop")
+    found = discover_calibration_tasks([tmp_path], include_synthetic=True)
+    names = {p.name for p in found}
+    assert names == {"count-things", "synthetic-noop"}, found
+
+
+def test_is_synthetic_task_reads_metadata_flag(
+    tmp_path: Path,
+    binary_count_task: Path,
+) -> None:
+    synth = _make_synthetic_task(tmp_path, "synthetic-noop")
+    assert is_synthetic_task(synth) is True
+    assert is_synthetic_task(binary_count_task) is False
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -463,3 +528,52 @@ def test_cli_calibrate_triad_strict_exits_nonzero_on_breach(
     )
     assert result.exit_code == 1, result.output
     assert (out_dir / "broken.json").is_file()
+
+
+def test_cli_calibrate_triad_skips_synthetic_when_walking_parent(
+    tmp_path: Path,
+    binary_count_task: Path,
+) -> None:
+    """When invoked on a parent dir, synthetic-tagged tasks are filtered out
+    by default but pulled back in by ``--include-synthetic``."""
+    _make_synthetic_task(tmp_path, "synthetic-noop")
+
+    runner = CliRunner()
+    out_dir = tmp_path / "calib-out"
+    report = tmp_path / "report.md"
+
+    result = runner.invoke(
+        main,
+        [
+            "calibrate-triad",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--report",
+            str(report),
+            "--no-json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (out_dir / "count-things.json").is_file()
+    assert not (out_dir / "synthetic-noop.json").exists()
+
+    out_dir2 = tmp_path / "calib-out-incl"
+    report2 = tmp_path / "report-incl.md"
+    result2 = runner.invoke(
+        main,
+        [
+            "calibrate-triad",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir2),
+            "--report",
+            str(report2),
+            "--include-synthetic",
+            "--no-strict",
+            "--no-json",
+        ],
+    )
+    assert result2.exit_code == 0, result2.output
+    assert (out_dir2 / "count-things.json").is_file()
+    assert (out_dir2 / "synthetic-noop.json").is_file()

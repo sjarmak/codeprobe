@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "List public symbols exported from package"
 language = "python"
 task_type = "architecture_comprehension"
+synthetic = true
 
 [verification]
 type = "test_script"

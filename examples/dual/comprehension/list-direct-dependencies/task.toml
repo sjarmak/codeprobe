@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "List direct runtime dependencies"
 language = "python"
 task_type = "architecture_comprehension"
+synthetic = true
 
 [verification]
 type = "test_script"

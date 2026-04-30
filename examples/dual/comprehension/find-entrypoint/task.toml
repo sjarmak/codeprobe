@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Identify the project's CLI entry point"
 language = "python"
 task_type = "architecture_comprehension"
+synthetic = true
 
 [verification]
 type = "test_script"

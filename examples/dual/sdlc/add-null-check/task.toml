@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Add a null/None guard"
 language = "python"
 task_type = "sdlc_code_change"
+synthetic = true
 
 [verification]
 type = "test_script"

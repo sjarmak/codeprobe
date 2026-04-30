@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Extract repeated logic into a helper function"
 language = "python"
 task_type = "sdlc_code_change"
+synthetic = true
 
 [verification]
 type = "test_script"

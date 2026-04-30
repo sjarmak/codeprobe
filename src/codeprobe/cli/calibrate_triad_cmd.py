@@ -83,12 +83,22 @@ _DEFAULT_OUT_DIR = Path("docs/qa/codeprobe_calibration")
     help="Exit non-zero on any band breach. --no-strict reports breaches "
     "but always exits 0.",
 )
+@click.option(
+    "--include-synthetic/--no-include-synthetic",
+    default=False,
+    show_default=True,
+    help="Include tasks whose metadata sets 'synthetic = true' (e.g. the "
+    "examples/dual/* illustrative tasks whose tests/test.sh is a "
+    "placeholder). Off by default — synthetic tasks always breach the "
+    "null/adversarial bands and only exist to demonstrate the file shape.",
+)
 def calibrate_triad(
     task_dirs: tuple[Path, ...],
     out_dir: Path,
     report: Path | None,
     limit: int | None,
     strict: bool,
+    include_synthetic: bool,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
@@ -103,7 +113,7 @@ def calibrate_triad(
         "calibrate-triad", json_flag, no_json_flag, json_lines_flag
     )
 
-    tasks = _resolve_task_dirs(task_dirs)
+    tasks = _resolve_task_dirs(task_dirs, include_synthetic=include_synthetic)
     if limit is not None:
         tasks = tasks[:limit]
 
@@ -149,8 +159,16 @@ def calibrate_triad(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_task_dirs(task_dirs: tuple[Path, ...]) -> list[Path]:
-    """Expand explicit args or fall back to discovery defaults."""
+def _resolve_task_dirs(
+    task_dirs: tuple[Path, ...], *, include_synthetic: bool = False
+) -> list[Path]:
+    """Expand explicit args or fall back to discovery defaults.
+
+    Explicit task-dir arguments are always included regardless of the
+    ``synthetic`` flag — pointing the CLI at a directory is an opt-in.
+    The ``include_synthetic`` flag only governs what the auto-walk under
+    parent directories returns.
+    """
     if task_dirs:
         expanded: list[Path] = []
         for td in task_dirs:
@@ -160,7 +178,11 @@ def _resolve_task_dirs(task_dirs: tuple[Path, ...]) -> list[Path]:
                 expanded.append(td)
                 continue
             # Treat as a parent directory; discover within it.
-            expanded.extend(discover_calibration_tasks([td]))
+            expanded.extend(
+                discover_calibration_tasks(
+                    [td], include_synthetic=include_synthetic
+                )
+            )
         # Deduplicate while preserving order.
         seen: set[Path] = set()
         unique: list[Path] = []
@@ -171,7 +193,7 @@ def _resolve_task_dirs(task_dirs: tuple[Path, ...]) -> list[Path]:
             seen.add(resolved)
             unique.append(p)
         return unique
-    return discover_calibration_tasks()
+    return discover_calibration_tasks(include_synthetic=include_synthetic)
 
 
 def _write_task_json(out_dir: Path, result: TriadResult) -> None:
