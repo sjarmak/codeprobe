@@ -259,6 +259,8 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
             cost_model=t.get("cost_model", "unknown"),
             cost_source=t.get("cost_source", "unavailable"),
             tool_call_count=t.get("tool_call_count"),
+            tool_use_by_name=t.get("tool_use_by_name"),
+            error_category=t.get("error_category"),
             scoring_details=t.get("scoring_details", {}),
             metadata=t.get("metadata", {}),
         )

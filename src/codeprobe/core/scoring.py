@@ -94,12 +94,37 @@ def read_task_verification(task_dir: Path) -> dict:
 
 @dataclass(frozen=True)
 class ScoreResult:
-    """Result of scoring a task's agent output."""
+    """Result of scoring a task's agent output.
+
+    ``score`` is the headline reward — the number that drives ranking,
+    pass/fail, and ``mean_automated_score`` in aggregate.json. For IR-style
+    scorers (``file_list``, ``symbol_list``, oracle continuous) reward is
+    oracle-matching (recall, or weighted_recall when the oracle uses tier
+    weights); precision and F1 are computed alongside but do **not** drag
+    the reward down.
+
+    ``ir_metrics`` exposes those IR diagnostics (``precision`` / ``recall``
+    / ``f1`` and optional ``weighted_recall``) so callers can inspect the
+    over-shipping vs under-shipping shape without re-computing it. Empty
+    for non-IR scorers (binary, exact_match, count, etc.).
+
+    ``reward_score`` mirrors ``score`` for now and is provided so future
+    schema migrations can disambiguate "score the user reads" from
+    "headline metric for ranking" without another contract break. Today
+    the two are equal by definition.
+
+    ``details`` continues to carry the precision/recall/f1 fields for
+    backward compatibility with aggregate.json consumers that read
+    ``scoring_details["f1"]`` directly. Treat ``ir_metrics`` as the
+    canonical source going forward.
+    """
 
     score: float
     passed: bool
     error: str | None = None
     details: dict = field(default_factory=dict)
+    reward_score: float | None = None
+    ir_metrics: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -395,12 +420,27 @@ class ContinuousScorer:
             clamped = max(0.0, min(1.0, raw_score))
             details = self._read_metrics_json(run.sandbox_task)
             if details:
-                return ScoreResult(
-                    score=clamped,
-                    passed=clamped > 0.0,
-                    details=details,
+                # IR-style oracle (file_list / weighted file_list): reward
+                # is recall (or weighted_recall when the oracle uses tier
+                # weights). The headline ``score`` shifts off F1 onto
+                # oracle-matching so over-shipping no longer drags the
+                # reward down. F1 / precision stay in ``ir_metrics`` for
+                # diagnostics. See docs/scoring_model.md.
+                reward, ir_metrics = self._derive_reward_and_metrics(
+                    details, fallback=clamped
                 )
-            return ScoreResult(score=clamped, passed=clamped > 0.0)
+                return ScoreResult(
+                    score=reward,
+                    passed=reward > 0.0,
+                    details=details,
+                    reward_score=reward,
+                    ir_metrics=ir_metrics,
+                )
+            return ScoreResult(
+                score=clamped,
+                passed=clamped > 0.0,
+                reward_score=clamped,
+            )
         finally:
             if run.sandbox_dir is not None:
                 shutil.rmtree(run.sandbox_dir, ignore_errors=True)
@@ -413,6 +453,59 @@ class ContinuousScorer:
         if not reward_file.is_file():
             return None
         return _parse_float_score(reward_file.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _derive_reward_and_metrics(
+        details: dict, *, fallback: float
+    ) -> tuple[float, dict]:
+        """Derive ``(reward, ir_metrics)`` from an oracle ``metrics.json``.
+
+        The oracle today writes ``reward.txt = f1`` (or ``weighted_f1``)
+        for legacy reasons. We pivot to oracle-matching here so the
+        scoring contract stays decoupled from the on-disk script:
+
+        * If ``weighted_recall`` is present and finite → reward = it
+          (matches the org-scale weighted oracle's intent that "tier-A
+          hits matter more than tier-C hits, and over-shipping is free").
+        * Otherwise if ``recall`` is present → reward = recall.
+        * Otherwise fall back to the parsed reward.txt value (``fallback``)
+          so older mined tasks without recall in their metrics still get
+          a sensible score.
+
+        ``ir_metrics`` echoes the precision/recall/f1 (and weighted_recall
+        when present) for downstream diagnostics. Values are coerced to
+        float and clamped to [0, 1] — defensive, since the oracle script
+        is user-modifiable.
+        """
+
+        def _num(key: str) -> float | None:
+            v = details.get(key)
+            if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                return max(0.0, min(1.0, float(v)))
+            return None
+
+        precision = _num("precision")
+        recall = _num("recall")
+        f1 = _num("f1")
+        weighted_recall = _num("weighted_recall")
+
+        if weighted_recall is not None:
+            reward = weighted_recall
+        elif recall is not None:
+            reward = recall
+        else:
+            reward = max(0.0, min(1.0, fallback))
+
+        ir_metrics: dict[str, float] = {}
+        if precision is not None:
+            ir_metrics["precision"] = precision
+        if recall is not None:
+            ir_metrics["recall"] = recall
+        if f1 is not None:
+            ir_metrics["f1"] = f1
+        if weighted_recall is not None:
+            ir_metrics["weighted_recall"] = weighted_recall
+        return reward, ir_metrics
 
     @classmethod
     def _read_metrics_json(cls, sandbox_task: Path | None) -> dict:
@@ -652,6 +745,26 @@ def _find_answer_file(task_dir: Path) -> Path | None:
 # ---------------------------------------------------------------------------
 
 
+def _ir_metrics(
+    expected_set: frozenset[str], actual_set: frozenset[str]
+) -> tuple[float, float, float]:
+    """Return ``(precision, recall, f1)`` for two normalized sets.
+
+    Empty inputs collapse to zero — same convention as ``_compute_f1``.
+    Used by the IR scorers to populate ``ScoreResult.ir_metrics`` next to
+    the reward. Pure arithmetic, no judgment.
+    """
+    if not expected_set or not actual_set:
+        return 0.0, 0.0, 0.0
+    intersection = len(expected_set & actual_set)
+    precision = intersection / len(actual_set)
+    recall = intersection / len(expected_set)
+    if precision + recall == 0:
+        return precision, recall, 0.0
+    f1 = 2 * precision * recall / (precision + recall)
+    return precision, recall, f1
+
+
 def _compute_f1(expected: list[str], actual: list[str]) -> float:
     """Compute F1 score from two lists of file paths.
 
@@ -665,16 +778,18 @@ def _compute_f1(expected: list[str], actual: list[str]) -> float:
         return _ZERO_SCORE
     if not actual_set:
         return _ZERO_SCORE
-    intersection = len(expected_set & actual_set)
-    precision = intersection / len(actual_set)
-    recall = intersection / len(expected_set)
-    if precision + recall == 0:
-        return _ZERO_SCORE
-    return 2 * precision * recall / (precision + recall)
+    _, _, f1 = _ir_metrics(expected_set, actual_set)
+    return f1 if f1 > 0.0 else _ZERO_SCORE
 
 
 def score_file_list(expected: object, actual: object) -> ScoreResult:
-    """Score a file_list answer_type using F1."""
+    """Score a file_list answer_type.
+
+    Reward is oracle-matching (recall): did the agent find every expected
+    file?  Precision and F1 are reported alongside in ``ir_metrics`` for
+    diagnostics but do not drag the reward down. Over-shipping shows up as
+    low precision, not as a reward penalty.
+    """
     if not isinstance(expected, list):
         return ScoreResult(
             score=0.0,
@@ -687,8 +802,17 @@ def score_file_list(expected: object, actual: object) -> ScoreResult:
             passed=False,
             error=f"file_list actual answer must be a list, got {type(actual).__name__}",
         )
-    f1 = _compute_f1(expected, actual)
-    return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
+    expected_set = frozenset(_normalize_path(p) for p in expected if p)
+    actual_set = frozenset(_normalize_path(p) for p in actual if p)
+    precision, recall, f1 = _ir_metrics(expected_set, actual_set)
+    ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
+    return ScoreResult(
+        score=recall,
+        passed=recall >= PASS_THRESHOLD,
+        details=dict(ir_metrics),
+        reward_score=recall,
+        ir_metrics=ir_metrics,
+    )
 
 
 def score_count(expected: object, actual: object) -> ScoreResult:
@@ -722,20 +846,33 @@ def _normalize_symbol(s: str) -> str:
 
 
 def score_symbol_list(expected: object, actual: object) -> ScoreResult:
-    """Score a symbol_list answer_type using F1 over normalized symbol names."""
+    """Score a symbol_list answer_type.
+
+    Reward is recall over normalized symbol names; precision and F1 are
+    reported in ``ir_metrics``. See :func:`score_file_list` for rationale.
+    """
     exp = expected if isinstance(expected, list) else []
     act = actual if isinstance(actual, list) else []
     exp_set = frozenset(_normalize_symbol(str(s)) for s in exp if s)
     act_set = frozenset(_normalize_symbol(str(s)) for s in act if s)
     if not exp_set or not act_set:
-        return ScoreResult(score=0.0, passed=False)
-    intersection = len(exp_set & act_set)
-    precision = intersection / len(act_set)
-    recall = intersection / len(exp_set)
-    if precision + recall == 0:
-        return ScoreResult(score=0.0, passed=False)
-    f1 = 2 * precision * recall / (precision + recall)
-    return ScoreResult(score=f1, passed=f1 >= PASS_THRESHOLD)
+        empty = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            details=dict(empty),
+            reward_score=0.0,
+            ir_metrics=empty,
+        )
+    precision, recall, f1 = _ir_metrics(exp_set, act_set)
+    ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
+    return ScoreResult(
+        score=recall,
+        passed=recall >= PASS_THRESHOLD,
+        details=dict(ir_metrics),
+        reward_score=recall,
+        ir_metrics=ir_metrics,
+    )
 
 
 def _lcs_length(a: list[str], b: list[str]) -> int:
@@ -1037,7 +1174,11 @@ class ArtifactScorer:
         )
 
     def _score_legacy_format(self, gt: dict, answer_data: dict) -> ScoreResult:
-        """Legacy format: treat 'expected' as a file_list."""
+        """Legacy format: treat 'expected' as a file_list.
+
+        Same reward shape as :func:`score_file_list` — recall is the headline,
+        precision/F1 are diagnostics in ``ir_metrics``.
+        """
         expected = gt.get("expected", [])
         actual = answer_data.get("answer", [])
         if not isinstance(expected, list):
@@ -1052,8 +1193,17 @@ class ArtifactScorer:
                 passed=False,
                 error="answer.json 'answer' is not a list",
             )
-        f1 = _compute_f1(expected, actual)
-        return ScoreResult(score=f1, passed=f1 > 0.0)
+        expected_set = frozenset(_normalize_path(p) for p in expected if p)
+        actual_set = frozenset(_normalize_path(p) for p in actual if p)
+        precision, recall, f1 = _ir_metrics(expected_set, actual_set)
+        ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
+        return ScoreResult(
+            score=recall,
+            passed=recall > 0.0,
+            details=dict(ir_metrics),
+            reward_score=recall,
+            ir_metrics=ir_metrics,
+        )
 
     # Delegate to module-level functions (kept for backward compat)
     _compute_f1 = staticmethod(_compute_f1)

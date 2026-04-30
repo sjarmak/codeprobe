@@ -44,9 +44,10 @@ This project is AI-orchestration code — ZFC applies at two levels:
 
 ### Compliant
 
-- `core/scoring.py` — delegates pass/fail to test.sh (gold standard ZFC)
+- `core/scoring.py` — delegates pass/fail to test.sh (gold standard ZFC); IR scorers report reward = recall (or `weighted_recall` for tiered oracles) with precision/F1 in `ir_metrics`. The split is documented arithmetic, not judgment — see `docs/scoring_model.md`
 - `core/llm.py` — shared Claude CLI utility for model-based judgment (pure IO + mechanical parsing)
 - `analysis/ranking.py` — deterministic arithmetic with explicit tiebreakers
+- `analysis/trace_quality.py` — mechanical projection of `CompletedTask` + `BiasWarning` records onto a per-trial quality view; sole threshold (`LOW_RECALL_THRESHOLD`) is a documented constant that surfaces an existing oracle metric, not a quality verdict (see `docs/trace_quality.md`)
 - `adapters/` — mechanical parsing, honest about data quality via `cost_source`
 - `analysis/stats.py` — arithmetic aggregation (deterministic math, not judgment)
 - `assess/heuristics.py:score_repo_with_model()` — delegates scoring to Claude via fixed RUBRIC_V1; model judges quality, code does IO

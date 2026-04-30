@@ -8,9 +8,50 @@ Use this workflow when you need to mine tasks that span multiple repositories. T
 - At least one agent installed (Claude Code, GitHub Copilot, or Codex)
 - A primary repo with merge history
 - One or more secondary repos (local paths or git URLs)
-- Sourcegraph authentication (for cross-repo symbol resolution)
+- A symbol-resolver backend — pick one (see [Backend selection](#backend-selection)):
+  - **Sourcegraph** — most accurate; needs `codeprobe auth sourcegraph`
+  - **AST** — tool-independent; needs the `go` toolchain on `PATH` for Go support
+  - **Ripgrep** — coarse but always available
 
-## Step 1: Authenticate with Sourcegraph (one-time)
+## Backend selection
+
+`--backend` selects the symbol resolver used for cross-repo and `--mcp-families` ground truth.
+
+| `--backend`     | Mechanism                            | Strengths                                  | Limitations                                   |
+| --------------- | ------------------------------------ | ------------------------------------------ | --------------------------------------------- |
+| `auto` (default) | Sourcegraph if authed, else ripgrep | Zero-config; matches prior behavior        | Falls back silently when SG auth is missing   |
+| `sourcegraph`   | Sourcegraph `find_references` MCP    | Cross-repo type-aware resolution           | Network + auth required; tautology risk[^t]   |
+| `ast`           | Local Python `ast` + Go `go/parser`  | Offline; tool-independent; no auth         | Intra-package only; no cross-package types    |
+| `grep`          | `ripgrep --word-regexp`              | Always works; trivially deterministic      | No type or import context                     |
+
+[^t]: When the agent under eval also uses the Sourcegraph MCP, ground truth derived from Sourcegraph is tautological — both sides resolve symbols through the same code-intel tool. Use `--backend ast` to break the tautology with a tool-independent oracle.
+
+### When to choose `--backend ast`
+
+The AST backend exists to end the `--mcp-families` tautology: Sourcegraph-derived ground truth and a Sourcegraph-MCP agent share the same resolver, so any disagreement is bias-free only when the oracle uses a different mechanism. Choose `ast` when:
+
+- You're comparing MCP-enabled vs. MCP-disabled configs and want a fair oracle.
+- You're running offline / airgapped and can't reach `sourcegraph.com`.
+- The symbol you're targeting has unique enough naming that intra-package scoping is sufficient.
+
+#### `ast` backend scope (v1)
+
+In scope:
+
+- **Python** (`.py`, `.pyi`): real `ast` walk. Resolves direct calls, method calls on local objects, definitions, and aliased imports. `mod.foo()` calls are filtered when `mod` is a known imported module — those go through the imported package, not a local method.
+- **Go** (`.go`): real `go/parser` walk via an embedded helper invoked with `go run`. Resolves method declarations, method calls on local receivers, and bare function calls. `pkg.Symbol(...)` calls are filtered when `pkg` is in the file's import set.
+- **Same-package scoping**: when constructed with `defining_file=`, results are restricted to the symbol's package directory — matches Sourcegraph's typed `find_references` semantics for intra-package callers.
+
+Out of scope (deferred to v2):
+
+- Cross-package Go type inference (interface satisfaction, full `gopls`-grade resolution).
+- Macro-heavy languages (Rust, C++).
+- Dynamic dispatch beyond Go interfaces and Python duck typing.
+- Languages outside Python and Go (use `--backend sourcegraph` or `grep`).
+
+Files with parse errors are skipped silently — they do not abort the scan.
+
+## Step 1: Authenticate with Sourcegraph (one-time, if using `--backend sourcegraph`)
 
 Cross-repo mining uses Sourcegraph for symbol resolution across repos. Authenticate once and the token is cached.
 

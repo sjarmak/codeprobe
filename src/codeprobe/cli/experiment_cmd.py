@@ -7,6 +7,7 @@ import statistics
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -225,8 +226,25 @@ def experiment_add_config(
     click.echo(f"  Total configs: {len(updated.configs)}")
 
 
-def experiment_validate(path: str) -> None:
-    """Validate experiment structure and readiness."""
+def experiment_validate(
+    path: str,
+    *,
+    allow_low_confidence: bool = False,
+) -> None:
+    """Validate experiment structure and readiness.
+
+    By default, refuses tasks whose ``confidence.json#score`` is below the
+    promotion gate (``mining.confidence.DEFAULT_THRESHOLD``). Pass
+    ``allow_low_confidence=True`` to keep low-confidence tasks in the run
+    plan — useful for exploratory experiments where reduced confidence is
+    acceptable.
+    """
+    from codeprobe.mining.confidence import (
+        DEFAULT_THRESHOLD,
+        load_confidence_file,
+        score_task_confidence,
+    )
+
     exp_dir = Path(path)
 
     try:
@@ -251,22 +269,40 @@ def experiment_validate(path: str) -> None:
     if not task_ids:
         errors.append("No tasks found. Add task directories to tasks/.")
 
+    quarantined: list[str] = []
     for task_id in task_ids:
         task_dir = tasks_dir / task_id
         if not (task_dir / "tests" / "test.sh").exists():
             warnings.append(
                 f"Task '{task_id}' has no tests/test.sh (automated scoring unavailable)"
             )
+        # Confidence gate: prefer cached confidence.json, fall back to live score.
+        score = load_confidence_file(task_dir)
+        if score is None:
+            score = score_task_confidence(task_dir)
+        if score.score < DEFAULT_THRESHOLD:
+            msg = (
+                f"Task '{task_id}' confidence={score.score:.2f} "
+                f"< {DEFAULT_THRESHOLD} (promotion gate)"
+            )
+            if allow_low_confidence:
+                warnings.append(msg + " — admitted via --allow-low-confidence")
+            else:
+                quarantined.append(task_id)
+                errors.append(
+                    msg + " — quarantined; pass --allow-low-confidence to override"
+                )
 
     if not experiment.configs:
         errors.append(
             "No configurations defined. Use 'add-config' to add at least one."
         )
 
-    total_runs = len(task_ids) * len(experiment.configs)
+    admitted_tasks = [t for t in task_ids if t not in quarantined]
+    total_runs = len(admitted_tasks) * len(experiment.configs)
 
     click.echo(f"Experiment: {experiment.name}")
-    click.echo(f"  Tasks: {len(task_ids)}")
+    click.echo(f"  Tasks: {len(task_ids)} ({len(quarantined)} quarantined)")
     click.echo(f"  Configurations: {len(experiment.configs)}")
     click.echo(f"  Total runs needed: {total_runs}")
 
@@ -290,6 +326,12 @@ def experiment_validate(path: str) -> None:
 
 def experiment_status(path: str) -> None:
     """Report completion status per configuration."""
+    from codeprobe.mining.confidence import (
+        confidence_histogram,
+        load_confidence_file,
+        score_task_confidence,
+    )
+
     exp_dir = Path(path)
 
     try:
@@ -312,6 +354,21 @@ def experiment_status(path: str) -> None:
     click.echo(f"Experiment: {experiment.name}")
     click.echo(f"  Description: {experiment.description}")
     click.echo(f"  Tasks: {total_tasks}")
+
+    # Confidence histogram across the task set
+    if task_ids:
+        scores = []
+        for tid in task_ids:
+            td = tasks_dir / tid
+            cached = load_confidence_file(td)
+            scores.append(cached if cached is not None else score_task_confidence(td))
+        hist = confidence_histogram(scores)
+        nonzero = {bucket: count for bucket, count in hist.items() if count}
+        if nonzero:
+            click.echo("  Confidence histogram:")
+            for bucket, count in hist.items():
+                bar = "#" * count
+                click.echo(f"    {bucket:<10} {count:>4} {bar}")
     click.echo()
 
     if not experiment.configs:
@@ -348,8 +405,15 @@ def experiment_status(path: str) -> None:
         click.echo(f"  {cfg.label:<25} {progress:<12} {score_str:<12} {status_str}")
 
 
-def experiment_aggregate(path: str) -> None:
-    """Aggregate results across configurations into a comparison report."""
+def experiment_aggregate(path: str, no_warn: bool = False) -> None:
+    """Aggregate results across configurations into a comparison report.
+
+    When ``no_warn`` is ``True``, bias warnings are suppressed in the
+    console output and winner-suppression is disabled — useful for
+    scripted aggregation. The structured ``bias_warnings`` array in
+    ``aggregate.json`` is always written so downstream tooling still
+    sees the signal.
+    """
     exp_dir = Path(path)
 
     try:
@@ -367,9 +431,11 @@ def experiment_aggregate(path: str) -> None:
 
     # Load results for each config
     config_results: dict[str, list[dict]] = {}
+    completed_by_config: dict[str, list[Any]] = {}
     for cfg in experiment.configs:
         try:
             results = load_config_results(exp_dir, cfg.label)
+            completed_by_config[cfg.label] = list(results.completed)
             config_results[cfg.label] = [
                 {
                     "task_id": t.task_id,
@@ -384,6 +450,7 @@ def experiment_aggregate(path: str) -> None:
                 for t in results.completed
             ]
         except FileNotFoundError:
+            completed_by_config[cfg.label] = []
             config_results[cfg.label] = []
 
     # Per-config summaries
@@ -414,9 +481,20 @@ def experiment_aggregate(path: str) -> None:
         recalls = _detail_values("recall")
         f1s = _detail_values("f1")
 
+        # ``mean_automated_score`` is the headline reward (recall-based for
+        # IR scorers post-codeprobe-voxa). ``mean_reward`` is an alias for
+        # callers who want an unambiguous name. ``ir_diagnostics`` carries
+        # the F1 / precision / recall *measurements* (still computed, just
+        # demoted from the headline so over-shipping doesn't fake a
+        # capability-quality gap). See docs/scoring_model.md.
+        mean_score = statistics.mean(scores) if scores else None
+        mean_p = statistics.mean(precisions) if precisions else None
+        mean_r = statistics.mean(recalls) if recalls else None
+        mean_f = statistics.mean(f1s) if f1s else None
         config_summaries[cfg_label] = {
             "tasks_completed": len(cfg_rows),
-            "mean_automated_score": (statistics.mean(scores) if scores else None),
+            "mean_automated_score": mean_score,
+            "mean_reward": mean_score,
             "stdev_automated_score": (
                 statistics.stdev(scores) if len(scores) > 1 else None
             ),
@@ -428,11 +506,16 @@ def experiment_aggregate(path: str) -> None:
                 if scores and costs and statistics.mean(costs) > 0
                 else None
             ),
-            "mean_precision": (
-                statistics.mean(precisions) if precisions else None
-            ),
-            "mean_recall": statistics.mean(recalls) if recalls else None,
-            "mean_f1": statistics.mean(f1s) if f1s else None,
+            # Back-compat: kept at the top level so older aggregate
+            # consumers don't break. New code should read ir_diagnostics.
+            "mean_precision": mean_p,
+            "mean_recall": mean_r,
+            "mean_f1": mean_f,
+            "ir_diagnostics": {
+                "mean_precision": mean_p,
+                "mean_recall": mean_r,
+                "mean_f1": mean_f,
+            },
         }
 
     # Pairwise deltas
@@ -478,18 +561,65 @@ def experiment_aggregate(path: str) -> None:
                     }
                 )
 
+    # Bias detection — flag tautology and capability-boundary patterns.
+    # Always computed so aggregate.json stays consistent across runs;
+    # suppressed from stdout when --no-warn is set.
+    from codeprobe.core.bias_detection import detect_bias_warnings
+
+    bias_warnings, _ = detect_bias_warnings(experiment, exp_dir, config_results)
+    suppress_winner = any(
+        w.kind == "no_independent_baseline" for w in bias_warnings
+    ) and not no_warn
+
+    # Per-trial quality view derived from the typed CompletedTask records
+    # (status, error_category, scoring_details) plus bias warnings. ZFC:
+    # mechanical projection only, no semantic judgment.
+    from codeprobe.analysis.trace_quality import TraceQualityReporter
+
+    quality_reporter = TraceQualityReporter.from_completed_tasks(
+        completed_by_config,
+        bias_warnings=bias_warnings,
+    )
+
     aggregate = {
         "experiment": experiment.name,
         "generated": _now_iso(),
         "config_count": len(experiment.configs),
         "config_summaries": config_summaries,
         "pairwise_deltas": pairwise,
+        "bias_warnings": [w.to_dict() for w in bias_warnings],
+        "quality_metrics": quality_reporter.to_dict(),
     }
 
     reports_dir = exp_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     out_path = reports_dir / "aggregate.json"
     out_path.write_text(json.dumps(aggregate, indent=2) + "\n", encoding="utf-8")
+
+    # Print bias warnings prominently before the table so users see the
+    # caveat in the same eyepath as the numbers. Severity-split (codeprobe-
+    # 9re9): real tautology risks under "Bias warnings:"; signals that the
+    # curator independently corroborated under "Informational:" so the
+    # warnings panel only highlights actionable measurement bias.
+    if bias_warnings and not no_warn:
+        actionable = [
+            w for w in bias_warnings
+            if getattr(w, "severity", "warning") == "warning"
+        ]
+        informational = [
+            w for w in bias_warnings
+            if getattr(w, "severity", "warning") == "informational"
+        ]
+        if actionable:
+            click.echo("Bias warnings:")
+            for w in actionable:
+                click.echo(f"  [{w.kind}] {w.message}")
+            click.echo()
+        if informational:
+            click.echo("Informational:")
+            for w in informational:
+                click.echo(f"  [{w.kind}] {w.message}")
+            click.echo()
 
     # Print summary table. Only render P/R columns if at least one config
     # exposed them — keeps the table compact for non-oracle experiments.
@@ -516,11 +646,16 @@ def experiment_aggregate(path: str) -> None:
         )
         click.echo(f"{'-' * 25} {'-' * 14} {'-' * 12} {'-' * 10}")
 
-    ranked = sorted(
-        config_summaries.items(),
-        key=lambda x: x[1].get("mean_automated_score") or 0,
-        reverse=True,
-    )
+    if suppress_winner:
+        # No independent baseline — show breakdown in declaration order
+        # so readers can't infer a ranking from row position.
+        ranked = list(config_summaries.items())
+    else:
+        ranked = sorted(
+            config_summaries.items(),
+            key=lambda x: x[1].get("mean_automated_score") or 0,
+            reverse=True,
+        )
     for label, s in ranked:
         auto = (
             f"{s['mean_automated_score']:.2f}"
@@ -556,7 +691,7 @@ def experiment_aggregate(path: str) -> None:
         else:
             click.echo(f"{label:<25} {auto:<14} {cost:<12} {spd:<10}")
 
-    if pairwise:
+    if pairwise and not suppress_winner:
         click.echo("\nPairwise Comparisons:")
         for p in pairwise:
             click.echo(
@@ -565,5 +700,9 @@ def experiment_aggregate(path: str) -> None:
                 f"(wins: {p['wins_a']}/{p['wins_b']}/{p['ties']} A/B/tie)  "
                 f"d={p['cohens_d'] or '--'}"
             )
+    elif pairwise and suppress_winner:
+        click.echo(
+            "\nPairwise comparisons suppressed: see bias_warnings in aggregate.json."
+        )
 
     click.echo(f"\nFull results: {out_path}")

@@ -85,6 +85,10 @@ where = ["src"]
 "codeprobe.templates" = ["*.yaml"]
 "codeprobe.llm" = ["*.yaml"]
 "codeprobe.cli" = ["error_codes.json"]
+# Embedded Go AST scanner sourced at runtime by AstResolver via `go run`.
+# Single-file program with no external deps; ships as plain text and is
+# compiled on-demand by the user's local go toolchain.
+"codeprobe.mining._go_ast_scanner" = ["*.go"]
 # Repo-committed agent skills live outside the src/ package tree at
 # .claude/skills/codeprobe-*/SKILL.md. They are the authoritative agent
 # contract (see PRD §7) and must ship in the sdist so downstream tooling

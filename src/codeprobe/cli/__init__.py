@@ -394,12 +394,70 @@ def init(
     "--mcp-families; requires a Sourcegraph token.",
 )
 @click.option(
+    "--consensus-backends",
+    "consensus_backends",
+    default="",
+    metavar="LIST",
+    hidden=True,
+    help="Comma-separated list of backends to run for MCP-advantaged "
+    "consensus mining: any of sourcegraph, ast, grep. Default: all three. "
+    "Only candidates whose pairwise F1 between any two available backends "
+    "meets the consensus threshold are shipped; the rest are quarantined.",
+)
+@click.option(
+    "--consensus-threshold",
+    "consensus_threshold",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.8,
+    show_default=True,
+    hidden=True,
+    help="Minimum pairwise file-level F1 between any two consensus "
+    "backends for an MCP-advantaged task to ship. Tasks below the "
+    "threshold are written to tasks_quarantined/ with a "
+    "divergence_report.json instead.",
+)
+@click.option(
+    "--consensus-mode",
+    "consensus_mode",
+    type=click.Choice(["intersection", "union"], case_sensitive=False),
+    default="intersection",
+    show_default=True,
+    hidden=True,
+    help="How to combine file sets across consensus backends for shipped "
+    "tasks. 'intersection' (default) keeps only files reported by every "
+    "available backend (high precision); 'union' includes any backend's "
+    "file (high recall).",
+)
+@click.option(
+    "--no-consensus",
+    "no_consensus",
+    is_flag=True,
+    default=False,
+    hidden=True,
+    help="Disable consensus mining for MCP-advantaged families and revert "
+    "to the legacy single-backend ground truth path. Use only when you "
+    "understand the resulting tautology risk (codeprobe-ekhi).",
+)
+@click.option(
     "--dual-verify",
     is_flag=True,
     default=False,
     hidden=True,
     help="Produce dual-verification tasks with oracle ground truth from PR diffs. "
     "Only for comprehension, org-scale, and cross-repo task types.",
+)
+@click.option(
+    "--backend",
+    "backend",
+    type=click.Choice(["auto", "grep", "sourcegraph", "ast"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    hidden=True,
+    help="Symbol resolver backend for cross-repo / MCP-advantaged ground "
+    "truth. 'auto' (default) prefers Sourcegraph when authenticated and "
+    "falls back to ripgrep. 'ast' uses a tool-independent AST parser "
+    "(Python + Go). Use 'ast' to avoid the tool tautology where ground "
+    "truth and the agent under eval share the same code-intel tool.",
 )
 @click.option(
     "--narrative-source",
@@ -473,7 +531,12 @@ def mine(
     mcp_families: bool,
     sg_repo: str,
     sg_discovery: bool,
+    consensus_backends: str,
+    consensus_threshold: float,
+    consensus_mode: str,
+    no_consensus: bool,
     dual_verify: bool,
+    backend: str,
     narrative_source: tuple[str, ...],
     refresh_dir: str | None,
     accept_structural_change: bool,
@@ -747,7 +810,12 @@ def mine(
         mcp_families=mcp_families,
         sg_repo=sg_repo,
         sg_discovery=sg_discovery,
+        consensus_backends=consensus_backends,
+        consensus_threshold=consensus_threshold,
+        consensus_mode=consensus_mode,
+        no_consensus=no_consensus,
         dual_verify=dual_verify,
+        backend=backend,
         narrative_source=narrative_source,
         refresh_dir=refresh_dir,
         accept_structural_change=accept_structural_change,
@@ -1140,11 +1208,21 @@ def add_config(
 
 @experiment.command("validate")
 @click.argument("path", type=click.Path(exists=True))
-def validate_experiment(path: str) -> None:
+@click.option(
+    "--allow-low-confidence",
+    is_flag=True,
+    default=False,
+    help=(
+        "Admit tasks with confidence below the promotion gate "
+        "(default 0.5). Without this flag, low-confidence tasks are "
+        "quarantined and validate exits non-zero."
+    ),
+)
+def validate_experiment(path: str, allow_low_confidence: bool) -> None:
     """Validate experiment structure and readiness."""
     from codeprobe.cli.experiment_cmd import experiment_validate
 
-    experiment_validate(path)
+    experiment_validate(path, allow_low_confidence=allow_low_confidence)
 
 
 @experiment.command("status")
@@ -1158,11 +1236,20 @@ def status_experiment(path: str) -> None:
 
 @experiment.command("aggregate")
 @click.argument("path", type=click.Path(exists=True))
-def aggregate_experiment(path: str) -> None:
+@click.option(
+    "--no-warn",
+    is_flag=True,
+    default=False,
+    help=(
+        "Suppress bias warnings on stdout and disable winner-suppression. "
+        "The 'bias_warnings' array in aggregate.json is always written."
+    ),
+)
+def aggregate_experiment(path: str, no_warn: bool) -> None:
     """Aggregate results across configurations into a comparison report."""
     from codeprobe.cli.experiment_cmd import experiment_aggregate
 
-    experiment_aggregate(path)
+    experiment_aggregate(path, no_warn=no_warn)
 
 
 @main.command()
@@ -1248,6 +1335,96 @@ def oracle_check_cmd(
                 "reward_written": write_reward,
             },
         )
+
+
+@main.command("mine-cross-validate")
+@add_json_flags
+@click.argument("tasks_dir", type=click.Path(exists=True, file_okay=False))
+@click.option(
+    "--threshold",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.6,
+    show_default=True,
+    help="F1 threshold below which a task pair is flagged for review.",
+)
+def mine_cross_validate_cmd(
+    tasks_dir: str,
+    threshold: float,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
+    """Compare ground truth across backends after mining.
+
+    Scans TASKS_DIR for tasks that ship multiple ground-truth variants
+    (e.g. ground_truth.json + ground_truth_ast.json) and reports per-pair
+    F1, Cohen's kappa, and per-suite/family aggregates. Tasks where any
+    backend pair has F1 < THRESHOLD are flagged for human review.
+
+    Writes the report to ``<TASKS_DIR>/.codeprobe/cross_validation_report.json``
+    and exits 1 when at least one task falls below THRESHOLD (so CI can gate).
+    """
+    from pathlib import Path
+
+    from codeprobe.mining.cross_validate import cross_validate, write_report
+
+    mode = resolve_mode(
+        "mine-cross-validate", json_flag, no_json_flag, json_lines_flag,
+    )
+
+    tasks_path = Path(tasks_dir)
+    report = cross_validate(tasks_path, threshold=threshold)
+    out_path = write_report(report, tasks_path)
+    summary = report["summary"]
+    below = int(summary["tasks_below_threshold"])
+
+    if mode.mode == "pretty":
+        click.echo(
+            f"Tasks scanned:   {summary['total_tasks']}\n"
+            f"Tasks compared:  {summary['tasks_compared']} "
+            f"(single-backend skipped: {summary['tasks_with_single_backend']})\n"
+            f"Above threshold: {summary['tasks_above_threshold']}\n"
+            f"Below threshold: {below} (threshold = {threshold:.2f})"
+        )
+        if report["pair_summary"]:
+            click.echo("\nBackend-pair agreement:")
+            for pair in report["pair_summary"]:
+                click.echo(
+                    f"  {pair['backend_a']} vs {pair['backend_b']}: "
+                    f"n={pair['n_tasks']}, mean F1={pair['mean_f1']:.4f}, "
+                    f"kappa={pair['cohens_kappa']:.4f} "
+                    f"({pair['kappa_interpretation']}), "
+                    f"below={pair['n_below_threshold']}"
+                )
+        if report["per_family"]:
+            click.echo("\nPer-family:")
+            for family, agg in report["per_family"].items():
+                click.echo(
+                    f"  {family}: n={agg['n_tasks']}, "
+                    f"mean min-F1={agg['mean_min_f1']:.4f}, "
+                    f"below={agg['n_below_threshold']}"
+                )
+        if report["flagged_tasks"]:
+            click.echo(
+                f"\nFlagged ({len(report['flagged_tasks'])}): "
+                + ", ".join(report["flagged_tasks"][:20])
+                + ("..." if len(report["flagged_tasks"]) > 20 else "")
+            )
+        click.echo(f"\nReport written to {out_path}")
+    else:
+        emit_envelope(
+            command="mine-cross-validate",
+            data={
+                "tasks_dir": str(tasks_path),
+                "threshold": threshold,
+                "report_path": str(out_path),
+                "report": report,
+            },
+        )
+
+    if below > 0:
+        # lint-exempt: CI gate — non-zero exit signals "task below threshold".
+        raise SystemExit(1)
 
 
 # Register the ratings subcommand group

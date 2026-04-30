@@ -114,20 +114,44 @@ For the full MCP comparison setup (preambles, baseline vs with-MCP configs), see
 
 Compare agent performance with and without MCP tools (Sourcegraph, GitHub, etc.).
 
+### Avoid the ground-truth tautology (read first)
+
+When `--mcp-families` mining writes ground truth using a single backend (e.g. Sourcegraph's `sg_find_references`), and the experiment then gives one config the *same* MCP tool, the with-MCP config can score 1.0 simply because it called the backend that wrote the answer key. The reported delta then measures "did the agent invoke the grading rubric" rather than tool value (tracked as `codeprobe-ekhi`).
+
+codeprobe ships three structural mitigations that are on by default; do not disable them unless you know what you are giving up:
+
+1. **Multi-source consensus mining** — `--mcp-families` runs every available backend (`sourcegraph`, `ast`, `grep`) and only ships tasks where ≥2 backends agree above `--consensus-threshold` (default `0.8` pairwise file-level F1). Tasks below the threshold are quarantined under `tasks_quarantined/` with a `divergence_report.json`. `--consensus-mode intersection` (default) keeps the high-precision intersection; `--consensus-mode union` keeps everything any backend found. `--no-consensus` reverts to legacy single-backend GT and is unsafe for MCP-vs-no-MCP comparisons.
+2. **Tool-independent AST oracle** — `--backend ast` (also one of the consensus backends) resolves ground truth via Python `ast` and a Go scanner, with no dependency on Sourcegraph or grep. Use it as a standalone backend or as the independent leg of consensus.
+3. **Aggregate-time bias detection** — `codeprobe experiment aggregate` flags `backend_overlap`, `overshipping`, and `no_independent_baseline` patterns before printing the score table. See [How to read aggregate output](#how-to-read-aggregate-output).
+
+After mining, also run cross-validation to surface remaining divergences across the per-backend ground-truth files:
+
+```bash
+codeprobe mine-cross-validate /path/to/repo/.codeprobe/tasks \
+  --threshold 0.6   # exit 1 if any pair falls below — useful in CI
+```
+
+The full command set above is the supported path for honest MCP-vs-no-MCP measurement; tasks that survive consensus + cross-validation are independent of the agent's tool surface and safe to publish.
+
 ### Mine org-scale comprehension tasks
 
 ```bash
-# Set up Sourcegraph credentials
+# Set up Sourcegraph credentials (used as one of the consensus backends)
 export SOURCEGRAPH_TOKEN="your-token"
 
-# Mine MCP-optimized tasks with Sourcegraph ground truth enrichment
+# Mine MCP-optimized tasks with default consensus across sourcegraph + ast + grep
 codeprobe mine /path/to/repo \
   --org-scale --mcp-families --count 5 \
   --no-interactive --no-llm \
   --sg-repo github.com/sg-evals/your-repo
+
+# Optional: cross-validate the resulting per-backend ground truths
+codeprobe mine-cross-validate /path/to/repo/.codeprobe/tasks
 ```
 
 MCP task families: `symbol-reference-trace`, `type-hierarchy-consumers`, `change-scope-audit`.
+
+> The Sourcegraph token enables the SG leg of consensus. With no token, consensus falls back to `ast + grep`; you'll see fewer shipped tasks but the comparison stays honest. Pass `--backend ast` to skip Sourcegraph entirely.
 
 ### Set up the experiment
 
@@ -182,8 +206,16 @@ codeprobe mine . --enrich             # Use LLM to improve weak task instruction
 codeprobe mine . --org-scale          # Mine comprehension tasks (not SDLC)
 codeprobe mine . --mcp-families       # Include MCP-optimized task families
 codeprobe mine . --sg-repo REPO       # Sourcegraph repo for ground truth enrichment
+codeprobe mine . --backend ast        # Tool-independent ground truth (Python + Go AST)
+codeprobe mine . --mcp-families       # Default: consensus across sourcegraph + ast + grep
+codeprobe mine . --mcp-families --consensus-threshold 0.9  # Stricter agreement
+codeprobe mine . --mcp-families --consensus-backends ast,grep  # Drop a backend
+codeprobe mine . --mcp-families --no-consensus  # UNSAFE: legacy single-backend GT
 codeprobe mine . --preset quick       # Quick scan: count=3
 codeprobe mine . --preset mcp         # MCP eval: org-scale + MCP families + enrich
+
+# Cross-validate after mining
+codeprobe mine-cross-validate ./.codeprobe/tasks --threshold 0.6
 
 # Mine profiles (save/load custom flag combinations)
 codeprobe mine --save-profile my-setup --count 10 --org-scale .
@@ -201,6 +233,25 @@ codeprobe preambles list              # Show available preambles at all levels
 # Output
 codeprobe interpret . --format csv    # Export for pivot tables
 codeprobe interpret . --format html   # Self-contained HTML report
+```
+
+## How to read aggregate output
+
+`codeprobe experiment aggregate` prints per-config metrics and pairwise deltas, and emits `reports/aggregate.json`. It also runs three lightweight bias detectors so silent measurement artifacts don't get reported as real signal.
+
+When a warning fires, it appears above the score table as `[<kind>] <message>` and is mirrored to `aggregate.json` under `bias_warnings`.
+
+| Warning kind              | What it means                                                                              | What to do                                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `backend_overlap`         | A config's MCP tool surface includes a backend that produced the ground truth.             | Do not report the with-MCP win as tool value — it may be tautological. Use an independent oracle (AST, hand-curated GT) instead. |
+| `overshipping`            | The losing config scored ≈0 with recall ≈1.0; it found everything but was over-shipping.   | Likely measures a tool capability boundary, not tool quality. Tighten the loser's tool surface or expand the GT.                 |
+| `no_independent_baseline` | Every task's GT comes from a single backend reachable by some configs but not all.         | Aggregate winner is suppressed (pairwise deltas hidden). Mine GT with a different backend before declaring a winner.             |
+
+Pass `--no-warn` to suppress the stdout block and re-enable winner ranking — useful when scripting. The structured `bias_warnings` array is always written to `aggregate.json` regardless.
+
+```bash
+codeprobe experiment aggregate ./mcp-comparison
+codeprobe experiment aggregate ./mcp-comparison --no-warn   # for CI / pivots
 ```
 
 ## Supported Agents

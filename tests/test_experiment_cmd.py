@@ -340,6 +340,92 @@ def test_aggregate_produces_report(runner: CliRunner, exp_dir: Path) -> None:
     assert "baseline" in report["config_summaries"]
 
 
+def test_aggregate_emits_quality_metrics_section(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """``aggregate.json`` carries a per-task and overall quality view.
+
+    Mixes a clean trial, an executor-level error, and a scorer-level error
+    so the summary, per-config, and low-quality blocks all see traffic.
+    """
+    save_config_results(
+        exp_dir,
+        "baseline",
+        [
+            CompletedTask(
+                task_id="task-001",
+                automated_score=1.0,
+                status="completed",
+                duration_seconds=1.0,
+                cost_usd=0.05,
+                scoring_details={"passed": True, "error": None},
+            ),
+            CompletedTask(
+                task_id="task-002",
+                automated_score=0.0,
+                status="error",
+                error_category="timeout",
+                duration_seconds=300.0,
+                metadata={"error": "subprocess timed out"},
+            ),
+        ],
+    )
+    save_config_results(
+        exp_dir,
+        "variant",
+        [
+            CompletedTask(
+                task_id="task-001",
+                automated_score=0.0,
+                status="completed",
+                duration_seconds=1.0,
+                scoring_details={
+                    "passed": False,
+                    "error": "tests/test.sh not found",
+                },
+            ),
+            CompletedTask(
+                task_id="task-002",
+                automated_score=1.0,
+                status="completed",
+                duration_seconds=2.0,
+                scoring_details={"passed": True, "error": None},
+            ),
+        ],
+    )
+
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads((exp_dir / "reports" / "aggregate.json").read_text())
+    assert "quality_metrics" in report
+
+    qm = report["quality_metrics"]
+    assert qm["schema_version"] == 1
+
+    overall = qm["overall"]
+    assert overall["total_trials"] == 4
+    assert overall["invalid_trials"] == 1
+    assert overall["valid_trials"] == 3
+    # 1 timeout + 1 scorer_error.
+    assert overall["low_quality_trials"] == 2
+    assert overall["error_category_counts"].get("timeout") == 1
+    assert overall["flag_counts"].get("invalid") == 1
+    assert overall["flag_counts"].get("timeout") == 1
+    assert overall["flag_counts"].get("scorer_error") == 1
+
+    per_config = qm["per_config"]
+    assert per_config["baseline"]["invalid_trials"] == 1
+    assert per_config["variant"]["invalid_trials"] == 0
+
+    low = qm["low_quality_trials"]
+    by_id = {(row["task_id"], row["config_label"]): row for row in low}
+    assert ("task-002", "baseline") in by_id
+    assert by_id[("task-002", "baseline")]["validity_reason"] == "timeout"
+    assert ("task-001", "variant") in by_id
+    assert "scorer_error" in by_id[("task-001", "variant")]["quality_flags"]
+
+
 def test_aggregate_no_results(runner: CliRunner, exp_dir: Path) -> None:
     """Aggregate with no results should still succeed (empty summaries)."""
     result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])

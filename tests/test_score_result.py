@@ -116,11 +116,15 @@ class TestArtifactScorerFileListThreshold:
         assert result.passed is False
 
     def test_f1_equal_threshold_is_pass(self, tmp_path: Path) -> None:
-        """f1 exactly 0.5 must be passed=True (>= semantic)."""
-        # expected=[a,b,c], actual=[a] → p=1.0, r=1/3, f1=2*(1/3)/(4/3)=0.5
+        """Reward exactly 0.5 must be passed=True (>= semantic).
+
+        Post-codeprobe-voxa reward is recall — pick a fixture where
+        recall == 0.5 to exercise the threshold boundary.
+        expected=[a,b], actual=[a] → recall = 1/2 = 0.5.
+        """
         task_dir = _make_file_list_task(
             tmp_path,
-            expected=["a.py", "b.py", "c.py"],
+            expected=["a.py", "b.py"],
             actual=["a.py"],
         )
         result = ArtifactScorer().score("", task_dir)

@@ -333,13 +333,14 @@ class TestContinuousScorer:
         assert result.passed is False
 
     def test_metrics_json_is_propagated_to_details(self, tmp_path: Path) -> None:
-        """Oracle metrics.json must be merged into ScoreResult.details.
+        """Oracle metrics.json must be merged into ScoreResult.details
+        AND drive the reward (codeprobe-voxa).
 
-        The oracle script writes a structured breakdown (precision, recall,
-        matched, etc.) alongside reward.txt. Without this plumbing, callers
-        only see the headline F1 and can't tell a brute-force grep
-        (P=0.26, R=1.0, F1=0.41) apart from a careful answer
-        (P=0.7, R=0.6, F1=0.65).
+        The oracle script writes precision/recall/f1 alongside reward.txt.
+        Reward is now oracle-matching (recall) — a brute-force grep with
+        recall=1.0 / precision=0.26 scores 1.0 reward (it found everything),
+        while a careful answer with recall=0.6 / precision=0.7 scores 0.6.
+        F1 stays in details/ir_metrics so callers can tell the two apart.
         """
         script = (
             "#!/bin/bash\n"
@@ -354,9 +355,12 @@ class TestContinuousScorer:
         )
         task_dir = _make_task_dir(tmp_path, "cont-metrics", script)
         result = ContinuousScorer().score("output", task_dir)
-        assert result.score == pytest.approx(0.4092)
+        # Reward is recall, not the f1 in reward.txt — over-shipping
+        # (precision=0.26) no longer drags the score down.
+        assert result.score == pytest.approx(1.0)
+        assert result.reward_score == pytest.approx(1.0)
         assert result.passed is True
-        # Whitelisted fields are surfaced, headline score is unchanged.
+        # IR diagnostics still surfaced via details + ir_metrics.
         assert result.details["precision"] == pytest.approx(0.2571)
         assert result.details["recall"] == pytest.approx(1.0)
         assert result.details["f1"] == pytest.approx(0.4092)
@@ -364,6 +368,10 @@ class TestContinuousScorer:
         assert result.details["expected_count"] == 80
         assert result.details["agent_files_count"] == 311
         assert result.details["metric"] == "f1"
+        # ir_metrics carries the canonical IR view.
+        assert result.ir_metrics["precision"] == pytest.approx(0.2571)
+        assert result.ir_metrics["recall"] == pytest.approx(1.0)
+        assert result.ir_metrics["f1"] == pytest.approx(0.4092)
 
     def test_metrics_json_missing_does_not_affect_score(
         self, tmp_path: Path

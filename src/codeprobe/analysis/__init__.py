@@ -22,12 +22,24 @@ from codeprobe.analysis.stats import (
     wilcoxon_test,
     wilson_ci,
 )
+from codeprobe.analysis.trace_quality import (
+    LOW_RECALL_THRESHOLD,
+    SCHEMA_VERSION as TRACE_QUALITY_SCHEMA_VERSION,
+    TraceQualityMetrics,
+    TraceQualityReporter,
+    TraceQualitySummary,
+)
 
 __all__ = [
     "ConfigSummary",
+    "LOW_RECALL_THRESHOLD",
     "PairwiseComparison",
     "RankedConfig",
     "Report",
+    "TRACE_QUALITY_SCHEMA_VERSION",
+    "TraceQualityMetrics",
+    "TraceQualityReporter",
+    "TraceQualitySummary",
     "format_csv_report",
     "format_html_report",
     "cliffs_delta",

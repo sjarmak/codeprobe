@@ -72,3 +72,6 @@ prompts/
 
 .brainstorm/
 .codex/
+
+# prd-build orchestration artifacts
+.prd-build/

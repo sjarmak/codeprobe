@@ -18,6 +18,14 @@
       "remediation_pattern": "Remove one of the conflicting flags and retry."
     },
     {
+      "code": "MISSING_SG_AUTH",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.9.0",
+      "description": "An operation that requires Sourcegraph authentication was invoked without a valid token (for example, --backend sourcegraph).",
+      "remediation_pattern": "Run `codeprobe auth sourcegraph` to authenticate, or pick a different backend (e.g. --backend ast for tool-independent ground truth)."
+    },
+    {
       "code": "TRACE_OVERFLOW_FIRED",
       "kind": "prescriptive",
       "exit_code": 2,

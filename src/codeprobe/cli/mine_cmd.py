@@ -1400,13 +1400,20 @@ def _dispatch_cross_repo(
     goal_name: str,
     bias: str,
     dual_verify: bool = False,
+    backend: str = "auto",
 ) -> None:
     """Dispatch cross-repo task mining.
 
     Resolves each ``--cross-repo`` entry to a local path (cloning if
-    needed), selects a symbol resolver (Sourcegraph when auth is
-    available, RipgrepResolver as fallback), and invokes
+    needed), selects a symbol resolver per *backend*, and invokes
     :func:`mine_tasks_multi`.
+
+    Backend selection:
+
+    - ``auto`` — try Sourcegraph first, fall back to ripgrep on missing auth
+    - ``grep`` — force :class:`RipgrepResolver`
+    - ``sourcegraph`` — force :class:`SourcegraphSymbolResolver` (errors loudly on missing auth)
+    - ``ast`` — force :class:`AstResolver` (tool-independent ground truth)
     """
     from codeprobe.mining.multi_repo import (
         RipgrepResolver,
@@ -1433,25 +1440,58 @@ def _dispatch_cross_repo(
                 )
             secondaries.append(rp)
 
-    # Select symbol resolver: prefer Sourcegraph, fall back to ripgrep
+    # Select symbol resolver per --backend (default: auto).
     from codeprobe.mining.multi_repo import SymbolResolver
     from codeprobe.mining.sg_auth import AuthError, get_valid_token
 
     resolver: SymbolResolver
-    try:
-        get_valid_token()
+    backend_norm = (backend or "auto").lower()
+
+    if backend_norm == "ast":
+        from codeprobe.mining.ast_resolver import AstResolver
+
+        resolver = AstResolver()
+        click.echo("Using AstResolver for cross-repo mining (--backend ast)")
+    elif backend_norm == "grep":
+        resolver = RipgrepResolver()
+        click.echo("Using RipgrepResolver for cross-repo mining (--backend grep)")
+    elif backend_norm == "sourcegraph":
+        try:
+            get_valid_token()
+        except AuthError as exc:
+            raise PrescriptiveError(
+                code="MISSING_SG_AUTH",
+                message=(
+                    "--backend sourcegraph requires Sourcegraph authentication. "
+                    "Run `codeprobe auth sourcegraph` or pick another backend."
+                ),
+                next_try_flag="--backend",
+                next_try_value="ast",
+                detail={"backend": "sourcegraph"},
+            ) from exc
         from codeprobe.mining.sg_ground_truth import SourcegraphSymbolResolver
 
         resolver = SourcegraphSymbolResolver()
-        click.echo("Using SourcegraphSymbolResolver for cross-repo mining")
-    except AuthError:
-        resolver = RipgrepResolver()
         click.echo(
-            "Warning: No Sourcegraph auth found — falling back to ripgrep for "
-            "cross-repo symbol resolution. Run `codeprobe auth sourcegraph` "
-            "for higher-accuracy results.",
-            err=True,
+            "Using SourcegraphSymbolResolver for cross-repo mining "
+            "(--backend sourcegraph)"
         )
+    else:  # auto
+        try:
+            get_valid_token()
+            from codeprobe.mining.sg_ground_truth import SourcegraphSymbolResolver
+
+            resolver = SourcegraphSymbolResolver()
+            click.echo("Using SourcegraphSymbolResolver for cross-repo mining")
+        except AuthError:
+            resolver = RipgrepResolver()
+            click.echo(
+                "Warning: No Sourcegraph auth found — falling back to ripgrep "
+                "for cross-repo symbol resolution. Run "
+                "`codeprobe auth sourcegraph` for higher-accuracy results, "
+                "or use `--backend ast` for tool-independent ground truth.",
+                err=True,
+            )
 
     result = mine_tasks_multi(
         primary=primary,
@@ -2115,7 +2155,12 @@ def run_mine(
     mcp_families: bool = False,
     sg_repo: str = "",
     sg_discovery: bool = False,
+    consensus_backends: str = "",
+    consensus_threshold: float = 0.8,
+    consensus_mode: str = "intersection",
+    no_consensus: bool = False,
     dual_verify: bool = False,
+    backend: str = "auto",
     narrative_source: tuple[str, ...] = (),
     refresh_dir: str | None = None,
     accept_structural_change: bool = False,
@@ -2356,6 +2401,7 @@ def run_mine(
                     goal_name=goal_name,
                     bias=bias,
                     dual_verify=dual_verify,
+                    backend=backend,
                 )
                 return
 
@@ -2397,6 +2443,10 @@ def run_mine(
                     sg_repo=sg_repo,
                     sg_discovery=sg_discovery,
                     dual_verify=dual_verify,
+                    consensus_backends=consensus_backends,
+                    consensus_threshold=consensus_threshold,
+                    consensus_mode=consensus_mode,
+                    no_consensus=no_consensus,
                 )
                 return
 
@@ -2527,6 +2577,10 @@ def _run_org_scale_mine(
     sg_repo: str = "",
     sg_discovery: bool = False,
     dual_verify: bool = False,
+    consensus_backends: str = "",
+    consensus_threshold: float = 0.8,
+    consensus_mode: str = "intersection",
+    no_consensus: bool = False,
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification.
 
@@ -2535,13 +2589,39 @@ def _run_org_scale_mine(
     that doesn't use the SDLC-style ``changed_files_map``. Phase 3 will
     add native dual oracle support for org-scale families.
     """
-    from codeprobe.mining.org_scale import mine_org_scale_tasks
+    from codeprobe.mining.consensus import parse_backend_list
+    from codeprobe.mining.org_scale import (
+        ConsensusConfig,
+        mine_org_scale_tasks,
+    )
     from codeprobe.mining.org_scale_families import FAMILY_BY_NAME
     from codeprobe.mining.writer import write_task_dir
 
     primary_repo = repo_paths[0]
     repo_names = ", ".join(rp.name for rp in repo_paths)
     click.echo(f"Scanning {repo_names} for org-scale patterns...", err=True)
+
+    # Build consensus config: enabled by default for --mcp-families unless
+    # the user passed --no-consensus. The default backend list (sourcegraph,
+    # ast, grep) lets the consensus runner gracefully drop SG when auth is
+    # unavailable while still requiring agreement between the remaining two.
+    consensus_config: ConsensusConfig | None = None
+    if mcp_families and not no_consensus:
+        try:
+            backend_tuple = parse_backend_list(consensus_backends or None)
+        except ValueError as exc:
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=str(exc),
+                next_try_flag="--consensus-backends",
+                next_try_value="sourcegraph,ast,grep",
+                detail={"value": consensus_backends},
+            ) from exc
+        consensus_config = ConsensusConfig(
+            backends=tuple(backend_tuple),
+            threshold=float(consensus_threshold),
+            mode=consensus_mode.lower(),
+        )
 
     # Filter families if specified
     selected_families: tuple[TaskFamily, ...] | None = None
@@ -2575,6 +2655,7 @@ def _run_org_scale_mine(
         include_mcp_families=mcp_families,
         sg_repo=effective_sg_repo,
         sg_discovery=sg_discovery,
+        consensus_config=consensus_config,
     )
 
     if not result.tasks:
@@ -2620,10 +2701,39 @@ def _run_org_scale_mine(
             curation_backends=curation_backends_used,
         )
 
+    # Write quarantined consensus candidates alongside the shipped tasks
+    # so a reviewer can audit divergence without re-running the miner.
+    quarantined = list(getattr(result, "quarantined", None) or [])
+    quarantine_dir = tasks_dir.parent / "tasks_quarantined"
+    if quarantine_dir.exists():
+        shutil.rmtree(quarantine_dir)
+    if quarantined:
+        from codeprobe.mining.writer import write_quarantined_task
+
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+        for cand in quarantined:
+            write_quarantined_task(
+                task_id=cand.task_id,
+                family=cand.family,
+                repo=cand.repo,
+                symbol=cand.symbol,
+                defining_file=cand.defining_file,
+                instruction_title=cand.instruction_title,
+                instruction_body=cand.instruction_body,
+                divergence_report=cand.divergence_report,
+                base_dir=quarantine_dir,
+            )
+
     _record_task_ids_in_experiment(primary_repo, [t.id for t in curated_tasks])
 
     _show_org_scale_results(
-        curated_tasks, tasks_dir, primary_repo, curation_backends_used
+        curated_tasks,
+        tasks_dir,
+        primary_repo,
+        curation_backends_used,
+        quarantined_count=len(quarantined),
+        quarantine_dir=quarantine_dir if quarantined else None,
+        consensus_config=consensus_config,
     )
 
 
@@ -2832,12 +2942,34 @@ def _show_org_scale_results(
     tasks_dir: Path,
     repo_path: Path,
     curation_backends: tuple[str, ...] = (),
+    *,
+    quarantined_count: int = 0,
+    quarantine_dir: Path | None = None,
+    consensus_config: object | None = None,
 ) -> None:
     """Display org-scale mining results table and next steps."""
     curated = bool(curation_backends)
 
     click.echo(f"Generated {len(tasks)} org-scale tasks:")
     click.echo()
+    if consensus_config is not None:
+        backends_str = ", ".join(getattr(consensus_config, "backends", ()))
+        click.echo(
+            "Consensus mining: backends=[{0}] threshold={1:.2f} mode={2} "
+            "shipped={3} quarantined={4}".format(
+                backends_str,
+                getattr(consensus_config, "threshold", 0.0),
+                getattr(consensus_config, "mode", ""),
+                len(tasks),
+                quarantined_count,
+            )
+        )
+        if quarantined_count and quarantine_dir is not None:
+            click.echo(
+                f"Quarantined candidates written to {quarantine_dir} "
+                "with divergence_report.json"
+            )
+        click.echo()
 
     # Header — add Tiers column when curation is active
     if curated:
