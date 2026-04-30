@@ -12,7 +12,7 @@ Every bead description MUST contain enough context that a fresh agent session ca
 
 **Required in every bead:**
 
-1. **Exact file paths** — `src/codeprobe/adapters/claude.py`, not "the adapter file"
+1. **Exact file paths** — `src/myproject/widgets/widget_service.py`, not "the widget file"
 2. **Line numbers or function names** — `line 43` or `parse_output()`
 3. **Numbered implementation steps** — what to do, in what order
 4. **Code snippets / data shapes** — JSON schemas, Protocol signatures, dataclass fields for anything non-obvious
