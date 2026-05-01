@@ -103,8 +103,8 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
     Offender(
         relpath="src/codeprobe/core/scoring.py",
         rule="quiet-recall-fallback",
-        line_start=727,
-        line_end=745,
+        line_start=732,
+        line_end=750,
         reason=(
             "ContinuousScorer._derive_reward_and_metrics: oracle_weighted_f1 "
             "branch falls back to weighted_recall / recall when f1 is missing "
@@ -158,8 +158,8 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
     Offender(
         relpath="src/codeprobe/core/scoring.py",
         rule="hardcoded-threshold",
-        line_start=985,
-        line_end=995,
+        line_start=1220,
+        line_end=1230,
         reason=(
             "_LOW_CONFIDENCE_THRESHOLD warns when ground_truth.confidence "
             "< 0.5. Named, documented, but not config-sourced."

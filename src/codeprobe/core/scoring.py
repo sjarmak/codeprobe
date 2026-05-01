@@ -204,6 +204,7 @@ SCORER_FAMILIES: frozenset[str] = frozenset(
         "continuous",  # reward.txt or stdout float, no IR
         # Composite
         "weighted_checkpoints",  # CheckpointScorer
+        "oracle_checks",  # OracleChecksScorer — structured-rubric criteria
         "dual_composite",  # DualScorer (direct + artifact)
     }
 )
@@ -965,6 +966,237 @@ class CheckpointScorer:
 
         # Fallback: exit code. Non-zero is a legitimate "verifier failed"
         # signal (not a silent swallow); returncode is the loud channel.
+        if run.returncode == 0:
+            return 1.0
+        return _ZERO_SCORE
+
+
+# ---------------------------------------------------------------------------
+# OracleChecksScorer
+# ---------------------------------------------------------------------------
+
+
+class OracleChecksScorer:
+    """Structured-rubric scorer — per-criterion verifiers with weighted average.
+
+    Mirrors the CSB ``oracle_checks`` pattern: each task declares a list of
+    named criteria, each with a weight and a verifier script. Verifiers run
+    independently in the sandbox and emit ``{"score": 0.0-1.0, "passed": bool}``
+    JSON or fall back to exit-code semantics. The headline reward is the
+    weight-normalized average ``Σ(weight_i · score_i) / Σ(weight_i)``.
+
+    Differences from :class:`CheckpointScorer`:
+
+    * Weights are *normalized* rather than required to sum to ``1.0``. A
+      rubric with weights ``[2, 1, 1]`` is equivalent to ``[0.5, 0.25,
+      0.25]``. This makes incremental rubric edits cheap — adding a
+      criterion doesn't force re-balancing every other weight.
+    * Reports ``scorer_family = "oracle_checks"`` so reviewers can
+      distinguish "verifier evaluated a structured rubric" from
+      ``weighted_checkpoints`` (which historically labels both
+      ``CheckpointScorer`` and ``ArtifactScorer._score_v2_checks`` —
+      ambiguous semantics that this family disentangles).
+
+    Rubric source resolution order:
+
+    1. ``metadata_criteria`` constructor argument — populated from
+       ``task.toml [[rubric_criteria]]`` by the task loader.
+    2. ``tests/rubric.json`` on disk — for tasks that ship the rubric
+       inline. JSON shape: a list of ``{"name", "weight", "verifier"}``
+       objects (``description`` is optional and ignored by the scorer).
+
+    Verifier scripts live in ``tests/verifiers/`` (same layout as
+    ``CheckpointScorer``) and emit JSON on stdout: ``{"score": 0.0-1.0,
+    "passed": bool}``. Fallback: exit ``0`` → ``1.0``, nonzero → ``0.0``.
+    """
+
+    SCORER_FAMILY = "oracle_checks"
+
+    def __init__(
+        self,
+        metadata_criteria: (
+            tuple[dict[str, object], ...] | list[dict[str, object]] | None
+        ) = None,
+    ) -> None:
+        self._metadata_criteria = metadata_criteria
+
+    def _load_criteria(
+        self, task_dir: Path
+    ) -> list[dict[str, object]] | ScoreResult:
+        """Resolve criteria list — metadata first, then tests/rubric.json.
+
+        Returns the list on success or a ``ScoreResult`` error on failure.
+        """
+        if self._metadata_criteria:
+            return list(self._metadata_criteria)
+
+        rubric_file = task_dir / "tests" / "rubric.json"
+        if not rubric_file.is_file():
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="tests/rubric.json not found",
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        try:
+            payload = json.loads(rubric_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=f"Invalid rubric.json: {exc}",
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        if not isinstance(payload, list):
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="rubric.json must be a JSON list of criteria",
+                scorer_family=self.SCORER_FAMILY,
+            )
+        return cast(list[dict[str, object]], payload)
+
+    def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+        loaded = self._load_criteria(task_dir)
+        if isinstance(loaded, ScoreResult):
+            return loaded
+        criteria = loaded
+
+        if not criteria:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="rubric must declare at least one criterion",
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        # Validate weights up-front. A negative or non-finite weight is a
+        # rubric authoring bug, not a missed criterion — fail loudly so
+        # reviewers see the typo in metadata rather than a silently
+        # truncated reward.
+        weights: list[float] = []
+        for idx, crit in enumerate(criteria):
+            raw = crit.get("weight", 0.0) if isinstance(crit, dict) else 0.0
+            try:
+                w = float(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] weight is not numeric: {raw!r}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+            if not math.isfinite(w):
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] weight must be finite, got: {w}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+            if w < 0.0:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] weight must be non-negative, got: {w}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+            weights.append(w)
+
+        total_weight = sum(weights, 0.0)
+        if total_weight <= 0.0:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=(
+                    "rubric weights sum to zero — at least one criterion "
+                    "must have a positive weight"
+                ),
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        criterion_scores: dict[str, float] = {}
+        criterion_weights: dict[str, float] = {}
+        weighted_sum = 0.0
+
+        for idx, (crit, weight) in enumerate(zip(criteria, weights, strict=True)):
+            verifier_name = str(crit.get("verifier", "") or "")
+            name = str(crit.get("name", verifier_name) or verifier_name) or f"criterion_{idx}"
+
+            if not verifier_name:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] missing 'verifier' field",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+
+            verifier_path = task_dir / "tests" / "verifiers" / verifier_name
+            if not verifier_path.is_file():
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"Verifier not found: {verifier_name}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+
+            cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
+            weighted_sum += cp_score * weight
+            criterion_scores[name] = cp_score
+            criterion_weights[name] = weight
+
+        # Normalize by total weight (the family's defining property).
+        reward = weighted_sum / total_weight
+        reward = max(0.0, min(1.0, reward))
+
+        sub_scores: dict[str, object] = {
+            "composite": reward,
+            "criterion_scores": dict(criterion_scores),
+            "total_weight": total_weight,
+        }
+        return ScoreResult(
+            score=reward,
+            passed=reward >= PASS_THRESHOLD,
+            details={
+                "criterion_scores": criterion_scores,
+                "criterion_weights": criterion_weights,
+                "total_weight": total_weight,
+            },
+            scorer_family=self.SCORER_FAMILY,
+            sub_scores=sub_scores,
+        )
+
+    @staticmethod
+    def _run_verifier(
+        verifier_path: Path,
+        agent_output: str,
+        task_dir: Path,
+    ) -> float:
+        """Run a single criterion verifier and return its score (0.0-1.0).
+
+        Mirrors :meth:`CheckpointScorer._run_verifier` so both composite
+        scorers see the same sandbox semantics: JSON ``score`` field is
+        preferred, exit-code is the documented fallback.
+        """
+        run = _run_in_sandbox(verifier_path, agent_output, task_dir)
+        if run.error is not None:
+            logger.warning(
+                "Verifier %s produced zero score due to sandbox error: %s",
+                verifier_path.name,
+                run.error,
+            )
+            return _ZERO_SCORE
+
+        stdout = run.stdout.strip()
+        if stdout:
+            try:
+                data = json.loads(stdout)
+                raw = float(data.get("score", 0.0))
+                return max(0.0, min(1.0, raw))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
         if run.returncode == 0:
             return 1.0
         return _ZERO_SCORE

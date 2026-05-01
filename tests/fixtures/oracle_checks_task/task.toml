@@ -1,0 +1,37 @@
+[task]
+id = "oracle-checks-demo-001"
+repo = "org/repo"
+time_limit_sec = 600
+
+[metadata]
+name = "oracle-checks-demo-001"
+difficulty = "medium"
+description = "Structured-rubric demo task — exercises the oracle_checks scorer_family"
+language = "python"
+synthetic = true
+
+[verification]
+type = "oracle_checks"
+reward_type = "oracle_checks"
+verification_mode = "test_script"
+
+# Per-criterion verifiers — weights are normalized, so they need not sum to 1.0.
+# A rubric with weights [2, 1, 1] is equivalent to [0.5, 0.25, 0.25].
+
+[[rubric_criteria]]
+name = "handles_edge_case_x"
+weight = 0.5
+verifier = "check_edge_case.sh"
+description = "Verify the agent's diff handles the empty-input edge case"
+
+[[rubric_criteria]]
+name = "covers_error_branches"
+weight = 0.3
+verifier = "check_error_branches.sh"
+description = "Verify all error-handling branches are exercised by tests"
+
+[[rubric_criteria]]
+name = "preserves_public_api"
+weight = 0.2
+verifier = "check_public_api.sh"
+description = "Verify no breaking changes to the public API surface"
