@@ -340,6 +340,108 @@ def test_aggregate_produces_report(runner: CliRunner, exp_dir: Path) -> None:
     assert "baseline" in report["config_summaries"]
 
 
+def test_aggregate_emits_token_count_rollups(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """codeprobe-oktg: aggregate.json.config_summaries carries
+    total_input_tokens / total_output_tokens / mean_*_per_task alongside
+    the existing cost rollup. Cost-Pareto plots that aren't dollar-locked
+    need the raw counts."""
+    save_config_results(
+        exp_dir,
+        "baseline",
+        [
+            CompletedTask(
+                task_id="task-001",
+                automated_score=1.0,
+                duration_seconds=2.0,
+                cost_usd=0.10,
+                input_tokens=1000,
+                output_tokens=200,
+            ),
+            CompletedTask(
+                task_id="task-002",
+                automated_score=0.5,
+                duration_seconds=3.0,
+                cost_usd=0.15,
+                input_tokens=2000,
+                output_tokens=400,
+            ),
+        ],
+    )
+    save_config_results(
+        exp_dir,
+        "variant",
+        [
+            CompletedTask(
+                task_id="task-001",
+                automated_score=1.0,
+                duration_seconds=2.0,
+                cost_usd=0.10,
+                # Mixed availability: one task missing usage. Mean should
+                # be over the populated tasks only, not coerce missing to 0.
+                input_tokens=500,
+                output_tokens=100,
+            ),
+            CompletedTask(
+                task_id="task-002",
+                automated_score=0.5,
+                duration_seconds=3.0,
+                cost_usd=0.15,
+            ),
+        ],
+    )
+
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads((exp_dir / "reports" / "aggregate.json").read_text())
+    summaries = report["config_summaries"]
+
+    base = summaries["baseline"]
+    assert base["total_input_tokens"] == 3000
+    assert base["total_output_tokens"] == 600
+    assert base["mean_input_tokens_per_task"] == pytest.approx(1500.0)
+    assert base["mean_output_tokens_per_task"] == pytest.approx(300.0)
+    # No regression on existing cost rollup.
+    assert base["total_cost_usd"] == pytest.approx(0.25)
+
+    var = summaries["variant"]
+    # Only one task in variant reported usage → totals/means reflect that.
+    assert var["total_input_tokens"] == 500
+    assert var["total_output_tokens"] == 100
+    assert var["mean_input_tokens_per_task"] == pytest.approx(500.0)
+    assert var["mean_output_tokens_per_task"] == pytest.approx(100.0)
+
+
+def test_aggregate_token_rollups_none_when_unavailable(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """When no task in a config reports token counts, the rollups are
+    None (omitted-as-zero would be a verifier-honesty violation)."""
+    save_config_results(
+        exp_dir,
+        "baseline",
+        [
+            CompletedTask(
+                task_id="task-001",
+                automated_score=1.0,
+                duration_seconds=2.0,
+                cost_usd=0.10,
+            ),
+        ],
+    )
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads((exp_dir / "reports" / "aggregate.json").read_text())
+    base = report["config_summaries"]["baseline"]
+    assert base["total_input_tokens"] is None
+    assert base["total_output_tokens"] is None
+    assert base["mean_input_tokens_per_task"] is None
+    assert base["mean_output_tokens_per_task"] is None
+
+
 def test_aggregate_emits_quality_metrics_section(
     runner: CliRunner, exp_dir: Path
 ) -> None:

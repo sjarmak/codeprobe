@@ -236,6 +236,40 @@ class TestExecutorDiagnosticsContract:
         diag = scoring["diagnostics"]
         assert "task_time_seconds" in diag
         assert "token_cost_usd" not in diag
+        # Same null-handling for raw token counts: omit when unavailable
+        # so callers can distinguish "agent reported zero" from "adapter
+        # didn't capture telemetry".
+        assert "input_tokens" not in diag
+        assert "output_tokens" not in diag
+
+    def test_scoring_json_emits_raw_token_counts(self, tmp_path: Path) -> None:
+        # codeprobe-oktg: scoring.json.diagnostics carries input_tokens /
+        # output_tokens alongside token_cost_usd. Cost-Pareto plots that
+        # aren't dollar-locked need the raw counts.
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir()
+        completed = CompletedTask(
+            task_id="t1",
+            automated_score=0.42,
+            duration_seconds=12.5,
+            cost_usd=0.0034,
+            input_tokens=1234,
+            output_tokens=567,
+            scoring_details={
+                "passed": False,
+                "scorer_family": "oracle_overlap_f1",
+            },
+        )
+        result = TaskResult(completed=completed, agent_stdout="", agent_stderr="")
+
+        _save_task_artifacts(runs_dir, "t1", result)
+
+        scoring = json.loads((runs_dir / "t1" / "scoring.json").read_text())
+        diag = scoring["diagnostics"]
+        # No regression on the existing cost field.
+        assert diag["token_cost_usd"] == pytest.approx(0.0034)
+        assert diag["input_tokens"] == 1234
+        assert diag["output_tokens"] == 567
 
 
 # ---------------------------------------------------------------------------

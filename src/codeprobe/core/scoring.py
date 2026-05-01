@@ -124,10 +124,14 @@ class ScoreResult:
     affect reward but are useful for debugging. The unified contract
     surfaces ``ir_metrics`` here (mirror of the IR breakdown for callers
     that want a single canonical IR view); the executor injects
-    ``task_time_seconds`` and ``token_cost_usd`` into the serialised
-    ``scoring_details.diagnostics`` block at scoring.json write time so
-    the per-task contract is self-contained without forcing the scorer
-    to know about run-level metadata.
+    ``task_time_seconds``, ``token_cost_usd``, ``input_tokens``, and
+    ``output_tokens`` into the serialised ``scoring_details.diagnostics``
+    block at scoring.json write time so the per-task contract is
+    self-contained without forcing the scorer to know about run-level
+    metadata. ``input_tokens`` / ``output_tokens`` are raw counts (sum
+    across the multi-turn conversation for the trial); cost-Pareto plots
+    that aren't dollar-locked need them to compare across models with
+    different per-token pricing.
 
     ``ir_metrics`` is kept at the top level for back-compat with existing
     aggregate consumers (``cli/experiment_cmd.py`` reads

@@ -823,6 +823,10 @@ def _save_task_artifacts(
     diagnostics["task_time_seconds"] = float(completed.duration_seconds)
     if completed.cost_usd is not None:
         diagnostics["token_cost_usd"] = float(completed.cost_usd)
+    if completed.input_tokens is not None:
+        diagnostics["input_tokens"] = int(completed.input_tokens)
+    if completed.output_tokens is not None:
+        diagnostics["output_tokens"] = int(completed.output_tokens)
     scoring["diagnostics"] = diagnostics
     (task_dir / "scoring.json").write_text(
         _json.dumps(scoring, indent=2) + "\n", encoding="utf-8"
