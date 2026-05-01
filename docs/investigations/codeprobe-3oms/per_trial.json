@@ -1,0 +1,962 @@
+[
+  {
+    "score": 0.5,
+    "reward": 0.5,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 393.42745341872796,
+      "token_cost_usd": 1.2382857999999997,
+      "input_tokens": 44,
+      "output_tokens": 7577
+    },
+    "config": "baseline",
+    "task_id": "0d4ec3ad"
+  },
+  {
+    "score": 0.03745314669864822,
+    "reward": 0.03745314669864822,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.057971,
+    "precision": 0.030303,
+    "recall": 0.666667,
+    "matched": 4,
+    "expected_count": 6,
+    "agent_files_count": 132,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.666667,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.030303,
+      "recall": 0.666667,
+      "f1": 0.057971,
+      "weighted_recall": 0.666667,
+      "reward": 0.03745314669864822,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.030303,
+        "recall": 0.666667,
+        "f1": 0.057971,
+        "weighted_recall": 0.666667
+      },
+      "task_time_seconds": 74.51526936516166,
+      "token_cost_usd": 0.36912315,
+      "input_tokens": 5,
+      "output_tokens": 2321
+    },
+    "config": "baseline",
+    "task_id": "38223444"
+  },
+  {
+    "score": 0.8,
+    "reward": 0.8,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "diagnostics": {
+      "task_time_seconds": 1503.864727635868,
+      "token_cost_usd": 1.9452373499999995,
+      "input_tokens": 3,
+      "output_tokens": 25
+    },
+    "config": "baseline",
+    "task_id": "45b581b5"
+  },
+  {
+    "score": 0.2906976663061084,
+    "reward": 0.2906976663061084,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.384615,
+    "precision": 0.25,
+    "recall": 0.833333,
+    "matched": 5,
+    "expected_count": 6,
+    "agent_files_count": 20,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.833333,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.25,
+      "recall": 0.833333,
+      "f1": 0.384615,
+      "weighted_recall": 0.833333,
+      "reward": 0.2906976663061084,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.25,
+        "recall": 0.833333,
+        "f1": 0.384615,
+        "weighted_recall": 0.833333
+      },
+      "task_time_seconds": 136.62344139814377,
+      "token_cost_usd": 0.5027778,
+      "input_tokens": 13,
+      "output_tokens": 8180
+    },
+    "config": "baseline",
+    "task_id": "6cf61fea"
+  },
+  {
+    "score": 0.9090910330578061,
+    "reward": 0.9090910330578061,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "f1": 0.8,
+    "precision": 1.0,
+    "recall": 0.666667,
+    "matched": 2,
+    "expected_count": 3,
+    "agent_files_count": 2,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.666667,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 1.0,
+      "recall": 0.666667,
+      "f1": 0.8,
+      "weighted_recall": 0.666667,
+      "reward": 0.9090910330578061,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 1.0,
+        "recall": 0.666667,
+        "f1": 0.8,
+        "weighted_recall": 0.666667
+      },
+      "task_time_seconds": 118.64220824139193,
+      "token_cost_usd": 0.66408855,
+      "input_tokens": 14,
+      "output_tokens": 8309
+    },
+    "config": "baseline",
+    "task_id": "b826fa9d"
+  },
+  {
+    "score": 0.5817,
+    "reward": 0.5817,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5817
+    },
+    "diagnostics": {
+      "task_time_seconds": 1247.6171091059223,
+      "token_cost_usd": 3.8108755999999993,
+      "input_tokens": 78,
+      "output_tokens": 44406
+    },
+    "config": "baseline",
+    "task_id": "ba1f3675"
+  },
+  {
+    "score": 0.6031,
+    "reward": 0.6031,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6031
+    },
+    "diagnostics": {
+      "task_time_seconds": 1124.5731272129342,
+      "token_cost_usd": 1.7172943999999994,
+      "input_tokens": 3,
+      "output_tokens": 47
+    },
+    "config": "baseline",
+    "task_id": "d906ac3d"
+  },
+  {
+    "score": 0.08741310015152312,
+    "reward": 0.08741310015152312,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.131579,
+    "precision": 0.071429,
+    "recall": 0.833333,
+    "matched": 5,
+    "expected_count": 6,
+    "agent_files_count": 70,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.833333,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.071429,
+      "recall": 0.833333,
+      "f1": 0.131579,
+      "weighted_recall": 0.833333,
+      "reward": 0.08741310015152312,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.071429,
+        "recall": 0.833333,
+        "f1": 0.131579,
+        "weighted_recall": 0.833333
+      },
+      "task_time_seconds": 163.60589390713722,
+      "token_cost_usd": 0.55355895,
+      "input_tokens": 11,
+      "output_tokens": 11367
+    },
+    "config": "baseline",
+    "task_id": "d9fee4ae"
+  },
+  {
+    "score": 0.02546712107366338,
+    "reward": 0.02546712107366338,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.040134,
+    "precision": 0.020478,
+    "recall": 1.0,
+    "matched": 6,
+    "expected_count": 6,
+    "agent_files_count": 293,
+    "metric": "weighted_f1",
+    "weighted_recall": 1.0,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.020478,
+      "recall": 1.0,
+      "f1": 0.040134,
+      "weighted_recall": 1.0,
+      "reward": 0.02546712107366338,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.020478,
+        "recall": 1.0,
+        "f1": 0.040134,
+        "weighted_recall": 1.0
+      },
+      "task_time_seconds": 70.36616051383317,
+      "token_cost_usd": 0.2785746,
+      "input_tokens": 7,
+      "output_tokens": 4993
+    },
+    "config": "baseline",
+    "task_id": "e5d7a4e7"
+  },
+  {
+    "score": 0.6784,
+    "reward": 0.6784,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6784
+    },
+    "diagnostics": {
+      "task_time_seconds": 2102.1396911409684,
+      "token_cost_usd": 9.279961500000002,
+      "input_tokens": 237,
+      "output_tokens": 85641
+    },
+    "config": "baseline",
+    "task_id": "fde8e6e0"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_canonical_statuses": 1.0,
+      "names_internal_beads_package": 1.0,
+      "names_claim_path": 1.0,
+      "names_cmd_package": 1.0
+    },
+    "criterion_weights": {
+      "names_canonical_statuses": 1.0,
+      "names_internal_beads_package": 1.0,
+      "names_claim_path": 1.0,
+      "names_cmd_package": 0.5
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 129.91353240795434,
+      "token_cost_usd": 0.40172545,
+      "input_tokens": 4,
+      "output_tokens": 1222
+    },
+    "config": "baseline",
+    "task_id": "oc_001"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_provider_interface": 1.0,
+      "names_exec_backend": 1.0,
+      "names_beadmail": 1.0,
+      "names_resolve": 1.0
+    },
+    "criterion_weights": {
+      "names_provider_interface": 1.0,
+      "names_exec_backend": 1.0,
+      "names_beadmail": 0.75,
+      "names_resolve": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 41.25307721225545,
+      "token_cost_usd": 0.160849,
+      "input_tokens": 4,
+      "output_tokens": 801
+    },
+    "config": "baseline",
+    "task_id": "oc_002"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_pool_desired_file": 1.0,
+      "names_awake_set": 1.0,
+      "names_reconciler": 1.0,
+      "explains_orphan_release": 1.0
+    },
+    "criterion_weights": {
+      "names_pool_desired_file": 1.0,
+      "names_awake_set": 1.0,
+      "names_reconciler": 0.75,
+      "explains_orphan_release": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 66.65143524901941,
+      "token_cost_usd": 0.23288885,
+      "input_tokens": 4,
+      "output_tokens": 1130
+    },
+    "config": "baseline",
+    "task_id": "oc_003"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "criterion_weights": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.75,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 1.0,
+        "explains_schema_driven_rationale": 1.0,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 79.3085524640046,
+      "token_cost_usd": 0.33135015,
+      "input_tokens": 12,
+      "output_tokens": 3364
+    },
+    "config": "baseline",
+    "task_id": "oc_004"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_process_control_file": 1.0,
+      "names_kinds": 1.0,
+      "describes_fanout": 1.0,
+      "states_concurrency": 1.0
+    },
+    "criterion_weights": {
+      "names_process_control_file": 1.0,
+      "names_kinds": 1.0,
+      "describes_fanout": 0.75,
+      "states_concurrency": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 49.27066592173651,
+      "token_cost_usd": 0.26591895,
+      "input_tokens": 7,
+      "output_tokens": 1815
+    },
+    "config": "baseline",
+    "task_id": "oc_005"
+  },
+  {
+    "score": 0.8,
+    "reward": 0.8,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "diagnostics": {
+      "task_time_seconds": 1749.7505639106967,
+      "token_cost_usd": 4.60184895,
+      "input_tokens": 68,
+      "output_tokens": 93678
+    },
+    "config": "with-sourcegraph",
+    "task_id": "0d4ec3ad"
+  },
+  {
+    "score": 0.3030306611570107,
+    "reward": 0.3030306611570107,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.380952,
+    "precision": 0.266667,
+    "recall": 0.666667,
+    "matched": 4,
+    "expected_count": 6,
+    "agent_files_count": 15,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.666667,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.266667,
+      "recall": 0.666667,
+      "f1": 0.380952,
+      "weighted_recall": 0.666667,
+      "reward": 0.3030306611570107,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.266667,
+        "recall": 0.666667,
+        "f1": 0.380952,
+        "weighted_recall": 0.666667
+      },
+      "task_time_seconds": 159.29587904177606,
+      "token_cost_usd": 0.5668402499999999,
+      "input_tokens": 16,
+      "output_tokens": 11672
+    },
+    "config": "with-sourcegraph",
+    "task_id": "38223444"
+  },
+  {
+    "score": 0.8,
+    "reward": 0.8,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "diagnostics": {
+      "task_time_seconds": 2430.1951791099273,
+      "token_cost_usd": 4.1956387500000005,
+      "input_tokens": 44,
+      "output_tokens": 131629
+    },
+    "config": "with-sourcegraph",
+    "task_id": "45b581b5"
+  },
+  {
+    "score": 0.24390210886370536,
+    "reward": 0.24390210886370536,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.32,
+    "precision": 0.210526,
+    "recall": 0.666667,
+    "matched": 4,
+    "expected_count": 6,
+    "agent_files_count": 19,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.666667,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.210526,
+      "recall": 0.666667,
+      "f1": 0.32,
+      "weighted_recall": 0.666667,
+      "reward": 0.24390210886370536,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.210526,
+        "recall": 0.666667,
+        "f1": 0.32,
+        "weighted_recall": 0.666667
+      },
+      "task_time_seconds": 124.0786235020496,
+      "token_cost_usd": 0.40423994999999996,
+      "input_tokens": 13,
+      "output_tokens": 8212
+    },
+    "config": "with-sourcegraph",
+    "task_id": "6cf61fea"
+  },
+  {
+    "score": 0.9090910330578061,
+    "reward": 0.9090910330578061,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "f1": 0.8,
+    "precision": 1.0,
+    "recall": 0.666667,
+    "matched": 2,
+    "expected_count": 3,
+    "agent_files_count": 2,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.666667,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 1.0,
+      "recall": 0.666667,
+      "f1": 0.8,
+      "weighted_recall": 0.666667,
+      "reward": 0.9090910330578061,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 1.0,
+        "recall": 0.666667,
+        "f1": 0.8,
+        "weighted_recall": 0.666667
+      },
+      "task_time_seconds": 136.73289151396602,
+      "token_cost_usd": 0.8893220999999997,
+      "input_tokens": 18,
+      "output_tokens": 7164
+    },
+    "config": "with-sourcegraph",
+    "task_id": "b826fa9d"
+  },
+  {
+    "score": 0.5432,
+    "reward": 0.5432,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5432
+    },
+    "diagnostics": {
+      "task_time_seconds": 1379.616524525918,
+      "token_cost_usd": 4.38226275,
+      "input_tokens": 65,
+      "output_tokens": 69226
+    },
+    "config": "with-sourcegraph",
+    "task_id": "ba1f3675"
+  },
+  {
+    "score": 0.6102,
+    "reward": 0.6102,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6102
+    },
+    "diagnostics": {
+      "task_time_seconds": 1699.447247906588,
+      "token_cost_usd": 3.6528636,
+      "input_tokens": 147,
+      "output_tokens": 101428
+    },
+    "config": "with-sourcegraph",
+    "task_id": "d906ac3d"
+  },
+  {
+    "score": 0.40322593652443106,
+    "reward": 0.40322593652443106,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.5,
+    "precision": 0.357143,
+    "recall": 0.833333,
+    "matched": 5,
+    "expected_count": 6,
+    "agent_files_count": 14,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.833333,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.357143,
+      "recall": 0.833333,
+      "f1": 0.5,
+      "weighted_recall": 0.833333,
+      "reward": 0.40322593652443106,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.357143,
+        "recall": 0.833333,
+        "f1": 0.5,
+        "weighted_recall": 0.833333
+      },
+      "task_time_seconds": 98.8270610421896,
+      "token_cost_usd": 0.4297422,
+      "input_tokens": 470,
+      "output_tokens": 7146
+    },
+    "config": "with-sourcegraph",
+    "task_id": "d9fee4ae"
+  },
+  {
+    "score": 0.23255814764737318,
+    "reward": 0.23255814764737318,
+    "status": "completed",
+    "passed": false,
+    "error": null,
+    "f1": 0.307692,
+    "precision": 0.2,
+    "recall": 0.666667,
+    "matched": 4,
+    "expected_count": 6,
+    "agent_files_count": 20,
+    "metric": "weighted_f1",
+    "weighted_recall": 0.666667,
+    "scorer_family": "oracle_overlap_fbeta",
+    "sub_scores": {
+      "precision": 0.2,
+      "recall": 0.666667,
+      "f1": 0.307692,
+      "weighted_recall": 0.666667,
+      "reward": 0.23255814764737318,
+      "fbeta_beta": 0.5
+    },
+    "diagnostics": {
+      "ir_metrics": {
+        "precision": 0.2,
+        "recall": 0.666667,
+        "f1": 0.307692,
+        "weighted_recall": 0.666667
+      },
+      "task_time_seconds": 245.2326526697725,
+      "token_cost_usd": 0.7875988499999999,
+      "input_tokens": 1301,
+      "output_tokens": 18456
+    },
+    "config": "with-sourcegraph",
+    "task_id": "e5d7a4e7"
+  },
+  {
+    "score": 0.6816,
+    "reward": 0.6816,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6816
+    },
+    "diagnostics": {
+      "task_time_seconds": 1831.10216632206,
+      "token_cost_usd": 4.8283368,
+      "input_tokens": 78,
+      "output_tokens": 107922
+    },
+    "config": "with-sourcegraph",
+    "task_id": "fde8e6e0"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_canonical_statuses": 1.0,
+      "names_internal_beads_package": 1.0,
+      "names_claim_path": 1.0,
+      "names_cmd_package": 1.0
+    },
+    "criterion_weights": {
+      "names_canonical_statuses": 1.0,
+      "names_internal_beads_package": 1.0,
+      "names_claim_path": 1.0,
+      "names_cmd_package": 0.5
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 133.98643168900162,
+      "token_cost_usd": 0.5118412499999999,
+      "input_tokens": 16,
+      "output_tokens": 7836
+    },
+    "config": "with-sourcegraph",
+    "task_id": "oc_001"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_provider_interface": 1.0,
+      "names_exec_backend": 1.0,
+      "names_beadmail": 1.0,
+      "names_resolve": 1.0
+    },
+    "criterion_weights": {
+      "names_provider_interface": 1.0,
+      "names_exec_backend": 1.0,
+      "names_beadmail": 0.75,
+      "names_resolve": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 23.850927045103163,
+      "token_cost_usd": 0.12050805,
+      "input_tokens": 6,
+      "output_tokens": 1126
+    },
+    "config": "with-sourcegraph",
+    "task_id": "oc_002"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_pool_desired_file": 1.0,
+      "names_awake_set": 1.0,
+      "names_reconciler": 1.0,
+      "explains_orphan_release": 1.0
+    },
+    "criterion_weights": {
+      "names_pool_desired_file": 1.0,
+      "names_awake_set": 1.0,
+      "names_reconciler": 0.75,
+      "explains_orphan_release": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 116.29005558695644,
+      "token_cost_usd": 0.34062555,
+      "input_tokens": 13,
+      "output_tokens": 5101
+    },
+    "config": "with-sourcegraph",
+    "task_id": "oc_003"
+  },
+  {
+    "score": 0.6428571428571429,
+    "reward": 0.6428571428571429,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.5,
+      "names_resolve_path": 1.0
+    },
+    "criterion_weights": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.75,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.6428571428571429,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.5,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 77.49814482685179,
+      "token_cost_usd": 0.34060635,
+      "input_tokens": 12354,
+      "output_tokens": 2944
+    },
+    "config": "with-sourcegraph",
+    "task_id": "oc_004"
+  },
+  {
+    "score": 1.0,
+    "reward": 1.0,
+    "status": "completed",
+    "passed": true,
+    "error": null,
+    "criterion_scores": {
+      "names_process_control_file": 1.0,
+      "names_kinds": 1.0,
+      "describes_fanout": 1.0,
+      "states_concurrency": 1.0
+    },
+    "criterion_weights": {
+      "names_process_control_file": 1.0,
+      "names_kinds": 1.0,
+      "describes_fanout": 0.75,
+      "states_concurrency": 0.75
+    },
+    "total_weight": 3.5,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "diagnostics": {
+      "task_time_seconds": 35.66135712340474,
+      "token_cost_usd": 0.25849635000000004,
+      "input_tokens": 5,
+      "output_tokens": 1783
+    },
+    "config": "with-sourcegraph",
+    "task_id": "oc_005"
+  }
+]

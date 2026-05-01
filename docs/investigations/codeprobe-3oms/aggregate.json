@@ -1,0 +1,229 @@
+{
+  "experiment": "gascity-mcp-comparison",
+  "generated": "2026-05-01T14:52:09Z",
+  "config_count": 2,
+  "config_summaries": {
+    "baseline": {
+      "tasks_completed": 15,
+      "mean_automated_score": 0.6342214711525166,
+      "mean_reward": 0.6342214711525166,
+      "stdev_automated_score": 0.3721963714656265,
+      "total_cost_usd": 21.752510100000002,
+      "mean_cost_per_task": 1.45016734,
+      "total_time_seconds": 7301.772345195059,
+      "total_input_tokens": 446,
+      "total_output_tokens": 181198,
+      "mean_input_tokens_per_task": 29.733333333333334,
+      "mean_output_tokens_per_task": 12079.866666666667,
+      "score_per_dollar": 0.43734364556335725,
+      "mean_precision": 0.274442,
+      "mean_recall": 0.8,
+      "mean_f1": 0.2828598,
+      "ir_diagnostics": {
+        "mean_precision": 0.274442,
+        "mean_recall": 0.8,
+        "mean_f1": 0.2828598
+      },
+      "scorer_family_distribution": {
+        "continuous": 5,
+        "oracle_checks": 5,
+        "oracle_overlap_fbeta": 5
+      }
+    },
+    "with-sourcegraph": {
+      "tasks_completed": 15,
+      "mean_automated_score": 0.6779776686738312,
+      "mean_reward": 0.6779776686738312,
+      "stdev_automated_score": 0.28345888243461187,
+      "total_cost_usd": 26.31077175,
+      "mean_cost_per_task": 1.75405145,
+      "total_time_seconds": 10241.565705816261,
+      "total_input_tokens": 14614,
+      "total_output_tokens": 575323,
+      "mean_input_tokens_per_task": 974.2666666666667,
+      "mean_output_tokens_per_task": 38354.86666666667,
+      "score_per_dollar": 0.386520970450343,
+      "mean_precision": 0.4068672,
+      "mean_recall": 0.7000002,
+      "mean_f1": 0.4617288,
+      "ir_diagnostics": {
+        "mean_precision": 0.4068672,
+        "mean_recall": 0.7000002,
+        "mean_f1": 0.4617288
+      },
+      "scorer_family_distribution": {
+        "continuous": 5,
+        "oracle_checks": 5,
+        "oracle_overlap_fbeta": 5
+      }
+    }
+  },
+  "pairwise_deltas": [
+    {
+      "config_a": "baseline",
+      "config_b": "with-sourcegraph",
+      "shared_tasks": 15,
+      "mean_delta": 0.0438,
+      "wins_a": 3,
+      "wins_b": 4,
+      "ties": 8,
+      "cohens_d": 0.257
+    }
+  ],
+  "bias_warnings": [
+    {
+      "kind": "backend_overlap",
+      "severity": "informational",
+      "message": "'with-sourcegraph' has access to sourcegraph, which contributed to the ground truth \u2014 but the curator independently corroborated GT via ast, curated, grep, so this is informational rather than a tautology risk.",
+      "detail": {
+        "config": "with-sourcegraph",
+        "shared_backends": [
+          "sourcegraph"
+        ],
+        "independent_backends": [
+          "ast",
+          "curated",
+          "grep"
+        ],
+        "affected_task_count": 5,
+        "affected_tasks": [
+          "38223444",
+          "6cf61fea",
+          "b826fa9d",
+          "d9fee4ae",
+          "e5d7a4e7"
+        ]
+      }
+    }
+  ],
+  "quality_metrics": {
+    "schema_version": 1,
+    "overall": {
+      "scope": "overall",
+      "total_trials": 30,
+      "valid_trials": 30,
+      "invalid_trials": 0,
+      "low_quality_trials": 5,
+      "invalid_rate": 0.0,
+      "valid_rate": 1.0,
+      "low_quality_rate": 0.1667,
+      "flag_counts": {
+        "backend_overlap_informational": 5
+      },
+      "error_category_counts": {},
+      "experiment_warnings": []
+    },
+    "per_config": {
+      "baseline": {
+        "scope": "baseline",
+        "total_trials": 15,
+        "valid_trials": 15,
+        "invalid_trials": 0,
+        "low_quality_trials": 0,
+        "invalid_rate": 0.0,
+        "valid_rate": 1.0,
+        "low_quality_rate": 0.0,
+        "flag_counts": {},
+        "error_category_counts": {},
+        "experiment_warnings": []
+      },
+      "with-sourcegraph": {
+        "scope": "with-sourcegraph",
+        "total_trials": 15,
+        "valid_trials": 15,
+        "invalid_trials": 0,
+        "low_quality_trials": 5,
+        "invalid_rate": 0.0,
+        "valid_rate": 1.0,
+        "low_quality_rate": 0.3333,
+        "flag_counts": {
+          "backend_overlap_informational": 5
+        },
+        "error_category_counts": {},
+        "experiment_warnings": []
+      }
+    },
+    "low_quality_trials": [
+      {
+        "task_id": "38223444",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.3030306611570107,
+        "scorer_passed": false,
+        "precision": 0.266667,
+        "recall": 0.666667,
+        "f1": 0.380952,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "6cf61fea",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.24390210886370536,
+        "scorer_passed": false,
+        "precision": 0.210526,
+        "recall": 0.666667,
+        "f1": 0.32,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "b826fa9d",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.9090910330578061,
+        "scorer_passed": true,
+        "precision": 1.0,
+        "recall": 0.666667,
+        "f1": 0.8,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "d9fee4ae",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.40322593652443106,
+        "scorer_passed": false,
+        "precision": 0.357143,
+        "recall": 0.833333,
+        "f1": 0.5,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "e5d7a4e7",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.23255814764737318,
+        "scorer_passed": false,
+        "precision": 0.2,
+        "recall": 0.666667,
+        "f1": 0.307692,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      }
+    ]
+  }
+}
