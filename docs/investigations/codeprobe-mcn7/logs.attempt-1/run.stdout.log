@@ -1,0 +1,17 @@
+Suite 'codeprobe-mcn7-sdlc-rerun': 5/15 tasks selected
+
+Running config: baseline (5 tasks)
+
+Running config: with-sourcegraph (5 tasks)
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.5, "duration_seconds": 325.53124922979623, "cost_usd": 0.7454303499999999, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.5, "duration_seconds": 509.6014442429878, "cost_usd": 1.9851770999999998, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 0.0, "cost_usd": null, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.25, "duration_seconds": 826.9983421396464, "cost_usd": 3.03261285, "record_type": "event"}
