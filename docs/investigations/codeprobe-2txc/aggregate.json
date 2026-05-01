@@ -1,0 +1,94 @@
+{
+  "experiment": "codeprobe-2txc-preamble-tune-rerun",
+  "config_summaries": {
+    "oc_baseline": {
+      "n": 15,
+      "mean_reward": 1.0,
+      "std_reward": 0.0,
+      "total_cost_usd": 4.6286,
+      "mean_cost_per_trial": 0.3086
+    },
+    "oc_with-sg-default-preamble": {
+      "n": 15,
+      "mean_reward": 0.9143,
+      "std_reward": 0.1835,
+      "total_cost_usd": 5.2256,
+      "mean_cost_per_trial": 0.3484
+    },
+    "oc_with-sg-tuned-preamble": {
+      "n": 15,
+      "mean_reward": 0.919,
+      "std_reward": 0.1705,
+      "total_cost_usd": 3.7506,
+      "mean_cost_per_trial": 0.25
+    },
+    "sdlc_baseline": {
+      "n": 15,
+      "mean_reward": 0.6831,
+      "std_reward": 0.1095,
+      "total_cost_usd": 69.1132,
+      "mean_cost_per_trial": 4.6075
+    },
+    "sdlc_with-sg-default-preamble-3oms": {
+      "n": 5,
+      "mean_reward": 0.687,
+      "std_reward": 0.1142,
+      "total_cost_usd": 21.661,
+      "mean_cost_per_trial": 4.3322
+    },
+    "sdlc_with-sg-tuned-preamble": {
+      "n": 15,
+      "mean_reward": 0.6866,
+      "std_reward": 0.1069,
+      "total_cost_usd": 85.1692,
+      "mean_cost_per_trial": 5.6779
+    }
+  },
+  "key_contrasts": {
+    "oc_tuned_vs_baseline": {
+      "n": 15,
+      "mean": -0.081,
+      "std": 0.1705,
+      "t": -1.839,
+      "df": 14,
+      "ci95_lower": -0.1754,
+      "ci95_upper": 0.0135
+    },
+    "oc_tuned_vs_default_preamble": {
+      "n": 15,
+      "mean": 0.0048,
+      "std": 0.0687,
+      "t": 0.269,
+      "df": 14,
+      "ci95_lower": -0.0333,
+      "ci95_upper": 0.0428
+    },
+    "oc_default_vs_baseline": {
+      "n": 15,
+      "mean": -0.0857,
+      "std": 0.1835,
+      "t": -1.809,
+      "df": 14,
+      "ci95_lower": -0.1873,
+      "ci95_upper": 0.0159
+    },
+    "sdlc_tuned_vs_baseline": {
+      "n": 15,
+      "mean": 0.0035,
+      "std": 0.0031,
+      "t": 4.287,
+      "df": 14,
+      "ci95_lower": 0.0017,
+      "ci95_upper": 0.0052
+    },
+    "sdlc_tuned_vs_default_preamble_n1": {
+      "n": 5,
+      "mean": -0.0007,
+      "std": 0.0028,
+      "t": -0.595,
+      "df": 4,
+      "ci95_lower": -0.0042,
+      "ci95_upper": 0.0027
+    }
+  }
+}

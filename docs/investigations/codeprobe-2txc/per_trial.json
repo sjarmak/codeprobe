@@ -1,0 +1,2199 @@
+[
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 61.31286531826481,
+    "cost_usd": 0.21597629999999998,
+    "input_tokens": 8,
+    "output_tokens": 3647,
+    "cache_read_tokens": 150591,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 7,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 21.359646735247225,
+    "cost_usd": 0.10591289999999999,
+    "input_tokens": 5,
+    "output_tokens": 1237,
+    "cache_read_tokens": 55018,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 89.03132265200838,
+    "cost_usd": 0.3059073,
+    "input_tokens": 12,
+    "output_tokens": 4932,
+    "cache_read_tokens": 320596,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 9,
+      "mcp__sourcegraph__read_file": 4,
+      "mcp__sourcegraph__list_files": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 21.520369913894683,
+    "cost_usd": 0.0597849,
+    "input_tokens": 6,
+    "output_tokens": 1018,
+    "cache_read_tokens": 91448,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__read_file": 3
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 22.06154605001211,
+    "cost_usd": 0.10422390000000001,
+    "input_tokens": 6,
+    "output_tokens": 1047,
+    "cache_read_tokens": 77678,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__read_file": 3
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 173.55665707821026,
+    "cost_usd": 0.45251745,
+    "input_tokens": 13,
+    "output_tokens": 7973,
+    "cache_read_tokens": 439974,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 8,
+      "mcp__sourcegraph__list_files": 3,
+      "mcp__sourcegraph__read_file": 8
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 139.23774161795154,
+    "cost_usd": 0.52258155,
+    "input_tokens": 1117,
+    "output_tokens": 8177,
+    "cache_read_tokens": 655831,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 10,
+      "mcp__sourcegraph__read_file": 12,
+      "mcp__sourcegraph__commit_search": 1,
+      "mcp__sourcegraph__diff_search": 2,
+      "mcp__sourcegraph__nls_search": 1
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 72.62500741612166,
+    "cost_usd": 0.2419911,
+    "input_tokens": 8,
+    "output_tokens": 3868,
+    "cache_read_tokens": 180332,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 6,
+      "mcp__sourcegraph__read_file": 6
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 162.5063469731249,
+    "cost_usd": 0.37711649999999997,
+    "input_tokens": 11,
+    "output_tokens": 7754,
+    "cache_read_tokens": 297770,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 9,
+      "mcp__sourcegraph__read_file": 7
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 0.5,
+    "status": "completed",
+    "duration_seconds": 53.40916342288256,
+    "cost_usd": 0.33685365,
+    "input_tokens": 61,
+    "output_tokens": 2790,
+    "cache_read_tokens": 295473,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.5,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.0,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 3,
+      "mcp__sourcegraph__list_files": 3,
+      "mcp__sourcegraph__read_file": 4,
+      "mcp__sourcegraph__nls_search": 1,
+      "mcp__sourcegraph__commit_search": 1,
+      "mcp__sourcegraph__diff_search": 1
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 0.6428571428571429,
+    "status": "completed",
+    "duration_seconds": 60.36300886422396,
+    "cost_usd": 0.2841318,
+    "input_tokens": 10,
+    "output_tokens": 2803,
+    "cache_read_tokens": 236331,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.6428571428571429,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.5,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 7,
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__read_file": 3,
+      "mcp__sourcegraph__nls_search": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 0.6428571428571429,
+    "status": "completed",
+    "duration_seconds": 64.12684585526586,
+    "cost_usd": 0.31241264999999996,
+    "input_tokens": 62,
+    "output_tokens": 3002,
+    "cache_read_tokens": 301243,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.6428571428571429,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.5,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 7,
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__read_file": 3,
+      "mcp__sourcegraph__nls_search": 1,
+      "mcp__sourcegraph__commit_search": 1,
+      "mcp__sourcegraph__diff_search": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 39.264119770843536,
+    "cost_usd": 0.1438593,
+    "input_tokens": 5,
+    "output_tokens": 1925,
+    "cache_read_tokens": 53581,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 37.01774854864925,
+    "cost_usd": 0.14516685000000001,
+    "input_tokens": 5,
+    "output_tokens": 2017,
+    "cache_read_tokens": 53577,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-tuned-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 33.837019418831915,
+    "cost_usd": 0.14214300000000002,
+    "input_tokens": 5,
+    "output_tokens": 1812,
+    "cache_read_tokens": 53560,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 34.005441918969154,
+    "cost_usd": 0.1386119,
+    "input_tokens": 4,
+    "output_tokens": 948,
+    "cache_read_tokens": 45538,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 1,
+      "Read": 4
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 45.5662759100087,
+    "cost_usd": 0.15220350000000002,
+    "input_tokens": 4,
+    "output_tokens": 916,
+    "cache_read_tokens": 45538,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 2,
+      "Read": 5
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 55.48928212095052,
+    "cost_usd": 0.23275785000000002,
+    "input_tokens": 11,
+    "output_tokens": 1463,
+    "cache_read_tokens": 295612,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Glob": 2,
+      "Bash": 4,
+      "Read": 4
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 105.21378099126741,
+    "cost_usd": 0.53691075,
+    "input_tokens": 17,
+    "output_tokens": 5887,
+    "cache_read_tokens": 684070,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Glob": 3,
+      "Grep": 10,
+      "Read": 7,
+      "Bash": 4
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 117.59240572107956,
+    "cost_usd": 0.4268883499999999,
+    "input_tokens": 4,
+    "output_tokens": 1015,
+    "cache_read_tokens": 45600,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 23,
+      "Grep": 5,
+      "Read": 10
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 136.9600608232431,
+    "cost_usd": 0.4680817500000001,
+    "input_tokens": 4,
+    "output_tokens": 1161,
+    "cache_read_tokens": 45600,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 10,
+      "Glob": 2,
+      "Grep": 24,
+      "Read": 6
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 91.90568108996376,
+    "cost_usd": 0.2768734,
+    "input_tokens": 4,
+    "output_tokens": 1130,
+    "cache_read_tokens": 45543,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 2,
+      "Grep": 11,
+      "Read": 11
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 73.1978151393123,
+    "cost_usd": 0.32210685000000006,
+    "input_tokens": 4,
+    "output_tokens": 1253,
+    "cache_read_tokens": 45543,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 7,
+      "Grep": 5,
+      "Read": 11
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 51.942702358122915,
+    "cost_usd": 0.2904507,
+    "input_tokens": 13,
+    "output_tokens": 2615,
+    "cache_read_tokens": 430189,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 1.0,
+        "explains_schema_driven_rationale": 1.0,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Glob": 1,
+      "Grep": 1,
+      "Read": 6,
+      "Bash": 6
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 78.01327820494771,
+    "cost_usd": 0.29496,
+    "input_tokens": 4,
+    "output_tokens": 1018,
+    "cache_read_tokens": 45543,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 2,
+      "Grep": 11,
+      "Read": 10
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 58.815165924839675,
+    "cost_usd": 0.30101069999999996,
+    "input_tokens": 10,
+    "output_tokens": 2226,
+    "cache_read_tokens": 337644,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 1.0,
+        "explains_schema_driven_rationale": 1.0,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Grep": 2,
+      "Read": 4,
+      "Bash": 3
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 70.6613804702647,
+    "cost_usd": 0.3547884,
+    "input_tokens": 12,
+    "output_tokens": 2659,
+    "cache_read_tokens": 463858,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 1.0,
+        "explains_schema_driven_rationale": 1.0,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Grep": 3,
+      "Read": 6,
+      "Bash": 2
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 47.88826877903193,
+    "cost_usd": 0.27332670000000003,
+    "input_tokens": 7,
+    "output_tokens": 1559,
+    "cache_read_tokens": 142269,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Glob": 2,
+      "Bash": 2,
+      "Read": 3
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 45.55476196296513,
+    "cost_usd": 0.2896944,
+    "input_tokens": 7,
+    "output_tokens": 1778,
+    "cache_read_tokens": 169853,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Glob": 2,
+      "Read": 4
+    }
+  },
+  {
+    "config": "oc_baseline",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 35.284693726338446,
+    "cost_usd": 0.26994435,
+    "input_tokens": 6,
+    "output_tokens": 1634,
+    "cache_read_tokens": 109542,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "Glob": 2,
+      "Read": 4
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 22.7212906149216,
+    "cost_usd": 0.117645,
+    "input_tokens": 6,
+    "output_tokens": 1014,
+    "cache_read_tokens": 86815,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__read_file": 3
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 25.045750874094665,
+    "cost_usd": 0.12342495,
+    "input_tokens": 6,
+    "output_tokens": 1064,
+    "cache_read_tokens": 85644,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 3
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_002",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 19.174506503157318,
+    "cost_usd": 0.055816199999999996,
+    "input_tokens": 5,
+    "output_tokens": 1067,
+    "cache_read_tokens": 74354,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_provider_interface": 1.0,
+        "names_exec_backend": 1.0,
+        "names_beadmail": 1.0,
+        "names_resolve": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 3
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 80.45466264197603,
+    "cost_usd": 0.31638164999999996,
+    "input_tokens": 9,
+    "output_tokens": 4741,
+    "cache_read_tokens": 237378,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 6,
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__read_file": 4
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 162.20283280219883,
+    "cost_usd": 0.5296039499999999,
+    "input_tokens": 13,
+    "output_tokens": 9178,
+    "cache_read_tokens": 512729,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 7,
+      "mcp__sourcegraph__list_files": 3,
+      "mcp__sourcegraph__read_file": 10
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_001",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 172.86453358503059,
+    "cost_usd": 0.5435028,
+    "input_tokens": 14,
+    "output_tokens": 10275,
+    "cache_read_tokens": 526036,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_canonical_statuses": 1.0,
+        "names_internal_beads_package": 1.0,
+        "names_claim_path": 1.0,
+        "names_cmd_package": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 9,
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__read_file": 11
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 0.6428571428571429,
+    "status": "completed",
+    "duration_seconds": 56.21012181695551,
+    "cost_usd": 0.4166421,
+    "input_tokens": 206,
+    "output_tokens": 2582,
+    "cache_read_tokens": 387797,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.6428571428571429,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.5,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 4,
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__read_file": 5,
+      "mcp__sourcegraph__commit_search": 3,
+      "mcp__sourcegraph__nls_search": 1,
+      "mcp__sourcegraph__diff_search": 1
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 231.58751007495448,
+    "cost_usd": 0.8222598000000001,
+    "input_tokens": 27,
+    "output_tokens": 12513,
+    "cache_read_tokens": 1221121,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 16,
+      "mcp__sourcegraph__read_file": 13,
+      "mcp__sourcegraph__commit_search": 3,
+      "mcp__sourcegraph__diff_search": 3
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 215.12341361818835,
+    "cost_usd": 0.5766189000000002,
+    "input_tokens": 18,
+    "output_tokens": 10108,
+    "cache_read_tokens": 699133,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 11,
+      "mcp__sourcegraph__read_file": 9,
+      "mcp__sourcegraph__nls_search": 1,
+      "mcp__sourcegraph__commit_search": 2,
+      "mcp__sourcegraph__diff_search": 1
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 0.42857142857142855,
+    "status": "completed",
+    "duration_seconds": 105.77996818115935,
+    "cost_usd": 0.38366985,
+    "input_tokens": 61,
+    "output_tokens": 4438,
+    "cache_read_tokens": 298327,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.42857142857142855,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.5,
+        "names_resolve_path": 0.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 4,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__nls_search": 2,
+      "mcp__sourcegraph__read_file": 4,
+      "mcp__sourcegraph__commit_search": 2,
+      "mcp__sourcegraph__diff_search": 1
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_003",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 195.74298005271703,
+    "cost_usd": 0.47116725000000004,
+    "input_tokens": 14,
+    "output_tokens": 10623,
+    "cache_read_tokens": 417380,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_pool_desired_file": 1.0,
+        "names_awake_set": 1.0,
+        "names_reconciler": 1.0,
+        "explains_orphan_release": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 10,
+      "mcp__sourcegraph__read_file": 10
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 34.4083343045786,
+    "cost_usd": 0.15473895,
+    "input_tokens": 5,
+    "output_tokens": 1860,
+    "cache_read_tokens": 59109,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 0.6428571428571429,
+    "status": "completed",
+    "duration_seconds": 65.35770328482613,
+    "cost_usd": 0.35875155000000003,
+    "input_tokens": 240,
+    "output_tokens": 3281,
+    "cache_read_tokens": 323101,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 0.6428571428571429,
+      "criterion_scores": {
+        "names_flag_aliases_field": 1.0,
+        "names_toml_tag": 0.0,
+        "explains_schema_driven_rationale": 0.5,
+        "names_resolve_path": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__keyword_search": 6,
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__read_file": 4,
+      "mcp__sourcegraph__nls_search": 1,
+      "mcp__sourcegraph__commit_search": 2,
+      "mcp__sourcegraph__diff_search": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 39.12575701298192,
+    "cost_usd": 0.15807315,
+    "input_tokens": 5,
+    "output_tokens": 2078,
+    "cache_read_tokens": 59098,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "oc_with-sg-default-preamble",
+    "family": "oracle_checks",
+    "task_id": "oc_005",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "status": "completed",
+    "duration_seconds": 33.85365166980773,
+    "cost_usd": 0.197265,
+    "input_tokens": 5,
+    "output_tokens": 1903,
+    "cache_read_tokens": 59100,
+    "scorer_family": "oracle_checks",
+    "sub_scores": {
+      "composite": 1.0,
+      "criterion_scores": {
+        "names_process_control_file": 1.0,
+        "names_kinds": 1.0,
+        "describes_fanout": 1.0,
+        "states_concurrency": 1.0
+      },
+      "total_weight": 3.5
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 1,
+      "mcp__sourcegraph__keyword_search": 1,
+      "mcp__sourcegraph__read_file": 2
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 0,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2174.6430448517203,
+    "cost_usd": 10.225945450000001,
+    "input_tokens": 186,
+    "output_tokens": 73468,
+    "cache_read_tokens": 26892671,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 128,
+      "Read": 64,
+      "Grep": 3,
+      "Glob": 1,
+      "Edit": 13,
+      "Write": 2
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 1,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2222.894105609972,
+    "cost_usd": 10.19420985,
+    "input_tokens": 178,
+    "output_tokens": 98657,
+    "cache_read_tokens": 25413141,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 117,
+      "Glob": 2,
+      "Read": 85,
+      "Grep": 1,
+      "Edit": 7
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 0,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 466.74778056982905,
+    "cost_usd": 1.5319257999999993,
+    "input_tokens": 40,
+    "output_tokens": 17370,
+    "cache_read_tokens": 2535786,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 19,
+      "Read": 25,
+      "Grep": 8,
+      "Glob": 1,
+      "Edit": 1
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 1,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 433.8873260091059,
+    "cost_usd": 1.5564387500000003,
+    "input_tokens": 27,
+    "output_tokens": 14609,
+    "cache_read_tokens": 2187481,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 24,
+      "Read": 23,
+      "Grep": 5,
+      "Edit": 1
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 2,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 1127.72986825509,
+    "cost_usd": 5.746336099999999,
+    "input_tokens": 126,
+    "output_tokens": 52158,
+    "cache_read_tokens": 14047231,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Glob": 4,
+      "Bash": 69,
+      "Read": 48,
+      "Grep": 10,
+      "Edit": 9
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 2,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 430.33385139191523,
+    "cost_usd": 1.4356156500000001,
+    "input_tokens": 31,
+    "output_tokens": 17648,
+    "cache_read_tokens": 2110481,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 22,
+      "Read": 20,
+      "Grep": 10,
+      "Edit": 1
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 1,
+    "reward": 0.534,
+    "status": "completed",
+    "duration_seconds": 1392.2286499501206,
+    "cost_usd": 3.1427633000000013,
+    "input_tokens": 3,
+    "output_tokens": 25,
+    "cache_read_tokens": 135547,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.534
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 46,
+      "Grep": 15,
+      "Read": 28,
+      "Glob": 2,
+      "Edit": 4
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 0,
+    "reward": 0.534,
+    "status": "completed",
+    "duration_seconds": 1825.324953299947,
+    "cost_usd": 11.891961600000002,
+    "input_tokens": 173,
+    "output_tokens": 94246,
+    "cache_read_tokens": 30755536,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.534
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Glob": 2,
+      "Bash": 70,
+      "Read": 71,
+      "Grep": 29,
+      "Edit": 26
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 0,
+    "reward": 0.6031,
+    "status": "completed",
+    "duration_seconds": 239.50368348136544,
+    "cost_usd": 1.0859828999999999,
+    "input_tokens": 27,
+    "output_tokens": 11077,
+    "cache_read_tokens": 1636697,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6031
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 25,
+      "Read": 14,
+      "Grep": 1,
+      "Edit": 5
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 2,
+    "reward": 0.534,
+    "status": "completed",
+    "duration_seconds": 637.1484283208847,
+    "cost_usd": 3.449643449999999,
+    "input_tokens": 80,
+    "output_tokens": 27324,
+    "cache_read_tokens": 7911675,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.534
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 48,
+      "Read": 35,
+      "Glob": 1,
+      "Edit": 7
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 1,
+    "reward": 0.6031,
+    "status": "completed",
+    "duration_seconds": 474.0205996129662,
+    "cost_usd": 1.8439370499999999,
+    "input_tokens": 37,
+    "output_tokens": 28578,
+    "cache_read_tokens": 3066678,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6031
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 16,
+      "Read": 20,
+      "Grep": 3,
+      "Glob": 3,
+      "Edit": 9
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 2,
+    "reward": 0.6031,
+    "status": "completed",
+    "duration_seconds": 1164.3482524021529,
+    "cost_usd": 1.6381534999999998,
+    "input_tokens": 3,
+    "output_tokens": 42,
+    "cache_read_tokens": 84202,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6031
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 38,
+      "Read": 14,
+      "Grep": 4,
+      "Edit": 7
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 0,
+    "reward": 0.6784,
+    "status": "completed",
+    "duration_seconds": 1075.1272112750448,
+    "cost_usd": 5.0429892,
+    "input_tokens": 86,
+    "output_tokens": 51015,
+    "cache_read_tokens": 12002154,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6784
+    },
+    "tool_use_by_name": {
+      "Bash": 49,
+      "Read": 31,
+      "Grep": 1,
+      "Edit": 2
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 2,
+    "reward": 0.6784,
+    "status": "completed",
+    "duration_seconds": 1450.0383750726469,
+    "cost_usd": 3.970115950000001,
+    "input_tokens": 112,
+    "output_tokens": 39545,
+    "cache_read_tokens": 9153318,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6784
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 89,
+      "Glob": 2,
+      "Read": 46,
+      "Edit": 3
+    }
+  },
+  {
+    "config": "sdlc_baseline",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 1,
+    "reward": 0.6784,
+    "status": "completed",
+    "duration_seconds": 1655.2142449589446,
+    "cost_usd": 6.3572292500000005,
+    "input_tokens": 138,
+    "output_tokens": 74983,
+    "cache_read_tokens": 14170161,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6784
+    },
+    "tool_use_by_name": {
+      "Agent": 1,
+      "Bash": 88,
+      "Grep": 10,
+      "Read": 70,
+      "Edit": 3
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 1,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 1479.3141437950544,
+    "cost_usd": 4.32407565,
+    "input_tokens": 58,
+    "output_tokens": 87442,
+    "cache_read_tokens": 7046843,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 36,
+      "mcp__sourcegraph__keyword_search": 15,
+      "Write": 5
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 0,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2839.868438921869,
+    "cost_usd": 7.894894649999998,
+    "input_tokens": 810,
+    "output_tokens": 155470,
+    "cache_read_tokens": 14019953,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__keyword_search": 24,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 62,
+      "Write": 6,
+      "mcp__sourcegraph__diff_search": 6,
+      "mcp__sourcegraph__commit_search": 2
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 2,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2612.6286522787996,
+    "cost_usd": 7.623222900000001,
+    "input_tokens": 633,
+    "output_tokens": 153325,
+    "cache_read_tokens": 13839588,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 3,
+      "mcp__sourcegraph__keyword_search": 29,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 42,
+      "Write": 7
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 0,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2208.2828767350875,
+    "cost_usd": 4.835988900000002,
+    "input_tokens": 47,
+    "output_tokens": 128036,
+    "cache_read_tokens": 6466693,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 5,
+      "mcp__sourcegraph__list_repos": 3,
+      "mcp__sourcegraph__read_file": 31,
+      "mcp__sourcegraph__keyword_search": 10,
+      "Write": 7,
+      "mcp__sourcegraph__commit_search": 1,
+      "mcp__sourcegraph__diff_search": 3
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 1,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 1880.6679433989339,
+    "cost_usd": 3.6220501500000006,
+    "input_tokens": 15003,
+    "output_tokens": 106453,
+    "cache_read_tokens": 4079183,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__keyword_search": 11,
+      "mcp__sourcegraph__list_repos": 2,
+      "mcp__sourcegraph__read_file": 23,
+      "mcp__sourcegraph__commit_search": 3,
+      "Write": 6,
+      "mcp__sourcegraph__diff_search": 8
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 0,
+    "reward": 0.5388,
+    "status": "completed",
+    "duration_seconds": 1107.5234461301006,
+    "cost_usd": 4.2246531,
+    "input_tokens": 56,
+    "output_tokens": 74156,
+    "cache_read_tokens": 7570267,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5388
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 32,
+      "mcp__sourcegraph__keyword_search": 18,
+      "Write": 8,
+      "mcp__sourcegraph__commit_search": 5,
+      "mcp__sourcegraph__diff_search": 2
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 2,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2912.8342634509318,
+    "cost_usd": 6.67748265,
+    "input_tokens": 8293,
+    "output_tokens": 172021,
+    "cache_read_tokens": 9377908,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 5,
+      "mcp__sourcegraph__list_repos": 5,
+      "mcp__sourcegraph__read_file": 33,
+      "mcp__sourcegraph__commit_search": 3,
+      "Write": 10,
+      "mcp__sourcegraph__keyword_search": 8,
+      "mcp__sourcegraph__diff_search": 1
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 1,
+    "reward": 0.5432,
+    "status": "completed",
+    "duration_seconds": 1519.4476856440306,
+    "cost_usd": 4.6169918999999995,
+    "input_tokens": 2078,
+    "output_tokens": 83679,
+    "cache_read_tokens": 8555543,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5432
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 3,
+      "mcp__sourcegraph__list_repos": 2,
+      "mcp__sourcegraph__read_file": 32,
+      "Write": 14,
+      "mcp__sourcegraph__keyword_search": 26,
+      "mcp__sourcegraph__commit_search": 3,
+      "mcp__sourcegraph__diff_search": 10
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 2,
+    "reward": 0.5388,
+    "status": "completed",
+    "duration_seconds": 1705.217387312092,
+    "cost_usd": 6.214648349999999,
+    "input_tokens": 14911,
+    "output_tokens": 106763,
+    "cache_read_tokens": 11667322,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5388
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 3,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 38,
+      "Write": 15,
+      "mcp__sourcegraph__keyword_search": 18,
+      "mcp__sourcegraph__commit_search": 2,
+      "mcp__sourcegraph__diff_search": 4
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 0,
+    "reward": 0.6079,
+    "status": "completed",
+    "duration_seconds": 1277.7649280321784,
+    "cost_usd": 2.4421753500000007,
+    "input_tokens": 30,
+    "output_tokens": 82847,
+    "cache_read_tokens": 2203947,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6079
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 4,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 14,
+      "Write": 9,
+      "mcp__sourcegraph__keyword_search": 4
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 1,
+    "reward": 0.6079,
+    "status": "completed",
+    "duration_seconds": 673.9334231750108,
+    "cost_usd": 1.51263825,
+    "input_tokens": 26,
+    "output_tokens": 40635,
+    "cache_read_tokens": 1571830,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6079
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 5,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 15,
+      "Write": 5,
+      "mcp__sourcegraph__keyword_search": 1
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 2,
+    "reward": 0.6079,
+    "status": "completed",
+    "duration_seconds": 1354.1926974779926,
+    "cost_usd": 2.9011246499999994,
+    "input_tokens": 34,
+    "output_tokens": 82136,
+    "cache_read_tokens": 3354238,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6079
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 5,
+      "Write": 10,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 19,
+      "mcp__sourcegraph__keyword_search": 4,
+      "mcp__sourcegraph__commit_search": 1,
+      "mcp__sourcegraph__diff_search": 2
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 0,
+    "reward": 0.6846,
+    "status": "completed",
+    "duration_seconds": 2455.024720807094,
+    "cost_usd": 11.015182350000005,
+    "input_tokens": 803,
+    "output_tokens": 170419,
+    "cache_read_tokens": 23543082,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6846
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 4,
+      "mcp__sourcegraph__keyword_search": 56,
+      "mcp__sourcegraph__list_repos": 8,
+      "mcp__sourcegraph__read_file": 88,
+      "mcp__sourcegraph__diff_search": 3,
+      "mcp__sourcegraph__commit_search": 3,
+      "Write": 8
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 1,
+    "reward": 0.6846,
+    "status": "completed",
+    "duration_seconds": 2294.112856372725,
+    "cost_usd": 8.85446175,
+    "input_tokens": 112,
+    "output_tokens": 159237,
+    "cache_read_tokens": 17637265,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6846
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 6,
+      "mcp__sourcegraph__keyword_search": 55,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 56,
+      "Write": 8
+    }
+  },
+  {
+    "config": "sdlc_with-sg-tuned-preamble",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 2,
+    "reward": 0.6846,
+    "status": "completed",
+    "duration_seconds": 2021.652661447879,
+    "cost_usd": 8.409605699999998,
+    "input_tokens": 2153,
+    "output_tokens": 136834,
+    "cache_read_tokens": 17454539,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6846
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 6,
+      "mcp__sourcegraph__keyword_search": 40,
+      "Write": 8,
+      "mcp__sourcegraph__list_repos": 1,
+      "mcp__sourcegraph__read_file": 61
+    }
+  },
+  {
+    "config": "sdlc_with-sg-default-preamble-3oms",
+    "family": "continuous",
+    "task_id": "0d4ec3ad",
+    "repeat_index": 0,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 1749.7505639106967,
+    "cost_usd": 4.60184895,
+    "input_tokens": 68,
+    "output_tokens": 93678,
+    "cache_read_tokens": 5248979,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 4,
+      "mcp__sourcegraph__read_file": 56,
+      "mcp__sourcegraph__keyword_search": 12,
+      "mcp__sourcegraph__commit_search": 3,
+      "Write": 4,
+      "mcp__sourcegraph__diff_search": 2
+    }
+  },
+  {
+    "config": "sdlc_with-sg-default-preamble-3oms",
+    "family": "continuous",
+    "task_id": "ba1f3675",
+    "repeat_index": 0,
+    "reward": 0.5432,
+    "status": "completed",
+    "duration_seconds": 1379.616524525918,
+    "cost_usd": 4.38226275,
+    "input_tokens": 65,
+    "output_tokens": 69226,
+    "cache_read_tokens": 5627838,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.5432
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_repos": 2,
+      "mcp__sourcegraph__list_files": 2,
+      "mcp__sourcegraph__read_file": 72,
+      "mcp__sourcegraph__keyword_search": 12,
+      "mcp__sourcegraph__nls_search": 1,
+      "Write": 11
+    }
+  },
+  {
+    "config": "sdlc_with-sg-default-preamble-3oms",
+    "family": "continuous",
+    "task_id": "45b581b5",
+    "repeat_index": 0,
+    "reward": 0.8,
+    "status": "completed",
+    "duration_seconds": 2430.1951791099273,
+    "cost_usd": 4.1956387500000005,
+    "input_tokens": 44,
+    "output_tokens": 131629,
+    "cache_read_tokens": 3393081,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.8
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 5,
+      "mcp__sourcegraph__read_file": 31,
+      "mcp__sourcegraph__keyword_search": 8,
+      "mcp__sourcegraph__commit_search": 2,
+      "Write": 11,
+      "mcp__sourcegraph__list_repos": 2
+    }
+  },
+  {
+    "config": "sdlc_with-sg-default-preamble-3oms",
+    "family": "continuous",
+    "task_id": "d906ac3d",
+    "repeat_index": 0,
+    "reward": 0.6102,
+    "status": "completed",
+    "duration_seconds": 1699.447247906588,
+    "cost_usd": 3.6528636,
+    "input_tokens": 147,
+    "output_tokens": 101428,
+    "cache_read_tokens": 3559500,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6102
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 5,
+      "mcp__sourcegraph__list_repos": 11,
+      "mcp__sourcegraph__read_file": 22,
+      "Write": 12,
+      "mcp__sourcegraph__keyword_search": 3,
+      "mcp__sourcegraph__commit_search": 1
+    }
+  },
+  {
+    "config": "sdlc_with-sg-default-preamble-3oms",
+    "family": "continuous",
+    "task_id": "fde8e6e0",
+    "repeat_index": 0,
+    "reward": 0.6816,
+    "status": "completed",
+    "duration_seconds": 1831.10216632206,
+    "cost_usd": 4.8283368,
+    "input_tokens": 78,
+    "output_tokens": 107922,
+    "cache_read_tokens": 6616825,
+    "scorer_family": "continuous",
+    "sub_scores": {
+      "raw_score": 0.6816
+    },
+    "tool_use_by_name": {
+      "mcp__sourcegraph__list_files": 6,
+      "mcp__sourcegraph__keyword_search": 35,
+      "mcp__sourcegraph__read_file": 51,
+      "Write": 3
+    }
+  }
+]
