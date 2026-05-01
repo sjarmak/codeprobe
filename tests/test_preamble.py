@@ -312,6 +312,101 @@ def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
     assert "supplement with local Grep" in prompt
     assert "Union results when recall matters" in prompt
     assert "treat `sg_find_references` as authoritative" not in prompt
+    # Regression (codeprobe-riad): default branch must carry the
+    # verify-before-denying rule. Sourcegraph false-negatives were
+    # leading agents to write confident denials of existence
+    # ("FlagAliases does not exist") when local Grep would find them
+    # immediately. The default branch is the place to land this rule
+    # because index-lag is generic, not category-specific.
+    assert "Verify before denying existence" in prompt
+    assert "Do not write a denial of existence" in prompt
+    assert "Sourcegraph's index can lag the working tree" in prompt
+
+
+def test_compose_instruction_sourcegraph_oracle_checks_uses_coverage_first(
+    tmp_path: Path,
+):
+    """oracle_checks tasks should get coverage-first rubric guidance.
+
+    Regression: 3oms eval saw oc_004 drop 1.000 → 0.643 because the default
+    branch encouraged unioning grep results, which steered the agent away
+    from the explicit `flag_aliases` rubric criterion. The oracle_checks
+    branch must instead enforce criterion-by-criterion coverage.
+    """
+    task_dir = tmp_path / "oc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Answer the rubric questions about feature flags.",
+        repo_path=Path("/repo"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="oc_004",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "oracle_checks",
+                    "sg_repo": "github.com/acme/widgets",
+                }
+            }
+        ),
+    )
+
+    # Coverage-first language must appear.
+    assert "address every declared criterion" in prompt
+    assert "Coverage-first synthesis" in prompt
+    assert "list the explicit criteria" in prompt
+    # Must NOT carry the broad-recall default that caused oc_004 to regress.
+    assert "Union results when recall matters" not in prompt
+    # Must NOT carry the symbol-reference-trace authoritative-only language.
+    assert "treat `sg_find_references` as authoritative" not in prompt
+    # Regression (codeprobe-riad): oracle_checks must carry an emphasised
+    # verify-before-denying rule. oc_004 reproducibly failed because the
+    # agent wrote "FlagAliases does not appear anywhere in the gascity
+    # codebase" after Sourcegraph (with a stale index) returned no hits.
+    # The rubric guarantees the symbol exists; the agent must fall back
+    # to local Grep before denying.
+    assert "Verify before denying existence" in prompt
+    assert "rubric guarantees the named symbol exists" in prompt
+    assert "Never write a denial of existence" in prompt
+
+
+def test_compose_instruction_sourcegraph_sdlc_uses_stop_signal(tmp_path: Path):
+    """SDLC tasks should be told to stop searching once file list is known.
+
+    Regression: 3oms eval saw SDLC family take +40% wall-clock under the
+    default broad-recall preamble. The sdlc branch must steer the agent
+    toward implementation effort rather than pre-discovery.
+    """
+    task_dir = tmp_path / "sdlc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Modify src/foo/bar.py to add a new field.",
+        repo_path=Path("/repo"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="0d4ec3ad",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "sdlc",
+                    "sg_repo": "github.com/acme/widgets",
+                }
+            }
+        ),
+    )
+
+    # Stop-signal language must appear.
+    assert "Stop searching when you have the file list" in prompt
+    assert "Implementation effort is the bottleneck" in prompt
+    assert "NOT to pre-discover file lists" in prompt
+    # Must NOT carry the broad-recall default.
+    assert "Union results when recall matters" not in prompt
+    # Must NOT carry the oracle_checks coverage-first language.
+    assert "Coverage-first synthesis" not in prompt
 
 
 # -- Built-in preamble tests --------------------------------------------------

@@ -45,4 +45,5 @@ Start narrow, then broaden if results are insufficient.
 1. **Search with Sourcegraph** to find files matching the task criteria
 2. **Trace references** with `sg_find_references` on key symbols to discover indirect usages
 3. {{sg_local_search_step}}
-4. {{sg_result_synthesis_step}}
+4. {{sg_negative_result_handling}}
+5. {{sg_result_synthesis_step}}

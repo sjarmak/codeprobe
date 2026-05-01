@@ -18,6 +18,8 @@ __all__ = [
 ]
 
 _SYMBOL_REFERENCE_TRACE_CATEGORY = "symbol-reference-trace"
+_ORACLE_CHECKS_CATEGORY = "oracle_checks"
+_SDLC_CATEGORY = "sdlc"
 
 
 @runtime_checkable
@@ -161,12 +163,106 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
                     "**Use local Grep narrowly** only when you need to find "
                     "the definition site or investigate a mismatch."
                 ),
+                "sg_negative_result_handling": (
+                    "If `sg_find_references` returns an empty set for the "
+                    "target symbol, **verify with a local `Grep` over the "
+                    "working tree before reporting 'no references'**. "
+                    "Sourcegraph's index can lag the working tree on recent "
+                    "commits."
+                ),
                 "sg_result_synthesis_step": (
                     "**Prefer authoritative references** — report the "
                     "`sg_find_references` result set instead of unioning in "
                     "extra grep matches. If `sg_find_references` returns a "
                     "non-empty set, write the answer; do not escalate to "
                     "`sg_deepsearch`."
+                ),
+            }
+        )
+        return extra_context
+
+    if extra_context.get("task_category") == _ORACLE_CHECKS_CATEGORY:
+        extra_context.update(
+            {
+                "sg_task_search_guidance": (
+                    "For `oracle_checks` rubric questions, the answer must "
+                    "address every declared criterion. Before searching, "
+                    "list the explicit criteria the question asks for "
+                    "(typically named in the rubric or mentioned by name in "
+                    "the prompt). Search only as deeply as needed to "
+                    "satisfy each criterion. **Do not pursue tangential "
+                    "investigation depth at the cost of breadth across "
+                    "criteria.**"
+                ),
+                "sg_find_references_guidance": (
+                    "Use this when a criterion explicitly asks about a "
+                    "symbol's relationships. Stop when you have one "
+                    "authoritative reference per criterion that asks for "
+                    "one."
+                ),
+                "sg_local_search_step": (
+                    "**Use local Grep narrowly** to confirm a specific "
+                    "identifier or path is mentioned in the criterion's "
+                    "required content."
+                ),
+                "sg_negative_result_handling": (
+                    "**Verify before denying existence.** The rubric "
+                    "guarantees the named symbol exists somewhere in the "
+                    "codebase. If `sg_keyword_search` or "
+                    "`sg_find_references` returns no hits for an identifier "
+                    "the rubric explicitly asks about, **run a local "
+                    "`Grep` over the working tree before answering**. "
+                    "Sourcegraph's index can lag the working tree, "
+                    "particularly for recent commits. **Never write a "
+                    "denial of existence** for a rubric-named symbol — if "
+                    "Sourcegraph misses it, fall back to local Grep before "
+                    "concluding it does not exist."
+                ),
+                "sg_result_synthesis_step": (
+                    "**Coverage-first synthesis** — before finalizing your "
+                    "response, re-read the criteria list and verify each is "
+                    "addressed. If any criterion isn't, search specifically "
+                    "for what it asks (including a local Grep fallback if "
+                    "Sourcegraph returned empty). Otherwise, write the "
+                    "answer."
+                ),
+            }
+        )
+        return extra_context
+
+    if extra_context.get("task_category") == _SDLC_CATEGORY:
+        extra_context.update(
+            {
+                "sg_task_search_guidance": (
+                    "For SDLC implementation tasks, the instruction "
+                    "typically names the files to modify. Use Sourcegraph "
+                    "for *additional* references when a symbol's full "
+                    "usage matters for your edit, NOT to pre-discover file "
+                    "lists. Implementation effort is the bottleneck, not "
+                    "navigation."
+                ),
+                "sg_find_references_guidance": (
+                    "Use this only when a callsite or reference outside "
+                    "the named files is needed to make a correct edit. "
+                    "Otherwise skip."
+                ),
+                "sg_local_search_step": (
+                    "**Use local Grep narrowly** to find usages within or "
+                    "adjacent to the named files. Don't broaden scope "
+                    "unless the edit requires it."
+                ),
+                "sg_negative_result_handling": (
+                    "If a Sourcegraph search misses an identifier you "
+                    "expect to exist (e.g., a recently-added symbol), "
+                    "**fall back to local `Grep` rather than blocking on "
+                    "the index**. Implementation effort, not navigation, "
+                    "is the bottleneck."
+                ),
+                "sg_result_synthesis_step": (
+                    "**Stop searching when you have the file list and the "
+                    "references your edit needs.** Switch to writing code. "
+                    "Don't unionize — implementation effort dominates the "
+                    "trial budget."
                 ),
             }
         )
@@ -185,6 +281,15 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
             "sg_local_search_step": (
                 "**Supplement with local Grep** to catch anything Sourcegraph "
                 "may have missed."
+            ),
+            "sg_negative_result_handling": (
+                "**Verify before denying existence.** If a Sourcegraph "
+                "search returns no results for an identifier the question "
+                "explicitly asks about, **run a local `Grep` over the "
+                "working tree before concluding the identifier does not "
+                "exist**. Sourcegraph's index can lag the working tree, "
+                "particularly for recent commits. **Do not write a denial "
+                "of existence** based solely on a Sourcegraph negative."
             ),
             "sg_result_synthesis_step": (
                 "**Union results when recall matters** — combine indexed "

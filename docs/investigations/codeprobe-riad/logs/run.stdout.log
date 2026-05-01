@@ -1,0 +1,8 @@
+Suite 'codeprobe-riad-oc004-rerun': 1/5 tasks selected
+
+Running config: with-sg-tuned-preamble (1 tasks)
+{"event": "task_done", "task_id": "oc_004", "score": 1.0, "duration_seconds": 80.89734380086884, "cost_usd": 0.33907755000000006, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_004", "score": 1.0, "duration_seconds": 86.41371706267819, "cost_usd": 0.30346470000000003, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_004", "score": 1.0, "duration_seconds": 92.4932027249597, "cost_usd": 0.28371255000000006, "record_type": "event"}
+{"record_type": "envelope", "ok": true, "command": "run", "version": "0.5.5", "schema_version": "1", "exit_code": 0, "data": {"experiment": "gascity-mcp-comparison", "configs": [{"label": "with-sg-tuned-preamble", "tasks": 3, "mean_score": 1.0, "perfect": 3, "cost_usd": 0.9262548000000002}], "total_tasks": 3, "total_cost_usd": 0.9262548000000002, "tenant": "codeprobe-riad", "tenant_source": "flag", "command_schema_version": "1"}, "error": null, "warnings": [], "next_steps": []}
+EXIT=0

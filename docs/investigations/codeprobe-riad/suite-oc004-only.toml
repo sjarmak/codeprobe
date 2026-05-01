@@ -1,0 +1,8 @@
+[suite]
+name = "codeprobe-riad-oc004-rerun"
+description = "Rerun oc_004 N=3 with refined oracle_checks preamble (verify-via-Grep before denying) + Sourcegraph index refreshed"
+task_dir = "tasks"
+eval_goal = "Confirm whether toml_tag failure was preamble-fixable, index-fixable, both, or neither"
+task_ids = [
+  "oc_004",
+]
