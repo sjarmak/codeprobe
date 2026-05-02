@@ -409,6 +409,164 @@ def test_compose_instruction_sourcegraph_sdlc_uses_stop_signal(tmp_path: Path):
     assert "Coverage-first synthesis" not in prompt
 
 
+def test_compose_instruction_sourcegraph_sdlc_forbids_mcp_read_for_local_files(
+    tmp_path: Path,
+):
+    """SDLC tasks must include the MCP-vs-local guardrail with substituted repo_path.
+
+    Regression (codeprobe-evjr): cross-rig audit showed codeprobe agents
+    routed all reads through `mcp__sourcegraph__read_file` even when the
+    file existed locally at `repo_path`. Across 75 with-sourcegraph trials,
+    zero local `Read/Bash/Edit/Grep` calls were observed. EnterpriseBench's
+    `_HYBRID_HEADER` solves this with an explicit "never use
+    mcp__sourcegraph__read_file for files in /workspace" rule, and EB's
+    hybrid output_tokens are 0.59-0.62× baseline as a result.
+
+    This test asserts:
+      1. The "never use mcp__sourcegraph__read_file" prohibition is rendered
+         into the SDLC preamble.
+      2. `{{repo_path}}` is correctly substituted (no literal token leaks).
+      3. The EFFICIENCY "don't over-read" rule reaches the SDLC branch.
+    """
+    task_dir = tmp_path / "sdlc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    repo_path = Path("/work/grpc-go")
+    prompt, _ = compose_instruction(
+        instruction="Add a new field to src/foo/bar.go.",
+        repo_path=repo_path,
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="sdlc-001",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "sdlc",
+                    "sg_repo": "github.com/acme/grpc-go",
+                }
+            }
+        ),
+    )
+
+    # MCP-vs-local guardrail must appear with the explicit prohibition.
+    assert "never use `mcp__sourcegraph__read_file`" in prompt
+    # repo_path must be substituted, not left as a literal template token.
+    assert str(repo_path) in prompt
+    assert "{{repo_path}}" not in prompt
+    # The "When To Use MCP vs Local Tools" decision table must render.
+    assert "When To Use MCP vs Local Tools" in prompt
+    # The EFFICIENCY rule reaches the SDLC branch.
+    assert "Efficiency" in prompt
+    assert "sg_read_file" in prompt
+
+
+def test_compose_instruction_sourcegraph_efficiency_rule_in_all_branches(
+    tmp_path: Path,
+):
+    """All four category branches must carry the 'don't over-read' efficiency rule.
+
+    Regression (codeprobe-evjr): Section 6.2 audit recommended placing the
+    EFFICIENCY guard in every branch of `task_preamble_context` so MCP-only
+    reading patterns don't survive when categories switch. Verifies the
+    SDLC, default, oracle_checks, and symbol-reference-trace branches all
+    include the EFFICIENCY rule.
+    """
+    task_dir = tmp_path / "task-001"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    categories = [
+        "sdlc",
+        "oracle_checks",
+        "symbol-reference-trace",
+        "change-scope-audit",  # exercises the default branch
+    ]
+    for category in categories:
+        prompt, _ = compose_instruction(
+            instruction="Do the task.",
+            repo_path=Path("/repo"),
+            preamble_names=["sourcegraph"],
+            resolver=resolver,
+            task_id="task-001",
+            extra_context=task_preamble_context(
+                {
+                    "metadata": {
+                        "category": category,
+                        "sg_repo": "github.com/acme/widgets",
+                    }
+                }
+            ),
+        )
+        assert "Efficiency" in prompt, (
+            f"Category {category!r} missing EFFICIENCY rule in synthesis step"
+        )
+
+
+# -- task_preamble_context guard tests ---------------------------------------
+
+
+def test_task_preamble_context_raises_when_sg_repo_empty_with_sourcegraph():
+    """Empty ``metadata.sg_repo`` plus a ``sourcegraph`` preamble is fatal.
+
+    Regression (codeprobe-evjr.3): gascity SDLC tasks were shipping with
+    ``metadata.sg_repo = ""``, which caused the Sourcegraph preamble's
+    ``repo:^{{sg_repo}}$`` filter to render as ``repo:^$ <query>`` — a
+    malformed scope that fell back to global search and inflated cost
+    without scoping. ``task_preamble_context`` must convert this silent
+    degradation into a fail-loud error at prompt-composition time.
+    """
+    with pytest.raises(ValueError, match="sg_repo is empty"):
+        task_preamble_context(
+            {"metadata": {"category": "sdlc", "sg_repo": ""}},
+            preamble_names=["sourcegraph"],
+            task_id="ba1f3675",
+        )
+
+
+def test_task_preamble_context_raises_when_sg_repo_missing_with_sourcegraph():
+    """Missing ``metadata.sg_repo`` key triggers the same guard."""
+    with pytest.raises(ValueError, match="ba1f3675"):
+        task_preamble_context(
+            {"metadata": {"category": "sdlc"}},
+            preamble_names=["sourcegraph"],
+            task_id="ba1f3675",
+        )
+
+
+def test_task_preamble_context_no_guard_without_sourcegraph_preamble():
+    """Empty ``sg_repo`` is tolerated when sourcegraph isn't requested."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": ""}},
+        preamble_names=["github"],
+        task_id="ba1f3675",
+    )
+    assert "sg_repo" not in ctx
+
+
+def test_task_preamble_context_no_guard_when_preamble_names_omitted():
+    """Backwards-compatible callers (no ``preamble_names``) don't trigger."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": ""}},
+    )
+    assert "sg_repo" not in ctx
+
+
+def test_task_preamble_context_passes_when_sg_repo_populated():
+    """Populated ``sg_repo`` flows through and propagates to the context."""
+    ctx = task_preamble_context(
+        {
+            "metadata": {
+                "category": "sdlc",
+                "sg_repo": "github.com/gastownhall/gascity",
+            }
+        },
+        preamble_names=["sourcegraph"],
+        task_id="ba1f3675",
+    )
+    assert ctx["sg_repo"] == "github.com/gastownhall/gascity"
+
+
 # -- Built-in preamble tests --------------------------------------------------
 
 from codeprobe.preambles import get_builtin, list_builtins  # noqa: E402
@@ -522,62 +680,3 @@ def test_mcp_template_references_sourcegraph_preamble():
     hints = prompts["with-mcp-hints"]
     preambles = hints.get("preambles", hints) if isinstance(hints, dict) else hints
     assert "sourcegraph" in preambles
-
-
-# -- task_preamble_context guard tests (codeprobe-evjr.3) --------------------
-
-
-def test_task_preamble_context_raises_when_sg_repo_empty_with_sourcegraph():
-    """Empty ``metadata.sg_repo`` plus a ``sourcegraph`` preamble is fatal.
-
-    Regression (codeprobe-evjr.3): gascity SDLC tasks were shipping with
-    ``metadata.sg_repo = ""``, which caused the Sourcegraph preamble's
-    ``repo:^{{sg_repo}}$`` filter to render as ``repo:^$ <query>`` — a
-    malformed scope that fell back to global search and inflated cost
-    without scoping. ``task_preamble_context`` must convert this silent
-    degradation into a fail-loud error at prompt-composition time.
-    """
-    with pytest.raises(ValueError, match="sg_repo is empty"):
-        task_preamble_context(
-            {"metadata": {"category": "sdlc", "sg_repo": ""}},
-            preamble_names=["sourcegraph"],
-            task_id="ba1f3675",
-        )
-
-
-def test_task_preamble_context_raises_when_sg_repo_missing_with_sourcegraph():
-    """Missing ``metadata.sg_repo`` key triggers the same guard."""
-    with pytest.raises(ValueError, match="ba1f3675"):
-        task_preamble_context(
-            {"metadata": {"category": "sdlc"}},
-            preamble_names=["sourcegraph"],
-            task_id="ba1f3675",
-        )
-
-
-def test_task_preamble_context_no_guard_without_sourcegraph_preamble():
-    """Empty ``sg_repo`` is tolerated when sourcegraph isn't requested."""
-    ctx = task_preamble_context(
-        {"metadata": {"category": "sdlc", "sg_repo": ""}},
-        preamble_names=["github"],
-        task_id="ba1f3675",
-    )
-    assert "sg_repo" not in ctx
-
-
-def test_task_preamble_context_no_guard_when_preamble_names_omitted():
-    """Backwards-compatible callers (no ``preamble_names``) don't trigger."""
-    ctx = task_preamble_context(
-        {"metadata": {"category": "sdlc", "sg_repo": ""}},
-    )
-    assert "sg_repo" not in ctx
-
-
-def test_task_preamble_context_passes_when_sg_repo_populated():
-    """The happy path: sg_repo populated → no raise, value reaches context."""
-    ctx = task_preamble_context(
-        {"metadata": {"category": "sdlc", "sg_repo": "github.com/owner/repo"}},
-        preamble_names=["sourcegraph"],
-        task_id="ba1f3675",
-    )
-    assert ctx["sg_repo"] == "github.com/owner/repo"

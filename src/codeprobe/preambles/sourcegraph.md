@@ -22,6 +22,25 @@
 > duplicate work the primitive tools above already do directly. Prefer
 > `sg_find_references` + `sg_keyword_search`.
 
+## When To Use MCP vs Local Tools
+
+| Task                              | Use MCP                          | Use Local        |
+| --------------------------------- | -------------------------------- | ---------------- |
+| Find symbols across the repo      | `sg_keyword_search`              | —                |
+| Semantic/concept search           | `sg_nls_search`                  | —                |
+| Trace callers/references          | `sg_find_references`             | —                |
+| Jump to definition                | `sg_go_to_definition`            | —                |
+| Search commit history             | `sg_commit_search`               | —                |
+| Read a file in `{{repo_path}}`    | —                                | `Read` / `cat`   |
+| Search within local files         | —                                | `Grep` / `grep`  |
+| Edit a file in `{{repo_path}}`    | —                                | `Edit` / `Write` |
+
+**Key rule: never use `mcp__sourcegraph__read_file` for files that exist
+locally at `{{repo_path}}` — local reads are instant and don't pad the
+context window.** `mcp__sourcegraph__read_file` is for files outside the
+working tree (other repos, historical revisions). Reading working-tree
+files through MCP wastes turns and inflates output tokens with no upside.
+
 ## Tool Selection
 
 1. **Start with `sg_keyword_search`** for known identifiers (function names, class names, constants)

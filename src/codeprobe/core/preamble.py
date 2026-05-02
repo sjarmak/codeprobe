@@ -204,6 +204,9 @@ def task_preamble_context(
                     "commits."
                 ),
                 "sg_result_synthesis_step": (
+                    "**Efficiency** — references rarely need broad reading. "
+                    "Don't read >8 files via `sg_read_file` without writing "
+                    "the answer; after 4 reads, decide and respond. "
                     "**Prefer authoritative references** — report the "
                     "`sg_find_references` result set instead of unioning in "
                     "extra grep matches. If `sg_find_references` returns a "
@@ -252,12 +255,15 @@ def task_preamble_context(
                     "concluding it does not exist."
                 ),
                 "sg_result_synthesis_step": (
-                    "**Coverage-first synthesis** — before finalizing your "
-                    "response, re-read the criteria list and verify each is "
-                    "addressed. If any criterion isn't, search specifically "
-                    "for what it asks (including a local Grep fallback if "
-                    "Sourcegraph returned empty). Otherwise, write the "
-                    "answer."
+                    "**Efficiency** — don't read >12 files via "
+                    "`sg_read_file` without producing answer text. After 6 "
+                    "reads, integrate what you have and write coverage for "
+                    "each criterion. **Coverage-first synthesis** — before "
+                    "finalizing your response, re-read the criteria list "
+                    "and verify each is addressed. If any criterion isn't, "
+                    "search specifically for what it asks (including a "
+                    "local Grep fallback if Sourcegraph returned empty). "
+                    "Otherwise, write the answer."
                 ),
             }
         )
@@ -292,6 +298,9 @@ def task_preamble_context(
                     "is the bottleneck."
                 ),
                 "sg_result_synthesis_step": (
+                    "**Efficiency** — don't read >10 files via "
+                    "`sg_read_file` without editing. After 5 reads, write "
+                    "your edit and check it. "
                     "**Stop searching when you have the file list and the "
                     "references your edit needs.** Switch to writing code. "
                     "Don't unionize — implementation effort dominates the "
@@ -325,6 +334,9 @@ def task_preamble_context(
                 "of existence** based solely on a Sourcegraph negative."
             ),
             "sg_result_synthesis_step": (
+                "**Efficiency** — don't read >15 files via `sg_read_file` "
+                "without writing code or answer text. After 8 reads, "
+                "integrate what you have and act. "
                 "**Union results when recall matters** — combine indexed "
                 "search and local Grep for broader coverage."
             ),
