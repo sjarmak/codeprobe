@@ -875,6 +875,18 @@ def mine(
     help="Timeout in seconds per task (overrides experiment.json extra.timeout_seconds).",
 )
 @click.option(
+    "--max-turns",
+    "max_turns",
+    default=None,
+    type=int,
+    envvar="CODEPROBE_MAX_TURNS",
+    help=(
+        "Hard cap on agent turns per task (overrides experiment.json max_turns). "
+        "None = uncapped (historical default). Reference rigs: CSB caps at 30, "
+        "EB at 50. See docs/agent_config.md. Env: CODEPROBE_MAX_TURNS."
+    ),
+)
+@click.option(
     "--repeats",
     default=None,
     type=int,
@@ -949,6 +961,7 @@ def run(
     force_plain: bool,
     force_rich: bool,
     timeout: int | None,
+    max_turns: int | None,
     repeats: int | None,
     show_prompt: bool,
     suite_path: str | None,
@@ -1000,6 +1013,7 @@ def run(
         force_plain=force_plain,
         force_rich=force_rich,
         timeout=timeout,
+        max_turns=max_turns,
         repeats=repeats if repeats is not None else 1,
         suite_path=suite_path,
         trace_overflow=trace_overflow,

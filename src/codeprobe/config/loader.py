@@ -158,6 +158,7 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             instruction_variant=cfg.get("instruction_variant"),
             preambles=tuple(cfg.get("preambles", ())),
             reward_type=cfg.get("reward_type", "binary"),
+            max_turns=cfg.get("max_turns"),
             extra={
                 k: v
                 for k, v in cfg.items()
@@ -173,6 +174,7 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
                     "instruction_variant",
                     "preambles",
                     "reward_type",
+                    "max_turns",
                 }
             },
         )

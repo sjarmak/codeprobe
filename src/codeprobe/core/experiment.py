@@ -110,6 +110,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
             instruction_variant=c.get("instruction_variant"),
             preambles=tuple(c.get("preambles", ())),
             reward_type=c.get("reward_type", "binary"),
+            max_turns=c.get("max_turns"),
             extra=c.get("extra", {}),
         )
         for c in data.get("configs", [])

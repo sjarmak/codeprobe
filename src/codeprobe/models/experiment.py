@@ -42,6 +42,7 @@ class ExperimentConfig:
     instruction_variant: str | None = None
     preambles: tuple[str, ...] = ()
     reward_type: str = "binary"
+    max_turns: int | None = None
     extra: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:
@@ -58,7 +59,7 @@ class ExperimentConfig:
             f"mcp_mode={self.mcp_mode!r}, "
             f"instruction_variant={self.instruction_variant!r}, "
             f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
-            f"extra={self.extra!r})"
+            f"max_turns={self.max_turns!r}, extra={self.extra!r})"
         )
 
 
