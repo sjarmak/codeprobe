@@ -29,6 +29,7 @@ from codeprobe.config.defaults import (
     resolve_out_calibrate,
     resolve_preamble,
     resolve_sg_repo,
+    resolve_sg_repo_from_origin,
     resolve_suite,
     resolve_task_type,
     resolve_timeout,
@@ -334,6 +335,50 @@ def test_resolve_sg_repo(remote: str | None, expected: str) -> None:
         assert source == "auto-detected"
     else:
         assert source == "default"
+
+
+# ---------------------------------------------------------------------------
+# resolve_sg_repo_from_origin (codeprobe-evjr.3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "remote,expected",
+    [
+        # HTTPS GitHub URL with .git suffix.
+        (
+            "https://github.com/gastownhall/gascity.git",
+            "github.com/gastownhall/gascity",
+        ),
+        # HTTPS without .git suffix.
+        (
+            "https://github.com/numpy/numpy",
+            "github.com/numpy/numpy",
+        ),
+        # SSH GitHub URL.
+        (
+            "git@github.com:pytorch/pytorch.git",
+            "github.com/pytorch/pytorch",
+        ),
+        # Empty / None / unparseable URL → "" (caller handles fail-loud).
+        ("", ""),
+        (None, ""),
+        ("not-a-url", ""),
+        ("https://gitlab.com/owner/repo.git", "github.com/owner/repo"),
+    ],
+)
+def test_resolve_sg_repo_from_origin(
+    remote: str | None, expected: str
+) -> None:
+    """``resolve_sg_repo_from_origin`` returns the live ``github.com/owner/repo``.
+
+    Regression (codeprobe-evjr.3): SDLC mining shipped tasks with
+    ``metadata.sg_repo = ""``, which made the Sourcegraph preamble's
+    ``repo:^{sg_repo}$`` filter render as ``repo:^$ <query>`` and silently
+    fall back to global search. The fix derives ``sg_repo`` from the
+    origin remote at mine time using this helper.
+    """
+    assert resolve_sg_repo_from_origin(remote) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -1322,6 +1322,7 @@ def _dispatch_by_task_type(
     min_quality: float = 0.5,
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
+    sg_repo: str = "",
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
@@ -1350,6 +1351,7 @@ def _dispatch_by_task_type(
         bias=bias,
         dual_verify=dual_verify,
         narrative_source=narrative_source,
+        sg_repo=sg_repo,
     )
 
     def _sdlc() -> None:
@@ -1756,6 +1758,46 @@ def _resolve_narrative_source(
     )
 
 
+def _resolve_sdlc_sg_repo(repo_path: Path, explicit_sg_repo: str) -> str:
+    """Derive ``sg_repo`` for SDLC mining.
+
+    Explicit ``--sg-repo`` wins. Otherwise we look up the repo's origin
+    remote and convert it to the natural Sourcegraph identifier
+    ``github.com/{owner}/{repo}`` so the Sourcegraph preamble's
+    ``repo:^{sg_repo}$`` filter matches the live repository (Q4: SDLC
+    tasks were silently shipping with empty ``sg_repo`` and unscoping the
+    agent's queries).
+    """
+    if explicit_sg_repo:
+        return explicit_sg_repo
+    from codeprobe.config.defaults import resolve_sg_repo_from_origin
+    from codeprobe.mining.sources import detect_source
+
+    source = detect_source(repo_path)
+    return resolve_sg_repo_from_origin(source.remote_url)
+
+
+def _stamp_sg_repo(tasks: list[Task], sg_repo: str) -> list[Task]:
+    """Set ``metadata.sg_repo`` on every dataclass task.
+
+    Empty ``sg_repo`` is a no-op so existing fixtures and offline mining
+    flows are unaffected. The downstream preamble guard
+    (``task_preamble_context``) raises if a Sourcegraph preamble is
+    requested without a populated ``sg_repo``.
+    """
+    if not sg_repo:
+        return tasks
+    stamped: list[Task] = []
+    for task in tasks:
+        if is_dataclass(task) and is_dataclass(task.metadata):
+            stamped.append(
+                replace(task, metadata=replace(task.metadata, sg_repo=sg_repo))
+            )
+        else:  # pragma: no cover — defensive for MagicMock-based tests
+            stamped.append(task)
+    return stamped
+
+
 def _dispatch_sdlc(
     *,
     repo_path: Path,
@@ -1770,6 +1812,7 @@ def _dispatch_sdlc(
     min_quality: float = 0.5,
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
+    sg_repo: str = "",
 ) -> None:
     """Run PR-based SDLC mining pipeline."""
     from codeprobe.mining import write_task_dir
@@ -1783,6 +1826,7 @@ def _dispatch_sdlc(
         subsystems=subsystems,
     )
     tasks = mine_result.tasks
+    effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
 
     if tasks:
         # INV1 loud-error guard: if mining produced tasks but no
@@ -1817,7 +1861,7 @@ def _dispatch_sdlc(
                 )
             else:  # pragma: no cover — defensive for MagicMock-based tests
                 stamped.append(task)
-        tasks = stamped
+        tasks = _stamp_sg_repo(stamped, effective_sg_repo)
         if is_dataclass(mine_result):
             mine_result = replace(mine_result, tasks=tasks)
 
@@ -1969,6 +2013,7 @@ def _dispatch_mixed(
     min_quality: float = 0.5,
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
+    sg_repo: str = "",
 ) -> None:
     """Run SDLC mining + probe generation, combining results."""
     from codeprobe.mining import write_task_dir as write_mining_task
@@ -1994,6 +2039,7 @@ def _dispatch_mixed(
     )
     sdlc_tasks = mine_result.tasks
     if sdlc_tasks:
+        effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
         resolved_selection = _resolve_narrative_source(
             narrative_source,
             repo_path,
@@ -2009,7 +2055,7 @@ def _dispatch_mixed(
                 )
             else:  # pragma: no cover — MagicMock-based tests
                 stamped.append(t)
-        sdlc_tasks = stamped
+        sdlc_tasks = _stamp_sg_repo(stamped, effective_sg_repo)
         sdlc_tasks = _enrich_sdlc_tasks(sdlc_tasks, mine_result, no_llm, enrich)
         if dual_verify:
             sdlc_tasks = _apply_dual_verification(sdlc_tasks, mine_result, repo_path)
@@ -2505,6 +2551,7 @@ def run_mine(
                 bias=bias,
                 dual_verify=dual_verify,
                 narrative_source=narrative_source,
+                sg_repo=sg_repo,
             )
         except KeyboardInterrupt as exc:
             # AC3: clean up partial output and exit with the standard SIGINT code.
