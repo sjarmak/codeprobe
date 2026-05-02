@@ -394,7 +394,14 @@ def execute_task(
             )
 
         if preamble_names and preamble_resolver is not None:
-            extra_ctx = task_preamble_context(_task_meta)
+            try:
+                extra_ctx = task_preamble_context(
+                    _task_meta,
+                    preamble_names=preamble_names,
+                    task_id=task_id,
+                )
+            except ValueError as exc:
+                return _error_result(f"Preamble resolution failed: {exc}")
 
             try:
                 prompt, resolved_preambles = compose_instruction(

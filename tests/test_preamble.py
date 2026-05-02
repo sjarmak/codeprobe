@@ -522,3 +522,62 @@ def test_mcp_template_references_sourcegraph_preamble():
     hints = prompts["with-mcp-hints"]
     preambles = hints.get("preambles", hints) if isinstance(hints, dict) else hints
     assert "sourcegraph" in preambles
+
+
+# -- task_preamble_context guard tests (codeprobe-evjr.3) --------------------
+
+
+def test_task_preamble_context_raises_when_sg_repo_empty_with_sourcegraph():
+    """Empty ``metadata.sg_repo`` plus a ``sourcegraph`` preamble is fatal.
+
+    Regression (codeprobe-evjr.3): gascity SDLC tasks were shipping with
+    ``metadata.sg_repo = ""``, which caused the Sourcegraph preamble's
+    ``repo:^{{sg_repo}}$`` filter to render as ``repo:^$ <query>`` — a
+    malformed scope that fell back to global search and inflated cost
+    without scoping. ``task_preamble_context`` must convert this silent
+    degradation into a fail-loud error at prompt-composition time.
+    """
+    with pytest.raises(ValueError, match="sg_repo is empty"):
+        task_preamble_context(
+            {"metadata": {"category": "sdlc", "sg_repo": ""}},
+            preamble_names=["sourcegraph"],
+            task_id="ba1f3675",
+        )
+
+
+def test_task_preamble_context_raises_when_sg_repo_missing_with_sourcegraph():
+    """Missing ``metadata.sg_repo`` key triggers the same guard."""
+    with pytest.raises(ValueError, match="ba1f3675"):
+        task_preamble_context(
+            {"metadata": {"category": "sdlc"}},
+            preamble_names=["sourcegraph"],
+            task_id="ba1f3675",
+        )
+
+
+def test_task_preamble_context_no_guard_without_sourcegraph_preamble():
+    """Empty ``sg_repo`` is tolerated when sourcegraph isn't requested."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": ""}},
+        preamble_names=["github"],
+        task_id="ba1f3675",
+    )
+    assert "sg_repo" not in ctx
+
+
+def test_task_preamble_context_no_guard_when_preamble_names_omitted():
+    """Backwards-compatible callers (no ``preamble_names``) don't trigger."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": ""}},
+    )
+    assert "sg_repo" not in ctx
+
+
+def test_task_preamble_context_passes_when_sg_repo_populated():
+    """The happy path: sg_repo populated → no raise, value reaches context."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": "github.com/owner/repo"}},
+        preamble_names=["sourcegraph"],
+        task_id="ba1f3675",
+    )
+    assert ctx["sg_repo"] == "github.com/owner/repo"

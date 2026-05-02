@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -20,6 +20,12 @@ __all__ = [
 _SYMBOL_REFERENCE_TRACE_CATEGORY = "symbol-reference-trace"
 _ORACLE_CHECKS_CATEGORY = "oracle_checks"
 _SDLC_CATEGORY = "sdlc"
+
+# Preambles whose templates render ``repo:^{{sg_repo}}$`` and therefore
+# silently degrade to a malformed ``repo:^$`` filter when ``sg_repo`` is
+# missing. ``github`` explicitly falls back to ``repo_name`` and is not
+# included here.
+_SG_REPO_REQUIRED_PREAMBLES = frozenset({"sourcegraph"})
 
 
 @runtime_checkable
@@ -124,8 +130,23 @@ def base_prompt(
 _base_prompt = base_prompt
 
 
-def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[str, str]:
-    """Extract task-aware context values that preamble templates can reference."""
+def task_preamble_context(
+    task_metadata: Mapping[str, object] | None,
+    *,
+    preamble_names: Iterable[str] | None = None,
+    task_id: str = "",
+) -> dict[str, str]:
+    """Extract task-aware context values that preamble templates can reference.
+
+    When *preamble_names* contains a preamble that requires
+    ``metadata.sg_repo`` (e.g. the ``sourcegraph`` preamble, whose template
+    renders ``repo:^{{sg_repo}}$``), this function raises ``ValueError`` if
+    ``metadata.sg_repo`` is missing or empty. That converts a silent runtime
+    degradation (``repo:^$ <query>`` falling back to global search) into a
+    clear failure at prompt-composition time. Callers that don't request a
+    sg_repo-dependent preamble can omit ``preamble_names`` and the guard is a
+    no-op.
+    """
     if not isinstance(task_metadata, Mapping):
         return {}
 
@@ -135,8 +156,20 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
 
     extra_context: dict[str, str] = {}
     sg_repo = metadata_block.get("sg_repo")
-    if isinstance(sg_repo, str) and sg_repo:
-        extra_context["sg_repo"] = sg_repo
+    sg_repo_value = sg_repo if isinstance(sg_repo, str) else ""
+    if sg_repo_value:
+        extra_context["sg_repo"] = sg_repo_value
+
+    requested = (
+        frozenset(preamble_names) if preamble_names is not None else frozenset()
+    )
+    if requested & _SG_REPO_REQUIRED_PREAMBLES and not sg_repo_value:
+        raise ValueError(
+            f"sg_repo is empty for task {task_id!r}; cannot render "
+            "Sourcegraph preamble. Re-mine the task with a populated origin "
+            "remote or pass --sg-repo at mine time so metadata.sg_repo is "
+            "set."
+        )
 
     category = metadata_block.get("category")
     if isinstance(category, str) and category:
