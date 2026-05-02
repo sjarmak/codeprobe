@@ -1,0 +1,303 @@
+==============================================================================
+CONTRAST 1 — SDLC: with-sg-fixed vs mcn7 with-sourcegraph
+==============================================================================
+| task | metric | with-sg-fixed | with-sg(mcn7) | delta |
+|------|--------|---------------|---------------|-------|
+| ba1f3675 | reward (mean) | 0.0000 | 0.5403 | -0.5403 |
+| ba1f3675 | wall-clock (mean/trial) | 1173s | 1444s | -271s |
+| ba1f3675 | cost (total over 3) | $11.37 | $15.06 | $-3.69 |
+| ba1f3675 | input tokens (total) | 4788 | 17045 | -12257 |
+| ba1f3675 | output tokens (total) | 204463 | 264598 | -60135 |
+| ba1f3675 | cache_read tokens (total) | 19345811 | 27793132 | -8447321 |
+| d906ac3d | reward (mean) | 0.5643 | 0.6079 | -0.0436 |
+| d906ac3d | wall-clock (mean/trial) | 968s | 1102s | -134s |
+| d906ac3d | cost (total over 3) | $7.53 | $6.86 | $0.67 |
+| d906ac3d | input tokens (total) | 153 | 90 | 63 |
+| d906ac3d | output tokens (total) | 181671 | 205618 | -23947 |
+| d906ac3d | cache_read tokens (total) | 10130273 | 7130015 | 3000258 |
+| 0d4ec3ad | reward (mean) | 0.0000 | 0.8000 | -0.8000 |
+| 0d4ec3ad | wall-clock (mean/trial) | 855s | 2311s | -1456s |
+| 0d4ec3ad | cost (total over 3) | $8.88 | $19.84 | $-10.96 |
+| 0d4ec3ad | input tokens (total) | 318 | 1501 | -1183 |
+| 0d4ec3ad | output tokens (total) | 136958 | 396237 | -259279 |
+| 0d4ec3ad | cache_read tokens (total) | 15856438 | 34906384 | -19049946 |
+| 45b581b5 | reward (mean) | 0.0000 | 0.8000 | -0.8000 |
+| 45b581b5 | wall-clock (mean/trial) | 1778s | 2334s | -556s |
+| 45b581b5 | cost (total over 3) | $13.52 | $15.14 | $-1.61 |
+| 45b581b5 | input tokens (total) | 10331 | 23343 | -13012 |
+| 45b581b5 | output tokens (total) | 328091 | 406510 | -78419 |
+| 45b581b5 | cache_read tokens (total) | 19840774 | 19923784 | -83010 |
+| fde8e6e0 | reward (mean) | 0.2099 | 0.6846 | -0.4747 |
+| fde8e6e0 | wall-clock (mean/trial) | 2042s | 2257s | -215s |
+| fde8e6e0 | cost (total over 3) | $13.06 | $28.28 | $-15.22 |
+| fde8e6e0 | input tokens (total) | 408 | 3068 | -2660 |
+| fde8e6e0 | output tokens (total) | 400253 | 466490 | -66237 |
+| fde8e6e0 | cache_read tokens (total) | 14907057 | 58634886 | -43727829 |
+
+==============================================================================
+CONTRAST 2 — SDLC: with-sg-fixed vs mcn7 baseline
+==============================================================================
+| task | metric | with-sg-fixed | baseline(mcn7) | delta |
+|------|--------|---------------|----------------|-------|
+| ba1f3675 | reward (mean) | 0.0000 | 0.5340 | -0.5340 |
+| ba1f3675 | wall-clock (mean/trial) | 1173s | 1285s | -112s |
+| ba1f3675 | cost (total over 3) | $11.37 | $18.48 | $-7.12 |
+| ba1f3675 | input tokens (total) | 4788 | 256 | 4532 |
+| ba1f3675 | output tokens (total) | 204463 | 121595 | 82868 |
+| ba1f3675 | cache_read tokens (total) | 19345811 | 38802758 | -19456947 |
+| d906ac3d | reward (mean) | 0.5643 | 0.6031 | -0.0388 |
+| d906ac3d | wall-clock (mean/trial) | 968s | 626s | 342s |
+| d906ac3d | cost (total over 3) | $7.53 | $4.57 | $2.96 |
+| d906ac3d | input tokens (total) | 153 | 67 | 86 |
+| d906ac3d | output tokens (total) | 181671 | 39697 | 141974 |
+| d906ac3d | cache_read tokens (total) | 10130273 | 4787577 | 5342696 |
+| 0d4ec3ad | reward (mean) | 0.0000 | 0.8000 | -0.8000 |
+| 0d4ec3ad | wall-clock (mean/trial) | 855s | 1842s | -987s |
+| 0d4ec3ad | cost (total over 3) | $8.88 | $26.17 | $-17.29 |
+| 0d4ec3ad | input tokens (total) | 318 | 490 | -172 |
+| 0d4ec3ad | output tokens (total) | 136958 | 224283 | -87325 |
+| 0d4ec3ad | cache_read tokens (total) | 15856438 | 66353043 | -50496605 |
+| 45b581b5 | reward (mean) | 0.0000 | 0.8000 | -0.8000 |
+| 45b581b5 | wall-clock (mean/trial) | 1778s | 444s | 1334s |
+| 45b581b5 | cost (total over 3) | $13.52 | $4.52 | $9.00 |
+| 45b581b5 | input tokens (total) | 10331 | 98 | 10233 |
+| 45b581b5 | output tokens (total) | 328091 | 49627 | 278464 |
+| 45b581b5 | cache_read tokens (total) | 19840774 | 6833748 | 13007026 |
+| fde8e6e0 | reward (mean) | 0.2099 | 0.6784 | -0.4685 |
+| fde8e6e0 | wall-clock (mean/trial) | 2042s | 1393s | 648s |
+| fde8e6e0 | cost (total over 3) | $13.06 | $15.37 | $-2.31 |
+| fde8e6e0 | input tokens (total) | 408 | 336 | 72 |
+| fde8e6e0 | output tokens (total) | 400253 | 165543 | 234710 |
+| fde8e6e0 | cache_read tokens (total) | 14907057 | 35325633 | -20418576 |
+
+==============================================================================
+CONTRAST 3 — oracle_checks: with-sg-fixed vs ttwq with-sourcegraph
+==============================================================================
+| task | metric | with-sg-fixed | with-sg(ttwq) | delta |
+|------|--------|---------------|---------------|-------|
+| oc_001 | reward (mean) | 1.0000 | 1.0000 | 0.0000 |
+| oc_001 | wall-clock (mean/trial) | 172s | 139s | 33s |
+| oc_001 | cost (total over 3) | $1.50 | $1.39 | $0.11 |
+| oc_001 | input tokens (total) | 46 | 36 | 10 |
+| oc_001 | output tokens (total) | 27629 | 24194 | 3435 |
+| oc_001 | cache_read tokens (total) | 1691679 | 1276143 | 415536 |
+| oc_002 | reward (mean) | 1.0000 | 1.0000 | 0.0000 |
+| oc_002 | wall-clock (mean/trial) | 28s | 22s | 5s |
+| oc_002 | cost (total over 3) | $0.23 | $0.30 | $-0.07 |
+| oc_002 | input tokens (total) | 16 | 17 | -1 |
+| oc_002 | output tokens (total) | 3355 | 3145 | 210 |
+| oc_002 | cache_read tokens (total) | 219741 | 246813 | -27072 |
+| oc_003 | reward (mean) | 0.9643 | 1.0000 | -0.0357 |
+| oc_003 | wall-clock (mean/trial) | 60s | 214s | -154s |
+| oc_003 | cost (total over 3) | $0.55 | $1.87 | $-1.32 |
+| oc_003 | input tokens (total) | 23 | 59 | -36 |
+| oc_003 | output tokens (total) | 7490 | 33244 | -25754 |
+| oc_003 | cache_read tokens (total) | 480320 | 2337634 | -1857314 |
+| oc_004 | reward (mean) | 0.9286 | 0.5714 | 0.3571 |
+| oc_004 | wall-clock (mean/trial) | 61s | 76s | -15s |
+| oc_004 | cost (total over 3) | $0.57 | $1.16 | $-0.59 |
+| oc_004 | input tokens (total) | 30 | 507 | -477 |
+| oc_004 | output tokens (total) | 8981 | 10301 | -1320 |
+| oc_004 | cache_read tokens (total) | 633958 | 1009225 | -375267 |
+| oc_005 | reward (mean) | 1.0000 | 1.0000 | 0.0000 |
+| oc_005 | wall-clock (mean/trial) | 41s | 36s | 5s |
+| oc_005 | cost (total over 3) | $0.46 | $0.51 | $-0.05 |
+| oc_005 | input tokens (total) | 15 | 15 | 0 |
+| oc_005 | output tokens (total) | 5903 | 5841 | 62 |
+| oc_005 | cache_read tokens (total) | 177717 | 177307 | 410 |
+
+==============================================================================
+CONTRAST 4 — oracle_checks: with-sg-fixed vs ttwq baseline
+==============================================================================
+| task | metric | with-sg-fixed | baseline(ttwq) | delta |
+|------|--------|---------------|----------------|-------|
+| oc_001 | reward (mean) | 1.0000 | 1.0000 | 0.0000 |
+| oc_001 | wall-clock (mean/trial) | 172s | 120s | 52s |
+| oc_001 | cost (total over 3) | $1.50 | $1.43 | $0.07 |
+| oc_001 | input tokens (total) | 46 | 25 | 21 |
+| oc_001 | output tokens (total) | 27629 | 8063 | 19566 |
+| oc_001 | cache_read tokens (total) | 1691679 | 775270 | 916409 |
+| oc_002 | reward (mean) | 1.0000 | 1.0000 | 0.0000 |
+| oc_002 | wall-clock (mean/trial) | 28s | 45s | -17s |
+| oc_002 | cost (total over 3) | $0.23 | $0.52 | $-0.30 |
+| oc_002 | input tokens (total) | 16 | 19 | -3 |
+| oc_002 | output tokens (total) | 3355 | 3327 | 28 |
+| oc_002 | cache_read tokens (total) | 219741 | 386688 | -166947 |
+| oc_003 | reward (mean) | 0.9643 | 1.0000 | -0.0357 |
+| oc_003 | wall-clock (mean/trial) | 60s | 81s | -21s |
+| oc_003 | cost (total over 3) | $0.55 | $0.89 | $-0.34 |
+| oc_003 | input tokens (total) | 23 | 12 | 11 |
+| oc_003 | output tokens (total) | 7490 | 3401 | 4089 |
+| oc_003 | cache_read tokens (total) | 480320 | 136629 | 343691 |
+| oc_004 | reward (mean) | 0.9286 | 1.0000 | -0.0714 |
+| oc_004 | wall-clock (mean/trial) | 61s | 60s | 1s |
+| oc_004 | cost (total over 3) | $0.57 | $0.95 | $-0.38 |
+| oc_004 | input tokens (total) | 30 | 35 | -5 |
+| oc_004 | output tokens (total) | 8981 | 7500 | 1481 |
+| oc_004 | cache_read tokens (total) | 633958 | 1231691 | -597733 |
+| oc_005 | reward (mean) | 1.0000 | 1.0000 | 0.0000 |
+| oc_005 | wall-clock (mean/trial) | 41s | 43s | -2s |
+| oc_005 | cost (total over 3) | $0.46 | $0.83 | $-0.37 |
+| oc_005 | input tokens (total) | 15 | 20 | -5 |
+| oc_005 | output tokens (total) | 5903 | 4971 | 932 |
+| oc_005 | cache_read tokens (total) | 177717 | 421664 | -243947 |
+
+==============================================================================
+FAMILY ROLLUP
+==============================================================================
+{
+  "sdlc": {
+    "baseline": {
+      "n_trials": 15,
+      "mean_reward": 0.6831,
+      "total_time_s": 16769.190375061706,
+      "mean_time_s_per_trial": 1117.9460250041136,
+      "total_cost_usd": 69.1132478,
+      "total_input_tokens": 1247,
+      "total_output_tokens": 600745,
+      "total_cache_read_tokens": 152102759
+    },
+    "with-sourcegraph": {
+      "n_trials": 15,
+      "mean_reward": 0.6865533333333333,
+      "total_time_s": 28342.46612497978,
+      "mean_time_s_per_trial": 1889.4977416653187,
+      "total_cost_usd": 85.1691963,
+      "total_input_tokens": 45047,
+      "total_output_tokens": 1739453,
+      "total_cache_read_tokens": 148388201
+    },
+    "with-sg-fixed": {
+      "n_trials": 15,
+      "mean_reward": 0.15484666666666666,
+      "total_time_s": 20448.241027879063,
+      "mean_time_s_per_trial": 1363.2160685252709,
+      "total_cost_usd": 54.358551150000004,
+      "total_input_tokens": 15998,
+      "total_output_tokens": 1251436,
+      "total_cache_read_tokens": 80080353
+    }
+  },
+  "oracle_checks": {
+    "baseline": {
+      "n_trials": 15,
+      "mean_reward": 1.0,
+      "total_time_s": 1048.090995141305,
+      "mean_time_s_per_trial": 69.87273300942033,
+      "total_cost_usd": 4.6286096,
+      "total_input_tokens": 111,
+      "total_output_tokens": 27262,
+      "total_cache_read_tokens": 2951942
+    },
+    "with-sourcegraph": {
+      "n_trials": 15,
+      "mean_reward": 0.9142857142857143,
+      "total_time_s": 1459.6530170375481,
+      "mean_time_s_per_trial": 97.31020113583654,
+      "total_cost_usd": 5.2255611,
+      "total_input_tokens": 634,
+      "total_output_tokens": 76725,
+      "total_cache_read_tokens": 5047122
+    },
+    "with-sg-fixed": {
+      "n_trials": 15,
+      "mean_reward": 0.9785714285714285,
+      "total_time_s": 1082.8506672633812,
+      "mean_time_s_per_trial": 72.19004448422541,
+      "total_cost_usd": 3.3156944999999998,
+      "total_input_tokens": 130,
+      "total_output_tokens": 53358,
+      "total_cache_read_tokens": 3203415
+    }
+  }
+}
+
+==============================================================================
+PAIRED CONTRASTS (95% CI on per-task delta)
+==============================================================================
+{
+  "sdlc": {
+    "with-sg-fixed_vs_with-sg": {
+      "n": 5,
+      "deltas": [
+        -0.5402666666666667,
+        -0.04356666666666664,
+        -0.8,
+        -0.8,
+        -0.4747
+      ],
+      "mean": -0.5317066666666667,
+      "std": 0.3104699335952947,
+      "se": 0.1388463752977849,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.9171442044933176,
+        -0.1462691288400158
+      ],
+      "t_stat": -3.8294601895534632
+    },
+    "with-sg-fixed_vs_baseline": {
+      "n": 5,
+      "deltas": [
+        -0.534,
+        -0.038766666666666616,
+        -0.8,
+        -0.8,
+        -0.4685
+      ],
+      "mean": -0.5282533333333334,
+      "std": 0.3126072550164006,
+      "se": 0.13980221449525676,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.916344280772166,
+        -0.14016238589450064
+      ],
+      "t_stat": -3.7785762925182853
+    }
+  },
+  "oracle_checks": {
+    "with-sg-fixed_vs_with-sg": {
+      "n": 5,
+      "deltas": [
+        0.0,
+        0.0,
+        -0.0357142857142857,
+        0.3571428571428572,
+        0.0
+      ],
+      "mean": 0.06428571428571431,
+      "std": 0.16444092047459058,
+      "se": 0.0735402152927643,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.1398619233669994,
+        0.268433351938428
+      ],
+      "t_stat": 0.8741572761215378
+    },
+    "with-sg-fixed_vs_baseline": {
+      "n": 5,
+      "deltas": [
+        0.0,
+        0.0,
+        -0.0357142857142857,
+        -0.0714285714285714,
+        0.0
+      ],
+      "mean": -0.02142857142857142,
+      "std": 0.03194382824999698,
+      "se": 0.014285714285714278,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.06108571428571426,
+        0.018228571428571417
+      ],
+      "t_stat": -1.5
+    }
+  }
+}
