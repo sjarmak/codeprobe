@@ -456,6 +456,14 @@ def test_compose_instruction_sourcegraph_sdlc_forbids_mcp_read_for_local_files(
     assert "{{repo_path}}" not in prompt
     # The "When To Use MCP vs Local Tools" decision table must render.
     assert "When To Use MCP vs Local Tools" in prompt
+    # The "Prefer local-first reads" framing makes the rule discoverable
+    # under EB-style heuristic searches (workspace / local-first / prefer
+    # local). Codeprobe uses `repo_path` as the template variable rather
+    # than EB's `/workspace` literal, so the prose calls out the mapping
+    # to keep the rule findable across both conventions.
+    assert "Prefer local-first" in prompt
+    assert "prefer local first" in prompt
+    assert "/workspace" in prompt
     # The EFFICIENCY rule reaches the SDLC branch.
     assert "Efficiency" in prompt
     assert "sg_read_file" in prompt

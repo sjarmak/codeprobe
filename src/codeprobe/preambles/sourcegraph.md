@@ -24,6 +24,11 @@
 
 ## When To Use MCP vs Local Tools
 
+> **Prefer local-first reads.** The working tree at `{{repo_path}}` (the
+> codeprobe equivalent of EnterpriseBench's `/workspace` mount) is on
+> the same machine. Read it directly with `Read` / `cat`; only escalate
+> to MCP for cross-repo or historical-revision content.
+
 | Task                              | Use MCP                          | Use Local        |
 | --------------------------------- | -------------------------------- | ---------------- |
 | Find symbols across the repo      | `sg_keyword_search`              | —                |
@@ -35,11 +40,12 @@
 | Search within local files         | —                                | `Grep` / `grep`  |
 | Edit a file in `{{repo_path}}`    | —                                | `Edit` / `Write` |
 
-**Key rule: never use `mcp__sourcegraph__read_file` for files that exist
-locally at `{{repo_path}}` — local reads are instant and don't pad the
-context window.** `mcp__sourcegraph__read_file` is for files outside the
-working tree (other repos, historical revisions). Reading working-tree
-files through MCP wastes turns and inflates output tokens with no upside.
+**Key rule (prefer local first): never use `mcp__sourcegraph__read_file`
+for files that exist locally at `{{repo_path}}` — local reads are instant
+and don't pad the context window.** `mcp__sourcegraph__read_file` is for
+files outside the working tree (other repos, historical revisions).
+Reading working-tree files through MCP wastes turns and inflates output
+tokens with no upside.
 
 ## Tool Selection
 
