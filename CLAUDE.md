@@ -25,6 +25,33 @@ Every bead description MUST contain enough context that a fresh agent session ca
 
 **Research-phase beads** (where the work IS exploration): provide a concrete checklist of commands to run, files/URLs to check, and questions to answer. Never open-ended "investigate this area."
 
+### MANDATORY: Bead Close Ritual
+
+The city's close-gate-reaper enforces evidence metadata on codeprobe bead closes. Beads whose title starts with `[` (the standard codeprobe convention, e.g. `[r1/codeprobe-evjr]`, `[3oms-followup]`, `[infra]`) are scanned by rule `codeprobe-drain-without-commit-guard`. **A close that doesn't set the three required fields will be reopened by the reaper within an hour.**
+
+Before running `bd update --status=closed` (or `bd close`), set ALL THREE of these metadata fields:
+
+```bash
+bd update <bead-id> \
+  --set-metadata "evidence.artifact_path=git:<commit-sha>" \
+  --set-metadata "evidence.reviewer_verdict=<pass|fail|pass-with-caveats>" \
+  --set-metadata "evidence.reviewer_agent=<your-session-or-agent-name>"
+
+bd update <bead-id> --status=closed --notes "<brief summary>"
+```
+
+Field semantics:
+
+- **`evidence.artifact_path`** — commit hash (`git:<sha>`), writeup path, or test file. Multiple comma-separated values are fine: `git:abc123,docs/investigations/x/writeup.md`.
+- **`evidence.reviewer_verdict`** — short freeform string. `pass`, `fail`, `pass-with-caveats` are typical; longer cycle markers like `9th-cycle-verified` are also accepted.
+- **`evidence.reviewer_agent`** — who is signing off. Typically your own session ID or agent name.
+
+**Why:** the reaper has no view into git. It only checks bead metadata. If you make a commit but don't set `evidence.artifact_path`, the reaper sees an empty field and reopens the close. This is the root cause of the `evjr.1/.2/.3/aupz` 13-cycle reopen loops in May 2026 — workers shipped real commits but never wrote the metadata, so each close was rolled back automatically.
+
+**Bypass for legitimate exception cases** (e.g. duplicate-of, superseded-by): set `metadata.gate_bypass="<reason>"` instead of evidence fields. The reaper respects bypass and won't reopen.
+
+**Tracking:** the upstream proposal `gascity gc-n5j` (close-time policy hook) would let `bd close` reject the close at source with a clear error instead of relying on post-hoc reopen. Until that lands, the workaround is this ritual.
+
 ## Architecture
 
 See `prd_agent_adapter_architecture.md` for the full PRD with converge debate results.
