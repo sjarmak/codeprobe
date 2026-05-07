@@ -145,11 +145,13 @@ landed there as a context manager
 
 ## Smoke trial
 
-Not run in this changeset — needs Claude API credit and a configured
-gascity-mcp-comparison experiment. The mechanism is unit-tested and
-integration-tested; a real-trial smoke is the natural next step before
-codeprobe-4cl6 (SDLC cap retune sweep) reruns against the new preamble
-+ endpoint + isolation.
+Not run in this changeset. Codeprobe authenticates Claude Code via OAuth
+(no per-run API billing), so the smoke trial only needs a configured
+experiment dir + `SOURCEGRAPH_TOKEN`. A staged experiment exists at
+`~/test_repos/gascity/gascity-mcp-comparison/`. The mechanism is
+unit-tested and integration-tested; a real-trial smoke is the natural
+next step before codeprobe-4cl6 (SDLC cap retune sweep) reruns against
+the new preamble + endpoint + isolation.
 
 To run the smoke trial manually:
 
