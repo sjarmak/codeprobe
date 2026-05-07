@@ -1,74 +1,72 @@
-# Sourcegraph MCP Tools
+# IMPORTANT: Source Code Access
 
-> Use Sourcegraph MCP tools as your PRIMARY code search method.
-> The repository is indexed at `{{sg_repo}}` on Sourcegraph.
-> {{sg_task_search_guidance}}
+**Local source files are not present.** Your workspace does not contain source code. You **MUST** use Sourcegraph MCP tools to discover, read, and understand code before making any changes.
 
-## Available Tools
-
-| Tool                  | When to use                                                       |
-| --------------------- | ----------------------------------------------------------------- |
-| `sg_keyword_search`   | Exact keyword/symbol search across the indexed repo               |
-| `sg_nls_search`       | Semantic/natural-language code search when keywords aren't enough |
-| `sg_find_references`  | Find all usages of a symbol (compiler-accurate, cross-file)       |
-| `sg_go_to_definition` | Jump to where a symbol is defined                                 |
-| `sg_read_file`        | Read a file from the indexed repo                                 |
-| `sg_list_files`       | List files/directories in the repo                                |
-| `sg_commit_search`    | Search commit messages and history                                |
-| `sg_diff_search`      | Search code changes (added/removed lines)                         |
-
-> Note: `sg_deepsearch` and `sg_deepsearch_read` exist on the server but are
-> **not recommended for these tasks** — they are slow multi-step searches that
-> duplicate work the primitive tools above already do directly. Prefer
-> `sg_find_references` + `sg_keyword_search`.
-
-## When To Use MCP vs Local Tools
-
-> **Prefer local-first reads.** The working tree at `{{repo_path}}` (the
-> codeprobe equivalent of EnterpriseBench's `/workspace` mount) is on
-> the same machine. Read it directly with `Read` / `cat`; only escalate
-> to MCP for cross-repo or historical-revision content.
-
-| Task                              | Use MCP                          | Use Local        |
-| --------------------------------- | -------------------------------- | ---------------- |
-| Find symbols across the repo      | `sg_keyword_search`              | —                |
-| Semantic/concept search           | `sg_nls_search`                  | —                |
-| Trace callers/references          | `sg_find_references`             | —                |
-| Jump to definition                | `sg_go_to_definition`            | —                |
-| Search commit history             | `sg_commit_search`               | —                |
-| Read a file in `{{repo_path}}`    | —                                | `Read` / `cat`   |
-| Search within local files         | —                                | `Grep` / `grep`  |
-| Edit a file in `{{repo_path}}`    | —                                | `Edit` / `Write` |
-
-**Key rule (prefer local first): never use `mcp__sourcegraph__read_file`
-for files that exist locally at `{{repo_path}}` — local reads are instant
-and don't pad the context window.** `mcp__sourcegraph__read_file` is for
-files outside the working tree (other repos, historical revisions).
-Reading working-tree files through MCP wastes turns and inflates output
-tokens with no upside.
-
-## Tool Selection
-
-1. **Start with `sg_keyword_search`** for known identifiers (function names, class names, constants)
-2. **Use `sg_nls_search`** when you need semantic matching ("error handling code", "authentication logic")
-3. **Use `sg_find_references`** to trace all callers/usages of a specific symbol — this catches aliases, re-exports, and indirect imports that grep misses. {{sg_find_references_guidance}}
-4. **Use `sg_go_to_definition`** to navigate from a usage to its definition
-5. **Avoid `sg_deepsearch`** — if `sg_find_references` plus a couple of `sg_keyword_search` calls don't answer the question, the question is malformed; don't escalate to deepsearch.
-
-## Scoping
-
-Always scope queries to the target repository:
-
-```
-repo:^{{sg_repo}}$ <your query>
-```
-
-Start narrow, then broaden if results are insufficient.
+{{repo_scope}}
 
 ## Required Workflow
 
-1. **Search with Sourcegraph** to find files matching the task criteria
-2. **Trace references** with `sg_find_references` on key symbols to discover indirect usages
-3. {{sg_local_search_step}}
-4. {{sg_negative_result_handling}}
-5. {{sg_result_synthesis_step}}
+1. **Search first** — Use MCP tools to find relevant files and understand existing patterns
+2. **Read remotely with line ranges** — Use `sg_read_file` with `startLine`/`endLine` to fetch only the relevant region. Search results include line numbers; pass them ±~20 lines as a range.
+{{workflow_tail}}
+
+## Tool Selection
+
+| Goal | Tool |
+|------|------|
+| Exact terms (AND logic, all must match) | `sg_keyword_search` |
+| Broader matching (OR logic + word stemming) | `sg_nls_search` |
+| Trace usage/callers | `sg_find_references` |
+| See implementation | `sg_go_to_definition` |
+| Read a code region (default) | `sg_read_file` with `startLine`/`endLine` |
+| Read full small file (rare) | `sg_read_file` (no range) |
+| Browse structure | `sg_list_files` |
+| Find repos | `sg_list_repos` |
+| Search commits | `sg_commit_search` |
+| Track changes | `sg_diff_search` |
+| Compare versions | `sg_compare_revisions` |
+
+**Decision logic:**
+1. Know the exact symbol or string? → `sg_keyword_search` (all terms must match)
+2. Don't know exact names, or want word-stem variants ("authenticate" also matches "authentication", "authenticator")? → `sg_nls_search` (any term matches; pass extracted keywords, NOT natural-language questions)
+3. Need definition of a symbol? → `sg_go_to_definition`
+4. Need all callers/references? → `sg_find_references`
+5. Need a specific code region? → `sg_read_file` with `startLine`/`endLine` (default — use ±20 lines around the search hit)
+6. Need a full small file? → `sg_read_file` with no range (only when you need broad structure; files >128KB are auto-truncated to 200 lines)
+
+## Scoping (Always Do This)
+
+```
+repo:^github.com/ORG/REPO$      # Exact repo (preferred)
+repo:github.com/ORG/            # All repos in org
+file:.*\.ts$                    # TypeScript only
+file:src/api/                   # Specific directory
+```
+
+Start narrow. Expand only if results are empty.
+
+## Query Construction
+
+Both `sg_keyword_search` and `sg_nls_search` expect **extracted keywords**, not full questions. Strip question words (how, what, where, does, is) and articles (the, a, an).
+
+- "how does the router match incoming requests to handlers"
+- "router match request handler"
+
+`sg_nls_search` applies stemming to a single root form, so "handle" already covers "handler" / "handling" / "handles".
+
+## Efficiency Rules
+
+- Chain searches logically: search → read range → references → definition
+- Don't re-search for the same pattern; use results from prior calls
+- Prefer `sg_keyword_search` when you have exact terms; fall back to `sg_nls_search` only when keyword search returns too few hits
+- Default to range-bounded reads. Search snippets carry line numbers — pass `startLine`/`endLine` to `sg_read_file` (±~20 lines) instead of fetching whole files. Reserve full-file reads for cases where you need broad structure.
+- Read 2-3 related code regions before synthesising, rather than one at a time
+- Don't read 20+ remote regions without writing code — once you understand the pattern, start implementing
+
+## If Stuck
+
+If MCP search returns no results:
+1. Broaden the query (drop a term, try root forms)
+2. Switch from `sg_keyword_search` (AND) to `sg_nls_search` (OR + stemming)
+3. Use `sg_list_files` to browse the directory structure
+4. Use `sg_list_repos` to verify the repository name

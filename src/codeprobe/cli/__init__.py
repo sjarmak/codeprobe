@@ -1182,6 +1182,18 @@ def init_experiment(
         "Ignored when --allowed-tools or --disallowed-tools is set."
     ),
 )
+@click.option(
+    "--hide-local-source",
+    is_flag=True,
+    default=False,
+    help=(
+        "Stash local source files from the workspace for the duration of "
+        "the agent run (sg-only mode, codeprobe-jf28). The agent has no "
+        "local source to read; pair with --preamble sourcegraph whose v2 "
+        "body declares 'Local source files are not present.' Source is "
+        "restored before scoring runs."
+    ),
+)
 def add_config(
     path: str,
     label: str,
@@ -1194,6 +1206,7 @@ def add_config(
     allowed_tools: str | None,
     disallowed_tools: str | None,
     mcp_mode: str,
+    hide_local_source: bool,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
@@ -1217,6 +1230,7 @@ def add_config(
         allowed_tools=_parse_tools(allowed_tools),
         disallowed_tools=_parse_tools(disallowed_tools),
         mcp_mode=mcp_mode,
+        hide_local_source=hide_local_source,
     )
 
 

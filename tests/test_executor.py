@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.core.executor import (
     DryRunEstimate,
     TaskResult,
@@ -1786,3 +1786,103 @@ class TestGitResetWorkdirMultiRepo:
 
         _git_reset_workdir(tmp_path)
         assert not (tmp_path / "repos").exists()
+
+
+# ---------------------------------------------------------------------------
+# hide_local_source integration (codeprobe-jf28)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingAdapter(FakeAdapter):
+    """FakeAdapter that snapshots the workspace contents during run().
+
+    Used to verify that ``quarantine_local_source`` is active around the
+    adapter's run() call when ``hide_local_source=True``.
+    """
+
+    def __init__(self, *, workspace: Path, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._workspace = workspace
+        self.workspace_entries_during_run: list[str] | None = None
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
+        if self._workspace.is_dir():
+            self.workspace_entries_during_run = sorted(
+                p.name for p in self._workspace.iterdir()
+            )
+        # Simulate the agent producing answer.txt in the (empty) workspace.
+        (self._workspace / "answer.txt").write_text("agent computed answer")
+        return super().run(prompt, config, session_env=session_env)
+
+
+def test_execute_task_hide_local_source_stashes_during_run(tmp_path: Path):
+    """When hide_local_source=True, the workspace is empty during run()
+    and source is restored before scoring."""
+    task_dir = _make_task(tmp_path / "task-jf28", passing=True)
+
+    # Set up a workspace with realistic source layout next to the task dir.
+    repo_path = tmp_path / "workspace"
+    repo_path.mkdir()
+    (repo_path / "src").mkdir()
+    (repo_path / "src" / "main.py").write_text("def main(): ...")
+    (repo_path / "README.md").write_text("# Project")
+    (repo_path / ".git").mkdir()  # default-keep entry survives quarantine
+
+    adapter = _RecordingAdapter(workspace=repo_path, stdout="ok")
+
+    result = execute_task(
+        adapter,
+        task_dir,
+        repo_path,
+        AgentConfig(),
+        hide_local_source=True,
+    )
+
+    # During the run the agent saw an empty workspace (apart from .git).
+    assert adapter.workspace_entries_during_run is not None
+    visible = [
+        e
+        for e in adapter.workspace_entries_during_run
+        if e != ".git" and e != "answer.txt"
+    ]
+    assert visible == [], (
+        f"agent saw source files during sg-only run: {visible!r}"
+    )
+
+    # Source is restored AFTER the run.
+    assert (repo_path / "src" / "main.py").read_text() == "def main(): ..."
+    assert (repo_path / "README.md").read_text() == "# Project"
+
+    # answer.txt produced during the empty-workspace window survives
+    # the source restore (it didn't conflict with any stashed name).
+    assert (repo_path / "answer.txt").read_text() == "agent computed answer"
+
+    # Task scored as completed (test.sh exits 0).
+    assert result.completed.status == "completed"
+    assert result.completed.automated_score == 1.0
+
+
+def test_execute_task_hide_local_source_default_false_keeps_source_visible(
+    tmp_path: Path,
+):
+    """Default (hide_local_source=False) is no-op: source is visible
+    throughout the run."""
+    task_dir = _make_task(tmp_path / "task-default", passing=True)
+
+    repo_path = tmp_path / "workspace"
+    repo_path.mkdir()
+    (repo_path / "src.py").write_text("source")
+
+    adapter = _RecordingAdapter(workspace=repo_path, stdout="ok")
+
+    execute_task(adapter, task_dir, repo_path, AgentConfig())
+
+    assert adapter.workspace_entries_during_run is not None
+    assert "src.py" in adapter.workspace_entries_during_run, (
+        "source was hidden when hide_local_source defaulted to False"
+    )

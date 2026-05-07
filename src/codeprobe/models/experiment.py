@@ -43,6 +43,13 @@ class ExperimentConfig:
     preambles: tuple[str, ...] = ()
     reward_type: str = "binary"
     max_turns: int | None = None
+    # When True, the executor stashes local source from the workspace
+    # before running the agent and restores it after (codeprobe-jf28).
+    # Mirrors CSB's ``Dockerfile.sg_only`` and EB's
+    # ``generate_sg_only_dockerfile`` pattern. Pair with the v2
+    # ``sourcegraph`` preamble whose body declares "Local source
+    # files are not present."
+    hide_local_source: bool = False
     extra: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:
@@ -59,7 +66,9 @@ class ExperimentConfig:
             f"mcp_mode={self.mcp_mode!r}, "
             f"instruction_variant={self.instruction_variant!r}, "
             f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
-            f"max_turns={self.max_turns!r}, extra={self.extra!r})"
+            f"max_turns={self.max_turns!r}, "
+            f"hide_local_source={self.hide_local_source!r}, "
+            f"extra={self.extra!r})"
         )
 
 
@@ -137,6 +146,7 @@ class CompletedTask:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
     cost_usd: float | None = None
     cost_model: str = "unknown"
     cost_source: str = "unavailable"

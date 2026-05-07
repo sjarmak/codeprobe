@@ -276,7 +276,9 @@ def test_compose_instruction_sourcegraph_symbol_reference_is_authoritative(
     )
 
     assert "treat `sg_find_references` as authoritative" in prompt
-    assert "do not replace it with a grep union" in prompt
+    # jf28: under file-removal mode local Grep is unavailable; the
+    # corresponding union forbidden is the keyword-search union.
+    assert "do not replace it with a keyword-search union" in prompt
     assert "maximum recall" not in prompt
     # Regression: symbol-reference-trace must explicitly forbid sg_deepsearch.
     # We saw an Opus 4.7 run burn 3 deepsearch calls (most of the cost) on
@@ -309,14 +311,17 @@ def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
         ),
     )
 
-    assert "supplement with local Grep" in prompt
+    # jf28: under sg-only mode "supplement with local Grep" is no
+    # longer applicable — the workspace has no local source. The broad
+    # recall directive is now scoped to MCP-tool unions instead.
     assert "Union results when recall matters" in prompt
+    assert "sg_keyword_search" in prompt and "sg_nls_search" in prompt
     assert "treat `sg_find_references` as authoritative" not in prompt
     # Regression (codeprobe-riad): default branch must carry the
     # verify-before-denying rule. Sourcegraph false-negatives were
     # leading agents to write confident denials of existence
-    # ("FlagAliases does not exist") when local Grep would find them
-    # immediately. The default branch is the place to land this rule
+    # ("FlagAliases does not exist") even when broader queries would
+    # find them. The default branch is the place to land this rule
     # because index-lag is generic, not category-specific.
     assert "Verify before denying existence" in prompt
     assert "Do not write a denial of existence" in prompt
@@ -409,33 +414,35 @@ def test_compose_instruction_sourcegraph_sdlc_uses_stop_signal(tmp_path: Path):
     assert "Coverage-first synthesis" not in prompt
 
 
-def test_compose_instruction_sourcegraph_sdlc_forbids_mcp_read_for_local_files(
+def test_compose_instruction_sourcegraph_declares_no_local_source(
     tmp_path: Path,
 ):
-    """SDLC tasks must include the MCP-vs-local guardrail with substituted repo_path.
+    """The v2 sourcegraph preamble must state local source is absent.
 
-    Regression (codeprobe-evjr): cross-rig audit showed codeprobe agents
+    History (codeprobe-evjr): cross-rig audit showed codeprobe agents
     routed all reads through `mcp__sourcegraph__read_file` even when the
-    file existed locally at `repo_path`. Across 75 with-sourcegraph trials,
-    zero local `Read/Bash/Edit/Grep` calls were observed. EnterpriseBench's
-    `_HYBRID_HEADER` solves this with an explicit "never use
-    mcp__sourcegraph__read_file for files in /workspace" rule, and EB's
-    hybrid output_tokens are 0.59-0.62× baseline as a result.
+    file existed locally. The v1 preamble tried to fix that with a
+    "Prefer local-first" guardrail.
 
-    This test asserts:
-      1. The "never use mcp__sourcegraph__read_file" prohibition is rendered
-         into the SDLC preamble.
-      2. `{{repo_path}}` is correctly substituted (no literal token leaks).
-      3. The EFFICIENCY "don't over-read" rule reaches the SDLC branch.
+    Resolution (codeprobe-jf28): the v2 preamble takes the opposite,
+    cleaner approach — pair it with file-removal isolation so local
+    source genuinely is not present, and have the preamble state that
+    fact explicitly. The MCP-vs-local guardrail is no longer needed
+    because there is nothing local to prefer.
+
+    This test pins the new invariant:
+      1. The preamble declares "Local source files are not present."
+      2. The preamble routes all reads through MCP.
+      3. The EFFICIENCY "don't over-read" rule still reaches every
+         category (covered by the dedicated test below).
     """
     task_dir = tmp_path / "sdlc-task"
     task_dir.mkdir(parents=True)
     resolver = DefaultPreambleResolver(task_dir=task_dir)
 
-    repo_path = Path("/work/grpc-go")
     prompt, _ = compose_instruction(
-        instruction="Add a new field to src/foo/bar.go.",
-        repo_path=repo_path,
+        instruction="Add a new field.",
+        repo_path=Path("/work/grpc-go"),
         preamble_names=["sourcegraph"],
         resolver=resolver,
         task_id="sdlc-001",
@@ -449,24 +456,17 @@ def test_compose_instruction_sourcegraph_sdlc_forbids_mcp_read_for_local_files(
         ),
     )
 
-    # MCP-vs-local guardrail must appear with the explicit prohibition.
-    assert "never use `mcp__sourcegraph__read_file`" in prompt
-    # repo_path must be substituted, not left as a literal template token.
-    assert str(repo_path) in prompt
-    assert "{{repo_path}}" not in prompt
-    # The "When To Use MCP vs Local Tools" decision table must render.
-    assert "When To Use MCP vs Local Tools" in prompt
-    # The "Prefer local-first reads" framing makes the rule discoverable
-    # under EB-style heuristic searches (workspace / local-first / prefer
-    # local). Codeprobe uses `repo_path` as the template variable rather
-    # than EB's `/workspace` literal, so the prose calls out the mapping
-    # to keep the rule findable across both conventions.
-    assert "Prefer local-first" in prompt
-    assert "prefer local first" in prompt
-    assert "/workspace" in prompt
-    # The EFFICIENCY rule reaches the SDLC branch.
-    assert "Efficiency" in prompt
+    # The new mode declares local source absence.
+    assert "Local source files are not present" in prompt
+    # All reads go through MCP — sg_read_file is the canonical path.
     assert "sg_read_file" in prompt
+    # repo_scope is rendered with the actual sg_repo value, not left
+    # as a literal template token.
+    assert "github.com/acme/grpc-go" in prompt
+    assert "{{repo_scope}}" not in prompt
+    assert "{{workflow_tail}}" not in prompt
+    # The EFFICIENCY rule still reaches the SDLC branch.
+    assert "Efficiency" in prompt
 
 
 def test_compose_instruction_sourcegraph_efficiency_rule_in_all_branches(
@@ -581,26 +581,43 @@ from codeprobe.preambles import get_builtin, list_builtins  # noqa: E402
 
 
 def test_builtin_sourcegraph_preamble_exists():
-    """The sourcegraph preamble ships as a built-in."""
+    """The sourcegraph preamble ships as a built-in.
+
+    jf28: The v2 template references ``{{repo_scope}}`` and
+    ``{{workflow_tail}}`` rather than substituting ``{{sg_repo}}``
+    directly. The repo identifier is composed into ``repo_scope`` by
+    ``task_preamble_context`` and substituted at compose time.
+    """
     block = get_builtin("sourcegraph")
     assert block.name == "sourcegraph"
-    assert "keyword_search" in block.template
-    assert "{{sg_repo}}" in block.template
+    assert "sg_keyword_search" in block.template
+    assert "{{repo_scope}}" in block.template
+    assert "{{workflow_tail}}" in block.template
 
 
 def test_builtin_preamble_renders_variables():
-    """Built-in preamble template variables resolve correctly."""
+    """Built-in preamble template variables resolve correctly.
+
+    jf28: The renderer fills ``{{repo_scope}}`` and ``{{workflow_tail}}``
+    via the slots produced by ``task_preamble_context``. We exercise
+    ``compose_instruction`` end-to-end below; this test covers the raw
+    block.render() contract — both slots are substituted, no literal
+    template tokens leak through.
+    """
     block = get_builtin("sourcegraph")
     rendered = block.render(
         {
             "repo_path": "/my/repo",
             "repo_name": "my-repo",
             "task_id": "task-42",
-            "sg_repo": "github.com/sg-evals/my-repo",
+            "repo_scope": "**Indexed repository:** `github.com/sg-evals/my-repo`.",
+            "workflow_tail": "3. **Trace references** — example tail step.",
         }
     )
     assert "github.com/sg-evals/my-repo" in rendered
-    assert "{{sg_repo}}" not in rendered
+    assert "Trace references" in rendered
+    assert "{{repo_scope}}" not in rendered
+    assert "{{workflow_tail}}" not in rendered
 
 
 def test_builtin_github_preamble_exists():

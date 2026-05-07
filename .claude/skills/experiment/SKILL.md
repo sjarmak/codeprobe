@@ -135,7 +135,7 @@ Then ask:
 **If Sourcegraph:**
 
 - Source `.env.local` to get `SOURCEGRAPH_ACCESS_TOKEN` and `SOURCEGRAPH_URL`
-- Build MCP config JSON: `{"mcpServers":{"sourcegraph":{"type":"http","url":"{SG_URL}/.api/mcp/v1","headers":{"Authorization":"token {SG_TOKEN}"}}}}`
+- Build MCP config JSON: `{"mcpServers":{"sourcegraph":{"type":"http","url":"{SG_URL}/.api/mcp/all","headers":{"Authorization":"token {SG_TOKEN}"}}}}`
 - Use `--preamble sourcegraph` (built-in preamble with `{{sg_repo}}` from task metadata)
 - Mine tasks with `--org-scale --mcp-families --sg-repo {SG_REPO}` (see `/mine-tasks` MCP flow)
 
@@ -300,7 +300,7 @@ codeprobe experiment add-config ./my-experiment --label baseline --model claude-
 codeprobe experiment add-config ./my-experiment --label with-sourcegraph \
   --model claude-sonnet-4-6 \
   --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/v1","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
+  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
 
 # Add GitHub MCP config (different preamble + different MCP server)
 codeprobe experiment add-config ./my-experiment --label with-github \

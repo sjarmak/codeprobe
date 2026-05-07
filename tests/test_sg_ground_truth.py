@@ -186,7 +186,7 @@ class TestAPICall:
             )
 
             url_called = mock_req.post.call_args[0][0]
-            assert url_called == "https://my-sg.example.com/.api/mcp/v1"
+            assert url_called == "https://my-sg.example.com/.api/mcp/all"
 
     def test_tools_call_method_and_params(self) -> None:
         """Verify we send tools/call with sg_find_references params."""

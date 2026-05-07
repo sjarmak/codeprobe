@@ -34,6 +34,7 @@ from codeprobe.core.isolation import (
     cleanup_multi_repo_workspace,
     git_pin_commit,
     git_restore_clean,
+    quarantine_local_source,
     quarantine_sibling_experiments,
     setup_multi_repo_workspace,
 )
@@ -288,6 +289,8 @@ def execute_task(
     worktree_path: Path | None = None,
     session_env: dict[str, str] | None = None,
     dual_worktree_factory: Callable[[Path, str], IsolationStrategy] | None = None,
+    hide_local_source: bool = False,
+    hide_local_source_keep: tuple[str, ...] = (),
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -467,8 +470,23 @@ def execute_task(
                     error_category="system",
                 )
 
+        # Optional file-removal isolation (codeprobe-jf28). When enabled,
+        # local source files are stashed for the duration of the agent
+        # run so the agent has no choice but to use Sourcegraph MCP.
+        # ``effective_workspace`` is the per-trial worktree (when
+        # parallel) or ``repo_path`` (single-tenant). On context exit
+        # the source is restored before scoring runs.
+        source_ctx = (
+            quarantine_local_source(
+                effective_workspace, keep=hide_local_source_keep
+            )
+            if hide_local_source
+            else contextlib.nullcontext()
+        )
+
         try:
-            output = adapter.run(prompt, agent_config, session_env=session_env)
+            with source_ctx:
+                output = adapter.run(prompt, agent_config, session_env=session_env)
         except subprocess.TimeoutExpired as exc:
             return _error_result(
                 sanitize_secrets(str(exc)),
@@ -486,6 +504,7 @@ def execute_task(
                 input_tokens=output.input_tokens,
                 output_tokens=output.output_tokens,
                 cache_read_tokens=output.cache_read_tokens,
+                cache_creation_tokens=output.cache_creation_tokens,
                 cost_usd=output.cost_usd,
                 cost_model=output.cost_model,
                 cost_source=output.cost_source,
@@ -832,6 +851,10 @@ def _save_task_artifacts(
         diagnostics["token_cost_usd"] = float(completed.cost_usd)
     if completed.input_tokens is not None:
         diagnostics["input_tokens"] = int(completed.input_tokens)
+    if completed.cache_read_tokens is not None:
+        diagnostics["cache_read_tokens"] = int(completed.cache_read_tokens)
+    if completed.cache_creation_tokens is not None:
+        diagnostics["cache_creation_tokens"] = int(completed.cache_creation_tokens)
     if completed.output_tokens is not None:
         diagnostics["output_tokens"] = int(completed.output_tokens)
     scoring["diagnostics"] = diagnostics
@@ -865,6 +888,7 @@ def _restore_checkpointed(
                 input_tokens=entry.get("input_tokens"),
                 output_tokens=entry.get("output_tokens"),
                 cache_read_tokens=entry.get("cache_read_tokens"),
+                cache_creation_tokens=entry.get("cache_creation_tokens"),
                 cost_usd=entry.get("cost_usd"),
                 cost_model=entry.get("cost_model", "unknown"),
                 cost_source=entry.get("cost_source", "unavailable"),
@@ -1003,6 +1027,7 @@ def execute_config(
                 preamble_resolver=preamble_resolver,
                 worktree_path=worktree_path,
                 session_env=session_env,
+                hide_local_source=experiment_config.hide_local_source,
             )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:
@@ -1051,6 +1076,7 @@ def execute_config(
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
                     cache_read_tokens=result.cache_read_tokens,
+                    cache_creation_tokens=result.cache_creation_tokens,
                     cost_model=result.cost_model,
                     cost_source=result.cost_source,
                     error=result.metadata.get("error") if result.metadata else None,

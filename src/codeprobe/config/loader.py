@@ -159,6 +159,7 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             preambles=tuple(cfg.get("preambles", ())),
             reward_type=cfg.get("reward_type", "binary"),
             max_turns=cfg.get("max_turns"),
+            hide_local_source=bool(cfg.get("hide_local_source", False)),
             extra={
                 k: v
                 for k, v in cfg.items()
@@ -175,6 +176,7 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
                     "preambles",
                     "reward_type",
                     "max_turns",
+                    "hide_local_source",
                 }
             },
         )

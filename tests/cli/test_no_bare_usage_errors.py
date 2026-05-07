@@ -45,7 +45,7 @@ _CLI_ROOT = _REPO_ROOT / "src" / "codeprobe" / "cli"
 
 INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
     {
-        ("src/codeprobe/cli/__init__.py", 1105),
+        ("src/codeprobe/cli/__init__.py", 1119),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
@@ -55,15 +55,18 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         ("src/codeprobe/cli/experiment_cmd.py", 73),
         ("src/codeprobe/cli/experiment_cmd.py", 88),
         ("src/codeprobe/cli/experiment_cmd.py", 99),
-        ("src/codeprobe/cli/experiment_cmd.py", 158),
-        ("src/codeprobe/cli/experiment_cmd.py", 167),
-        ("src/codeprobe/cli/experiment_cmd.py", 183),
-        ("src/codeprobe/cli/experiment_cmd.py", 211),
-        ("src/codeprobe/cli/experiment_cmd.py", 255),
-        ("src/codeprobe/cli/experiment_cmd.py", 325),
-        ("src/codeprobe/cli/experiment_cmd.py", 342),
-        ("src/codeprobe/cli/experiment_cmd.py", 424),
-        ("src/codeprobe/cli/experiment_cmd.py", 431),
+        # jf28: lines shifted +1 (signature gained `hide_local_source`)
+        # for entries above the ExperimentConfig() call; +2 for entries
+        # below (the ExperimentConfig() call also grew one line).
+        ("src/codeprobe/cli/experiment_cmd.py", 159),
+        ("src/codeprobe/cli/experiment_cmd.py", 168),
+        ("src/codeprobe/cli/experiment_cmd.py", 184),
+        ("src/codeprobe/cli/experiment_cmd.py", 213),
+        ("src/codeprobe/cli/experiment_cmd.py", 257),
+        ("src/codeprobe/cli/experiment_cmd.py", 327),
+        ("src/codeprobe/cli/experiment_cmd.py", 344),
+        ("src/codeprobe/cli/experiment_cmd.py", 426),
+        ("src/codeprobe/cli/experiment_cmd.py", 433),
         ("src/codeprobe/cli/init_cmd.py", 46),
         ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),
