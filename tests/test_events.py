@@ -50,6 +50,7 @@ def _make_task_scored(
         input_tokens=100,
         output_tokens=50,
         cache_read_tokens=10,
+        cache_creation_tokens=5,
         cost_model=cost_model,
         cost_source="api_response",
         error=None,

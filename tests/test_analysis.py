@@ -1129,6 +1129,7 @@ class TestFormatCsvReport:
             "input_tokens",
             "output_tokens",
             "cache_read_tokens",
+            "cache_creation_tokens",
             "cost_model",
             "ci_lower",
             "ci_upper",

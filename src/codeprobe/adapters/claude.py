@@ -462,6 +462,7 @@ class ClaudeAdapter(BaseAdapter):
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cache_read_tokens=usage.cache_read_tokens,
+            cache_creation_tokens=usage.cache_creation_tokens,
             cost_usd=usage.cost_usd,
             cost_model=usage.cost_model,
             cost_source=usage.cost_source,

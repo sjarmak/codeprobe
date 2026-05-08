@@ -42,11 +42,20 @@ bd update <bead-id> --status=closed --notes "<brief summary>"
 
 Field semantics:
 
-- **`evidence.artifact_path`** — commit hash (`git:<sha>`), writeup path, or test file. Multiple comma-separated values are fine: `git:abc123,docs/investigations/x/writeup.md`.
+- **`evidence.artifact_path`** — commit hash (`git:<sha>`), writeup path, or test file. Multiple comma-separated values are fine: `git:abc123,docs/investigations/x/writeup.md`. **Critical:** any `git:<sha>` reference MUST be reachable from `main` (i.e. the commit is merged), not a feature-branch-only commit.
 - **`evidence.reviewer_verdict`** — short freeform string. `pass`, `fail`, `pass-with-caveats` are typical; longer cycle markers like `9th-cycle-verified` are also accepted.
 - **`evidence.reviewer_agent`** — who is signing off. Typically your own session ID or agent name.
 
-**Why:** the reaper has no view into git. It only checks bead metadata. If you make a commit but don't set `evidence.artifact_path`, the reaper sees an empty field and reopens the close. This is the root cause of the `evjr.1/.2/.3/aupz` 13-cycle reopen loops in May 2026 — workers shipped real commits but never wrote the metadata, so each close was rolled back automatically.
+**Verify reachability before close:**
+
+```bash
+# Confirm the commit is on main (or your default branch). Exit 0 = merged.
+git merge-base --is-ancestor <commit-sha> main && echo "OK: merged" || echo "NOT MERGED — do not close yet"
+```
+
+A commit on a feature branch is NOT shipped. Closing a bead with `evidence.artifact_path=git:<sha>` where the sha is feature-branch-only puts the bead store and git out of sync — the bead says shipped, git says the work is unreachable from `main`. This pattern was found in zelda and in codeprobe's own evjr.* beads (May 2026): all 6 evjr commits closed as shipped while still living only on `feature/codeprobe-x7p3-validate-unified-contract`. Don't add to this debt.
+
+**Why the metadata even matters:** the reaper has no view into git. It only checks bead metadata. If you make a commit but don't set `evidence.artifact_path`, the reaper sees an empty field and reopens the close. This is the surface-level cause of the evjr.* 13-cycle reopen loops in May 2026 — workers shipped real commits but never wrote the metadata, so each close was rolled back automatically. The deeper cause (commits not reaching `main`) is what the reachability requirement above addresses.
 
 **Bypass for legitimate exception cases** (e.g. duplicate-of, superseded-by): set `metadata.gate_bypass="<reason>"` instead of evidence fields. The reaper respects bypass and won't reopen.
 

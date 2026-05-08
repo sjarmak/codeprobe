@@ -271,6 +271,65 @@ class TestExecutorDiagnosticsContract:
         assert diag["input_tokens"] == 1234
         assert diag["output_tokens"] == 567
 
+    def test_scoring_json_emits_cache_token_counts(self, tmp_path: Path) -> None:
+        # codeprobe-e9pr: scoring.json.diagnostics carries cache_read_tokens
+        # and cache_creation_tokens alongside the existing input/output
+        # counts. Cache-aware cost-Pareto plots need bulk-reuse and
+        # write-through tokens broken out from the uncached input portion.
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir()
+        completed = CompletedTask(
+            task_id="t1",
+            automated_score=0.42,
+            duration_seconds=12.5,
+            cost_usd=0.0034,
+            input_tokens=30,
+            output_tokens=567,
+            cache_read_tokens=98765,
+            cache_creation_tokens=4321,
+            scoring_details={
+                "passed": False,
+                "scorer_family": "oracle_overlap_f1",
+            },
+        )
+        result = TaskResult(completed=completed, agent_stdout="", agent_stderr="")
+
+        _save_task_artifacts(runs_dir, "t1", result)
+
+        scoring = json.loads((runs_dir / "t1" / "scoring.json").read_text())
+        diag = scoring["diagnostics"]
+        # Existing fields remain (no regression).
+        assert diag["token_cost_usd"] == pytest.approx(0.0034)
+        assert diag["input_tokens"] == 30
+        assert diag["output_tokens"] == 567
+        # New fields populated.
+        assert diag["cache_read_tokens"] == 98765
+        assert diag["cache_creation_tokens"] == 4321
+
+    def test_scoring_json_omits_cache_tokens_when_unavailable(
+        self, tmp_path: Path
+    ) -> None:
+        # When the adapter doesn't capture cache telemetry, cache fields
+        # are omitted (not zero-filled) so callers can distinguish "no
+        # cache hits" from "adapter didn't record cache data".
+        runs_dir = tmp_path / "runs"
+        runs_dir.mkdir()
+        completed = CompletedTask(
+            task_id="t1",
+            automated_score=1.0,
+            input_tokens=10,
+            output_tokens=20,
+            scoring_details={"passed": True, "scorer_family": "binary_test"},
+        )
+        result = TaskResult(completed=completed, agent_stdout="", agent_stderr="")
+
+        _save_task_artifacts(runs_dir, "t1", result)
+
+        scoring = json.loads((runs_dir / "t1" / "scoring.json").read_text())
+        diag = scoring["diagnostics"]
+        assert "cache_read_tokens" not in diag
+        assert "cache_creation_tokens" not in diag
+
 
 # ---------------------------------------------------------------------------
 # _ir_reward_from_family routes oracle_overlap_fbeta correctly

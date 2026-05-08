@@ -61,6 +61,7 @@ class UsageData:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
     cost_usd: float | None = None
     cost_model: str = "unknown"
     cost_source: str = "unavailable"
@@ -275,6 +276,7 @@ class JsonStdoutCollector:
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
         cache_read_tokens = usage.get("cache_read_input_tokens")
+        cache_creation_tokens = usage.get("cache_creation_input_tokens")
         cost_usd_raw = envelope.get("total_cost_usd")
 
         # Detect error envelopes from the Claude CLI. Auth failures, API errors,
@@ -310,6 +312,7 @@ class JsonStdoutCollector:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
             cost_usd=cost_usd_raw,
             cost_model=cost_model,
             cost_source=cost_source,

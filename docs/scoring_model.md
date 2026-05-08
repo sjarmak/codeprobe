@@ -308,6 +308,49 @@ canonical source for the rubric breakdown going forward.
 }
 ```
 
+### `scoring.json#diagnostics` — executor-injected run telemetry
+
+The executor (`core/executor.py:_save_task_artifacts`) merges per-trial
+runtime telemetry into the serialised `scoring_details.diagnostics`
+block at scoring.json write time so the per-task contract is
+self-contained without forcing the scorer to know about run-level
+metadata. The full shape:
+
+```jsonc
+{
+  "diagnostics": {
+    "task_time_seconds":    18.4,    // wall-clock duration
+    "token_cost_usd":       0.0034,  // adapter-computed total cost (cache-aware)
+    "input_tokens":         320,     // uncached input portion only
+    "cache_read_tokens":    98765,   // bulk re-use; billed at the reduced cache-read rate
+    "cache_creation_tokens": 4321,   // write-through to cache; billed at the higher cache-write rate
+    "output_tokens":        567,
+    "ir_metrics": { "precision": …, "recall": …, "f1": … }  // when present
+  }
+}
+```
+
+Field semantics — important for cache-aware cost-Pareto plots:
+
+* **`input_tokens`** — *uncached* prompt tokens only. With heavy prompt
+  caching this can be tiny (tens to hundreds) for long sessions where
+  most context is reused. Reading it as "the model saw N input tokens"
+  is wrong; it's "N tokens of fresh input were billed at the standard
+  rate."
+* **`cache_read_tokens`** — bulk re-use. The Anthropic SDK reports this
+  separately as `cache_read_input_tokens`. For multi-turn sessions this
+  is typically the dominant token category by raw count.
+* **`cache_creation_tokens`** — write-through cost. Billed at a higher
+  rate than uncached input (cache-write rate). Reported by the SDK as
+  `cache_creation_input_tokens`.
+* **`token_cost_usd`** — already accounts for the full mix at the
+  correct per-category rate. The raw counts are surfaced so cost-Pareto
+  plots can reason about cache-hit rates without re-deriving cost.
+
+All four token fields are omitted (not zero-filled) when the adapter
+couldn't capture telemetry, so callers can distinguish "agent reported
+zero" from "adapter didn't record this category."
+
 ### `aggregate.json#config_summaries[label]`
 
 ```jsonc
@@ -319,6 +362,19 @@ canonical source for the rubric breakdown going forward.
   "total_cost_usd": 4.20,
   "mean_cost_per_task": 0.05,
   "score_per_dollar": 9.8,
+
+  // raw token counts — sum/mean across tasks that reported usage. Tasks
+  // where the adapter couldn't capture telemetry are excluded from the
+  // mean rather than counted as zero. cost_usd already accounts for the
+  // mix at the correct per-category rate.
+  "total_input_tokens":            25600,
+  "total_output_tokens":            45360,
+  "total_cache_read_tokens":      7901200,  // dominant for multi-turn sessions
+  "total_cache_creation_tokens":   345680,
+  "mean_input_tokens_per_task":      320.0,
+  "mean_output_tokens_per_task":     567.0,
+  "mean_cache_read_tokens_per_task": 98765.0,
+  "mean_cache_creation_tokens_per_task": 4321.0,
 
   // back-compat: kept at the top level so older consumers don't break
   "mean_precision": 0.26,
@@ -503,10 +559,13 @@ test flags stale entries).
   `reward.txt = f1` (or `weighted_f1`) — same as before. The runner-
   side family routing decides which value becomes the headline reward
   without re-mining tasks.
-* Cost/time live on `CompletedTask`, not on `ScoreResult.diagnostics`.
-  The `diagnostics` block on a `ScoreResult` carries scorer-side
-  observations only (currently the IR metrics view); telemetry merges
-  in cost/time at the aggregate level.
+* Cost/time live on `CompletedTask` and are mirrored into the
+  serialised `scoring.json#diagnostics` block at write time (see
+  *`scoring.json#diagnostics` — executor-injected run telemetry*
+  above). The `diagnostics` field on a live `ScoreResult` still
+  carries scorer-side observations only (currently the IR metrics
+  view); the executor merges in `task_time_seconds`,
+  `token_cost_usd`, and the four token-count fields when serialising.
 * `pass` thresholds are preserved on `ScoreResult.passed` for back-
   compat — `score_passed` in `analysis/stats.py` reads it. New
   consumers should compare `score` to a context-specific threshold

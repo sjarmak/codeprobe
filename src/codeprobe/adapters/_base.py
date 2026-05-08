@@ -206,6 +206,7 @@ class BaseAdapter:
                         input_tokens=parsed.input_tokens,
                         output_tokens=parsed.output_tokens,
                         cache_read_tokens=parsed.cache_read_tokens,
+                        cache_creation_tokens=parsed.cache_creation_tokens,
                         cost_usd=parsed.cost_usd,
                         cost_model=parsed.cost_model,
                         cost_source=parsed.cost_source,
