@@ -145,34 +145,64 @@ landed there as a context manager
 
 ## Smoke trial
 
-Not run in this changeset. Codeprobe authenticates Claude Code via OAuth
-(no per-run API billing), so the smoke trial only needs a configured
-experiment dir + `SOURCEGRAPH_TOKEN`. A staged experiment exists at
-`~/test_repos/gascity/gascity-mcp-comparison/`. The mechanism is
-unit-tested and integration-tested; a real-trial smoke is the natural
-next step before codeprobe-4cl6 (SDLC cap retune sweep) reruns against
-the new preamble + endpoint + isolation.
+**Result:** PASS. Single trial against `oc_001` (oracle_checks rubric
+task on the gascity codebase) completed with score 1.0 in 162 s.
 
-To run the smoke trial manually:
+Setup:
+
+- Standalone experiment dir at
+  `~/test_repos/gascity/gascity-jf28-smoke/.codeprobe/`, one config
+  (`with-sg-isolated`), one task (`oc_001`).
+- Config: `claude` agent, `claude-sonnet-4-6`, `preamble: sourcegraph`,
+  `mcp_mode: strict`, `hide_local_source: true`, `max_turns: 50`.
+- MCP endpoint: `https://demo.sourcegraph.com/.api/mcp/all` (resolved
+  from `$SOURCEGRAPH_MCP_URL`).
+- Authentication: OAuth (Claude Code subscription), no API billing.
+
+Acceptance evidence:
+
+- **Agent used MCP, not local Read.** Trace breakdown (25 tool calls
+  total, from `runs/trace.db`):
+  - `mcp__sourcegraph__keyword_search` × 13
+  - `mcp__sourcegraph__read_file` × 8
+  - `mcp__sourcegraph__list_files` × 4
+  - Local `Read` / `Bash` / `Grep` / `Glob`: **0**
+
+  The agent had no choice — local source was stashed for the duration
+  of the run.
+
+- **Source restored cleanly.** Post-run inspection of
+  `~/test_repos/gascity/`: all top-level entries present (`cmd/`,
+  `internal/`, `AGENTS.md`, `CHANGELOG.md`, …), `.git` and `.codeprobe`
+  survived per the default-keep set, no leftover
+  `.codeprobe-source-stash-*` directories.
+
+- **Ground-truth survived.** Scoring read `tests/rubric.json` from the
+  task dir (which lives outside the workspace and is structurally
+  unaffected by quarantine). All four rubric criteria scored 1.0:
+  `names_canonical_statuses`, `names_internal_beads_package`,
+  `names_claim_path`, `names_cmd_package`.
+
+- **Cited concrete file paths from the indexed repo.** The agent's
+  answer cites `internal/beads/beads.go:23`, `bdstore.go:529-530`,
+  `memstore.go:107`/`165`/`179`,
+  `test/integration/filebdshim/main.go:337-341`, and
+  `engdocs/architecture/life-of-a-bead.md:174-177` — all reachable
+  only via MCP `sg_read_file` since local source was hidden.
+
+Telemetry:
+
+- Cost (Anthropic accounting): $0.59
+- Tokens: 16 input, 9929 output, 568,954 cache reads, 72,007 cache
+  creation
+- Wall-clock: 161.9 s
+
+Reproducer:
 
 ```bash
-codeprobe experiment add-config <exp-dir> \
-  --label with-sg-isolated \
-  --agent claude --model claude-sonnet-4-6 \
-  --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}' \
-  --hide-local-source
-
-codeprobe run <exp-dir> --max-cost-usd 0.50 --task-id <one-task>
+codeprobe run ~/test_repos/gascity/gascity-jf28-smoke/.codeprobe \
+  --timeout 900 --parallel 1 --force-plain
 ```
-
-Acceptance for the smoke (per bead):
-
-- Trial envelope shows the agent invoked MCP tools (not local `Read`).
-- Source files restored after the trial; `answer.txt` survives.
-- Ground-truth/test files in `task_dir` were untouched (they're outside
-  the workspace, so this is structurally guaranteed by codeprobe's
-  scoring path — but worth eyeballing the run dir).
 
 ## Sequencing
 
