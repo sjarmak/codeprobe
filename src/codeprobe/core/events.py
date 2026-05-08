@@ -53,6 +53,7 @@ class TaskScored:
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
+    cache_creation_tokens: int | None
     cost_model: str
     cost_source: str
     error: str | None

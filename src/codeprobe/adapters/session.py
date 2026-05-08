@@ -244,6 +244,7 @@ class ClaudeSessionCollector:
             input_tokens=input_delta,
             output_tokens=output_delta,
             cache_read_tokens=cache_read_delta,
+            cache_creation_tokens=cache_creation_delta,
             cost_usd=cost,
             cost_model=cost_model,
             cost_source=cost_source,

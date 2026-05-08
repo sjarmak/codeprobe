@@ -360,7 +360,12 @@ def show_prompt_and_exit(
             preamble_names=list(preamble_names),
             resolver=resolver,
             task_id=first_task.name,
-            extra_context=task_preamble_context(read_task_metadata(first_task)) or None,
+            extra_context=task_preamble_context(
+                read_task_metadata(first_task),
+                preamble_names=preamble_names,
+                task_id=first_task.name,
+            )
+            or None,
         )
     else:
         prompt = base_prompt(instruction, repo_root)
@@ -832,7 +837,11 @@ def run_eval(
                     )
                     _instr = load_instruction(_td, variant=_variant)
                     if exp_config.preambles and preamble_resolver is not None:
-                        _extra_context = task_preamble_context(read_task_metadata(_td))
+                        _extra_context = task_preamble_context(
+                            read_task_metadata(_td),
+                            preamble_names=exp_config.preambles,
+                            task_id=_td.name,
+                        )
                         _prompt, _ = compose_instruction(
                             _instr,
                             repo_root,

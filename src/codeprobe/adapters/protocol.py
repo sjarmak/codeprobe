@@ -41,6 +41,7 @@ class AgentOutput:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
     cost_model: str = "unknown"
     error: str | None = None
     cost_source: str = "unavailable"

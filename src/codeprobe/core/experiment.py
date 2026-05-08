@@ -153,6 +153,8 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
     has_output = False
     cache_sum = 0
     has_cache = False
+    cache_creation_sum = 0
+    has_cache_creation = False
     dur_sum = 0.0
     # Optional oracle metrics (precision/recall/f1) — only present when the
     # scorer surfaced them via ScoreResult.details. Tasks without these
@@ -177,6 +179,9 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         if t.cache_read_tokens is not None:
             cache_sum += t.cache_read_tokens
             has_cache = True
+        if t.cache_creation_tokens is not None:
+            cache_creation_sum += t.cache_creation_tokens
+            has_cache_creation = True
         details = t.scoring_details or {}
         for key in metric_sums:
             value = details.get(key)
@@ -195,6 +200,7 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
             "input": input_sum if has_input else None,
             "output": output_sum if has_output else None,
             "cache_read": cache_sum if has_cache else None,
+            "cache_creation": cache_creation_sum if has_cache_creation else None,
         },
         "total_cost_usd": round(total_cost, 6) if total_cost is not None else None,
     }
@@ -256,6 +262,7 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
             input_tokens=t.get("input_tokens"),
             output_tokens=t.get("output_tokens"),
             cache_read_tokens=t.get("cache_read_tokens"),
+            cache_creation_tokens=t.get("cache_creation_tokens"),
             cost_usd=t.get("cost_usd"),
             cost_model=t.get("cost_model", "unknown"),
             cost_source=t.get("cost_source", "unavailable"),
