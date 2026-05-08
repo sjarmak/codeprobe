@@ -177,6 +177,34 @@ codeprobe run /path/to/repo/mcp-comparison --agent claude --max-cost-usd 5.00
 codeprobe interpret /path/to/repo/mcp-comparison
 ```
 
+### sg-only mode (file-removal isolation, v0.10.0+)
+
+For oracle / symbol-reference-trace / change-scope-audit tasks where the
+agent's answer is text rather than code edits, you can isolate the
+comparison further by stashing the workspace's source files for the
+duration of the run. The agent then *must* use Sourcegraph MCP — there
+is nothing local to fall back on. Pair the v2 `sourcegraph` preamble
+(which declares "Local source files are not present") with the
+`--hide-local-source` flag:
+
+```bash
+codeprobe experiment add-config /path/to/repo/mcp-comparison \
+  --label with-sg-isolated --agent claude --model claude-sonnet-4-6 \
+  --preamble sourcegraph \
+  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}' \
+  --hide-local-source
+```
+
+`--hide-local-source` mirrors CodeScaleBench's `Dockerfile.sg_only` and
+EnterpriseBench's `generate_sg_only_dockerfile` pattern. The workspace
+appears empty during the agent's run and is restored on exit (including
+on exception). `.git`, `.codeprobe`, and `.codeprobe-worktrees*` are
+preserved by default.
+
+**Not compatible with SDLC tasks** — they need source files to edit.
+For SDLC, use `--preamble sourcegraph` without `--hide-local-source`;
+the v2 preamble alone (no isolation) is the relevant intervention.
+
 ### Preambles
 
 Preambles are composable instruction templates prepended to the agent's prompt for MCP-enabled configs. Built-in preambles: `sourcegraph`, `github`.
@@ -187,13 +215,26 @@ Override built-ins by placing a `.md` file in:
 - `.codeprobe/preambles/` (project-level)
 - `~/.codeprobe/preambles/` (user-level)
 
-Template variables: `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}}`
+Template variables (filled by `task_preamble_context`):
+
+- `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}}` — task identity
+- `{{repo_scope}}` — one-line repo-scoping directive (sourcegraph
+  preamble; built from `metadata.sg_repo`)
+- `{{workflow_tail}}` — category-specialised continuation of the
+  numbered "Required Workflow" list (sourcegraph preamble; varies by
+  `metadata.category`)
 
 ## Key Flags
 
 ```bash
 # Running
-codeprobe run . --parallel 5          # Run 5 tasks concurrently (worktree-isolated)
+codeprobe run . --parallel 5          # Run 5 tasks concurrently within each config
+codeprobe run . --config-parallel 2   # Run 2 configs concurrently (default 1 = serial).
+                                      # Cross-config parallelism multiplies in-flight
+                                      # task count and inflates --max-cost-usd
+                                      # overshoot proportionally; default 1 keeps the
+                                      # cost cap honest. Opt in only when you don't
+                                      # need cost containment.
 codeprobe run . --max-cost-usd 2.00   # Stop when cost budget is reached
 codeprobe run . --dry-run             # Estimate resource usage without running
 codeprobe run . --model opus-4        # Override experiment.json model
@@ -225,6 +266,12 @@ codeprobe mine --list-profiles        # Show available profiles
 # Experiment configs
 codeprobe experiment add-config . --preamble sourcegraph  # Attach MCP preamble
 codeprobe experiment add-config . --mcp-config config.json  # Attach MCP server
+codeprobe experiment add-config . --hide-local-source     # sg-only mode (v0.10.0+):
+                                                          # stash workspace source for
+                                                          # the run; restore after.
+                                                          # Pair with --preamble
+                                                          # sourcegraph. Incompatible
+                                                          # with SDLC tasks.
 
 # Diagnostics
 codeprobe doctor                      # Check agents, API keys, git, Python

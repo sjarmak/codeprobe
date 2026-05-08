@@ -136,8 +136,14 @@ Then ask:
 
 - Source `.env.local` to get `SOURCEGRAPH_ACCESS_TOKEN` and `SOURCEGRAPH_URL`
 - Build MCP config JSON: `{"mcpServers":{"sourcegraph":{"type":"http","url":"{SG_URL}/.api/mcp/all","headers":{"Authorization":"token {SG_TOKEN}"}}}}`
-- Use `--preamble sourcegraph` (built-in preamble with `{{sg_repo}}` from task metadata)
+- Use `--preamble sourcegraph` (built-in v2 preamble; `task_preamble_context` fills `{{repo_scope}}` from `metadata.sg_repo` and `{{workflow_tail}}` per `metadata.category`)
 - Mine tasks with `--org-scale --mcp-families --sg-repo {SG_REPO}` (see `/mine-tasks` MCP flow)
+- For oracle / symbol-reference-trace / change-scope-audit tasks
+  (text answers, not code edits): also pass `--hide-local-source` to
+  stash the workspace source for the duration of the run. Forces
+  MCP-only access, mirrors CSB `Dockerfile.sg_only` / EB
+  `generate_sg_only_dockerfile`. **Skip** for SDLC tasks — they need
+  files to edit.
 
 **If GitHub:**
 
@@ -257,6 +263,13 @@ Delegate to `/run-eval` with the experiment directory path. It will:
 
 Present progress as configs complete.
 
+**Cost-cap note (v0.10.0+):** `codeprobe run` defaults to
+`--config-parallel 1` (configs run serially). This keeps
+`--max-cost-usd` honest — cross-config parallelism multiplies in-flight
+task count and inflates cost-cap overshoot proportionally. Pass
+`--config-parallel N` only when you want to trade cost-cap precision
+for wall-clock speed.
+
 ### Step 2d: Handle Interruptions
 
 If interrupted, check status:
@@ -326,7 +339,22 @@ Built-in preambles: `sourcegraph`, `github`. Override by placing a `.md` file in
 - `.codeprobe/preambles/` (project-level)
 - `~/.codeprobe/preambles/` (user-level)
 
-Template variables: `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}}`
+Template variables (filled by `task_preamble_context` at compose time):
+
+- `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}}` — task identity
+- `{{repo_scope}}` — one-line repo-scoping directive (sourcegraph
+  preamble v2; built from `metadata.sg_repo`)
+- `{{workflow_tail}}` — category-specialised continuation of the
+  numbered "Required Workflow" list (sourcegraph preamble v2; varies
+  by `metadata.category`: oracle_checks, symbol-reference-trace,
+  sdlc, or default)
+
+Pair the v2 sourcegraph preamble with `--hide-local-source` for a
+true sg-only comparison: workspace source is stashed for the run so
+the agent has nothing local to fall back on. Compatible with text-
+answer task families (oracle_checks, symbol-reference-trace,
+change-scope-audit). Not compatible with SDLC (which needs source
+to edit).
 
 ---
 
