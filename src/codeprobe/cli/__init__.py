@@ -851,6 +851,19 @@ def mine(
     help="Max concurrent task executions per config (default: 5). Env: CODEPROBE_PARALLEL.",
 )
 @click.option(
+    "--config-parallel",
+    default=1,
+    type=int,
+    envvar="CODEPROBE_CONFIG_PARALLEL",
+    help=(
+        "Max concurrent configs to dispatch (default: 1 = serial). "
+        "Cross-config parallelism multiplies in-flight task count, which "
+        "makes --max-cost-usd overshoot proportional to "
+        "config_parallel × parallel. Set >1 only when cost containment is "
+        "not a concern. Env: CODEPROBE_CONFIG_PARALLEL."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     default=False,
@@ -957,6 +970,7 @@ def run(
     config: str | None,
     max_cost_usd: float | None,
     parallel: int,
+    config_parallel: int,
     dry_run: bool,
     force_plain: bool,
     force_rich: bool,
@@ -1007,6 +1021,7 @@ def run(
         config=config,
         max_cost_usd=max_cost_usd,
         parallel=parallel,
+        config_parallel=config_parallel,
         dry_run=dry_run,
         log_format=log_format,
         quiet=quiet,

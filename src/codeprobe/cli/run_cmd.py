@@ -380,6 +380,7 @@ def run_eval(
     config: str | None = None,
     max_cost_usd: float | None = None,
     parallel: int = 1,
+    config_parallel: int = 1,
     repeats: int = 1,
     dry_run: bool = False,
     log_format: str = "text",
@@ -919,11 +920,18 @@ def run_eval(
             _results_by_config[exp_config.label] = list(results)
             return exp_config.label, results
 
-        # Run configs in parallel (each config gets its own adapter + checkpoint)
+        # Run configs in parallel only when config_parallel > 1 AND there
+        # are multiple configs. Default config_parallel=1 dispatches configs
+        # sequentially so --max-cost-usd holds within parallel × per-task-cost
+        # of overshoot rather than config_parallel × parallel × per-task-cost
+        # (codeprobe-emez fix).
+        effective_config_parallel = min(config_parallel, len(configs_to_run))
         budget_error: TraceBudgetExceededError | None = None
         try:
-            if parallel > 1 and len(configs_to_run) > 1:
-                with ThreadPoolExecutor(max_workers=len(configs_to_run)) as pool:
+            if effective_config_parallel > 1:
+                with ThreadPoolExecutor(
+                    max_workers=effective_config_parallel
+                ) as pool:
                     futures = {
                         pool.submit(_run_config, c): c.label for c in configs_to_run
                     }
