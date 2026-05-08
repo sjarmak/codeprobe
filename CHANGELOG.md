@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.10.0 (2026-05-08)
+
+Sourcegraph MCP comparison overhaul + cost-cap correctness. Three
+themes: a tighter v2 sourcegraph preamble paired with file-removal
+isolation, a default-correct cost-cap behaviour, and a
+cache_creation_tokens contract through the scoring pipeline.
+
+### Sourcegraph preamble v2 + sg-only isolation (codeprobe-jf28)
+
+- **New `sourcegraph` preamble body.** Decision-table-driven, range-
+  bounded reads (`sg_read_file` with `startLine`/`endLine`) as the
+  default, explicit "If Stuck" fallback to `sg_nls_search` /
+  `sg_list_files`. Two new template slots — `{{repo_scope}}` (one-line
+  indexed-repo directive) and `{{workflow_tail}}` (per-category
+  workflow continuation) — replace the v1 preamble's five per-category
+  insertion points.
+- **MCP endpoint `/all` is the new default.** README, `experiment`
+  skill, the `init` wizard, and the shipped MCP-comparison template
+  now point at `https://sourcegraph.com/.api/mcp/all` instead of
+  `/v1`.
+- **`hide_local_source: bool = False`** field on `ExperimentConfig`.
+  When true, codeprobe stashes the workspace's top-level entries
+  (except `.git`, `.codeprobe`, `.codeprobe-worktrees*`) for the
+  duration of the agent run and restores them on exit. Mirrors CSB's
+  `Dockerfile.sg_only` and EB's `generate_sg_only_dockerfile`. Pair
+  with the v2 preamble whose body declares "Local source files are
+  not present."
+- **CLI flag**: `codeprobe experiment add-config … --hide-local-source`.
+- **New context manager**: `codeprobe.core.isolation.quarantine_local_source`.
+- Verified against the historical `codeprobe-ttwq` "FlagAliases does
+  not exist" regression: 15/15 with-sg-isolated trials now score 1.0
+  on the same 5 oracle_checks tasks (vs 12/15 under v1 preamble).
+
+### Cost cap fix — `--config-parallel` opt-in (codeprobe-emez)
+
+- **New `--config-parallel` flag**, default 1 (serial). Cross-config
+  parallelism is opt-in.
+- Background: when `parallel > 1` and there were multiple configs,
+  `run_eval` previously dispatched configs concurrently via a
+  `ThreadPoolExecutor` sized to `len(configs)`. Combined with each
+  config's own parallel pool of size `parallel`, total in-flight tasks
+  could reach `len(configs) × parallel`. The cost-cap fires only on
+  task completion, so already-running tasks completed past the cap and
+  total cost overshot proportional to that product. Observed in
+  jf28 SDLC rerun: $58.33 actual vs $25 cap.
+- Existing single-config workflows are unaffected.
+
+### Cache_creation_tokens contract (codeprobe-x7p3)
+
+- New field on `TaskScored` events and `CompletedTask.cache_creation_tokens`.
+- Adapters (claude, session) extract it from raw envelopes; analysis,
+  display, and JSON outputs propagate it through.
+- Closes the gap in token accounting where cache creation cost was
+  invisible to budget reasoning.
+
+### Upgrade notes
+
+- **Sourcegraph preamble template variables changed.** If you have
+  custom preambles that referenced `{{sg_local_search_step}}`,
+  `{{sg_negative_result_handling}}`, or
+  `{{sg_result_synthesis_step}}`, those slots no longer render — they
+  were collapsed into `{{workflow_tail}}`. The renderer leaves unknown
+  `{{var}}` tokens in place rather than crashing, so the failure mode
+  is visible (literal token in the prompt) rather than silent.
+- **MCP endpoint URL.** Existing experiment configs that pin
+  `https://sourcegraph.com/.api/mcp/v1` still work; codeprobe doesn't
+  rewrite them. New experiments produced by the wizard or by editing
+  the shipped template will use `/all` automatically.
+- **Cost cap enforcement is stricter by default.** If you relied on
+  cross-config parallelism, pass `--config-parallel N` explicitly
+  (or set `CODEPROBE_CONFIG_PARALLEL=N`).
+
 ## 0.9.0 (2026-04-27)
 
 Behavioral change to the `with-mcp` config semantic, prompted by the
