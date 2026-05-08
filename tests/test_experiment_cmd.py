@@ -41,7 +41,14 @@ def exp_dir(tmp_path: Path) -> Path:
         tasks_dir="tasks",
     )
     d = create_experiment_dir(tmp_path, exp)
-    # Create two task directories with instruction.md and test.sh
+    # Create two task directories with instruction.md and test.sh.
+    # confidence.json is required by the promotion gate added in
+    # codeprobe-9fri (calibration triad gates per task) — without it
+    # the task would default to confidence=0.30 and be quarantined,
+    # making the validate_ready fixture fail. Real mined tasks always
+    # carry confidence.json so the fixture mirrors that contract.
+    import json as _json
+
     for tid in ("task-001", "task-002"):
         task_dir = d / "tasks" / tid
         task_dir.mkdir(parents=True, exist_ok=True)
@@ -49,6 +56,18 @@ def exp_dir(tmp_path: Path) -> Path:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
         (tests_dir / "test.sh").write_text("#!/bin/bash\nexit 0\n")
+        (task_dir / "confidence.json").write_text(
+            _json.dumps(
+                {
+                    "task_id": tid,
+                    "score": 0.85,
+                    "threshold": 0.5,
+                    "breakdown": {},
+                    "notes": {},
+                    "promoted": True,
+                }
+            )
+        )
     return d
 
 

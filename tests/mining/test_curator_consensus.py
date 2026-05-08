@@ -181,13 +181,20 @@ class TestLLMResolvedDisagreement:
         # Make b.py readable so the curator's snippet read succeeds.
         (tmp_path / "b.py").write_text("from src.foo import Foo\n")
 
-        with patch.object(
-            oracle_curator,
-            "_curate_with_llm",
-            return_value=CuratorVote(
-                keep=True, rationale="aliased import of Foo"
-            ),
-        ) as mock_llm:
+        # Patch llm_available alongside _curate_with_llm so the test
+        # passes on CI environments without ANTHROPIC_API_KEY or claude
+        # CLI installed; otherwise the curator short-circuits with
+        # "LLM unavailable" before reaching the mocked call.
+        with (
+            patch.object(oracle_curator, "llm_available", return_value=True),
+            patch.object(
+                oracle_curator,
+                "_curate_with_llm",
+                return_value=CuratorVote(
+                    keep=True, rationale="aliased import of Foo"
+                ),
+            ) as mock_llm,
+        ):
             out = curate_consensus(
                 backend_results=results,
                 symbol="Foo",
@@ -217,11 +224,14 @@ class TestLLMResolvedDisagreement:
             _br("ast", ["a.py"]),
         ]
 
-        with patch.object(
-            oracle_curator,
-            "_curate_with_llm",
-            return_value=CuratorVote(
-                keep=False, rationale="unrelated mention in a comment"
+        with (
+            patch.object(oracle_curator, "llm_available", return_value=True),
+            patch.object(
+                oracle_curator,
+                "_curate_with_llm",
+                return_value=CuratorVote(
+                    keep=False, rationale="unrelated mention in a comment"
+                ),
             ),
         ):
             out = curate_consensus(
@@ -246,11 +256,14 @@ class TestLLMResolvedDisagreement:
             _br("grep", ["a.py", "b.py"]),
             _br("ast", ["a.py"]),
         ]
-        with patch.object(
-            oracle_curator,
-            "_curate_with_llm",
-            return_value=CuratorVote(
-                keep=False, error="non-JSON response"
+        with (
+            patch.object(oracle_curator, "llm_available", return_value=True),
+            patch.object(
+                oracle_curator,
+                "_curate_with_llm",
+                return_value=CuratorVote(
+                    keep=False, error="non-JSON response"
+                ),
             ),
         ):
             out = curate_consensus(
