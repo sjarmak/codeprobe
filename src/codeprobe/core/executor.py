@@ -561,12 +561,17 @@ def execute_task(
         # we must short-circuit — scoring a workspace the agent never
         # actually touched yields vacuous pass/fail rows.
         if output.error and not has_answer:
+            # Honour an adapter-declared category (e.g. "quota" for
+            # OAuth-limit detection per codeprobe-9xrl). Falls back to
+            # the historical "agent" classification when the adapter
+            # didn't pin a category.
+            error_cat = output.error_category or "agent"
             return TaskResult(
                 completed=CompletedTask(
                     task_id=task_id,
                     automated_score=0.0,
                     status="error",
-                    error_category="agent",
+                    error_category=error_cat,
                     metadata={"error": sanitize_secrets(output.error)},
                     **_output_fields(),
                 ),
@@ -1046,11 +1051,32 @@ def execute_config(
                 sem.release()
 
     budget_warning_emitted = False
+    # Set when an adapter signals an unrecoverable error category (e.g.
+    # OAuth quota exhausted) — the dispatch loop checks this and halts
+    # rather than wasting wall-clock on guaranteed-failing trials
+    # (codeprobe-9xrl).
+    quota_exhausted = False
+    quota_message: str | None = None
 
     def _handle_result(task_result: TaskResult) -> None:
         nonlocal cumulative_cost, budget_warning_emitted
+        nonlocal quota_exhausted, quota_message
         result = task_result.completed
         results.append(result)
+
+        # Detect quota exhaustion from adapter-declared error category.
+        # First detection wins — subsequent ones don't change behaviour
+        # but their messages are preserved on the individual results.
+        if result.error_category == "quota" and not quota_exhausted:
+            quota_exhausted = True
+            quota_message = (
+                result.metadata.get("error") if result.metadata else None
+            )
+            _budget_msg(
+                f"OAuth quota exhausted — halting run after current "
+                f"in-flight tasks complete. Remaining trials will be "
+                f"cancelled. Message: {quota_message or '(no detail)'}"
+            )
 
         if runs_dir is not None:
             artifact_id = result.task_id
@@ -1111,6 +1137,12 @@ def execute_config(
             return budget_checker.is_exceeded
         return max_cost_usd is not None and cumulative_cost > max_cost_usd
 
+    def _should_halt() -> bool:
+        """Stop dispatching new trials when budget is exhausted OR a
+        quota error has been detected (codeprobe-9xrl).
+        """
+        return _budget_exceeded() or quota_exhausted
+
     # Capture original HEAD so we can restore it after commit pinning.
     original_ref = _get_head_ref(repo_path)
 
@@ -1128,6 +1160,12 @@ def execute_config(
         if workers <= 1:
             # Sequential — preserves original behavior and budget checks
             for idx, (task_dir, repeat_index) in enumerate(pending_work):
+                if quota_exhausted:
+                    _budget_msg(
+                        "OAuth quota exhausted — halting remaining "
+                        f"{len(pending_work) - idx} trials"
+                    )
+                    break
                 if _budget_exceeded():
                     _budget_msg(
                         f"Cost budget exceeded: ${cumulative_cost:.2f} > "
@@ -1240,11 +1278,23 @@ def execute_config(
                             )
                         _handle_result(task_result)
 
-                        if _budget_exceeded():
-                            _budget_msg(
-                                f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                                f"${max_cost_usd:.2f} — halting"
-                            )
+                        # Halt on either budget exhaustion or quota
+                        # detection (codeprobe-9xrl). Both are
+                        # unrecoverable within this run; only
+                        # not-yet-started futures are cancellable, but
+                        # that's still cheaper than letting them all
+                        # run to a guaranteed failure.
+                        if _should_halt():
+                            if quota_exhausted:
+                                _budget_msg(
+                                    "OAuth quota exhausted — cancelling "
+                                    "pending trials"
+                                )
+                            else:
+                                _budget_msg(
+                                    f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                                    f"${max_cost_usd:.2f} — halting"
+                                )
                             for f in future_to_work:
                                 f.cancel()
                             break

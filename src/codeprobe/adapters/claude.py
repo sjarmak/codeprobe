@@ -27,6 +27,45 @@ from codeprobe.core.sandbox import is_sandboxed
 # (claude-sonnet-4-6-20250514). Strip the date suffix when present.
 _API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
 
+# Patterns that indicate an OAuth / API quota was exhausted. Detected
+# from raw stdout/stderr because the Claude CLI does not surface these
+# as JSON envelopes — it returns a short literal message and exits
+# successfully, which would otherwise be scored as a 0.0 task failure
+# and silently contaminate the run mean (codeprobe-9xrl).
+#
+# Robust to wording variants: monthly limits, rate limits, generic
+# "quota" terminology. Case-insensitive.
+_QUOTA_PATTERN = re.compile(
+    r"(?i)"
+    r"(monthly\s+usage\s+limit"
+    r"|rate\s+limit\s+(?:exceeded|reached)"
+    r"|quota\s+(?:exceeded|exhausted)"
+    r"|usage\s+limit\s+reached)"
+)
+
+
+def _detect_quota_error(stdout: str, stderr: str | None) -> str | None:
+    """Return a normalised quota-error message if either stream matches.
+
+    The match looks at both stdout (where Claude CLI writes the OAuth
+    "monthly usage limit" stub) and stderr (where API/CLI surfaces
+    rate-limit messages from the underlying transport). Returns the
+    triggering line so the executor can include it in the task's
+    error metadata.
+    """
+    for stream in (stdout, stderr or ""):
+        if not stream:
+            continue
+        match = _QUOTA_PATTERN.search(stream)
+        if match:
+            # Find and return the line containing the match so the user
+            # sees the exact wording (helps Anthropic message rewording).
+            for line in stream.splitlines():
+                if _QUOTA_PATTERN.search(line):
+                    return line.strip()
+            return match.group(0)
+    return None
+
 # Credential files whose presence marks a file-based login.  Used by
 # ``isolate_session`` to decide whether to mirror ~/.claude per slot.
 _FILE_CRED_NAMES: tuple[str, ...] = ("credentials.json", ".credentials.json")
@@ -454,6 +493,20 @@ class ClaudeAdapter(BaseAdapter):
                     stdout_text = ev.get("result", result.stdout)
                     break
 
+        # Quota detection runs against the raw stdout / stderr (not the
+        # extracted ``stdout_text``) because the OAuth "monthly usage
+        # limit" stub is the entire response — there is no JSON envelope
+        # to peel back. ``usage.error`` may be empty for the same reason
+        # (no envelope means no error field), so we explicitly synthesise
+        # one when quota is detected (codeprobe-9xrl).
+        quota_message = _detect_quota_error(result.stdout, result.stderr)
+        if quota_message is not None:
+            error_text = f"OAuth quota exhausted: {quota_message}"
+            error_category: str | None = "quota"
+        else:
+            error_text = usage.error
+            error_category = None
+
         return AgentOutput(
             stdout=stdout_text,
             stderr=result.stderr or None,
@@ -466,7 +519,8 @@ class ClaudeAdapter(BaseAdapter):
             cost_usd=usage.cost_usd,
             cost_model=usage.cost_model,
             cost_source=usage.cost_source,
-            error=usage.error,
+            error=error_text,
+            error_category=error_category,
             tool_call_count=usage.tool_call_count,
             tool_use_by_name=usage.tool_use_by_name,
         )

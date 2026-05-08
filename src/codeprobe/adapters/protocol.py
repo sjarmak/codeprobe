@@ -44,6 +44,12 @@ class AgentOutput:
     cache_creation_tokens: int | None = None
     cost_model: str = "unknown"
     error: str | None = None
+    # Optional adapter-declared category for ``error``. When the adapter
+    # can identify a recoverable-vs-unrecoverable / quota / auth class,
+    # it sets this so the executor can route the failure correctly.
+    # Recognised values include "quota" (codeprobe-9xrl). None means
+    # "use the executor's default classification".
+    error_category: str | None = None
     cost_source: str = "unavailable"
     tool_call_count: int | None = None
     # Per-tool usage counts (e.g. {"Read": 5, "mcp__sourcegraph__...": 2}).

@@ -274,6 +274,12 @@ class ConfigSummary:
     dual_task_count: int = 0
     direct_pass_rate: float | None = None
     artifact_pass_rate: float | None = None
+    # Count of trials whose ``error_category == "quota"`` — broken out
+    # separately because quota errors are unrecoverable infrastructure
+    # failures, not task-quality failures, and should NOT roll into
+    # ``mean_score`` (codeprobe-9xrl). Renderers surface this as a
+    # warning so users see how much of the data is contaminated.
+    quota_error_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -326,6 +332,7 @@ def summarize_config(
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
     errored_tasks = [t for t in tasks if t.status != "completed"]
+    quota_count = sum(1 for t in tasks if t.error_category == "quota")
 
     scores = [t.automated_score for t in tasks]
     passed = sum(1 for t in tasks if task_passed(t))
@@ -411,6 +418,7 @@ def summarize_completed_tasks(
     dual_count = 0
     direct_passes = 0
     artifact_passes = 0
+    quota_count = 0
 
     for task in tasks:
         total += 1
@@ -418,6 +426,8 @@ def summarize_completed_tasks(
             completed_count += 1
         else:
             errored_count += 1
+        if task.error_category == "quota":
+            quota_count += 1
 
         scores.append(task.automated_score)
         if task_passed(task):
@@ -502,6 +512,7 @@ def summarize_completed_tasks(
         dual_task_count=dual_count,
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
+        quota_error_count=quota_count,
     )
 
 

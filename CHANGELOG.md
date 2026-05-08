@@ -1,5 +1,54 @@
 # Changelog
 
+## 0.10.1 (2026-05-08)
+
+Fix for codeprobe-9xrl: OAuth quota errors no longer silently
+contaminate run statistics.
+
+### Fixes
+
+- **Adapter detects OAuth / API quota errors** (commit). The Claude
+  adapter now matches `monthly usage limit`, `rate limit exceeded`,
+  `quota exhausted`, and `usage limit reached` patterns
+  (case-insensitive) in raw stdout/stderr. When detected, it sets
+  `AgentOutput.error_category="quota"` and a normalised error message.
+- **Executor halts on first quota detection.** Once any task in the
+  current `execute_config` returns `error_category="quota"`,
+  remaining sequential trials are skipped and parallel futures are
+  cancelled. Prevents a quota boundary from cascading into a full run
+  of guaranteed-failing trials.
+- **`codeprobe interpret` surfaces quota counts.** Per-config
+  rankings annotate `⚠ N quota error(s)` when `quota_error_count > 0`,
+  and a footer note explains that quota-error 0-scores are infra
+  failures, not task-quality failures. Users can rerun the affected
+  trials after quota resets without polluting the headline mean.
+- **`AgentOutput.error_category` is a new field** on the adapter
+  protocol (`None` by default; existing adapters unaffected).
+- **`CompletedTask.error_category` already existed**; the executor
+  now honors `output.error_category` when set instead of always
+  hard-coding `"agent"`.
+
+### Background
+
+The codeprobe-jf28 SDLC clean rerun (May 2026) hit the OAuth monthly
+limit halfway through one config. 9 of 15 trials returned a 41-byte
+`"You've hit your org's monthly usage limit"` stub which was scored
+0.0, dragging the config's reported `mean_score` to 0.000. The real
+trial mean (n=6) was inconclusive but the report framed it as strong
+underperformance. This fix prevents that class of misreading.
+
+### Upgrade notes
+
+- No breaking API changes. Existing adapters that don't set
+  `error_category` keep the historical `"agent"` classification on
+  errored tasks.
+- If you were relying on quota errors being scored 0.0 in your
+  aggregations, those trials are now `status="error"` with
+  `error_category="quota"` and shouldn't be averaged into mean
+  scores. `codeprobe interpret` filters appropriately; downstream
+  consumers (CSV exports, custom dashboards) should check
+  `error_category` before including a trial in score statistics.
+
 ## 0.10.0 (2026-05-08)
 
 Sourcegraph MCP comparison overhaul + cost-cap correctness. Three

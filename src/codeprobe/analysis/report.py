@@ -240,9 +240,24 @@ def format_text_report(report: Report) -> str:
             )
         else:
             headline = f"{s.pass_rate:.0%} pass rate"
+        # codeprobe-9xrl: when any trials were lost to OAuth quota,
+        # surface the count beside the headline so readers don't
+        # interpret the 0-scored quota errors as task-quality failures.
+        quota_suffix = ""
+        if s.quota_error_count > 0:
+            quota_suffix = f" ⚠ {s.quota_error_count} quota error(s)"
         lines.append(
             f"{rc.rank}. {rc.label} — {headline}{dual_suffix}, "
-            f"{cost_str} — {rc.recommendation}"
+            f"{cost_str}{quota_suffix} — {rc.recommendation}"
+        )
+    if any(rc.summary.quota_error_count > 0 for rc in report.rankings):
+        lines.append("")
+        lines.append(
+            "> **Quota note:** trials marked with ⚠ hit an OAuth/API "
+            "quota limit and were scored 0.0 by default. The mean and "
+            "rankings shown include those zeros. To get a clean "
+            "comparison, rerun the affected trials after quota resets "
+            "or with API-key billing."
         )
     lines.append("")
 
