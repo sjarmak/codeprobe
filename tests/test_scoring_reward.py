@@ -478,6 +478,325 @@ class TestBinaryTestFamily:
 
 
 # ---------------------------------------------------------------------------
+# OracleChecksScorer — structured-rubric criteria with normalized weights
+# ---------------------------------------------------------------------------
+
+
+def _make_rubric_task(
+    tmp_path: Path,
+    name: str,
+    criteria: list[dict],
+    verifier_scripts: dict[str, str],
+    *,
+    on_disk: bool = True,
+) -> Path:
+    """Build a task dir with a rubric.json + verifier scripts.
+
+    When ``on_disk`` is False, the rubric is omitted so callers can
+    inject ``metadata_criteria`` via the constructor instead.
+    """
+    task_dir = tmp_path / name
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+
+    if on_disk:
+        (tests_dir / "rubric.json").write_text(
+            json.dumps(criteria), encoding="utf-8"
+        )
+
+    verifiers_dir = tests_dir / "verifiers"
+    verifiers_dir.mkdir(exist_ok=True)
+    for script_name, script_content in verifier_scripts.items():
+        script_path = verifiers_dir / script_name
+        script_path.write_text(script_content)
+        script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+
+    return task_dir
+
+
+class TestOracleChecksFamily:
+    """Per the bead acceptance criteria (A1-A4):
+
+    * full pass / partial / all-fail produce the documented reward
+    * weights are *normalized*, not required to sum to 1.0
+    * missing-criterion / malformed-rubric paths fail loudly
+    """
+
+    def test_oracle_checks_in_registry(self) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        assert "oracle_checks" in SCORER_FAMILIES
+        assert OracleChecksScorer.SCORER_FAMILY == "oracle_checks"
+
+    def test_full_pass(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [
+            {"name": "edge_case", "weight": 0.5, "verifier": "edge.sh"},
+            {"name": "error_branches", "weight": 0.5, "verifier": "errors.sh"},
+        ]
+        verifiers = {
+            "edge.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+            "errors.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+        }
+        task_dir = _make_rubric_task(tmp_path, "rubric-full-pass", criteria, verifiers)
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(1.0)
+        assert result.passed is True
+        assert result.sub_scores["composite"] == pytest.approx(1.0)
+        assert result.sub_scores["criterion_scores"]["edge_case"] == pytest.approx(1.0)
+        assert result.sub_scores["criterion_scores"]["error_branches"] == pytest.approx(1.0)
+        assert result.sub_scores["total_weight"] == pytest.approx(1.0)
+
+    def test_partial_pass(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [
+            {"name": "covered", "weight": 0.6, "verifier": "covered.sh"},
+            {"name": "missed", "weight": 0.4, "verifier": "missed.sh"},
+        ]
+        verifiers = {
+            "covered.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+            "missed.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+        }
+        task_dir = _make_rubric_task(tmp_path, "rubric-partial", criteria, verifiers)
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(0.6)
+        assert result.sub_scores["criterion_scores"] == {
+            "covered": pytest.approx(1.0),
+            "missed": pytest.approx(0.0),
+        }
+
+    def test_all_fail(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [
+            {"name": "a", "weight": 0.5, "verifier": "a.sh"},
+            {"name": "b", "weight": 0.5, "verifier": "b.sh"},
+        ]
+        verifiers = {
+            "a.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+            "b.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+        }
+        task_dir = _make_rubric_task(tmp_path, "rubric-all-fail", criteria, verifiers)
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is False
+
+    def test_weight_normalization_does_not_require_sum_to_one(
+        self, tmp_path: Path
+    ) -> None:
+        """A rubric with weights ``[2, 1, 1]`` must score the same as
+        ``[0.5, 0.25, 0.25]`` — that is the family's defining property
+        (`Σ(w·s) / Σ w`). CheckpointScorer rejects this; oracle_checks
+        accepts it.
+        """
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [
+            {"name": "high", "weight": 2.0, "verifier": "high.sh"},
+            {"name": "mid", "weight": 1.0, "verifier": "mid.sh"},
+            {"name": "low", "weight": 1.0, "verifier": "low.sh"},
+        ]
+        verifiers = {
+            "high.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+            "mid.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+            "low.sh": '#!/bin/bash\necho \'{"score": 0.0, "passed": false}\'\nexit 1\n',
+        }
+        task_dir = _make_rubric_task(tmp_path, "rubric-norm", criteria, verifiers)
+        result = OracleChecksScorer().score("output", task_dir)
+
+        # 2/(2+1+1) = 0.5 — high passed, mid + low failed
+        assert result.score == pytest.approx(0.5)
+        assert result.sub_scores["total_weight"] == pytest.approx(4.0)
+
+    def test_metadata_criteria_take_precedence_over_rubric_json(
+        self, tmp_path: Path
+    ) -> None:
+        """When ``metadata_criteria`` is passed at construction, the
+        on-disk ``tests/rubric.json`` MUST be ignored. Mirrors the
+        precedence in :class:`CheckpointScorer`."""
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        on_disk = [
+            {"name": "stale", "weight": 1.0, "verifier": "stale.sh"},
+        ]
+        metadata = [
+            {"name": "fresh", "weight": 1.0, "verifier": "fresh.sh"},
+        ]
+        verifiers = {
+            "fresh.sh": '#!/bin/bash\necho \'{"score": 1.0, "passed": true}\'\nexit 0\n',
+        }
+        task_dir = _make_rubric_task(tmp_path, "rubric-metadata", on_disk, verifiers)
+        result = OracleChecksScorer(metadata_criteria=metadata).score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(1.0)
+        assert "fresh" in result.sub_scores["criterion_scores"]
+        assert "stale" not in result.sub_scores["criterion_scores"]
+
+    def test_missing_rubric_json_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        task_dir = tmp_path / "rubric-missing"
+        (task_dir / "tests").mkdir(parents=True)
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(0.0)
+        assert result.passed is False
+        assert result.error is not None
+        assert "rubric.json" in result.error
+
+    def test_missing_verifier_script_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [
+            {"name": "ghost", "weight": 1.0, "verifier": "does_not_exist.sh"},
+        ]
+        task_dir = _make_rubric_task(tmp_path, "rubric-no-verifier", criteria, {})
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(0.0)
+        assert result.error is not None
+        assert "Verifier not found" in result.error
+
+    def test_missing_verifier_field_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [{"name": "no_verifier", "weight": 1.0}]
+        task_dir = _make_rubric_task(tmp_path, "rubric-no-verifier-field", criteria, {})
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.error is not None
+        assert "verifier" in result.error.lower()
+
+    def test_negative_weight_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [{"name": "bad", "weight": -1.0, "verifier": "x.sh"}]
+        task_dir = _make_rubric_task(tmp_path, "rubric-neg-weight", criteria, {})
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.error is not None
+        assert "non-negative" in result.error.lower()
+
+    def test_zero_total_weight_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [
+            {"name": "a", "weight": 0.0, "verifier": "a.sh"},
+            {"name": "b", "weight": 0.0, "verifier": "b.sh"},
+        ]
+        task_dir = _make_rubric_task(tmp_path, "rubric-zero-weight", criteria, {})
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.error is not None
+        assert "weights sum to zero" in result.error.lower()
+
+    def test_empty_criteria_list_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        task_dir = _make_rubric_task(tmp_path, "rubric-empty", [], {})
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.error is not None
+        assert "at least one criterion" in result.error.lower()
+
+    def test_malformed_rubric_json_is_loud_error(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        task_dir = tmp_path / "rubric-bad-json"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "rubric.json").write_text(
+            "not valid json", encoding="utf-8"
+        )
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.error is not None
+        assert "rubric.json" in result.error.lower()
+
+    def test_rubric_json_must_be_a_list(self, tmp_path: Path) -> None:
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        task_dir = tmp_path / "rubric-not-list"
+        (task_dir / "tests").mkdir(parents=True)
+        (task_dir / "tests" / "rubric.json").write_text(
+            json.dumps({"criteria": []}), encoding="utf-8"
+        )
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.error is not None
+        assert "list" in result.error.lower()
+
+    def test_verifier_exit_zero_with_no_stdout_is_full_pass(
+        self, tmp_path: Path
+    ) -> None:
+        """Documented fallback: exit 0 → 1.0, exit nonzero → 0.0 when
+        the verifier emits no JSON."""
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        criteria = [{"name": "silent", "weight": 1.0, "verifier": "silent.sh"}]
+        verifiers = {"silent.sh": "#!/bin/bash\nexit 0\n"}
+        task_dir = _make_rubric_task(tmp_path, "rubric-silent", criteria, verifiers)
+        result = OracleChecksScorer().score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(1.0)
+
+    def test_registry_resolves_oracle_checks(self) -> None:
+        """``get_scorer("oracle_checks")`` returns an :class:`OracleChecksScorer`."""
+        from codeprobe.core.registry import resolve_scorer
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        scorer = resolve_scorer("oracle_checks")
+        assert isinstance(scorer, OracleChecksScorer)
+
+    def test_fixture_task_scores_under_oracle_checks(self) -> None:
+        """The shipped ``tests/fixtures/oracle_checks_task`` fixture must
+        score cleanly. Acceptance A5: a fixture using the new family is
+        added to demonstrate end-to-end wiring."""
+        from codeprobe.core.scoring import OracleChecksScorer
+
+        fixture_dir = (
+            Path(__file__).parent / "fixtures" / "oracle_checks_task"
+        )
+        assert fixture_dir.is_dir(), f"missing fixture: {fixture_dir}"
+        assert (fixture_dir / "tests" / "rubric.json").is_file()
+
+        # Agent output that satisfies all three rubric criteria.
+        good_output = (
+            "Implementation handles edge_case_x gracefully.\n"
+            "All error branches covered:\n"
+            "  raise ValueError on invalid input\n"
+            "  except FileNotFoundError\n"
+            "  return error code on overflow\n"
+            "Public API surface preserved.\n"
+        )
+        result = OracleChecksScorer().score(good_output, fixture_dir)
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == pytest.approx(1.0)
+        assert result.sub_scores["criterion_scores"] == {
+            "handles_edge_case_x": pytest.approx(1.0),
+            "covers_error_branches": pytest.approx(1.0),
+            "preserves_public_api": pytest.approx(1.0),
+        }
+
+
+# ---------------------------------------------------------------------------
 # Aggregate schema — mean_reward + ir_diagnostics block (back-compat)
 # ---------------------------------------------------------------------------
 
@@ -586,6 +905,7 @@ __all__ = [
     "TestExactMatchFamily",
     "TestSequenceLcsFamily",
     "TestBinaryTestFamily",
+    "TestOracleChecksFamily",
     "test_aggregate_emits_mean_reward_and_ir_diagnostics",
     "test_score_result_carries_full_contract",
 ]

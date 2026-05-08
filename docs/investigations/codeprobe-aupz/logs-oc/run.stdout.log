@@ -1,0 +1,19 @@
+Suite 'codeprobe-aupz-oc': 5/15 tasks selected
+
+Running config: with-sg-fixed (5 tasks)
+{"event": "task_done", "task_id": "oc_001", "score": 1.0, "duration_seconds": 110.08849409688264, "cost_usd": 0.35334735000000006, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_001", "score": 1.0, "duration_seconds": 185.7330828346312, "cost_usd": 0.5939673, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_002", "score": 1.0, "duration_seconds": 20.966796865221113, "cost_usd": 0.09344535000000001, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_002", "score": 1.0, "duration_seconds": 30.130474959965795, "cost_usd": 0.06447839999999999, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_002", "score": 1.0, "duration_seconds": 31.583058637101203, "cost_usd": 0.06931905, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_003", "score": 1.0, "duration_seconds": 51.7516699670814, "cost_usd": 0.21937800000000002, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_001", "score": 1.0, "duration_seconds": 218.74170330911875, "cost_usd": 0.55641705, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_003", "score": 0.8928571428571429, "duration_seconds": 55.86142985476181, "cost_usd": 0.17131845, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_003", "score": 1.0, "duration_seconds": 72.88707654224709, "cost_usd": 0.1591623, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_004", "score": 0.7857142857142857, "duration_seconds": 51.67376061202958, "cost_usd": 0.19125749999999997, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_004", "score": 1.0, "duration_seconds": 68.17253144131973, "cost_usd": 0.2355354, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_005", "score": 1.0, "duration_seconds": 37.76902070408687, "cost_usd": 0.14384835, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_004", "score": 1.0, "duration_seconds": 63.22392550902441, "cost_usd": 0.14424075, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_005", "score": 1.0, "duration_seconds": 37.326461473014206, "cost_usd": 0.10012019999999999, "record_type": "event"}
+{"event": "task_done", "task_id": "oc_005", "score": 1.0, "duration_seconds": 46.94118045689538, "cost_usd": 0.21985905, "record_type": "event"}
+{"record_type": "envelope", "ok": true, "command": "run", "version": "0.5.5", "schema_version": "1", "exit_code": 0, "data": {"experiment": "gascity-mcp-comparison", "configs": [{"label": "with-sg-fixed", "tasks": 15, "mean_score": 0.9785714285714285, "perfect": 13, "cost_usd": 3.3156945}], "total_tasks": 15, "total_cost_usd": 3.3156945, "tenant": "codeprobe-aupz", "tenant_source": "flag", "command_schema_version": "1"}, "error": null, "warnings": [], "next_steps": []}

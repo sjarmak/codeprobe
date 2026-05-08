@@ -80,6 +80,36 @@ If **Point me to a directory**: ask for path. Record `TASK_SOURCE=path`.
 
 Record as `TASK_COUNT_TARGET`.
 
+### Step 0e: Task Type Distribution (only if TASK_SOURCE=mine)
+
+**Question** -- Header: "What kinds of tasks should the eval cover?"
+
+By default the eval mines a single task family chosen from your goal in Step 0a (e.g. Goal 1 → MCP-style symbol/type/scope tasks). For honest comparisons across task styles — especially when you want to know "does MCP help on SDLC tasks the same way it helps on symbol-reference-trace?" — you can specify a mix.
+
+| #   | Option                          | Description                                                                           |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------- |
+| 1   | **Auto (based on goal)**        | Default. Use the family bound to your Step 0a goal. Backward-compatible.              |
+| 2   | **Custom task type mix**        | Specify counts per task type (e.g. 5 symbol-reference-trace + 5 SDLC + 5 oracle_checks). |
+
+**If Auto:** Record `TASK_DISTRIBUTION="auto"`. Mining proceeds with the goal-bound default.
+
+**If Custom mix:** Show the user the **Available Task Types** table (see reference at the end of this skill). Ask:
+
+- For each type they want, how many tasks (must sum to ≤ `TASK_COUNT_TARGET`).
+- Validate the sum.
+
+Record as `TASK_DISTRIBUTION` (a JSON object), e.g.:
+
+```json
+{
+  "symbol-reference-trace": 5,
+  "sdlc": 5,
+  "oracle_checks": 5
+}
+```
+
+> **Mining support note:** Not every task family currently has a dedicated miner. See the **Available Task Types** table for which types are wired vs. which surface as follow-ups (`MINING_HARDCODED_FOR=<list>` is reported back to the user after mining).
+
 ---
 
 ## Phase 1: Configure Comparisons
@@ -105,7 +135,7 @@ Then ask:
 **If Sourcegraph:**
 
 - Source `.env.local` to get `SOURCEGRAPH_ACCESS_TOKEN` and `SOURCEGRAPH_URL`
-- Build MCP config JSON: `{"mcpServers":{"sourcegraph":{"type":"http","url":"{SG_URL}/.api/mcp/v1","headers":{"Authorization":"token {SG_TOKEN}"}}}}`
+- Build MCP config JSON: `{"mcpServers":{"sourcegraph":{"type":"http","url":"{SG_URL}/.api/mcp/all","headers":{"Authorization":"token {SG_TOKEN}"}}}}`
 - Use `--preamble sourcegraph` (built-in preamble with `{{sg_repo}}` from task metadata)
 - Mine tasks with `--org-scale --mcp-families --sg-repo {SG_REPO}` (see `/mine-tasks` MCP flow)
 
@@ -192,6 +222,7 @@ Delegate to `/mine-tasks` with experiment context:
 
 - Target repo: `{REPO_URL}`
 - Task count target: `{TASK_COUNT_TARGET}`
+- **Task distribution:** `{TASK_DISTRIBUTION}` (from Step 0e — `"auto"` or a JSON object of `{family: count}`). When `auto`, mine-tasks falls back to its goal-bound default (e.g. `--mcp-families` for Goal 1). When a custom mix is supplied, mine-tasks honors per-family counts where supported and reports `MINING_HARDCODED_FOR=<list>` for any unsupported families.
 - Output directory: the experiment's tasks directory
 
 After mining, re-validate:
@@ -269,7 +300,7 @@ codeprobe experiment add-config ./my-experiment --label baseline --model claude-
 codeprobe experiment add-config ./my-experiment --label with-sourcegraph \
   --model claude-sonnet-4-6 \
   --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/v1","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
+  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
 
 # Add GitHub MCP config (different preamble + different MCP server)
 codeprobe experiment add-config ./my-experiment --label with-github \
@@ -299,6 +330,32 @@ Template variables: `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}
 
 ---
 
+## Available Task Types
+
+The eval framework supports the following task families. Each maps to a `scorer_family` from `codeprobe.core.scoring.SCORER_FAMILIES`. When you choose a Custom task type mix in Step 0e, pick one or more from this table.
+
+| Task type                    | scorer_family            | What it tests                                                              | Mining support             |
+| ---------------------------- | ------------------------ | -------------------------------------------------------------------------- | -------------------------- |
+| `symbol-reference-trace`     | `oracle_overlap_f1`      | Find all files referencing a symbol (catches aliases, re-exports)          | Wired (`--mcp-families`)   |
+| `type-hierarchy-consumers`   | `oracle_overlap_f1`      | Find implementations and consumers of base classes                         | Wired (`--mcp-families`)   |
+| `change-scope-audit`         | `oracle_overlap_f1`      | Blast radius: all files affected by changing a symbol                      | Wired (`--mcp-families`)   |
+| `mcp-fbeta`                  | `oracle_overlap_fbeta`   | Same as above with per-task β (precision-aware MCP comparison)             | Wired (`--mcp-families` + `verification.fbeta_beta`) |
+| `org-scale-tier-weighted`    | `oracle_weighted_f1`     | Cross-cutting org-scale tasks with tiered weights (header / impl / test)   | Wired (`--org-scale`)       |
+| `org-scale-recall-tilted`    | `oracle_weighted_recall` | Same as above, recall-leaning for triage / discovery                       | Wired (`--org-scale`)       |
+| `dependency-chain`           | `sequence_lcs`           | Order-sensitive dependency chains (call-graph traversals)                  | Wired (general SDLC mining) |
+| `sdlc`                       | `weighted_checkpoints`   | SDLC-style: build / test / refactor / doc tasks with per-checkpoint scoring | Wired (general SDLC mining) |
+| `oracle_checks` (CSB-org-style) | `oracle_checks`       | Structured-rubric criteria: per-criterion pass/fail with weights           | **Hardcoded for follow-up** — port from CSB pending |
+| `binary-test`                | `binary_test`            | Single test.sh exit-code tasks                                             | Wired (general SDLC mining) |
+| `continuous`                 | `continuous`             | Reward.txt or stdout-float scoring                                         | Wired (general SDLC mining) |
+| `exact-match`                | `exact_match`            | Count, boolean, or text equality                                           | Wired (general SDLC mining) |
+| `dual-composite`             | `dual_composite`         | Composite of direct + artifact scoring                                     | Wired (general SDLC mining) |
+
+> **Backward compatibility:** if Step 0e is set to `auto`, the eval uses whatever family the chosen Goal would have used previously (Goal 1 → MCP families; Goals 2/3/4 → SDLC mix). No existing eval invocation breaks.
+
+> **Distribution honored vs hardcoded:** mining honors `TASK_DISTRIBUTION` for families marked **Wired** above. For any family marked **Hardcoded for follow-up**, the experiment skill will surface the gap as `MINING_HARDCODED_FOR=<list>` after mining, and the eval will run on whatever subset the miner could produce. Currently `oracle_checks` mining is the open follow-up — track in the codeprobe rig as a successor to `bln9`.
+
+---
+
 ## Quick Reference
 
 | User says                 | What happens                              |
@@ -309,5 +366,6 @@ Template variables: `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}
 | "compare Sonnet vs Opus"  | Starts at Goal 2, pre-fills model configs |
 | "test different prompts"  | Starts at Goal 3                          |
 | "I have tasks, run them"  | Starts at Goal 5, skips mining            |
+| "mix task types"          | Branches to Step 0e Custom mix            |
 | "resume experiment X"     | Loads experiment, checks status, resumes  |
 | "experiment status"       | Runs `codeprobe experiment status`        |

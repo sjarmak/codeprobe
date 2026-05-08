@@ -1,0 +1,12 @@
+[suite]
+name = "codeprobe-aupz-oc"
+description = "Rerun ttwq's 5 oracle_checks tasks under with-sg-fixed (combined evjr fixes)"
+task_dir = "tasks"
+eval_goal = "Effect of evjr fixes on oracle_checks family (oc_004 cascade)"
+task_ids = [
+  "oc_001",
+  "oc_002",
+  "oc_003",
+  "oc_004",
+  "oc_005",
+]

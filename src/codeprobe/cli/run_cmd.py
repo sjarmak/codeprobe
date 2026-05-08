@@ -382,6 +382,7 @@ def run_eval(
     force_plain: bool = False,
     force_rich: bool = False,
     timeout: int | None = None,
+    max_turns: int | None = None,
     suite_path: str | None = None,
     trace_overflow: str = "fail",
     trace_deny: tuple[str, ...] = (),
@@ -696,13 +697,26 @@ def run_eval(
             # Layered config resolution: defaults < experiment.json < CLI flags
             resolved_model = model if model is not None else exp_config.model
             resolved_timeout = timeout if timeout is not None else exp_config.extra.get("timeout_seconds", 3600)
+            # max_turns: explicit field wins, fall back to extra dict for
+            # configs authored before the field existed; CLI flag overrides
+            # both.
+            cfg_max_turns = (
+                exp_config.max_turns
+                if exp_config.max_turns is not None
+                else exp_config.extra.get("max_turns")
+            )
+            resolved_max_turns = (
+                max_turns if max_turns is not None else cfg_max_turns
+            )
 
             logger.debug(
-                "Config resolution: model=%s (%s), timeout=%ds (%s)",
+                "Config resolution: model=%s (%s), timeout=%ds (%s), max_turns=%s (%s)",
                 resolved_model,
                 "CLI override" if model is not None else "experiment.json",
                 resolved_timeout,
                 "CLI override" if timeout is not None else "experiment.json",
+                resolved_max_turns,
+                "CLI override" if max_turns is not None else "experiment.json",
             )
 
             policy = resolve_tool_policy(exp_config)
@@ -719,6 +733,7 @@ def run_eval(
                 allowed_tools=policy.allowed_tools,
                 disallowed_tools=policy.disallowed_tools,
                 cwd=str(repo_root),
+                max_turns=resolved_max_turns,
             )
 
             issues = config_adapter.preflight(agent_config)

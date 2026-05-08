@@ -147,6 +147,7 @@ def experiment_add_config(
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
     mcp_mode: str = "strict",
+    hide_local_source: bool = False,
 ) -> None:
     """Add a configuration to an existing experiment."""
     exp_dir = Path(path)
@@ -199,6 +200,7 @@ def experiment_add_config(
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         mcp_mode=mcp_mode,
+        hide_local_source=hide_local_source,
     )
 
     # Validate the label is a safe path component
@@ -443,6 +445,10 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
                     "automated_score": t.automated_score,
                     "duration_seconds": t.duration_seconds,
                     "cost_usd": t.cost_usd,
+                    "input_tokens": t.input_tokens,
+                    "output_tokens": t.output_tokens,
+                    "cache_read_tokens": t.cache_read_tokens,
+                    "cache_creation_tokens": t.cache_creation_tokens,
                     # Oracle metrics surfaced via scoring_details (Option 1
                     # plumbing: precision/recall/f1 don't change scoring,
                     # they just stop being hidden).
@@ -465,6 +471,36 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
             r["duration_seconds"]
             for r in cfg_rows
             if r.get("duration_seconds") is not None
+        ]
+        # Raw token counts (codeprobe-oktg). Tasks where the adapter
+        # couldn't capture usage contribute None and are excluded from the
+        # mean rather than counted as zero — keeps cost-Pareto comparisons
+        # honest when only some configs have telemetry.
+        input_tokens_per_task = [
+            r["input_tokens"]
+            for r in cfg_rows
+            if r.get("input_tokens") is not None
+        ]
+        output_tokens_per_task = [
+            r["output_tokens"]
+            for r in cfg_rows
+            if r.get("output_tokens") is not None
+        ]
+        # codeprobe-e9pr: cache fields surface bulk-reuse and write-through
+        # tokens separately. ``input_tokens`` is the uncached input portion;
+        # ``cache_read_tokens`` is the bulk re-use; ``cache_creation_tokens``
+        # is the write-through cost. cost_usd already accounts for the cache
+        # rate inside the adapter — surfacing the raw counts lets cost-Pareto
+        # plots reason about cache-hit rates without re-deriving cost.
+        cache_read_per_task = [
+            r["cache_read_tokens"]
+            for r in cfg_rows
+            if r.get("cache_read_tokens") is not None
+        ]
+        cache_creation_per_task = [
+            r["cache_creation_tokens"]
+            for r in cfg_rows
+            if r.get("cache_creation_tokens") is not None
         ]
 
         # Oracle metrics from scoring_details — only present for tasks scored
@@ -517,6 +553,40 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
             "total_cost_usd": sum(costs) if costs else None,
             "mean_cost_per_task": (statistics.mean(costs) if costs else None),
             "total_time_seconds": sum(times) if times else None,
+            # Raw token counts (codeprobe-oktg). Sum/mean over tasks that
+            # reported usage; None when no task in the config did so.
+            "total_input_tokens": (
+                sum(input_tokens_per_task) if input_tokens_per_task else None
+            ),
+            "total_output_tokens": (
+                sum(output_tokens_per_task) if output_tokens_per_task else None
+            ),
+            "mean_input_tokens_per_task": (
+                statistics.mean(input_tokens_per_task)
+                if input_tokens_per_task
+                else None
+            ),
+            "mean_output_tokens_per_task": (
+                statistics.mean(output_tokens_per_task)
+                if output_tokens_per_task
+                else None
+            ),
+            "total_cache_read_tokens": (
+                sum(cache_read_per_task) if cache_read_per_task else None
+            ),
+            "total_cache_creation_tokens": (
+                sum(cache_creation_per_task) if cache_creation_per_task else None
+            ),
+            "mean_cache_read_tokens_per_task": (
+                statistics.mean(cache_read_per_task)
+                if cache_read_per_task
+                else None
+            ),
+            "mean_cache_creation_tokens_per_task": (
+                statistics.mean(cache_creation_per_task)
+                if cache_creation_per_task
+                else None
+            ),
             "score_per_dollar": (
                 statistics.mean(scores) / statistics.mean(costs)
                 if scores and costs and statistics.mean(costs) > 0

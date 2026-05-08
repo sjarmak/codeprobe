@@ -1,0 +1,12 @@
+[suite]
+name = "codeprobe-mcn7-sdlc-rerun"
+description = "Rerun SDLC family at N=3 to bound +0.054 with-sourcegraph delta from codeprobe-3oms"
+task_dir = "tasks"
+eval_goal = "MCP-vs-baseline SDLC reproducibility"
+task_ids = [
+  "ba1f3675",
+  "d906ac3d",
+  "0d4ec3ad",
+  "45b581b5",
+  "fde8e6e0",
+]

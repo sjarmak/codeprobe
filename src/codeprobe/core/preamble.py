@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -18,6 +18,14 @@ __all__ = [
 ]
 
 _SYMBOL_REFERENCE_TRACE_CATEGORY = "symbol-reference-trace"
+_ORACLE_CHECKS_CATEGORY = "oracle_checks"
+_SDLC_CATEGORY = "sdlc"
+
+# Preambles whose templates render ``repo:^{{sg_repo}}$`` and therefore
+# silently degrade to a malformed ``repo:^$`` filter when ``sg_repo`` is
+# missing. ``github`` explicitly falls back to ``repo_name`` and is not
+# included here.
+_SG_REPO_REQUIRED_PREAMBLES = frozenset({"sourcegraph"})
 
 
 @runtime_checkable
@@ -122,8 +130,124 @@ def base_prompt(
 _base_prompt = base_prompt
 
 
-def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[str, str]:
-    """Extract task-aware context values that preamble templates can reference."""
+def _build_repo_scope(sg_repo: str) -> str:
+    """Render the ``repo_scope`` slot for the sourcegraph preamble.
+
+    The new preamble assumes the workspace has no local source, so the
+    scope statement is a single-line directive that names the indexed
+    repository and shows the canonical scoping filter.
+    """
+    return (
+        f"**Indexed repository:** `{sg_repo}`. Use `repo:^{sg_repo}$` "
+        "in scoping filters to keep results focused on this repo."
+    )
+
+
+def _workflow_tail_default() -> str:
+    """Default ``workflow_tail`` for change-scope-audit and unknown categories."""
+    return (
+        "3. **Trace references** — Use `sg_find_references` on key "
+        "symbols to discover indirect usages\n"
+        "4. **Verify before denying existence** — If a Sourcegraph "
+        "search returns no results for an identifier the question "
+        "explicitly asks about, broaden the query (drop a term, try "
+        "stemmed forms via `sg_nls_search`, or browse `sg_list_files`) "
+        "before concluding the identifier does not exist. Sourcegraph's "
+        "index can lag the working tree on recent commits. Do not "
+        "write a denial of existence based solely on a single empty "
+        "search.\n"
+        "5. **Efficiency** — Don't read >15 files via `sg_read_file` "
+        "without writing the answer. After 8 reads, integrate what you "
+        "have and act. **Union results when recall matters** — combine "
+        "`sg_keyword_search` and `sg_nls_search` for broader coverage."
+    )
+
+
+def _workflow_tail_symbol_reference_trace() -> str:
+    return (
+        "3. **Authoritative references** — For symbol-reference-trace "
+        "tasks, treat `sg_find_references` as authoritative. It is the "
+        "source of truth for symbol references; do not replace it with "
+        "a keyword-search union and do not second-guess it with "
+        "`sg_deepsearch`.\n"
+        "4. **Forbidden tools** — DO NOT call `sg_deepsearch` or "
+        "`sg_deepsearch_read`. They are slow multi-step searches that "
+        "duplicate work `sg_find_references` already does correctly. "
+        "If `sg_find_references` returns a non-empty set, write the "
+        "answer; do not escalate to `sg_deepsearch`.\n"
+        "5. **Efficiency** — References rarely need broad reading. "
+        "Don't read >8 files via `sg_read_file` without writing the "
+        "answer; after 4 reads, decide and respond."
+    )
+
+
+def _workflow_tail_oracle_checks() -> str:
+    return (
+        "3. **Coverage over depth** — The answer must address every "
+        "declared criterion the rubric asks for. Before searching, "
+        "list the explicit criteria the rubric asks for and enumerate "
+        "them. Search only as deeply as needed to satisfy each one. "
+        "Do not pursue tangential investigation depth at the cost of "
+        "breadth across criteria.\n"
+        "4. **Verify before denying existence** — The rubric guarantees "
+        "the named symbol exists somewhere in the codebase. If "
+        "`sg_keyword_search` or `sg_find_references` returns no hits "
+        "for an identifier the rubric explicitly asks about, broaden "
+        "the query via `sg_nls_search` (stemming) or `sg_list_files` "
+        "(directory browse) before answering. Never write a denial "
+        "of existence for a rubric-named symbol.\n"
+        "5. **Coverage-first synthesis** — Don't read >12 files via "
+        "`sg_read_file` without producing answer text. After 6 reads, "
+        "integrate what you have and write coverage for each "
+        "criterion. Before finalising, re-read the criteria list and "
+        "verify each is addressed. **Efficiency** caps each criterion "
+        "at one authoritative reference."
+    )
+
+
+def _workflow_tail_sdlc() -> str:
+    return (
+        "3. **Trace selectively** — Use `sg_find_references` only when "
+        "a callsite or reference outside the named files is needed to "
+        "make a correct edit. The instruction typically names the files "
+        "to modify, so use Sourcegraph for additional references, "
+        "NOT to pre-discover file lists. Implementation effort is the "
+        "bottleneck, not navigation.\n"
+        "4. **Stop searching when you have the file list and the "
+        "references your edit needs** — Switch to writing code. Don't "
+        "broaden scope unless the edit requires it.\n"
+        "5. **Efficiency** — Don't read >10 files via `sg_read_file` "
+        "without editing. After 5 reads, write your edit and check it."
+    )
+
+
+_WORKFLOW_TAILS_BY_CATEGORY: dict[str, Callable[[], str]] = {}
+
+
+def task_preamble_context(
+    task_metadata: Mapping[str, object] | None,
+    *,
+    preamble_names: Iterable[str] | None = None,
+    task_id: str = "",
+) -> dict[str, str]:
+    """Extract task-aware context values that preamble templates can reference.
+
+    When *preamble_names* contains a preamble that requires
+    ``metadata.sg_repo`` (e.g. the ``sourcegraph`` preamble, whose template
+    renders ``repo:^{{sg_repo}}$``), this function raises ``ValueError`` if
+    ``metadata.sg_repo`` is missing or empty. That converts a silent runtime
+    degradation (``repo:^$ <query>`` falling back to global search) into a
+    clear failure at prompt-composition time. Callers that don't request a
+    sg_repo-dependent preamble can omit ``preamble_names`` and the guard is a
+    no-op.
+
+    The function also populates two slots used by the v2 sourcegraph
+    preamble (jf28):
+
+    * ``repo_scope`` — single-line repository scoping directive.
+    * ``workflow_tail`` — category-specialised continuation of the
+      "Required Workflow" numbered list (steps 3+).
+    """
     if not isinstance(task_metadata, Mapping):
         return {}
 
@@ -133,66 +257,49 @@ def task_preamble_context(task_metadata: Mapping[str, object] | None) -> dict[st
 
     extra_context: dict[str, str] = {}
     sg_repo = metadata_block.get("sg_repo")
-    if isinstance(sg_repo, str) and sg_repo:
-        extra_context["sg_repo"] = sg_repo
+    sg_repo_value = sg_repo if isinstance(sg_repo, str) else ""
+    if sg_repo_value:
+        extra_context["sg_repo"] = sg_repo_value
+
+    requested = (
+        frozenset(preamble_names) if preamble_names is not None else frozenset()
+    )
+    if requested & _SG_REPO_REQUIRED_PREAMBLES and not sg_repo_value:
+        raise ValueError(
+            f"sg_repo is empty for task {task_id!r}; cannot render "
+            "Sourcegraph preamble. Re-mine the task with a populated origin "
+            "remote or pass --sg-repo at mine time so metadata.sg_repo is "
+            "set."
+        )
 
     category = metadata_block.get("category")
     if isinstance(category, str) and category:
         extra_context["task_category"] = category
 
-    if extra_context.get("task_category") == _SYMBOL_REFERENCE_TRACE_CATEGORY:
-        extra_context.update(
-            {
-                "sg_task_search_guidance": (
-                    "For `symbol-reference-trace`, treat "
-                    "`sg_find_references` as authoritative. Use local Grep "
-                    "only to locate the definition site or sanity-check a "
-                    "suspicious gap. **DO NOT call `sg_deepsearch` or "
-                    "`sg_deepsearch_read`** — they are slow multi-step "
-                    "searches that duplicate work `sg_find_references` "
-                    "already does correctly."
-                ),
-                "sg_find_references_guidance": (
-                    "For `symbol-reference-trace`, this is the source of "
-                    "truth; do not replace it with a grep union and do not "
-                    "second-guess it with `sg_deepsearch`."
-                ),
-                "sg_local_search_step": (
-                    "**Use local Grep narrowly** only when you need to find "
-                    "the definition site or investigate a mismatch."
-                ),
-                "sg_result_synthesis_step": (
-                    "**Prefer authoritative references** — report the "
-                    "`sg_find_references` result set instead of unioning in "
-                    "extra grep matches. If `sg_find_references` returns a "
-                    "non-empty set, write the answer; do not escalate to "
-                    "`sg_deepsearch`."
-                ),
-            }
-        )
-        return extra_context
+    # repo_scope only renders meaningfully when sg_repo is populated.
+    # The guard above already fails when a sourcegraph preamble is
+    # requested without sg_repo, so reaching this branch with an empty
+    # sg_repo means a non-sourcegraph preamble — leave repo_scope unset
+    # and the renderer will leave the {{repo_scope}} token intact.
+    if sg_repo_value:
+        extra_context["repo_scope"] = _build_repo_scope(sg_repo_value)
 
-    extra_context.update(
-        {
-            "sg_task_search_guidance": (
-                "Use Sourcegraph tools FIRST, then supplement with local "
-                "Grep when broader recall helps."
-            ),
-            "sg_find_references_guidance": (
-                "For symbol-relationship questions, prefer this over "
-                "heuristic text matches."
-            ),
-            "sg_local_search_step": (
-                "**Supplement with local Grep** to catch anything Sourcegraph "
-                "may have missed."
-            ),
-            "sg_result_synthesis_step": (
-                "**Union results when recall matters** — combine indexed "
-                "search and local Grep for broader coverage."
-            ),
-        }
+    tail_builder = _WORKFLOW_TAILS_BY_CATEGORY.get(
+        extra_context.get("task_category", ""),
+        _workflow_tail_default,
     )
+    extra_context["workflow_tail"] = tail_builder()
+
     return extra_context
+
+
+_WORKFLOW_TAILS_BY_CATEGORY.update(
+    {
+        _SYMBOL_REFERENCE_TRACE_CATEGORY: _workflow_tail_symbol_reference_trace,
+        _ORACLE_CHECKS_CATEGORY: _workflow_tail_oracle_checks,
+        _SDLC_CATEGORY: _workflow_tail_sdlc,
+    }
+)
 
 
 def compose_instruction(

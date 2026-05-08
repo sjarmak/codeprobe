@@ -229,6 +229,241 @@ class TestRunValidate:
         assert not gt.passed
 
 
+class TestAnswerTxtDrift:
+    """answer.txt drift check (codeprobe-w8pg)."""
+
+    def _drift_results(self, results: list) -> list:
+        return [r for r in results if r.name == "answer.txt drift"]
+
+    def _make_dual_task(
+        self,
+        tmp_path: Path,
+        *,
+        gt_payload: dict,
+        gt_in_tests_dir: bool = True,
+        verification_mode: str = "dual",
+    ) -> Path:
+        """Build a minimal task dir with a configurable ground_truth.json.
+
+        ``gt_in_tests_dir`` toggles between the dual-mode layout
+        (``tests/ground_truth.json``) and the legacy mined-task layout
+        (``ground_truth.json`` at task root).
+        """
+        (tmp_path / "instruction.md").write_text("# Task\n")
+        (tmp_path / "task.toml").write_text(
+            '[metadata]\nname = "t"\n\n'
+            f'[verification]\nverification_mode = "{verification_mode}"\n'
+        )
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        ts = tests_dir / "test.sh"
+        ts.write_text("#!/bin/bash\nexit 0\n")
+        ts.chmod(ts.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        gt_path = (tests_dir if gt_in_tests_dir else tmp_path) / "ground_truth.json"
+        gt_path.write_text(json.dumps(gt_payload))
+        return tmp_path
+
+    def test_no_answer_txt_skips_check(self, dual_task_dir: Path) -> None:
+        """Tasks without answer.txt should not surface a drift result."""
+        results = run_validate(dual_task_dir)
+        assert self._drift_results(results) == []
+
+    def test_file_list_match_dual_layout(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={
+                "answer_type": "file_list",
+                "answer": ["src/a.py", "src/b.py"],
+            },
+        )
+        (task / "answer.txt").write_text("src/a.py\nsrc/b.py\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].passed
+        assert "matches ground_truth" in drift[0].detail
+
+    def test_file_list_drift_warn(self, tmp_path: Path) -> None:
+        """Voxa-class regression: stale answer.txt vs updated ground_truth."""
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={
+                "answer_type": "file_list",
+                "answer": ["src/new.py", "src/keep.py"],
+            },
+        )
+        (task / "answer.txt").write_text("src/keep.py\nsrc/old.py\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].passed  # advisory, never fails the run
+        assert drift[0].detail.startswith("warn:")
+        assert "jaccard" in drift[0].detail
+
+    def test_legacy_expected_layout(self, tmp_path: Path) -> None:
+        """Mined tasks ship ground_truth.json at task root with `expected`."""
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={
+                "oracle_type": "file_list",
+                "expected": ["pkg/a.go", "pkg/b.go"],
+            },
+            gt_in_tests_dir=False,
+            verification_mode="test_script",
+        )
+        (task / "answer.txt").write_text("pkg/a.go\npkg/b.go\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert "matches ground_truth (2 items)" in drift[0].detail
+
+    def test_legacy_expected_drift(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={
+                "oracle_type": "file_list",
+                "expected": ["pkg/a.go", "pkg/b.go", "pkg/c.go"],
+            },
+            gt_in_tests_dir=False,
+            verification_mode="test_script",
+        )
+        (task / "answer.txt").write_text("pkg/a.go\npkg/c.go\npkg/d.go\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].detail.startswith("warn:")
+
+    def test_count_match(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "count", "answer": 7},
+        )
+        (task / "answer.txt").write_text("7\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert "matches ground_truth (count=7)" in drift[0].detail
+
+    def test_count_drift(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "count", "answer": 7},
+        )
+        (task / "answer.txt").write_text("9\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].detail.startswith("warn:")
+        assert "answer.txt=9" in drift[0].detail
+        assert "ground_truth=7" in drift[0].detail
+
+    def test_boolean_match(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "boolean", "answer": True},
+        )
+        (task / "answer.txt").write_text("true\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert "matches ground_truth (boolean=True)" in drift[0].detail
+
+    def test_boolean_drift(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "boolean", "answer": True},
+        )
+        (task / "answer.txt").write_text("no\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].detail.startswith("warn:")
+
+    def test_scalar_string_match(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "string", "answer": "hello world"},
+        )
+        (task / "answer.txt").write_text("hello world\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert "matches ground_truth (scalar)" in drift[0].detail
+
+    def test_scalar_string_drift(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "string", "answer": "expected"},
+        )
+        (task / "answer.txt").write_text("something else\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].detail.startswith("warn:")
+
+    def test_v2_checks_layout(self, tmp_path: Path) -> None:
+        """v2 schema uses a `checks` array; pick the first answerable entry."""
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={
+                "checks": [
+                    {"answer_type": "file_list", "answer": ["x/a.py", "x/b.py"]},
+                ],
+            },
+        )
+        (task / "answer.txt").write_text("x/a.py\nx/b.py\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert "matches ground_truth (2 items)" in drift[0].detail
+
+    def test_drift_does_not_fail_validate(self, tmp_path: Path) -> None:
+        """Drift is advisory: validate must still exit 0 in CLI mode."""
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "count", "answer": 1},
+        )
+        (task / "answer.txt").write_text("99\n")
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(task)])
+        assert result.exit_code == 0, result.output
+        assert "warn: answer.txt disagrees" in result.output
+
+    def test_comments_and_blanks_ignored_in_file_list(self, tmp_path: Path) -> None:
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={
+                "answer_type": "file_list",
+                "answer": ["src/a.py", "src/b.py"],
+            },
+        )
+        (task / "answer.txt").write_text(
+            "# header comment\n"
+            "src/a.py\n"
+            "\n"
+            "src/b.py\n"
+            "# trailing\n"
+        )
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert "matches ground_truth" in drift[0].detail
+
+    def test_no_comparable_answer_skipped(self, tmp_path: Path) -> None:
+        """ground_truth without answer/expected/checks emits an info skip."""
+        task = self._make_dual_task(
+            tmp_path,
+            gt_payload={"answer_type": "weird_custom"},
+        )
+        (task / "answer.txt").write_text("anything\n")
+        results = run_validate(task)
+        drift = self._drift_results(results)
+        assert len(drift) == 1
+        assert drift[0].detail.startswith("info:")
+        assert "no comparable" in drift[0].detail
+
+
 class TestValidateCLI:
     """Integration tests for the CLI command."""
 

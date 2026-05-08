@@ -1934,6 +1934,52 @@ class TestClaudeToolRestrictions:
         assert "--verbose" in cmd
 
 
+class TestClaudeMaxTurns:
+    """Claude adapter wires AgentConfig.max_turns to ``--max-turns``.
+
+    Reference rigs cap aggressively: CSB at 30 turns, EB at 50. codeprobe's
+    historical default was uncapped (only the per-task subprocess timeout
+    bounded loops), which the codeprobe-evjr cross-rig audit identified as
+    the largest structural cost driver vs CSB/EB on MCP-vs-baseline runs.
+    """
+
+    def test_max_turns_emitted_when_set(self) -> None:
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(max_turns=50)
+        cmd = adapter.build_command("test", config)
+        assert "--max-turns" in cmd
+        idx = cmd.index("--max-turns")
+        assert cmd[idx + 1] == "50"
+
+    def test_max_turns_omitted_when_none(self) -> None:
+        """Default ``max_turns=None`` keeps the historical uncapped behavior."""
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig()
+        assert config.max_turns is None
+        cmd = adapter.build_command("test", config)
+        assert "--max-turns" not in cmd
+
+    def test_max_turns_rejects_zero(self) -> None:
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(max_turns=0)
+        with pytest.raises(ValueError, match="positive integer"):
+            adapter.build_command("test", config)
+
+    def test_max_turns_rejects_negative(self) -> None:
+        adapter = ClaudeAdapter()
+        if not adapter.find_binary():
+            pytest.skip("claude binary not available")
+        config = AgentConfig(max_turns=-5)
+        with pytest.raises(ValueError, match="positive integer"):
+            adapter.build_command("test", config)
+
+
 class TestStreamJsonToolUseCapture:
     """JsonStdoutCollector parses stream-json and counts tool_use blocks."""
 

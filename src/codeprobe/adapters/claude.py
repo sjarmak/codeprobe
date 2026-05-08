@@ -309,6 +309,17 @@ class ClaudeAdapter(BaseAdapter):
         if config.model:
             cmd.extend(["--model", _normalize_model_for_cli(config.model)])
 
+        # Hard cap on agent turns. ``None`` means uncapped (historical
+        # default); when set, codeprobe matches the rig surface used by CSB
+        # (30) and EB (50). Acts as a backstop against runaway loops where
+        # the only other limit is the per-task subprocess timeout.
+        if config.max_turns is not None:
+            if not isinstance(config.max_turns, int) or config.max_turns <= 0:
+                raise ValueError(
+                    f"max_turns must be a positive integer, got {config.max_turns!r}"
+                )
+            cmd.extend(["--max-turns", str(config.max_turns)])
+
         if config.permission_mode == "dangerously_skip":
             cmd.append("--dangerously-skip-permissions")
         elif config.permission_mode != "default":

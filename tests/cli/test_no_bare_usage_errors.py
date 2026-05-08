@@ -45,25 +45,28 @@ _CLI_ROOT = _REPO_ROOT / "src" / "codeprobe" / "cli"
 
 INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
     {
-        ("src/codeprobe/cli/__init__.py", 1105),
+        ("src/codeprobe/cli/__init__.py", 1119),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
         ("src/codeprobe/cli/auth_cmd.py", 41),
-        ("src/codeprobe/cli/experiment_cmd.py", 53),
-        ("src/codeprobe/cli/experiment_cmd.py", 65),
-        ("src/codeprobe/cli/experiment_cmd.py", 72),
-        ("src/codeprobe/cli/experiment_cmd.py", 87),
-        ("src/codeprobe/cli/experiment_cmd.py", 98),
-        ("src/codeprobe/cli/experiment_cmd.py", 157),
-        ("src/codeprobe/cli/experiment_cmd.py", 166),
-        ("src/codeprobe/cli/experiment_cmd.py", 182),
-        ("src/codeprobe/cli/experiment_cmd.py", 210),
-        ("src/codeprobe/cli/experiment_cmd.py", 254),
-        ("src/codeprobe/cli/experiment_cmd.py", 324),
-        ("src/codeprobe/cli/experiment_cmd.py", 341),
-        ("src/codeprobe/cli/experiment_cmd.py", 423),
-        ("src/codeprobe/cli/experiment_cmd.py", 430),
+        ("src/codeprobe/cli/experiment_cmd.py", 54),
+        ("src/codeprobe/cli/experiment_cmd.py", 66),
+        ("src/codeprobe/cli/experiment_cmd.py", 73),
+        ("src/codeprobe/cli/experiment_cmd.py", 88),
+        ("src/codeprobe/cli/experiment_cmd.py", 99),
+        # jf28: lines shifted +1 (signature gained `hide_local_source`)
+        # for entries above the ExperimentConfig() call; +2 for entries
+        # below (the ExperimentConfig() call also grew one line).
+        ("src/codeprobe/cli/experiment_cmd.py", 159),
+        ("src/codeprobe/cli/experiment_cmd.py", 168),
+        ("src/codeprobe/cli/experiment_cmd.py", 184),
+        ("src/codeprobe/cli/experiment_cmd.py", 213),
+        ("src/codeprobe/cli/experiment_cmd.py", 257),
+        ("src/codeprobe/cli/experiment_cmd.py", 327),
+        ("src/codeprobe/cli/experiment_cmd.py", 344),
+        ("src/codeprobe/cli/experiment_cmd.py", 426),
+        ("src/codeprobe/cli/experiment_cmd.py", 433),
         ("src/codeprobe/cli/init_cmd.py", 46),
         ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),
@@ -72,8 +75,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         ("src/codeprobe/cli/scaffold_cmd.py", 100),
         ("src/codeprobe/cli/scaffold_cmd.py", 123),
         ("src/codeprobe/cli/trace_cmd.py", 36),
-        ("src/codeprobe/cli/validate_cmd.py", 544),
-        ("src/codeprobe/cli/validate_cmd.py", 558),
+        ("src/codeprobe/cli/validate_cmd.py", 912),
+        ("src/codeprobe/cli/validate_cmd.py", 926),
     }
 )
 

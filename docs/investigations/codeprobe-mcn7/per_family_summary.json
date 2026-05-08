@@ -1,0 +1,462 @@
+{
+  "investigation_id": "codeprobe-mcn7",
+  "predecessor": "codeprobe-3oms",
+  "n_repeats": 3,
+  "n_tasks": 5,
+  "n_trials_expected": 30,
+  "n_trials_observed": 30,
+  "n_trials_missing": 0,
+  "per_task": {
+    "baseline": {
+      "ba1f3675": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.534,
+          "std": 0.0,
+          "min": 0.534,
+          "max": 0.534
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 6.161456116666668,
+          "std": 4.9651348095999435,
+          "min": 3.1427633000000013,
+          "max": 11.891961600000002
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 1284.9006771903175,
+          "std": 601.3155028189252,
+          "min": 637.1484283208847,
+          "max": 1825.324953299947
+        },
+        "rewards_per_repeat": [
+          0.534,
+          0.534,
+          0.534
+        ]
+      },
+      "d906ac3d": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.6031,
+          "std": 0.0,
+          "min": 0.6031,
+          "max": 0.6031
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 1.5226911499999998,
+          "std": 0.3919467936802105,
+          "min": 1.0859828999999999,
+          "max": 1.8439370499999999
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 625.9575118321615,
+          "std": 480.7785229568776,
+          "min": 239.50368348136544,
+          "max": 1164.3482524021529
+        },
+        "rewards_per_repeat": [
+          0.6031,
+          0.6031,
+          0.6031
+        ]
+      },
+      "0d4ec3ad": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.8,
+          "std": 0.0,
+          "min": 0.8,
+          "max": 0.8
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 8.7221638,
+          "std": 2.5771912350740123,
+          "min": 5.746336099999999,
+          "max": 10.225945450000001
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 1841.755672905594,
+          "std": 618.8349363894819,
+          "min": 1127.72986825509,
+          "max": 2222.894105609972
+        },
+        "rewards_per_repeat": [
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "45b581b5": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.8,
+          "std": 0.0,
+          "min": 0.8,
+          "max": 0.8
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 1.5079934,
+          "std": 0.06386802956661877,
+          "min": 1.4356156500000001,
+          "max": 1.5564387500000003
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 443.65631932361674,
+          "std": 20.07656550129401,
+          "min": 430.33385139191523,
+          "max": 466.74778056982905
+        },
+        "rewards_per_repeat": [
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "fde8e6e0": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.6784,
+          "std": 0.0,
+          "min": 0.6784,
+          "max": 0.6784
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 5.123444800000001,
+          "std": 1.1955886853085143,
+          "min": 3.970115950000001,
+          "max": 6.3572292500000005
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 1393.4599437688787,
+          "std": 294.15315879426294,
+          "min": 1075.1272112750448,
+          "max": 1655.2142449589446
+        },
+        "rewards_per_repeat": [
+          0.6784,
+          0.6784,
+          0.6784
+        ]
+      }
+    },
+    "with-sourcegraph": {
+      "ba1f3675": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.5402666666666667,
+          "std": 0.002540341184434394,
+          "min": 0.5388,
+          "max": 0.5432
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 5.01876445,
+          "std": 1.0540807180694307,
+          "min": 4.2246531,
+          "max": 6.214648349999999
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 1444.0628396954078,
+          "std": 305.89486442311943,
+          "min": 1107.5234461301006,
+          "max": 1705.217387312092
+        },
+        "rewards_per_repeat": [
+          0.5388,
+          0.5432,
+          0.5388
+        ]
+      },
+      "d906ac3d": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.6079,
+          "std": 0.0,
+          "min": 0.6079,
+          "max": 0.6079
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 2.28531275,
+          "std": 0.7074093773801063,
+          "min": 1.51263825,
+          "max": 2.9011246499999994
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 1101.9636828950606,
+          "std": 372.64960541053256,
+          "min": 673.9334231750108,
+          "max": 1354.1926974779926
+        },
+        "rewards_per_repeat": [
+          0.6079,
+          0.6079,
+          0.6079
+        ]
+      },
+      "0d4ec3ad": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.8,
+          "std": 0.0,
+          "min": 0.8,
+          "max": 0.8
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 6.614064399999999,
+          "std": 1.987834938137957,
+          "min": 4.32407565,
+          "max": 7.894894649999998
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 2310.6037449985743,
+          "std": 728.8287048135709,
+          "min": 1479.3141437950544,
+          "max": 2839.868438921869
+        },
+        "rewards_per_repeat": [
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "45b581b5": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.8,
+          "std": 0.0,
+          "min": 0.8,
+          "max": 0.8
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 5.045173900000001,
+          "std": 1.53841987561355,
+          "min": 3.6220501500000006,
+          "max": 6.67748265
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 2333.9283611949845,
+          "std": 527.4295392621582,
+          "min": 1880.6679433989339,
+          "max": 2912.8342634509318
+        },
+        "rewards_per_repeat": [
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "fde8e6e0": {
+        "n_trials": 3,
+        "n_completed": 3,
+        "reward": {
+          "n": 3,
+          "mean": 0.6846,
+          "std": 0.0,
+          "min": 0.6846,
+          "max": 0.6846
+        },
+        "cost_usd": {
+          "n": 3,
+          "mean": 9.426416600000001,
+          "std": 1.3937742581154264,
+          "min": 8.409605699999998,
+          "max": 11.015182350000005
+        },
+        "time_seconds": {
+          "n": 3,
+          "mean": 2256.930079542566,
+          "std": 219.06563999840972,
+          "min": 2021.652661447879,
+          "max": 2455.024720807094
+        },
+        "rewards_per_repeat": [
+          0.6846,
+          0.6846,
+          0.6846
+        ]
+      }
+    }
+  },
+  "per_task_deltas": [
+    {
+      "task_id": "ba1f3675",
+      "baseline_mean": 0.534,
+      "baseline_std": 0.0,
+      "baseline_n": 3,
+      "with_sg_mean": 0.5402666666666667,
+      "with_sg_std": 0.002540341184434394,
+      "with_sg_n": 3,
+      "delta_mean": 0.006266666666666643,
+      "baseline_rewards": [
+        0.534,
+        0.534,
+        0.534
+      ],
+      "with_sg_rewards": [
+        0.5388,
+        0.5432,
+        0.5388
+      ],
+      "baseline_cost_mean": 6.161456116666668,
+      "with_sg_cost_mean": 5.01876445
+    },
+    {
+      "task_id": "d906ac3d",
+      "baseline_mean": 0.6031,
+      "baseline_std": 0.0,
+      "baseline_n": 3,
+      "with_sg_mean": 0.6079,
+      "with_sg_std": 0.0,
+      "with_sg_n": 3,
+      "delta_mean": 0.0048000000000000265,
+      "baseline_rewards": [
+        0.6031,
+        0.6031,
+        0.6031
+      ],
+      "with_sg_rewards": [
+        0.6079,
+        0.6079,
+        0.6079
+      ],
+      "baseline_cost_mean": 1.5226911499999998,
+      "with_sg_cost_mean": 2.28531275
+    },
+    {
+      "task_id": "0d4ec3ad",
+      "baseline_mean": 0.8,
+      "baseline_std": 0.0,
+      "baseline_n": 3,
+      "with_sg_mean": 0.8,
+      "with_sg_std": 0.0,
+      "with_sg_n": 3,
+      "delta_mean": 0.0,
+      "baseline_rewards": [
+        0.8,
+        0.8,
+        0.8
+      ],
+      "with_sg_rewards": [
+        0.8,
+        0.8,
+        0.8
+      ],
+      "baseline_cost_mean": 8.7221638,
+      "with_sg_cost_mean": 6.614064399999999
+    },
+    {
+      "task_id": "45b581b5",
+      "baseline_mean": 0.8,
+      "baseline_std": 0.0,
+      "baseline_n": 3,
+      "with_sg_mean": 0.8,
+      "with_sg_std": 0.0,
+      "with_sg_n": 3,
+      "delta_mean": 0.0,
+      "baseline_rewards": [
+        0.8,
+        0.8,
+        0.8
+      ],
+      "with_sg_rewards": [
+        0.8,
+        0.8,
+        0.8
+      ],
+      "baseline_cost_mean": 1.5079934,
+      "with_sg_cost_mean": 5.045173900000001
+    },
+    {
+      "task_id": "fde8e6e0",
+      "baseline_mean": 0.6784,
+      "baseline_std": 0.0,
+      "baseline_n": 3,
+      "with_sg_mean": 0.6846,
+      "with_sg_std": 0.0,
+      "with_sg_n": 3,
+      "delta_mean": 0.006199999999999983,
+      "baseline_rewards": [
+        0.6784,
+        0.6784,
+        0.6784
+      ],
+      "with_sg_rewards": [
+        0.6846,
+        0.6846,
+        0.6846
+      ],
+      "baseline_cost_mean": 5.123444800000001,
+      "with_sg_cost_mean": 9.426416600000001
+    }
+  ],
+  "family_delta_paired_t": {
+    "n_tasks": 5,
+    "mean_delta": 0.0034533333333333304,
+    "stdev_of_per_task_deltas": 0.0032063825237935743,
+    "stderr": 0.0014339378570139537,
+    "ci_95_low": -0.0005272781577374042,
+    "ci_95_high": 0.0074339448244040655,
+    "t_statistic": 2.4082866049192577,
+    "df": 4,
+    "p_value_normal_approx": 0.01602759311938362,
+    "t_critical_95_two_sided": 2.776,
+    "method": "paired_t_test_per_task_means_with_t_critical"
+  },
+  "task_0d4ec3ad_reproducibility": {
+    "task_id": "0d4ec3ad",
+    "baseline_mean": 0.8,
+    "baseline_std": 0.0,
+    "baseline_n": 3,
+    "with_sg_mean": 0.8,
+    "with_sg_std": 0.0,
+    "with_sg_n": 3,
+    "delta_mean": 0.0,
+    "baseline_rewards": [
+      0.8,
+      0.8,
+      0.8
+    ],
+    "with_sg_rewards": [
+      0.8,
+      0.8,
+      0.8
+    ],
+    "baseline_cost_mean": 8.7221638,
+    "with_sg_cost_mean": 6.614064399999999
+  }
+}

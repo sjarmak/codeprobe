@@ -48,6 +48,8 @@ When the user selects MCP comparison, switch to org-scale mining with MCP famili
 
 **Question 2c** -- Header: "Which MCP families?"
 
+> If the caller (e.g. `/experiment` Phase 0e) supplied `TASK_DISTRIBUTION` as a non-`auto` JSON object, **skip this question** — see the **Distribution-Driven Mode** section below for routing. Only ask when distribution is `auto`.
+
 - Options (all selected by default):
   - **symbol-reference-trace** -- Find all files referencing a symbol (catches aliases, re-exports)
   - **type-hierarchy-consumers** -- Find implementations and consumers of base classes
@@ -77,6 +79,52 @@ After mining completes, spawn a subagent to enrich each task's `instruction.md`:
 2. This runs inside the existing Claude Code session — no API key needed.
 
 Skip Phase 1 questions about git host (not needed for org-scale mining).
+
+---
+
+## Distribution-Driven Mode
+
+When invoked from `/experiment` with `TASK_DISTRIBUTION` set to a JSON object (e.g. `{"symbol-reference-trace": 5, "sdlc": 5, "oracle_checks": 5}`), bypass the goal-bound default and mine per-family per the supplied counts.
+
+### Family → mining mode mapping
+
+| Task family                  | Mining invocation                                                    | Status |
+| ---------------------------- | -------------------------------------------------------------------- | ------ |
+| `symbol-reference-trace`     | `--org-scale --mcp-families --family symbol-reference-trace --count N` | Wired |
+| `type-hierarchy-consumers`   | `--org-scale --mcp-families --family type-hierarchy-consumers --count N` | Wired |
+| `change-scope-audit`         | `--org-scale --mcp-families --family change-scope-audit --count N`   | Wired |
+| `mcp-fbeta`                  | Same as `symbol-reference-trace` + write `verification.fbeta_beta` per task | Wired |
+| `org-scale-tier-weighted`    | `--org-scale --count N`                                              | Wired |
+| `org-scale-recall-tilted`    | `--org-scale --recall --count N`                                     | Wired |
+| `dependency-chain`           | `--min-files 3 --bias dependency-chain --count N`                    | Wired (general SDLC bias) |
+| `sdlc`                       | `--min-files 2 --count N`                                            | Wired |
+| `binary-test`                | `--min-files 2 --bias binary --count N`                              | Wired (general SDLC bias) |
+| `continuous`                 | `--min-files 2 --bias continuous --count N`                          | Wired (general SDLC bias) |
+| `exact-match`                | `--min-files 2 --bias exact-match --count N`                         | Wired (general SDLC bias) |
+| `dual-composite`             | `--min-files 2 --bias dual-composite --count N`                      | Wired (general SDLC bias) |
+| `oracle_checks`              | _no dedicated miner yet_                                              | **Hardcoded for follow-up** — port the CSB rubric-builder. Track as successor to `codeprobe-bln9`. |
+
+### Execution
+
+For each `(family, count)` entry in `TASK_DISTRIBUTION`:
+
+1. If status is **Wired**, run the mapped invocation, accumulating into the experiment's tasks directory.
+2. If status is **Hardcoded for follow-up**, append the family name to `MINING_HARDCODED_FOR` and skip.
+
+After all entries process:
+
+```
+Mining summary:
+  Honored:  symbol-reference-trace=5, sdlc=5
+  Skipped:  oracle_checks=5  (no miner yet, follow-up to bln9)
+  Total tasks produced: 10 (target was 15)
+```
+
+If `MINING_HARDCODED_FOR` is non-empty, surface it explicitly to the caller so the experiment can decide whether to proceed with the partial set or bail.
+
+### Backward compatibility
+
+If `TASK_DISTRIBUTION` is absent, `null`, or `"auto"`, this section is skipped entirely and mining proceeds via the goal-bound default in Phase 0. No existing invocation breaks.
 
 ---
 

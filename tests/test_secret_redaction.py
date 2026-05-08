@@ -20,7 +20,7 @@ _MCP_CONFIG_WITH_TOKEN = {
     "mcpServers": {
         "sourcegraph": {
             "type": "http",
-            "url": "https://sourcegraph.com/.api/mcp/v1",
+            "url": "https://sourcegraph.com/.api/mcp/all",
             "headers": {
                 "Authorization": "token sgp_abcdef1234567890abcdef1234567890",
             },
@@ -98,7 +98,7 @@ class TestRedactMcpHeaders:
         assert result["mcpServers"]["sourcegraph"]["type"] == "http"
         assert (
             result["mcpServers"]["sourcegraph"]["url"]
-            == "https://sourcegraph.com/.api/mcp/v1"
+            == "https://sourcegraph.com/.api/mcp/all"
         )
 
     def test_returns_new_dict_no_mutation(self) -> None:

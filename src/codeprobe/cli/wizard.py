@@ -32,7 +32,7 @@ def build_sourcegraph_mcp_config(
         "mcpServers": {
             "sourcegraph": {
                 "type": "http",
-                "url": f"{base_url}/.api/mcp/v1",
+                "url": f"{base_url}/.api/mcp/all",
                 "headers": {"Authorization": f"token {token}"},
             }
         }

@@ -7,6 +7,7 @@ import logging
 import queue
 import shutil
 import subprocess
+import tempfile
 import threading
 import uuid
 from collections.abc import Iterator
@@ -160,6 +161,164 @@ def quarantine_sibling_experiments(
             except OSError as exc:
                 logger.warning(
                     "quarantine_sibling_experiments: failed to move %s -> %s: %s; "
+                    "rolling back partial quarantine",
+                    src,
+                    dst,
+                    exc,
+                )
+                _restore()
+                yield
+                return
+    except BaseException:
+        _restore()
+        raise
+
+    try:
+        yield
+    finally:
+        _restore()
+
+
+# Names always kept inside the workspace under quarantine_local_source.
+# .git is needed for any in-workspace git operations the agent might
+# perform (and for codeprobe's own pin/restore plumbing). The
+# .codeprobe-* prefixes cover worktree pool dirs and codeprobe metadata
+# that the executor relies on between trials.
+_LOCAL_SOURCE_DEFAULT_KEEP: frozenset[str] = frozenset({".git", ".codeprobe"})
+
+
+@contextlib.contextmanager
+def quarantine_local_source(
+    workspace: Path,
+    *,
+    keep: tuple[str, ...] = (),
+) -> Iterator[None]:
+    """Hide local source files from the agent during a sg-only run.
+
+    All top-level entries of *workspace* except ``.git``, ``.codeprobe``,
+    ``.codeprobe-worktrees*``, and any names in *keep* are atomically
+    moved to a sibling stash directory on enter and restored on exit
+    (including on exception). Files the agent creates during the yield
+    window (e.g. ``answer.txt``) are left in place by the restore.
+
+    Mirrors the CSB ``Dockerfile.sg_only`` and EB
+    ``generate_sg_only_dockerfile`` pattern: the workspace appears
+    empty so the agent must use Sourcegraph MCP for code access.
+    Codeprobe's verifier reads test scripts and oracle data from
+    ``task_dir`` (a path separate from the workspace), so the default
+    empty *keep* is the common case; SDLC-style tasks that need
+    in-tree fixtures would extend it.
+
+    The stash sits in a temp directory placed next to *workspace*
+    when that's writable, or in the system temp directory otherwise.
+    Same-filesystem placement enables atomic rename for performance
+    on large source trees.
+    """
+    workspace_resolved = workspace.resolve()
+    if not workspace_resolved.is_dir():
+        yield
+        return
+
+    keep_set = set(_LOCAL_SOURCE_DEFAULT_KEEP) | set(keep)
+
+    def _is_quarantinable(name: str) -> bool:
+        if name in keep_set:
+            return False
+        # Cover the runtime-suffixed worktree pool dirs that
+        # WorktreeIsolation creates under ``<repo>/.codeprobe-worktrees-<ns>``.
+        if name.startswith(".codeprobe-worktrees"):
+            return False
+        if name.startswith(".codeprobe-source-stash-"):
+            return False
+        return True
+
+    try:
+        entries = [e for e in workspace_resolved.iterdir() if _is_quarantinable(e.name)]
+    except OSError as exc:
+        logger.warning(
+            "quarantine_local_source: cannot enumerate %s: %s; "
+            "source will remain visible",
+            workspace_resolved,
+            exc,
+        )
+        yield
+        return
+
+    if not entries:
+        yield
+        return
+
+    # Place the stash next to the workspace when possible so the move
+    # is a same-filesystem rename. Fall back to the system temp dir
+    # if the parent is not writable.
+    stash_parent_candidates: list[Path] = []
+    if workspace_resolved.parent.is_dir():
+        stash_parent_candidates.append(workspace_resolved.parent)
+    stash_parent_candidates.append(Path(tempfile.gettempdir()))
+
+    stash_dir: Path | None = None
+    for candidate in stash_parent_candidates:
+        try:
+            stash_dir = Path(
+                tempfile.mkdtemp(prefix=".codeprobe-source-stash-", dir=str(candidate))
+            )
+            break
+        except OSError as exc:
+            logger.debug(
+                "quarantine_local_source: stash creation failed under %s: %s",
+                candidate,
+                exc,
+            )
+
+    if stash_dir is None:
+        logger.warning(
+            "quarantine_local_source: could not create stash dir in any candidate; "
+            "source will remain visible"
+        )
+        yield
+        return
+
+    moved: list[tuple[Path, Path]] = []  # (original, stashed)
+
+    def _restore() -> None:
+        for original, stashed in moved:
+            try:
+                if not stashed.exists():
+                    continue
+                if original.exists():
+                    # Agent produced a same-named entry during the yield
+                    # window — keep the agent's version, drop the stash.
+                    if stashed.is_dir() and not stashed.is_symlink():
+                        shutil.rmtree(stashed)
+                    else:
+                        stashed.unlink()
+                else:
+                    shutil.move(str(stashed), str(original))
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to restore quarantined source %s -> %s: %s",
+                    stashed,
+                    original,
+                    exc,
+                )
+        if stash_dir is not None and stash_dir.exists():
+            try:
+                shutil.rmtree(stash_dir)
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to remove source-stash dir %s: %s", stash_dir, exc
+                )
+
+    try:
+        for entry in entries:
+            src = entry
+            dst = stash_dir / entry.name
+            try:
+                shutil.move(str(src), str(dst))
+                moved.append((src, dst))
+            except OSError as exc:
+                logger.warning(
+                    "quarantine_local_source: failed to move %s -> %s: %s; "
                     "rolling back partial quarantine",
                     src,
                     dst,

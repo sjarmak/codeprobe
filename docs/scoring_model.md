@@ -79,6 +79,7 @@ SCORER_FAMILIES = frozenset({
 
     # Composite
     "weighted_checkpoints",     # CheckpointScorer
+    "oracle_checks",            # OracleChecksScorer (structured rubric — CSB-aligned)
     "dual_composite",           # DualScorer (direct + artifact)
 })
 ```
@@ -100,6 +101,7 @@ exact_match              → reward = 1.0 if equal else 0.0
 binary_test              → reward = 1.0 if exit==0 else 0.0
 continuous               → reward = clamped reward.txt (or last stdout line)
 weighted_checkpoints     → reward = Σ (weight_i · checkpoint_score_i)
+oracle_checks            → reward = Σ (weight_i · criterion_score_i) / Σ weight_i
 dual_composite           → reward depends on scoring_policy:
                               ""        → reward_direct
                               "min"     → min(direct, artifact)
@@ -143,6 +145,124 @@ The default applies to the on-disk continuous oracle
 and to the in-process `score_file_list` / `score_symbol_list`. The
 existing oracle script writes F1 today — we just stopped throwing it
 away in favour of recall.
+
+### `oracle_checks` — structured-rubric criteria
+
+`oracle_checks` is the structured-rubric scorer family. Use it for tasks
+where the verifier evaluates a list of named criteria — "did the diff
+handle edge case X?", "are all error-handling branches tested?" — that
+do not collapse to file/symbol overlap. Mirrors the CSB `oracle_checks`
+pattern so the same family name lines up across rigs.
+
+Per-criterion verifiers run independently under the standard scoring
+sandbox and emit `{"score": 0.0-1.0, "passed": bool}` JSON on stdout
+(or fall back to exit code: `0` → `1.0`, nonzero → `0.0`). The headline
+reward is the **weight-normalized average** `Σ(weight_i · score_i) /
+Σ(weight_i)`, so weights need not sum to `1.0` — a rubric with weights
+`[2, 1, 1]` is equivalent to `[0.5, 0.25, 0.25]`.
+
+Rubric source resolution order:
+
+1. `metadata_criteria` constructor argument — populated from `task.toml`
+   `[[rubric_criteria]]` by the task loader.
+2. `tests/rubric.json` on disk — for tasks that ship the rubric inline.
+
+#### `task.toml` schema
+
+Declare the rubric inline alongside `[verification]`:
+
+```toml
+[verification]
+type = "oracle_checks"
+reward_type = "oracle_checks"
+verification_mode = "test_script"
+
+[[rubric_criteria]]
+name = "handles_edge_case_x"
+weight = 0.5
+verifier = "check_edge_case.sh"
+description = "Verify the agent's diff handles the empty-input edge case"
+
+[[rubric_criteria]]
+name = "covers_error_branches"
+weight = 0.3
+verifier = "check_error_branches.sh"
+
+[[rubric_criteria]]
+name = "preserves_public_api"
+weight = 0.2
+verifier = "check_public_api.sh"
+```
+
+Required fields per criterion: `name`, `weight`, `verifier`. `description`
+is optional and recorded in metadata only — the scorer ignores it.
+
+#### `tests/rubric.json` schema
+
+For tasks that ship the rubric on disk (the format the scorer reads when
+no `metadata_criteria` are passed), `tests/rubric.json` is a JSON list:
+
+```json
+[
+  {
+    "name": "handles_edge_case_x",
+    "weight": 0.5,
+    "verifier": "check_edge_case.sh",
+    "description": "Verify the agent's diff handles the empty-input edge case"
+  },
+  {
+    "name": "covers_error_branches",
+    "weight": 0.3,
+    "verifier": "check_error_branches.sh"
+  }
+]
+```
+
+Verifier scripts live in `tests/verifiers/` — the same layout that
+`CheckpointScorer` uses. The sandbox copies the task directory, runs
+each verifier with `AGENT_OUTPUT` set to the captured agent text, and
+collects the JSON / exit code result.
+
+#### `sub_scores` shape
+
+```jsonc
+{
+  "scorer_family": "oracle_checks",
+  "sub_scores": {
+    "composite": 0.65,
+    "criterion_scores": {
+      "handles_edge_case_x": 1.0,
+      "covers_error_branches": 0.5,
+      "preserves_public_api": 0.0
+    },
+    "total_weight": 1.0
+  }
+}
+```
+
+`details.criterion_scores` and `details.criterion_weights` mirror this
+breakdown for `aggregate.json` consumers that read `scoring_details`
+directly.
+
+#### Composing with `dual_composite`
+
+`oracle_checks` is a regular `Scorer`; `DualScorer` can blend it with a
+direct (binary / continuous) leg the same way it blends `ArtifactScorer`.
+Tasks that want "test.sh must pass AND the rubric criteria must pass"
+declare:
+
+```toml
+[verification]
+verification_mode = "dual"
+reward_type = "binary"        # direct leg: tests/test.sh
+scoring_policy = "gate"        # 1.0 only when both legs passed
+# (artifact leg is OracleChecksScorer if the task ships a rubric)
+```
+
+The current `DualScorer` pairs the direct leg with `ArtifactScorer` —
+swapping in `OracleChecksScorer` for tasks that prefer rubric criteria
+over `ground_truth.json` answer-typing is a follow-up wiring change
+that doesn't require changes to the family contract.
 
 ## What gets emitted
 
@@ -345,6 +465,37 @@ Reviewers who want a recall-tilted view of either task add
 `{"verification": {"scorer_family": "oracle_overlap_recall"}}` to that
 task's metadata and re-score. Both views live alongside in
 `scoring_details.sub_scores`.
+
+## Verifier-honesty lint
+
+`tests/lint/test_scorer_honesty.py` is a pytest-based AST lint over
+`core/scoring.py` and `core/bias_detection.py`. It catches four
+classes of *verifier dishonesty* and runs as part of the standard
+`pytest` invocation (no separate CLI step):
+
+* **`missing-scorer-family`** — every `ScoreResult(...)` must declare
+  `scorer_family=`. Empty strings are allowed (the field is opaque
+  in that case); the kwarg has to be present.
+* **`quiet-recall-fallback`** — F1-family branches that fall back to
+  `reward = recall` / `weighted_recall`. The voxa-class regression.
+* **`hardcoded-threshold`** — inline float literals in compares AND
+  module-level threshold-named constants that are not config-plumbed.
+* **`bare-except`** — `except:` / `except Exception:` without a
+  `# noqa` annotation in scorer code.
+
+### Adding a new scorer family
+
+1. Add the name to `SCORER_FAMILIES` in `core/scoring.py`.
+2. Document the rubric and `sub_scores` shape in this file.
+3. Make sure every `ScoreResult` your scorer emits passes the lint
+   — declare `scorer_family=` on success AND error paths.
+4. Add a fixture-backed test under `tests/test_scoring_reward.py`.
+
+Pre-existing offenders are tracked in `_KNOWN_OFFENDERS` in the lint
+file with explicit follow-up bead IDs. Adding a new entry needs
+reviewer sign-off; deleting an entry once the offender is fixed is
+mandatory (the `test_scorer_honesty_known_offenders_still_present`
+test flags stale entries).
 
 ## Out of scope
 

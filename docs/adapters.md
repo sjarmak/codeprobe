@@ -72,6 +72,7 @@ Configuration passed to every adapter method:
 | `mcp_config`      | `dict \| None` | `None`      | MCP tool configuration                                     |
 | `extra`           | `dict \| None` | `None`      | Adapter-specific options                                   |
 | `cwd`             | `str \| None`  | `None`      | Working directory for the agent                            |
+| `max_turns`       | `int \| None`  | `None`      | Hard cap on agent turns; `None` = uncapped. See [agent_config.md](agent_config.md). |
 
 ### AgentOutput
 

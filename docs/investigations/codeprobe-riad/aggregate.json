@@ -1,0 +1,193 @@
+{
+  "task": "oc_004",
+  "rubric_criteria": [
+    "names_flag_aliases_field",
+    "names_toml_tag",
+    "explains_schema_driven_rationale",
+    "names_resolve_path"
+  ],
+  "per_config": {
+    "riad-refined-preamble-fresh-index": {
+      "n": 3,
+      "mean_reward": 1.0,
+      "rewards": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean_cost_usd": 0.3088,
+      "mean_wallclock_s": 86.6,
+      "wallclocks": [
+        92.5,
+        80.9,
+        86.4
+      ],
+      "mean_output_tokens": 4233,
+      "criterion_means": {
+        "explains_schema_driven_rationale": 1.0,
+        "names_flag_aliases_field": 1.0,
+        "names_resolve_path": 1.0,
+        "names_toml_tag": 1.0
+      },
+      "criterion_per_repeat": {
+        "explains_schema_driven_rationale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_flag_aliases_field": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_resolve_path": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_toml_tag": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    "2txc-tuned-preamble-stale-index": {
+      "n": 3,
+      "mean_reward": 0.5952,
+      "rewards": [
+        0.6429,
+        0.5,
+        0.6429
+      ],
+      "mean_cost_usd": 0.3111,
+      "mean_wallclock_s": 59.3,
+      "wallclocks": [
+        60.4,
+        53.4,
+        64.1
+      ],
+      "mean_output_tokens": 2865,
+      "criterion_means": {
+        "explains_schema_driven_rationale": 0.333,
+        "names_flag_aliases_field": 1.0,
+        "names_resolve_path": 1.0,
+        "names_toml_tag": 0.0
+      },
+      "criterion_per_repeat": {
+        "explains_schema_driven_rationale": [
+          0.5,
+          0.0,
+          0.5
+        ],
+        "names_flag_aliases_field": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_resolve_path": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_toml_tag": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "ttwq-default-preamble-stale-index": {
+      "n": 3,
+      "mean_reward": 0.5714,
+      "rewards": [
+        0.4286,
+        0.6429,
+        0.6429
+      ],
+      "mean_cost_usd": 0.3864,
+      "mean_wallclock_s": 75.8,
+      "wallclocks": [
+        105.8,
+        56.2,
+        65.4
+      ],
+      "mean_output_tokens": 3434.0,
+      "criterion_means": {
+        "explains_schema_driven_rationale": 0.5,
+        "names_flag_aliases_field": 1.0,
+        "names_resolve_path": 0.667,
+        "names_toml_tag": 0.0
+      },
+      "criterion_per_repeat": {
+        "explains_schema_driven_rationale": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "names_flag_aliases_field": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_resolve_path": [
+          0.0,
+          1.0,
+          1.0
+        ],
+        "names_toml_tag": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    "ttwq-baseline-no-mcp": {
+      "n": 3,
+      "mean_reward": 1.0,
+      "rewards": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "mean_cost_usd": 0.3154,
+      "mean_wallclock_s": 60.5,
+      "wallclocks": [
+        51.9,
+        70.7,
+        58.8
+      ],
+      "mean_output_tokens": 2500,
+      "criterion_means": {
+        "explains_schema_driven_rationale": 1.0,
+        "names_flag_aliases_field": 1.0,
+        "names_resolve_path": 1.0,
+        "names_toml_tag": 1.0
+      },
+      "criterion_per_repeat": {
+        "explains_schema_driven_rationale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_flag_aliases_field": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_resolve_path": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "names_toml_tag": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    }
+  },
+  "key_finding": "Refined preamble (verify-before-denying) + freshly-reindexed Sourcegraph lifts oc_004 from mean reward 0.595 (2txc) to 1.000 (3/3 perfect). All four criteria \u2014 including the previously-broken names_toml_tag \u2014 now score 1.0 across all three repeats. Cost holds at $0.31/trial.",
+  "attribution_caveat": "Two variables changed simultaneously between the 2txc reference and this run: (1) preamble.py gained the verify-via-Grep-before-denying instruction; (2) Sourcegraph's mirror was updated, lifting the indexed commit from 99742e36 (2026-04-22, before the FlagAliases commit d906ac3d on 2026-04-27) to 6b5d9121 (origin/main HEAD, which contains FlagAliases). We cannot disentangle preamble effect from index-refresh effect with this run alone."
+}

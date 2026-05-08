@@ -1,0 +1,242 @@
+[
+  {
+    "config": "riad-refined-preamble-fresh-index",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 92.4932027249597,
+    "cost_usd": 0.28371255000000006,
+    "input_tokens": 1607,
+    "output_tokens": 4588,
+    "cache_read_tokens": 322476,
+    "cache_creation_tokens": 30221
+  },
+  {
+    "config": "riad-refined-preamble-fresh-index",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 80.89734380086884,
+    "cost_usd": 0.33907755000000006,
+    "input_tokens": 4388,
+    "output_tokens": 4229,
+    "cache_read_tokens": 311116,
+    "cache_creation_tokens": 45105
+  },
+  {
+    "config": "riad-refined-preamble-fresh-index",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 86.41371706267819,
+    "cost_usd": 0.30346470000000003,
+    "input_tokens": 10,
+    "output_tokens": 3882,
+    "cache_read_tokens": 270799,
+    "cache_creation_tokens": 43724
+  },
+  {
+    "config": "2txc-tuned-preamble-stale-index",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 0.6428571428571429,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.5,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 60.36300886422396,
+    "cost_usd": 0.2841318,
+    "input_tokens": 10,
+    "output_tokens": 2803,
+    "cache_read_tokens": 236331,
+    "cache_creation_tokens": 45642
+  },
+  {
+    "config": "2txc-tuned-preamble-stale-index",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 0.5,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 53.40916342288256,
+    "cost_usd": 0.33685365,
+    "input_tokens": 61,
+    "output_tokens": 2790,
+    "cache_read_tokens": 295473,
+    "cache_creation_tokens": 54981
+  },
+  {
+    "config": "2txc-tuned-preamble-stale-index",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 0.6428571428571429,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.5,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 64.12684585526586,
+    "cost_usd": 0.31241264999999996,
+    "input_tokens": 62,
+    "output_tokens": 3002,
+    "cache_read_tokens": 301243,
+    "cache_creation_tokens": 47153
+  },
+  {
+    "config": "ttwq-default-preamble-stale-index",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 0.42857142857142855,
+    "passed": false,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.5,
+      "names_resolve_path": 0.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 105.77996818115935,
+    "cost_usd": 0.38366985,
+    "input_tokens": 61,
+    "output_tokens": 4438,
+    "cache_read_tokens": 298327,
+    "cache_creation_tokens": 60645
+  },
+  {
+    "config": "ttwq-default-preamble-stale-index",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 0.6428571428571429,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.5,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 56.21012181695551,
+    "cost_usd": 0.4166421,
+    "input_tokens": 206,
+    "output_tokens": 2582,
+    "cache_read_tokens": 387797,
+    "cache_creation_tokens": 69588
+  },
+  {
+    "config": "ttwq-default-preamble-stale-index",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 0.6428571428571429,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 0.0,
+      "explains_schema_driven_rationale": 0.5,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 65.35770328482613,
+    "cost_usd": 0.35875155000000003,
+    "input_tokens": 240,
+    "output_tokens": 3281,
+    "cache_read_tokens": 323101,
+    "cache_creation_tokens": 56503
+  },
+  {
+    "config": "ttwq-baseline-no-mcp",
+    "task_id": "oc_004",
+    "repeat_index": 0,
+    "reward": 1.0,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 51.942702358122915,
+    "cost_usd": 0.2904507,
+    "input_tokens": 13,
+    "output_tokens": 2615,
+    "cache_read_tokens": 430189,
+    "cache_creation_tokens": 32568
+  },
+  {
+    "config": "ttwq-baseline-no-mcp",
+    "task_id": "oc_004",
+    "repeat_index": 1,
+    "reward": 1.0,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 70.6613804702647,
+    "cost_usd": 0.3547884,
+    "input_tokens": 12,
+    "output_tokens": 2659,
+    "cache_read_tokens": 463858,
+    "cache_creation_tokens": 46856
+  },
+  {
+    "config": "ttwq-baseline-no-mcp",
+    "task_id": "oc_004",
+    "repeat_index": 2,
+    "reward": 1.0,
+    "passed": true,
+    "criterion_scores": {
+      "names_flag_aliases_field": 1.0,
+      "names_toml_tag": 1.0,
+      "explains_schema_driven_rationale": 1.0,
+      "names_resolve_path": 1.0
+    },
+    "scorer_family": "oracle_checks",
+    "duration_seconds": 58.815165924839675,
+    "cost_usd": 0.30101069999999996,
+    "input_tokens": 10,
+    "output_tokens": 2226,
+    "cache_read_tokens": 337644,
+    "cache_creation_tokens": 44346
+  }
+]

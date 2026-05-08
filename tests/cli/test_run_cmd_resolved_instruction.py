@@ -293,7 +293,12 @@ def test_resolved_instruction_renders_task_preamble_context(
     assert adapter.run_calls, "FakeAdapter.run was never invoked"
     assert prompt_text == adapter.run_calls[0][0]
     assert "github.com/acme/widgets" in prompt_text
-    assert "{{sg_repo}}" not in prompt_text
+    # jf28: sg_repo flows through repo_scope; the literal {{sg_repo}}
+    # token no longer appears in the v2 sourcegraph preamble.
+    assert "{{repo_scope}}" not in prompt_text
+    assert "{{workflow_tail}}" not in prompt_text
     assert "treat `sg_find_references` as authoritative" in prompt_text
-    assert "do not replace it with a grep union" in prompt_text
+    # jf28: "grep union" -> "keyword-search union" (no local Grep
+    # under file-removal mode).
+    assert "do not replace it with a keyword-search union" in prompt_text
     assert "maximum recall" not in prompt_text

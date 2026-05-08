@@ -11,6 +11,7 @@ import pytest
 from codeprobe.core.isolation import (
     RepoRef,
     cleanup_multi_repo_workspace,
+    quarantine_local_source,
     quarantine_sibling_experiments,
     setup_multi_repo_workspace,
 )
@@ -382,3 +383,150 @@ class TestExecuteConfigQuarantinesSiblings:
         # Sibling restored after dispatch.
         assert sibling_sentinel.exists()
         assert sibling_sentinel.read_text() == "LEAKED"
+
+
+# ---------------------------------------------------------------------------
+# quarantine_local_source — sg-only file-removal-and-bring-back (codeprobe-jf28)
+# ---------------------------------------------------------------------------
+
+
+class TestQuarantineLocalSource:
+    """Cover the file-removal-and-bring-back primitive.
+
+    Mirrors CSB's ``Dockerfile.sg_only`` and EB's
+    ``generate_sg_only_dockerfile`` pattern: workspace appears empty
+    during the yield window so the agent must use Sourcegraph MCP for
+    code access, then source is restored afterwards.
+    """
+
+    def test_stashes_and_restores_top_level_entries(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "src").mkdir()
+        (ws / "src" / "main.py").write_text("print('hi')")
+        (ws / "README.md").write_text("readme")
+
+        with quarantine_local_source(ws):
+            # Workspace appears empty (apart from default-keep entries
+            # which weren't created in this fixture).
+            entries = sorted(p.name for p in ws.iterdir())
+            assert entries == [], f"expected empty workspace, got {entries}"
+
+        # Restored — original layout intact.
+        assert (ws / "src" / "main.py").read_text() == "print('hi')"
+        assert (ws / "README.md").read_text() == "readme"
+
+    def test_keeps_dot_git_during_quarantine(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").mkdir()
+        (ws / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        (ws / "src.py").write_text("x = 1")
+
+        with quarantine_local_source(ws):
+            assert (ws / ".git").is_dir()
+            assert (ws / ".git" / "HEAD").read_text() == "ref: refs/heads/main\n"
+            assert not (ws / "src.py").exists()
+
+        assert (ws / "src.py").read_text() == "x = 1"
+
+    def test_keeps_codeprobe_metadata(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".codeprobe").mkdir()
+        (ws / ".codeprobe" / "marker").write_text("M")
+        (ws / ".codeprobe-worktrees-foo").mkdir()
+        (ws / "lib.py").write_text("x")
+
+        with quarantine_local_source(ws):
+            assert (ws / ".codeprobe" / "marker").read_text() == "M"
+            assert (ws / ".codeprobe-worktrees-foo").is_dir()
+            assert not (ws / "lib.py").exists()
+
+        assert (ws / "lib.py").read_text() == "x"
+
+    def test_extra_keep_entries_survive(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "tests").mkdir()
+        (ws / "tests" / "test.sh").write_text("#!/bin/sh\necho ok")
+        (ws / "src.py").write_text("x")
+
+        with quarantine_local_source(ws, keep=("tests",)):
+            assert (ws / "tests" / "test.sh").read_text() == "#!/bin/sh\necho ok"
+            assert not (ws / "src.py").exists()
+
+        assert (ws / "src.py").read_text() == "x"
+
+    def test_agent_created_files_survive_restore(self, tmp_path: Path) -> None:
+        """Files the agent writes during the yield window stay in place."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "src.py").write_text("source")
+
+        with quarantine_local_source(ws):
+            # Simulate agent producing answer.txt in the empty workspace.
+            (ws / "answer.txt").write_text("agent output")
+
+        # Source restored AND answer.txt survives.
+        assert (ws / "src.py").read_text() == "source"
+        assert (ws / "answer.txt").read_text() == "agent output"
+
+    def test_agent_overwriting_stashed_name_keeps_agent_version(
+        self, tmp_path: Path
+    ) -> None:
+        """If the agent creates a same-named entry, its version wins."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "notes.md").write_text("original")
+
+        with quarantine_local_source(ws):
+            (ws / "notes.md").write_text("agent rewrote this")
+
+        assert (ws / "notes.md").read_text() == "agent rewrote this"
+
+    def test_restores_on_exception(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "src.py").write_text("source")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            with quarantine_local_source(ws):
+                assert not (ws / "src.py").exists()
+                raise RuntimeError("boom")
+
+        # Source restored despite the exception.
+        assert (ws / "src.py").read_text() == "source"
+
+    def test_no_op_when_workspace_missing(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist"
+        with quarantine_local_source(missing):
+            # Should yield without raising; nothing to stash.
+            pass
+
+    def test_no_op_when_only_keep_entries_present(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").mkdir()
+
+        with quarantine_local_source(ws):
+            # .git is in default keep set; no quarantine activity.
+            assert (ws / ".git").is_dir()
+
+        assert (ws / ".git").is_dir()
+
+    def test_stash_dir_cleaned_up_on_exit(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "src.py").write_text("x")
+
+        with quarantine_local_source(ws):
+            pass
+
+        # No leftover stash dirs in the parent.
+        leftover = [
+            p
+            for p in tmp_path.iterdir()
+            if p.name.startswith(".codeprobe-source-stash-")
+        ]
+        assert leftover == [], f"stash leaked: {leftover}"

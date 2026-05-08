@@ -59,6 +59,7 @@ def _build_experiment_config(raw: dict) -> ExperimentConfig:
         instruction_variant=raw.get("instruction_variant"),
         preambles=tuple(raw.get("preambles", ())),
         reward_type=raw.get("reward_type", "binary"),
+        max_turns=raw.get("max_turns"),
         extra=raw.get("extra", {}),
     )
 
@@ -150,6 +151,13 @@ def run_experiment(
         adapter = resolve(exp_config.agent)
 
         timeout = exp_config.extra.get("timeout_seconds", 3600)
+        # max_turns: explicit field wins; fall back to extra dict for
+        # configs authored before the field existed.
+        resolved_max_turns = (
+            exp_config.max_turns
+            if exp_config.max_turns is not None
+            else exp_config.extra.get("max_turns")
+        )
         policy = resolve_tool_policy(exp_config)
         if policy.warning is not None:
             logger.warning("[%s] %s", exp_config.label, policy.warning)
@@ -161,6 +169,7 @@ def run_experiment(
             allowed_tools=policy.allowed_tools,
             disallowed_tools=policy.disallowed_tools,
             cwd=str(experiment_dir.resolve()),
+            max_turns=resolved_max_turns,
         )
 
         issues = adapter.preflight(agent_config)

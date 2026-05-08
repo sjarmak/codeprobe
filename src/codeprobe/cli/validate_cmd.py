@@ -276,6 +276,303 @@ _VALID_SCORING_POLICIES: frozenset[str] = frozenset(
 )
 
 
+_TRUE_VALS: frozenset[str] = frozenset({"true", "yes", "1"})
+_FALSE_VALS: frozenset[str] = frozenset({"false", "no", "0"})
+
+
+def _read_ground_truth_data(task_dir: Path) -> dict | None:
+    """Load ground_truth.json from either ``tests/`` or task root.
+
+    Returns the parsed dict, or ``None`` when the file is missing or
+    cannot be parsed as a JSON object. Mirrors the dual-layout fallback
+    used by ``codeprobe.qa.verify._read_ground_truth`` so the validator
+    handles both legacy mined tasks (root-level) and dual-mode synthetic
+    tasks (``tests/`` subdirectory).
+    """
+    for candidate in (
+        task_dir / "tests" / "ground_truth.json",
+        task_dir / "ground_truth.json",
+    ):
+        if candidate.is_file():
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return None
+            if isinstance(payload, dict):
+                return payload
+    return None
+
+
+def _expected_answer_from_gt(gt: dict) -> tuple[str | None, object]:
+    """Pick the canonical answer + answer_type from a ground_truth payload.
+
+    Returns ``(answer_type, answer_value)`` where ``answer_type`` is one of
+    ``"file_list" | "symbol_list" | "count" | "boolean" | "string" |
+    "list" | "scalar" | None``. ``answer_value`` carries whatever shape
+    came out of the ground truth (list, int, bool, str, or ``None`` when
+    nothing is recoverable). Resolution order:
+
+    1. v1 schema: top-level ``answer_type`` + ``answer``.
+    2. v2 schema: first ``checks[]`` entry with both fields populated.
+    3. Legacy: top-level ``expected`` list (treated as ``list``-shaped),
+       coupled with ``oracle_type`` if present (the mined-task convention).
+
+    The function never raises — invalid shapes return ``(None, None)`` so
+    the caller can skip the drift check rather than fail validation on a
+    malformed ground truth (a separate check covers that).
+    """
+    if "answer_type" in gt and "answer" in gt:
+        return gt.get("answer_type"), gt.get("answer")
+
+    checks = gt.get("checks")
+    if isinstance(checks, list):
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            if "answer_type" in check and "answer" in check:
+                return check.get("answer_type"), check.get("answer")
+
+    if "expected" in gt and isinstance(gt["expected"], list):
+        # Legacy mined-task layout. The oracle_type field is the closest
+        # signal we have to the canonical answer_type.
+        return gt.get("oracle_type") or "list", gt["expected"]
+
+    return None, None
+
+
+def _normalize_file_list(value: object) -> frozenset[str] | None:
+    """Coerce an answer value into a frozenset of stripped file paths.
+
+    Accepts either a list of strings or a multi-line text blob (the
+    shape ``answer.txt`` always takes). Empty lines and ``#``-prefixed
+    comments are dropped. Returns ``None`` when the input cannot be
+    interpreted as a file list at all.
+    """
+    if isinstance(value, list):
+        items = [str(p).strip() for p in value if p is not None]
+        return frozenset(p for p in items if p)
+    if isinstance(value, str):
+        items = []
+        for line in value.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            items.append(line)
+        return frozenset(items)
+    return None
+
+
+def _normalize_count(value: object) -> int | None:
+    """Coerce an answer value into an int, or ``None`` on parse failure."""
+    if isinstance(value, bool):
+        return None  # bool is an int subclass in Python; reject explicitly
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        for line in value.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                return int(line)
+            except ValueError:
+                return None
+    return None
+
+
+def _normalize_bool(value: object) -> bool | None:
+    """Coerce an answer value into a bool, or ``None`` when unrecognized."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        for line in value.splitlines():
+            line = line.strip().lower()
+            if not line or line.startswith("#"):
+                continue
+            if line in _TRUE_VALS:
+                return True
+            if line in _FALSE_VALS:
+                return False
+            return None
+    return None
+
+
+def _normalize_scalar(value: object) -> str | None:
+    """Coerce a scalar answer to a stripped string for equality compare."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return None  # caller should have routed this through file_list
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip()
+    return None
+
+
+def _check_answer_txt_drift(task_dir: Path) -> CheckResult | None:
+    """Compare a curator-shipped ``answer.txt`` against ground_truth.
+
+    This guards against the regression first observed against
+    ``e2e-codeprobe-self/tasks/0f2b0737`` (codeprobe-w8pg): a mined task
+    shipped an ``answer.txt`` that drifted out of sync with its
+    ``ground_truth.json``. The calibration triad's golden synthesizer
+    already prefers ground_truth (codeprobe-9fri), but downstream tools
+    that read ``answer.txt`` directly can still trip on stale data.
+
+    Returns:
+        - ``None`` when ``answer.txt`` is absent (the file is optional).
+        - ``CheckResult`` with ``passed=True`` and a "warn:" detail
+          prefix when drift is detected. Drift is advisory rather than
+          fatal so this check follows the same pattern as the QA-warning
+          plumbing in ``_check_qa``.
+        - ``CheckResult`` with ``passed=True`` and a normal detail when
+          the two agree (or when ground_truth offers no comparable
+          answer to score against).
+    """
+    answer_path = task_dir / "answer.txt"
+    if not answer_path.is_file():
+        return None
+
+    gt = _read_ground_truth_data(task_dir)
+    if gt is None:
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail="info: answer.txt present but ground_truth.json unavailable",
+        )
+
+    answer_type, expected = _expected_answer_from_gt(gt)
+    if expected is None:
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail=(
+                "info: answer.txt present but ground_truth has no comparable "
+                "answer/expected/checks field"
+            ),
+        )
+
+    try:
+        answer_text = answer_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail=f"info: failed to read answer.txt for drift check: {exc}",
+        )
+
+    list_types = {"file_list", "symbol_list", "list"}
+    if answer_type in list_types or isinstance(expected, list):
+        gt_set = _normalize_file_list(expected)
+        ans_set = _normalize_file_list(answer_text)
+        if gt_set is None or ans_set is None:
+            return CheckResult(
+                name="answer.txt drift",
+                passed=True,
+                detail=(
+                    f"info: answer.txt drift skipped — could not normalize "
+                    f"answer_type={answer_type!r}"
+                ),
+            )
+        if gt_set == ans_set:
+            return CheckResult(
+                name="answer.txt drift",
+                passed=True,
+                detail=f"answer.txt matches ground_truth ({len(gt_set)} items)",
+            )
+        only_gt = sorted(gt_set - ans_set)
+        only_ans = sorted(ans_set - gt_set)
+        intersect = len(gt_set & ans_set)
+        union = len(gt_set | ans_set)
+        jaccard = (intersect / union) if union else 0.0
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail=(
+                f"warn: answer.txt disagrees with ground_truth "
+                f"(jaccard={jaccard:.2f}, in gt only: {len(only_gt)}, "
+                f"in answer.txt only: {len(only_ans)})"
+            ),
+        )
+
+    if answer_type == "count":
+        gt_val = _normalize_count(expected)
+        ans_val = _normalize_count(answer_text)
+        if gt_val is None or ans_val is None:
+            return CheckResult(
+                name="answer.txt drift",
+                passed=True,
+                detail="info: answer.txt drift skipped — count parse failed",
+            )
+        if gt_val == ans_val:
+            return CheckResult(
+                name="answer.txt drift",
+                passed=True,
+                detail=f"answer.txt matches ground_truth (count={gt_val})",
+            )
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail=(
+                f"warn: answer.txt disagrees with ground_truth "
+                f"(answer.txt={ans_val}, ground_truth={gt_val})"
+            ),
+        )
+
+    if answer_type == "boolean":
+        gt_val = _normalize_bool(expected)
+        ans_val = _normalize_bool(answer_text)
+        if gt_val is None or ans_val is None:
+            return CheckResult(
+                name="answer.txt drift",
+                passed=True,
+                detail="info: answer.txt drift skipped — boolean parse failed",
+            )
+        if gt_val == ans_val:
+            return CheckResult(
+                name="answer.txt drift",
+                passed=True,
+                detail=f"answer.txt matches ground_truth (boolean={gt_val})",
+            )
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail=(
+                f"warn: answer.txt disagrees with ground_truth "
+                f"(answer.txt={ans_val}, ground_truth={gt_val})"
+            ),
+        )
+
+    gt_str = _normalize_scalar(expected)
+    ans_str = _normalize_scalar(answer_text)
+    if gt_str is None or ans_str is None:
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail=(
+                f"info: answer.txt drift skipped — unsupported "
+                f"answer_type={answer_type!r}"
+            ),
+        )
+    if gt_str == ans_str:
+        return CheckResult(
+            name="answer.txt drift",
+            passed=True,
+            detail="answer.txt matches ground_truth (scalar)",
+        )
+    return CheckResult(
+        name="answer.txt drift",
+        passed=True,
+        detail=(
+            "warn: answer.txt disagrees with ground_truth "
+            f"(answer.txt={ans_str!r}, ground_truth={gt_str!r})"
+        ),
+    )
+
+
 def _get_scoring_policy(meta: dict | None) -> str | None:
     """Extract scoring_policy from parsed metadata, if present.
 
@@ -428,8 +725,61 @@ def _check_verification_mode(vm: str) -> CheckResult:
     )
 
 
-def run_validate(task_dir: Path, *, strict: bool = False) -> list[CheckResult]:
+def _check_qa(task_dir: Path) -> list[CheckResult]:
+    """Run benchmark_qa_core checks, mapping each finding to a CheckResult.
+
+    Findings of severity ``error`` produce a failed CheckResult; ``warning``
+    and ``info`` findings surface as passed CheckResults whose detail
+    string starts with ``"warn: "`` / ``"info: "`` so the UI signals the
+    advisory level without aborting.
+
+    Class-D (path scope) findings are suppressed inside ``verify_task_qa``
+    by default — codeprobe's scoring contract already weights off-scope
+    answers via reward, so re-emitting them as QA errors creates noise.
+    """
+    from codeprobe.qa.verify import verify_task_qa
+
+    qa_result = verify_task_qa(task_dir)
+    results: list[CheckResult] = []
+    for finding in qa_result.findings:
+        loc = f" [{finding.location}]" if finding.location else ""
+        if finding.severity == "error":
+            results.append(
+                CheckResult(
+                    name=f"qa:{finding.code}",
+                    passed=False,
+                    detail=f"{finding.message}{loc}",
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    name=f"qa:{finding.code}",
+                    passed=True,
+                    detail=f"{finding.severity}: {finding.message}{loc}",
+                )
+            )
+    if not qa_result.findings:
+        results.append(
+            CheckResult(
+                name="qa checks",
+                passed=True,
+                detail="benchmark_qa_core: 0 findings",
+            )
+        )
+    return results
+
+
+def run_validate(
+    task_dir: Path, *, strict: bool = False, qa: bool = False
+) -> list[CheckResult]:
     """Run all structural validation checks on a task directory.
+
+    When ``qa=True``, also run the ``benchmark_qa_core`` lib's three
+    schema-agnostic checks (oracle coherence, scoring honesty, aux-file
+    leakage) and append one CheckResult per finding. Off by default to
+    keep the legacy validate semantics intact for callers that haven't
+    opted in.
 
     Returns a list of CheckResult objects.
     """
@@ -468,6 +818,15 @@ def run_validate(task_dir: Path, *, strict: bool = False) -> list[CheckResult]:
     # 6. Scoring policy / weight sum checks (always, regardless of mode)
     results.extend(_check_scoring_policy(meta))
 
+    # 7. answer.txt drift check (silent skip when answer.txt is absent).
+    drift_result = _check_answer_txt_drift(task_dir)
+    if drift_result is not None:
+        results.append(drift_result)
+
+    # 8. QA library checks — opt-in.
+    if qa:
+        results.extend(_check_qa(task_dir))
+
     return results
 
 
@@ -500,7 +859,16 @@ def _list_child_task_dirs(path: Path) -> list[Path]:
     default=False,
     help="Enable strict mode with LLM spot-check (placeholder).",
 )
-def validate(task_dir: str, strict: bool) -> None:
+@click.option(
+    "--qa",
+    is_flag=True,
+    default=False,
+    help=(
+        "Also run benchmark_qa_core checks (oracle coherence, scoring "
+        "honesty, aux-file leakage)."
+    ),
+)
+def validate(task_dir: str, strict: bool, qa: bool) -> None:
     """Validate structural correctness of a task directory.
 
     Checks that instruction.md, metadata, test scripts, and ground truth
@@ -525,7 +893,7 @@ def validate(task_dir: str, strict: bool) -> None:
             total = len(children)
             passed_count = 0
             for child in children:
-                child_results = run_validate(child, strict=strict)
+                child_results = run_validate(child, strict=strict, qa=qa)
                 child_ok = all(r.passed for r in child_results)
                 marker = "PASS" if child_ok else "FAIL"
                 click.echo(f"{marker}  {child.name}")
@@ -544,7 +912,7 @@ def validate(task_dir: str, strict: bool) -> None:
                 raise SystemExit(1)
             return
 
-    results = run_validate(path, strict=strict)
+    results = run_validate(path, strict=strict, qa=qa)
 
     any_failed = False
     for r in results:

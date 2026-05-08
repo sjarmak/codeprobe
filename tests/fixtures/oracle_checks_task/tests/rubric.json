@@ -1,0 +1,20 @@
+[
+  {
+    "name": "handles_edge_case_x",
+    "weight": 0.5,
+    "verifier": "check_edge_case.sh",
+    "description": "Verify the agent's diff handles the empty-input edge case"
+  },
+  {
+    "name": "covers_error_branches",
+    "weight": 0.3,
+    "verifier": "check_error_branches.sh",
+    "description": "Verify all error-handling branches are exercised by tests"
+  },
+  {
+    "name": "preserves_public_api",
+    "weight": 0.2,
+    "verifier": "check_public_api.sh",
+    "description": "Verify no breaking changes to the public API surface"
+  }
+]

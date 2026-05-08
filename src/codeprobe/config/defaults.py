@@ -482,36 +482,64 @@ def resolve_mcp_families(
 _GITHUB_SSH_PREFIX = "git@github.com:"
 
 
-def resolve_sg_repo(remote_url: str | None) -> tuple[str, str]:
-    """Derive ``github.com/sg-evals/{repo_name}`` from the origin remote (Q3)."""
+def _parse_github_owner_repo(remote_url: str | None) -> str:
+    """Parse ``owner/repo`` from a GitHub remote URL.
+
+    Accepts ``git@github.com:owner/repo[.git]`` and
+    ``http(s)://github.com/owner/repo[.git]``. Returns ``""`` if the URL is
+    empty, malformed, or not a recognizable GitHub remote.
+    """
     if not remote_url:
-        return "", "default"
+        return ""
 
     url = remote_url.strip()
-    name = ""
+    owner_repo = ""
 
     if url.startswith(_GITHUB_SSH_PREFIX):
-        tail = url[len(_GITHUB_SSH_PREFIX):]
-        # tail looks like "owner/repo.git"
-        owner_repo = tail
+        owner_repo = url[len(_GITHUB_SSH_PREFIX):]
     elif url.startswith(("http://", "https://")):
-        # https://github.com/owner/repo.git or similar
         parts = url.split("/")
         if len(parts) >= 2:
             owner_repo = "/".join(parts[-2:])
-        else:
-            owner_repo = ""
-    else:
-        owner_repo = ""
 
-    if owner_repo:
-        stripped = owner_repo.rsplit(".git", 1)[0]
-        _, _, name = stripped.rpartition("/")
+    if not owner_repo:
+        return ""
 
-    if not name:
+    stripped = owner_repo.rsplit(".git", 1)[0]
+    if "/" not in stripped:
+        return ""
+    owner, _, name = stripped.rpartition("/")
+    if not owner or not name:
+        return ""
+    return f"{owner}/{name}"
+
+
+def resolve_sg_repo(remote_url: str | None) -> tuple[str, str]:
+    """Derive ``github.com/sg-evals/{repo_name}`` from the origin remote (Q3)."""
+    owner_repo = _parse_github_owner_repo(remote_url)
+    if not owner_repo:
         return "", "default"
-
+    _, _, name = owner_repo.partition("/")
     return f"github.com/sg-evals/{name}", "auto-detected"
+
+
+def resolve_sg_repo_from_origin(remote_url: str | None) -> str:
+    """Derive ``github.com/{owner}/{repo}`` from the origin remote.
+
+    Unlike :func:`resolve_sg_repo` (which targets the ``sg-evals`` index used
+    by Sourcegraph synthetic eval mirrors), this returns the natural
+    Sourcegraph repo identifier matching the live GitHub URL — used by the
+    SDLC mining pipeline so ``metadata.sg_repo`` round-trips into the
+    Sourcegraph preamble's ``repo:^{repo}$`` filter.
+
+    Returns ``""`` when the URL is missing or unparsable; callers handle the
+    empty value (and the preamble guard fails loudly downstream if a
+    Sourcegraph preamble is requested without it).
+    """
+    owner_repo = _parse_github_owner_repo(remote_url)
+    if not owner_repo:
+        return ""
+    return f"github.com/{owner_repo}"
 
 
 def resolve_max_cost_usd() -> tuple[float, str]:
@@ -643,6 +671,7 @@ __all__ = [
     "resolve_out_calibrate",
     "resolve_preamble",
     "resolve_sg_repo",
+    "resolve_sg_repo_from_origin",
     "resolve_suite",
     "resolve_task_type",
     "resolve_timeout",

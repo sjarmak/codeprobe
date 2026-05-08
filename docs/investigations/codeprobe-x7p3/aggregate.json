@@ -1,0 +1,217 @@
+{
+  "experiment": "gascity-mcp-comparison",
+  "generated": "2026-05-01T02:13:29Z",
+  "config_count": 2,
+  "config_summaries": {
+    "baseline": {
+      "tasks_completed": 5,
+      "mean_automated_score": 0.3372716770319566,
+      "mean_reward": 0.3372716770319566,
+      "stdev_automated_score": 0.3533489379454327,
+      "total_cost_usd": 7.4981568,
+      "mean_cost_per_task": 1.49963136,
+      "total_time_seconds": 787.754531125538,
+      "score_per_dollar": 0.2249030568632258,
+      "mean_precision": 0.3344772,
+      "mean_recall": 0.8333332,
+      "mean_f1": 0.3640448,
+      "ir_diagnostics": {
+        "mean_precision": 0.3344772,
+        "mean_recall": 0.8333332,
+        "mean_f1": 0.3640448
+      },
+      "scorer_family_distribution": {
+        "oracle_overlap_fbeta": 5
+      }
+    },
+    "with-sourcegraph": {
+      "tasks_completed": 5,
+      "mean_automated_score": 0.5427678763762225,
+      "mean_reward": 0.5427678763762225,
+      "stdev_automated_score": 0.30500792846063185,
+      "total_cost_usd": 8.73615875,
+      "mean_cost_per_task": 1.74723175,
+      "total_time_seconds": 1032.9207082791254,
+      "score_per_dollar": 0.31064446738460566,
+      "mean_precision": 0.5712718,
+      "mean_recall": 0.6666668,
+      "mean_f1": 0.5371312,
+      "ir_diagnostics": {
+        "mean_precision": 0.5712718,
+        "mean_recall": 0.6666668,
+        "mean_f1": 0.5371312
+      },
+      "scorer_family_distribution": {
+        "oracle_overlap_fbeta": 5
+      }
+    }
+  },
+  "pairwise_deltas": [
+    {
+      "config_a": "baseline",
+      "config_b": "with-sourcegraph",
+      "shared_tasks": 5,
+      "mean_delta": 0.2055,
+      "wins_a": 2,
+      "wins_b": 2,
+      "ties": 1,
+      "cohens_d": 0.561
+    }
+  ],
+  "bias_warnings": [
+    {
+      "kind": "backend_overlap",
+      "severity": "informational",
+      "message": "'with-sourcegraph' has access to sourcegraph, which contributed to the ground truth \u2014 but the curator independently corroborated GT via ast, curated, grep, so this is informational rather than a tautology risk.",
+      "detail": {
+        "config": "with-sourcegraph",
+        "shared_backends": [
+          "sourcegraph"
+        ],
+        "independent_backends": [
+          "ast",
+          "curated",
+          "grep"
+        ],
+        "affected_task_count": 5,
+        "affected_tasks": [
+          "38223444",
+          "6cf61fea",
+          "b826fa9d",
+          "d9fee4ae",
+          "e5d7a4e7"
+        ]
+      }
+    }
+  ],
+  "quality_metrics": {
+    "schema_version": 1,
+    "overall": {
+      "scope": "overall",
+      "total_trials": 10,
+      "valid_trials": 10,
+      "invalid_trials": 0,
+      "low_quality_trials": 5,
+      "invalid_rate": 0.0,
+      "valid_rate": 1.0,
+      "low_quality_rate": 0.5,
+      "flag_counts": {
+        "backend_overlap_informational": 5
+      },
+      "error_category_counts": {},
+      "experiment_warnings": []
+    },
+    "per_config": {
+      "baseline": {
+        "scope": "baseline",
+        "total_trials": 5,
+        "valid_trials": 5,
+        "invalid_trials": 0,
+        "low_quality_trials": 0,
+        "invalid_rate": 0.0,
+        "valid_rate": 1.0,
+        "low_quality_rate": 0.0,
+        "flag_counts": {},
+        "error_category_counts": {},
+        "experiment_warnings": []
+      },
+      "with-sourcegraph": {
+        "scope": "with-sourcegraph",
+        "total_trials": 5,
+        "valid_trials": 5,
+        "invalid_trials": 0,
+        "low_quality_trials": 5,
+        "invalid_rate": 0.0,
+        "valid_rate": 1.0,
+        "low_quality_rate": 1.0,
+        "flag_counts": {
+          "backend_overlap_informational": 5
+        },
+        "error_category_counts": {},
+        "experiment_warnings": []
+      }
+    },
+    "low_quality_trials": [
+      {
+        "task_id": "b826fa9d",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.9090910330578061,
+        "scorer_passed": true,
+        "precision": 1.0,
+        "recall": 0.666667,
+        "f1": 0.8,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "d9fee4ae",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.35714284489795467,
+        "scorer_passed": false,
+        "precision": 0.3125,
+        "recall": 0.833333,
+        "f1": 0.454545,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "6cf61fea",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.24390210886370536,
+        "scorer_passed": false,
+        "precision": 0.210526,
+        "recall": 0.666667,
+        "f1": 0.32,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "38223444",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.37037006172831277,
+        "scorer_passed": false,
+        "precision": 0.333333,
+        "recall": 0.666667,
+        "f1": 0.444444,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      },
+      {
+        "task_id": "e5d7a4e7",
+        "config_label": "with-sourcegraph",
+        "repeat_index": 0,
+        "validity": "valid",
+        "validity_reason": null,
+        "score": 0.8333333333333334,
+        "scorer_passed": true,
+        "precision": 1.0,
+        "recall": 0.5,
+        "f1": 0.666667,
+        "quality_flags": [
+          "backend_overlap_informational"
+        ],
+        "detail": {}
+      }
+    ]
+  }
+}

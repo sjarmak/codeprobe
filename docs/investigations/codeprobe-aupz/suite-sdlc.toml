@@ -1,0 +1,12 @@
+[suite]
+name = "codeprobe-aupz-sdlc"
+description = "Rerun mcn7's 5 SDLC tasks under with-sg-fixed (combined evjr fixes)"
+task_dir = "tasks"
+eval_goal = "Effect of evjr fixes on SDLC family cost / reward"
+task_ids = [
+  "ba1f3675",
+  "d906ac3d",
+  "0d4ec3ad",
+  "45b581b5",
+  "fde8e6e0",
+]

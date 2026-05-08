@@ -23,6 +23,18 @@ from codeprobe.calibration.gate import (
     validate_calibration_correlation,
 )
 from codeprobe.calibration.profile import CalibrationProfile
+from codeprobe.calibration.triad import (
+    BAND_LIMITS,
+    FAMILIES,
+    Family,
+    FixtureOutcome,
+    TriadResult,
+    discover_calibration_tasks,
+    run_triad,
+    synthesize_adversarial_output,
+    synthesize_golden_output,
+    synthesize_null_output,
+)
 
 
 def __getattr__(name: str) -> object:
@@ -37,13 +49,23 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
+    "BAND_LIMITS",
     "CalibrationProfile",
     "CalibrationRejectedError",
+    "FAMILIES",
+    "Family",
+    "FixtureOutcome",
     "HoldoutRow",
+    "TriadResult",
     "compute_pearson",
+    "discover_calibration_tasks",
     "emit_profile",
     "format_calibration_line",
     "load_holdout",
     "refuse_profile_emission",
+    "run_triad",
+    "synthesize_adversarial_output",
+    "synthesize_golden_output",
+    "synthesize_null_output",
     "validate_calibration_correlation",
 ]

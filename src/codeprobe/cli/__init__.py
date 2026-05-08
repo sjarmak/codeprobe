@@ -875,6 +875,18 @@ def mine(
     help="Timeout in seconds per task (overrides experiment.json extra.timeout_seconds).",
 )
 @click.option(
+    "--max-turns",
+    "max_turns",
+    default=None,
+    type=int,
+    envvar="CODEPROBE_MAX_TURNS",
+    help=(
+        "Hard cap on agent turns per task (overrides experiment.json max_turns). "
+        "None = uncapped (historical default). Reference rigs: CSB caps at 30, "
+        "EB at 50. See docs/agent_config.md. Env: CODEPROBE_MAX_TURNS."
+    ),
+)
+@click.option(
     "--repeats",
     default=None,
     type=int,
@@ -949,6 +961,7 @@ def run(
     force_plain: bool,
     force_rich: bool,
     timeout: int | None,
+    max_turns: int | None,
     repeats: int | None,
     show_prompt: bool,
     suite_path: str | None,
@@ -1000,6 +1013,7 @@ def run(
         force_plain=force_plain,
         force_rich=force_rich,
         timeout=timeout,
+        max_turns=max_turns,
         repeats=repeats if repeats is not None else 1,
         suite_path=suite_path,
         trace_overflow=trace_overflow,
@@ -1168,6 +1182,18 @@ def init_experiment(
         "Ignored when --allowed-tools or --disallowed-tools is set."
     ),
 )
+@click.option(
+    "--hide-local-source",
+    is_flag=True,
+    default=False,
+    help=(
+        "Stash local source files from the workspace for the duration of "
+        "the agent run (sg-only mode, codeprobe-jf28). The agent has no "
+        "local source to read; pair with --preamble sourcegraph whose v2 "
+        "body declares 'Local source files are not present.' Source is "
+        "restored before scoring runs."
+    ),
+)
 def add_config(
     path: str,
     label: str,
@@ -1180,6 +1206,7 @@ def add_config(
     allowed_tools: str | None,
     disallowed_tools: str | None,
     mcp_mode: str,
+    hide_local_source: bool,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
@@ -1203,6 +1230,7 @@ def add_config(
         allowed_tools=_parse_tools(allowed_tools),
         disallowed_tools=_parse_tools(disallowed_tools),
         mcp_mode=mcp_mode,
+        hide_local_source=hide_local_source,
     )
 
 
@@ -1476,6 +1504,11 @@ main.add_command(check_infra)
 from codeprobe.cli.calibrate_cmd import calibrate  # noqa: E402
 
 main.add_command(calibrate)
+
+# Register the calibrate-triad command (null/golden/adversarial fixture gates)
+from codeprobe.cli.calibrate_triad_cmd import calibrate_triad  # noqa: E402
+
+main.add_command(calibrate_triad)
 
 # Register the snapshot command group
 from codeprobe.cli.snapshot_cmd import snapshot  # noqa: E402

@@ -104,6 +104,12 @@ class ScoreResult:
     triage tasks can opt into a recall-tilted family where over-shipping is
     free.
 
+    ``reward`` mirrors ``score`` and exposes the unified ScoreResult
+    contract field name. The two are always equal by definition; keep
+    ``score`` as the legacy field for the executor / aggregate consumers
+    that read it directly, and read ``reward`` when working against the
+    multi-rig contract (codeprobe / EB / CSB).
+
     ``scorer_family`` is the registered rubric name. See
     :data:`SCORER_FAMILIES` for the canonical set. Empty string means the
     scorer didn't declare one (treat as opaque).
@@ -115,10 +121,17 @@ class ScoreResult:
     diagnostics.
 
     ``diagnostics`` is a free-form bag of run-time observations that don't
-    affect reward but are useful for debugging — currently scoped to
-    ``ir_metrics`` (mirror of the IR breakdown for callers that want a
-    single canonical IR view). Cost / time live on
-    :class:`~codeprobe.models.experiment.CompletedTask`, not here.
+    affect reward but are useful for debugging. The unified contract
+    surfaces ``ir_metrics`` here (mirror of the IR breakdown for callers
+    that want a single canonical IR view); the executor injects
+    ``task_time_seconds``, ``token_cost_usd``, ``input_tokens``, and
+    ``output_tokens`` into the serialised ``scoring_details.diagnostics``
+    block at scoring.json write time so the per-task contract is
+    self-contained without forcing the scorer to know about run-level
+    metadata. ``input_tokens`` / ``output_tokens`` are raw counts (sum
+    across the multi-turn conversation for the trial); cost-Pareto plots
+    that aren't dollar-locked need them to compare across models with
+    different per-token pricing.
 
     ``ir_metrics`` is kept at the top level for back-compat with existing
     aggregate consumers (``cli/experiment_cmd.py`` reads
@@ -149,6 +162,14 @@ class ScoreResult:
     scorer_family: str = ""
     sub_scores: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
+    reward: float | None = None
+
+    def __post_init__(self) -> None:
+        # ``reward`` mirrors ``score`` when callers don't pass it explicitly.
+        # Frozen dataclass requires ``object.__setattr__`` to populate the
+        # default after init.
+        if self.reward is None:
+            object.__setattr__(self, "reward", self.score)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +191,7 @@ SCORER_FAMILIES: frozenset[str] = frozenset(
     {
         # IR-style — oracle is a set of expected files / symbols
         "oracle_overlap_f1",  # symbol-reference-trace, file-list-tight (default)
+        "oracle_overlap_fbeta",  # F-beta with per-task beta from verification.fbeta_beta
         "oracle_overlap_recall",  # file-discovery / triage (opt-in)
         "oracle_weighted_f1",  # org-scale tier-weighted oracle
         "oracle_weighted_recall",  # tier-weighted oracle, recall-tilted
@@ -182,6 +204,7 @@ SCORER_FAMILIES: frozenset[str] = frozenset(
         "continuous",  # reward.txt or stdout float, no IR
         # Composite
         "weighted_checkpoints",  # CheckpointScorer
+        "oracle_checks",  # OracleChecksScorer — structured-rubric criteria
         "dual_composite",  # DualScorer (direct + artifact)
     }
 )
@@ -192,6 +215,41 @@ SCORER_FAMILIES: frozenset[str] = frozenset(
 # Tasks where dump-and-filter is fine (file-discovery / triage) opt into
 # ``oracle_overlap_recall`` via ``verification.scorer_family``.
 DEFAULT_IR_FAMILY: str = "oracle_overlap_f1"
+
+# Default F-beta value when a task selects ``oracle_overlap_fbeta`` but
+# doesn't pin ``verification.fbeta_beta``. ``beta=1.0`` makes the family
+# numerically identical to F1; tasks that want over-ship penalised harder
+# (symbol-reference-trace) configure beta < 1.0 (e.g. 0.5 weights
+# precision twice as heavily as recall).
+DEFAULT_FBETA_BETA: float = 1.0
+
+
+def _read_fbeta_beta(task_dir: Path | None) -> float:
+    """Resolve the per-task ``beta`` parameter for ``oracle_overlap_fbeta``.
+
+    Reads ``verification.fbeta_beta`` from ``task_dir/metadata.json``.
+    Falls back to :data:`DEFAULT_FBETA_BETA` (=1.0, F1-equivalent) when:
+      * ``task_dir`` is None
+      * the metadata field is absent / non-numeric / non-finite
+      * the value is non-positive (F-beta is undefined for ``beta <= 0``)
+
+    The fallback is silent — F1-equivalent behaviour is the documented
+    default and surfacing a finding here would force tests that don't care
+    about beta to set the field.
+    """
+    if task_dir is None:
+        return DEFAULT_FBETA_BETA
+    verification = read_task_verification(task_dir)
+    raw = verification.get("fbeta_beta")
+    if raw is None:
+        return DEFAULT_FBETA_BETA
+    try:
+        beta = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_FBETA_BETA
+    if not math.isfinite(beta) or beta <= 0.0:
+        return DEFAULT_FBETA_BETA
+    return beta
 
 
 def _select_ir_family(task_dir: Path | None, *, weighted: bool = False) -> str:
@@ -555,8 +613,9 @@ class ContinuousScorer:
                     details.get("weighted_recall"), (int, float)
                 ) and math.isfinite(float(details["weighted_recall"]))
                 family = _select_ir_family(task_dir, weighted=weighted)
+                beta = _read_fbeta_beta(task_dir)
                 reward, ir_metrics, sub_scores = self._derive_reward_and_metrics(
-                    details, fallback=clamped, family=family
+                    details, fallback=clamped, family=family, beta=beta
                 )
                 return ScoreResult(
                     score=reward,
@@ -600,6 +659,7 @@ class ContinuousScorer:
         *,
         fallback: float,
         family: str,
+        beta: float = DEFAULT_FBETA_BETA,
     ) -> tuple[float, dict, dict]:
         """Derive ``(reward, ir_metrics, sub_scores)`` from an oracle
         ``metrics.json`` under the given scorer ``family``.
@@ -610,6 +670,9 @@ class ContinuousScorer:
           and missing. The default for symbol-reference-trace style tasks
           where shipping every file in the repo is "didn't solve". Over-ship
           and under-ship asymmetry shows in sub_scores.
+        * ``oracle_overlap_fbeta`` — reward = F-beta(precision, recall;
+          beta from ``verification.fbeta_beta``). Equivalent to F1 when
+          beta=1; beta<1 favours precision (over-ship costs more).
         * ``oracle_overlap_recall`` — reward = recall. Over-shipping is
           free. The opt-in family for file-discovery / triage tasks.
         * ``oracle_weighted_f1`` — reward = weighted_f1 (read from
@@ -658,6 +721,14 @@ class ContinuousScorer:
         # Pick reward by family
         if family == "oracle_overlap_recall":
             reward = recall if recall is not None else max(0.0, min(1.0, fallback))
+        elif family == "oracle_overlap_fbeta":
+            if precision is not None and recall is not None:
+                reward = _fbeta(precision, recall, beta)
+            elif f1 is not None and beta == DEFAULT_FBETA_BETA:
+                # beta=1 collapses to F1; honour the precomputed value.
+                reward = f1
+            else:
+                reward = max(0.0, min(1.0, fallback))
         elif family == "oracle_weighted_recall":
             if weighted_recall is not None:
                 reward = weighted_recall
@@ -701,6 +772,8 @@ class ContinuousScorer:
         if weighted_recall is not None:
             sub_scores["weighted_recall"] = weighted_recall
         sub_scores["reward"] = reward
+        if family == "oracle_overlap_fbeta":
+            sub_scores["fbeta_beta"] = beta
 
         return reward, ir_metrics, sub_scores
 
@@ -783,6 +856,7 @@ class CheckpointScorer:
                 score=0.0,
                 passed=False,
                 error="tests/checkpoints.json not found",
+                scorer_family="weighted_checkpoints",
             )
 
         try:
@@ -794,6 +868,7 @@ class CheckpointScorer:
                 score=0.0,
                 passed=False,
                 error=f"Invalid checkpoints.json: {exc}",
+                scorer_family="weighted_checkpoints",
             )
         return checkpoints  # type: ignore[no-any-return]
 
@@ -816,6 +891,7 @@ class CheckpointScorer:
                 score=0.0,
                 passed=False,
                 error=f"Checkpoint weights must sum to 1.0, got {total_weight:.4f}",
+                scorer_family="weighted_checkpoints",
             )
 
         weighted_score = 0.0
@@ -836,6 +912,7 @@ class CheckpointScorer:
                     score=0.0,
                     passed=False,
                     error=f"Verifier not found: {verifier_name}",
+                    scorer_family="weighted_checkpoints",
                 )
 
             cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
@@ -895,6 +972,237 @@ class CheckpointScorer:
 
 
 # ---------------------------------------------------------------------------
+# OracleChecksScorer
+# ---------------------------------------------------------------------------
+
+
+class OracleChecksScorer:
+    """Structured-rubric scorer — per-criterion verifiers with weighted average.
+
+    Mirrors the CSB ``oracle_checks`` pattern: each task declares a list of
+    named criteria, each with a weight and a verifier script. Verifiers run
+    independently in the sandbox and emit ``{"score": 0.0-1.0, "passed": bool}``
+    JSON or fall back to exit-code semantics. The headline reward is the
+    weight-normalized average ``Σ(weight_i · score_i) / Σ(weight_i)``.
+
+    Differences from :class:`CheckpointScorer`:
+
+    * Weights are *normalized* rather than required to sum to ``1.0``. A
+      rubric with weights ``[2, 1, 1]`` is equivalent to ``[0.5, 0.25,
+      0.25]``. This makes incremental rubric edits cheap — adding a
+      criterion doesn't force re-balancing every other weight.
+    * Reports ``scorer_family = "oracle_checks"`` so reviewers can
+      distinguish "verifier evaluated a structured rubric" from
+      ``weighted_checkpoints`` (which historically labels both
+      ``CheckpointScorer`` and ``ArtifactScorer._score_v2_checks`` —
+      ambiguous semantics that this family disentangles).
+
+    Rubric source resolution order:
+
+    1. ``metadata_criteria`` constructor argument — populated from
+       ``task.toml [[rubric_criteria]]`` by the task loader.
+    2. ``tests/rubric.json`` on disk — for tasks that ship the rubric
+       inline. JSON shape: a list of ``{"name", "weight", "verifier"}``
+       objects (``description`` is optional and ignored by the scorer).
+
+    Verifier scripts live in ``tests/verifiers/`` (same layout as
+    ``CheckpointScorer``) and emit JSON on stdout: ``{"score": 0.0-1.0,
+    "passed": bool}``. Fallback: exit ``0`` → ``1.0``, nonzero → ``0.0``.
+    """
+
+    SCORER_FAMILY = "oracle_checks"
+
+    def __init__(
+        self,
+        metadata_criteria: (
+            tuple[dict[str, object], ...] | list[dict[str, object]] | None
+        ) = None,
+    ) -> None:
+        self._metadata_criteria = metadata_criteria
+
+    def _load_criteria(
+        self, task_dir: Path
+    ) -> list[dict[str, object]] | ScoreResult:
+        """Resolve criteria list — metadata first, then tests/rubric.json.
+
+        Returns the list on success or a ``ScoreResult`` error on failure.
+        """
+        if self._metadata_criteria:
+            return list(self._metadata_criteria)
+
+        rubric_file = task_dir / "tests" / "rubric.json"
+        if not rubric_file.is_file():
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="tests/rubric.json not found",
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        try:
+            payload = json.loads(rubric_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=f"Invalid rubric.json: {exc}",
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        if not isinstance(payload, list):
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="rubric.json must be a JSON list of criteria",
+                scorer_family=self.SCORER_FAMILY,
+            )
+        return cast(list[dict[str, object]], payload)
+
+    def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+        loaded = self._load_criteria(task_dir)
+        if isinstance(loaded, ScoreResult):
+            return loaded
+        criteria = loaded
+
+        if not criteria:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error="rubric must declare at least one criterion",
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        # Validate weights up-front. A negative or non-finite weight is a
+        # rubric authoring bug, not a missed criterion — fail loudly so
+        # reviewers see the typo in metadata rather than a silently
+        # truncated reward.
+        weights: list[float] = []
+        for idx, crit in enumerate(criteria):
+            raw = crit.get("weight", 0.0) if isinstance(crit, dict) else 0.0
+            try:
+                w = float(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] weight is not numeric: {raw!r}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+            if not math.isfinite(w):
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] weight must be finite, got: {w}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+            if w < 0.0:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] weight must be non-negative, got: {w}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+            weights.append(w)
+
+        total_weight = sum(weights, 0.0)
+        if total_weight <= 0.0:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=(
+                    "rubric weights sum to zero — at least one criterion "
+                    "must have a positive weight"
+                ),
+                scorer_family=self.SCORER_FAMILY,
+            )
+
+        criterion_scores: dict[str, float] = {}
+        criterion_weights: dict[str, float] = {}
+        weighted_sum = 0.0
+
+        for idx, (crit, weight) in enumerate(zip(criteria, weights, strict=True)):
+            verifier_name = str(crit.get("verifier", "") or "")
+            name = str(crit.get("name", verifier_name) or verifier_name) or f"criterion_{idx}"
+
+            if not verifier_name:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"criterion[{idx}] missing 'verifier' field",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+
+            verifier_path = task_dir / "tests" / "verifiers" / verifier_name
+            if not verifier_path.is_file():
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"Verifier not found: {verifier_name}",
+                    scorer_family=self.SCORER_FAMILY,
+                )
+
+            cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
+            weighted_sum += cp_score * weight
+            criterion_scores[name] = cp_score
+            criterion_weights[name] = weight
+
+        # Normalize by total weight (the family's defining property).
+        reward = weighted_sum / total_weight
+        reward = max(0.0, min(1.0, reward))
+
+        sub_scores: dict[str, object] = {
+            "composite": reward,
+            "criterion_scores": dict(criterion_scores),
+            "total_weight": total_weight,
+        }
+        return ScoreResult(
+            score=reward,
+            passed=reward >= PASS_THRESHOLD,
+            details={
+                "criterion_scores": criterion_scores,
+                "criterion_weights": criterion_weights,
+                "total_weight": total_weight,
+            },
+            scorer_family=self.SCORER_FAMILY,
+            sub_scores=sub_scores,
+        )
+
+    @staticmethod
+    def _run_verifier(
+        verifier_path: Path,
+        agent_output: str,
+        task_dir: Path,
+    ) -> float:
+        """Run a single criterion verifier and return its score (0.0-1.0).
+
+        Mirrors :meth:`CheckpointScorer._run_verifier` so both composite
+        scorers see the same sandbox semantics: JSON ``score`` field is
+        preferred, exit-code is the documented fallback.
+        """
+        run = _run_in_sandbox(verifier_path, agent_output, task_dir)
+        if run.error is not None:
+            logger.warning(
+                "Verifier %s produced zero score due to sandbox error: %s",
+                verifier_path.name,
+                run.error,
+            )
+            return _ZERO_SCORE
+
+        stdout = run.stdout.strip()
+        if stdout:
+            try:
+                data = json.loads(stdout)
+                raw = float(data.get("score", 0.0))
+                return max(0.0, min(1.0, raw))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
+        if run.returncode == 0:
+            return 1.0
+        return _ZERO_SCORE
+
+
+# ---------------------------------------------------------------------------
 # ArtifactScorer
 # ---------------------------------------------------------------------------
 
@@ -909,6 +1217,12 @@ def _normalize_path(p: str) -> str:
 
 
 _MAX_GROUND_TRUTH_BYTES = 10 * 1024 * 1024  # 10 MB
+
+# Confidence below which we log a warning about low-confidence ground
+# truth in :class:`ArtifactScorer`. Promoted from an inline literal so
+# verifier-honesty lint sees a named, documented constant rather than a
+# bare ``< 0.5`` in scoring code (see tests/lint/test_scorer_honesty.py).
+_LOW_CONFIDENCE_THRESHOLD: float = 0.5
 
 
 def _load_json_file(path: Path) -> dict | list | None:
@@ -989,6 +1303,7 @@ def score_file_list(
     actual: object,
     *,
     family: str = DEFAULT_IR_FAMILY,
+    beta: float = DEFAULT_FBETA_BETA,
 ) -> ScoreResult:
     """Score a file_list answer_type under the given scorer ``family``.
 
@@ -1000,7 +1315,8 @@ def score_file_list(
     The family routing usually happens upstream in
     :class:`ArtifactScorer` from ``verification.scorer_family``; passing
     ``family`` directly is supported for tests and for callers that score
-    bare lists outside the artifact-scorer flow.
+    bare lists outside the artifact-scorer flow. ``beta`` only matters
+    when ``family == "oracle_overlap_fbeta"``; defaults to 1.0 (≡ F1).
     """
     if not isinstance(expected, list):
         return ScoreResult(
@@ -1020,8 +1336,12 @@ def score_file_list(
     actual_set = frozenset(_normalize_path(p) for p in actual if p)
     precision, recall, f1 = _ir_metrics(expected_set, actual_set)
     ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
-    reward = _ir_reward_from_family(family, precision=precision, recall=recall, f1=f1)
+    reward = _ir_reward_from_family(
+        family, precision=precision, recall=recall, f1=f1, beta=beta
+    )
     sub_scores = {**ir_metrics, "reward": reward}
+    if family == "oracle_overlap_fbeta":
+        sub_scores["fbeta_beta"] = beta
     return ScoreResult(
         score=reward,
         passed=reward >= PASS_THRESHOLD,
@@ -1034,12 +1354,29 @@ def score_file_list(
     )
 
 
+def _fbeta(precision: float, recall: float, beta: float) -> float:
+    """Compute the F-beta score from precision and recall.
+
+    F-beta = (1 + β²) · P · R / (β² · P + R), with the standard convention
+    that an empty intersection (precision = recall = 0) returns 0. Same
+    convention as :func:`_ir_metrics`.
+    """
+    if beta <= 0.0 or not math.isfinite(beta):
+        beta = DEFAULT_FBETA_BETA
+    beta_sq = beta * beta
+    denom = beta_sq * precision + recall
+    if denom <= 0.0:
+        return 0.0
+    return (1.0 + beta_sq) * precision * recall / denom
+
+
 def _ir_reward_from_family(
     family: str,
     *,
     precision: float,
     recall: float,
     f1: float,
+    beta: float = DEFAULT_FBETA_BETA,
 ) -> float:
     """Derive an IR reward from precision/recall/f1 under ``family``.
 
@@ -1047,12 +1384,19 @@ def _ir_reward_from_family(
     the legacy file-list scorer share one formula table. Falls back to F1
     for any unrecognised family — the conservative choice since over-
     shipping should generally cost something.
+
+    ``beta`` is consumed only by the ``oracle_overlap_fbeta`` family. The
+    default (1.0) makes that family numerically equivalent to F1; callers
+    that want a different bias supply the value resolved from per-task
+    metadata via :func:`_read_fbeta_beta`.
     """
     if family == "oracle_overlap_recall":
         return recall
     if family == "oracle_weighted_recall":
         return recall  # IR list scorers don't see tier weights; tier-weight
         # families surface via ContinuousScorer over the on-disk oracle
+    if family == "oracle_overlap_fbeta":
+        return _fbeta(precision, recall, beta)
     return f1
 
 
@@ -1104,11 +1448,13 @@ def score_symbol_list(
     actual: object,
     *,
     family: str = DEFAULT_IR_FAMILY,
+    beta: float = DEFAULT_FBETA_BETA,
 ) -> ScoreResult:
     """Score a symbol_list answer_type under the given scorer ``family``.
 
     Same family routing as :func:`score_file_list` — see that docstring
-    for rationale. The default is ``oracle_overlap_f1``.
+    for rationale. The default is ``oracle_overlap_f1``. ``beta`` only
+    matters under ``oracle_overlap_fbeta``.
     """
     exp = expected if isinstance(expected, list) else []
     act = actual if isinstance(actual, list) else []
@@ -1116,6 +1462,9 @@ def score_symbol_list(
     act_set = frozenset(_normalize_symbol(str(s)) for s in act if s)
     if not exp_set or not act_set:
         empty = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
+        sub_scores: dict = {**empty, "reward": 0.0}
+        if family == "oracle_overlap_fbeta":
+            sub_scores["fbeta_beta"] = beta
         return ScoreResult(
             score=0.0,
             passed=False,
@@ -1123,13 +1472,17 @@ def score_symbol_list(
             reward_score=0.0,
             ir_metrics=empty,
             scorer_family=family,
-            sub_scores={**empty, "reward": 0.0},
+            sub_scores=sub_scores,
             diagnostics={"ir_metrics": dict(empty)},
         )
     precision, recall, f1 = _ir_metrics(exp_set, act_set)
     ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
-    reward = _ir_reward_from_family(family, precision=precision, recall=recall, f1=f1)
+    reward = _ir_reward_from_family(
+        family, precision=precision, recall=recall, f1=f1, beta=beta
+    )
     sub_scores = {**ir_metrics, "reward": reward}
+    if family == "oracle_overlap_fbeta":
+        sub_scores["fbeta_beta"] = beta
     return ScoreResult(
         score=reward,
         passed=reward >= PASS_THRESHOLD,
@@ -1291,6 +1644,13 @@ class ArtifactScorer:
     """
 
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+        # Resolve the IR family up front so error-path ScoreResults can
+        # declare the rubric the caller requested. Verifier-honesty lint
+        # (tests/lint/test_scorer_honesty.py) requires every ScoreResult
+        # constructor to carry a scorer_family declaration.
+        ir_family = _select_ir_family(task_dir)
+        ir_beta = _read_fbeta_beta(task_dir)
+
         # Load ground truth — check tests/ subdir first (standard location),
         # then task_dir root (legacy). Keep in sync with mining/writer._ORACLE_PY.
         gt_path = task_dir / "tests" / "ground_truth.json"
@@ -1302,11 +1662,12 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="ground_truth.json not found or invalid",
+                scorer_family=ir_family,
             )
 
         # Warn on low-confidence ground truth
         confidence = gt.get("confidence")
-        if confidence is not None and confidence < 0.5:
+        if confidence is not None and confidence < _LOW_CONFIDENCE_THRESHOLD:
             logger.warning(
                 "Low confidence ground truth (%.2f) in %s",
                 confidence,
@@ -1320,6 +1681,7 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="answer.json not found",
+                scorer_family=ir_family,
             )
         answer_data = _load_json_file(answer_path)
         if answer_data is None or not isinstance(answer_data, dict):
@@ -1327,21 +1689,32 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="answer.json is invalid JSON",
+                scorer_family=ir_family,
             )
 
         # Detect format and dispatch. The IR family declared in
         # task metadata applies to all IR-style sub-scorers (file_list /
         # symbol_list / legacy file-list); non-IR scorers (count / boolean
         # / text / dependency_chain) ignore it.
-        ir_family = _select_ir_family(task_dir)
         if "checks" in gt:
-            return self._score_v2_checks(gt, answer_data, ir_family=ir_family)
+            return self._score_v2_checks(
+                gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
+            )
         if "answer_type" in gt:
-            return self._score_new_format(gt, answer_data, ir_family=ir_family)
-        return self._score_legacy_format(gt, answer_data, ir_family=ir_family)
+            return self._score_new_format(
+                gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
+            )
+        return self._score_legacy_format(
+            gt, answer_data, ir_family=ir_family, ir_beta=ir_beta
+        )
 
     def _score_v2_checks(
-        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+        self,
+        gt: dict,
+        answer_data: dict,
+        *,
+        ir_family: str = DEFAULT_IR_FAMILY,
+        ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
         """Score using v2 multi-check format with weighted composite."""
         checks: list[dict] = gt.get("checks", [])
@@ -1349,7 +1722,12 @@ class ArtifactScorer:
         # Validate structure
         validation_error = validate_ground_truth(gt)
         if validation_error is not None:
-            return ScoreResult(score=0.0, passed=False, error=validation_error)
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=validation_error,
+                scorer_family="weighted_checkpoints",
+            )
 
         # Build answer lookup: {answer_type: answer_value} from agent answers.
         # Use the first occurrence of each answer_type (spec: "first match").
@@ -1388,19 +1766,30 @@ class ArtifactScorer:
             actual = answer_lookup.get(answer_type)
 
             if scorer_fn is None:
-                # Unknown answer_type — scores 0.0 for this check
+                # Unknown answer_type — scores 0.0 for this check. The
+                # family is the answer_type itself so callers can see
+                # which check failed.
                 check_result = ScoreResult(
                     score=0.0,
                     passed=False,
                     error=f"Unknown answer_type: {answer_type!r}",
+                    scorer_family=str(answer_type),
                 )
             elif actual is None:
                 # Agent didn't provide an answer for this type
-                check_result = ScoreResult(score=0.0, passed=False)
+                check_result = ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    scorer_family=str(answer_type),
+                )
             elif answer_type in _IR_LIST_ANSWER_TYPES:
                 # IR scorers take a family kwarg so the v2 multi-check
-                # composite respects per-task scorer routing.
-                check_result = scorer_fn(expected, actual, family=ir_family)
+                # composite respects per-task scorer routing. ``beta`` is
+                # only consumed by ``oracle_overlap_fbeta`` but threading
+                # it unconditionally keeps the dispatch table simple.
+                check_result = scorer_fn(
+                    expected, actual, family=ir_family, beta=ir_beta
+                )
             else:
                 check_result = scorer_fn(expected, actual)
 
@@ -1425,7 +1814,12 @@ class ArtifactScorer:
         )
 
     def _score_new_format(
-        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+        self,
+        gt: dict,
+        answer_data: dict,
+        *,
+        ir_family: str = DEFAULT_IR_FAMILY,
+        ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
         answer_type = gt.get("answer_type", "")
         expected = gt.get("answer")
@@ -1440,11 +1834,22 @@ class ArtifactScorer:
                 agent_answer_type,
             )
 
+        # Family for this scoring path: the answer_type's natural family
+        # when known (file_list / symbol_list use ir_family; non-IR types
+        # use exact_match), otherwise the answer_type itself.
+        if answer_type in _IR_LIST_ANSWER_TYPES:
+            error_family = ir_family
+        elif isinstance(answer_type, str) and answer_type:
+            error_family = str(answer_type)
+        else:
+            error_family = ""
+
         if expected is None:
             return ScoreResult(
                 score=0.0,
                 passed=False,
                 error="ground_truth.json missing 'answer' field",
+                scorer_family=error_family,
             )
 
         if actual is None:
@@ -1452,13 +1857,14 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="answer.json missing 'answer' field",
+                scorer_family=error_family,
             )
 
         # Look up in builtin registry first
         scorer_fn = _ORACLE_TYPE_SCORERS.get(answer_type)
         if scorer_fn is not None:
             if answer_type in _IR_LIST_ANSWER_TYPES:
-                return scorer_fn(expected, actual, family=ir_family)
+                return scorer_fn(expected, actual, family=ir_family, beta=ir_beta)
             return scorer_fn(expected, actual)
 
         # Fall back to entry_point registry for extensibility
@@ -1474,10 +1880,16 @@ class ArtifactScorer:
             score=0.0,
             passed=False,
             error=f"Unknown answer_type: {answer_type!r}",
+            scorer_family=error_family,
         )
 
     def _score_legacy_format(
-        self, gt: dict, answer_data: dict, *, ir_family: str = DEFAULT_IR_FAMILY
+        self,
+        gt: dict,
+        answer_data: dict,
+        *,
+        ir_family: str = DEFAULT_IR_FAMILY,
+        ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
         """Legacy format: treat 'expected' as a file_list.
 
@@ -1492,20 +1904,25 @@ class ArtifactScorer:
                 score=0.0,
                 passed=False,
                 error="Legacy ground_truth.json 'expected' is not a list",
+                scorer_family=ir_family,
             )
         if not isinstance(actual, list):
             return ScoreResult(
                 score=0.0,
                 passed=False,
                 error="answer.json 'answer' is not a list",
+                scorer_family=ir_family,
             )
         expected_set = frozenset(_normalize_path(p) for p in expected if p)
         actual_set = frozenset(_normalize_path(p) for p in actual if p)
         precision, recall, f1 = _ir_metrics(expected_set, actual_set)
         ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
         reward = _ir_reward_from_family(
-            ir_family, precision=precision, recall=recall, f1=f1
+            ir_family, precision=precision, recall=recall, f1=f1, beta=ir_beta
         )
+        sub_scores: dict = {**ir_metrics, "reward": reward}
+        if ir_family == "oracle_overlap_fbeta":
+            sub_scores["fbeta_beta"] = ir_beta
         return ScoreResult(
             score=reward,
             passed=reward >= PASS_THRESHOLD,
@@ -1513,7 +1930,7 @@ class ArtifactScorer:
             reward_score=reward,
             ir_metrics=ir_metrics,
             scorer_family=ir_family,
-            sub_scores={**ir_metrics, "reward": reward},
+            sub_scores=sub_scores,
             diagnostics={"ir_metrics": dict(ir_metrics)},
         )
 
@@ -1559,6 +1976,7 @@ def _safe_leg_score(
             score=0.0,
             passed=False,
             error=f"scorer raised: {type(exc).__name__}: {exc}",
+            scorer_family="dual_composite",
         )
 
 
@@ -1628,6 +2046,7 @@ class DualScorer:
                     "absent, unparseable, or has no verification key"
                 ),
                 details={"error_metadata": "verification_block_empty"},
+                scorer_family="dual_composite",
             )
         reward_type = verification.get("reward_type", "binary") or "binary"
         scoring_policy = verification.get("scoring_policy", "") or ""

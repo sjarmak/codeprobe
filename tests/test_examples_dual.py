@@ -84,3 +84,33 @@ def test_example_task_is_dual_mode(task_dir: Path) -> None:
         f"{task_dir.name}: verification_mode is "
         f"{verification.get('verification_mode')!r}, expected 'dual'"
     )
+
+
+@pytest.mark.parametrize(
+    "task_dir",
+    TASK_DIRS,
+    ids=[f"{p.parent.name}/{p.name}" for p in TASK_DIRS],
+)
+def test_example_task_is_marked_synthetic(task_dir: Path) -> None:
+    """Every example task must declare ``synthetic = true`` in [metadata].
+
+    The example tasks ship a placeholder ``tests/test.sh`` that exits 0
+    regardless of agent output. They exist to demonstrate the dual-task
+    file shape, not to score real agents — so default discovery (e.g.
+    ``codeprobe calibrate-triad``) skips them. Forgetting the flag would
+    re-leak placeholder tasks into the calibration corpus.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore[no-redef]
+
+    with open(task_dir / "task.toml", "rb") as f:
+        data = tomllib.load(f)
+    metadata = data.get("metadata", {})
+    assert metadata.get("synthetic") is True, (
+        f"{task_dir.name}: metadata.synthetic is "
+        f"{metadata.get('synthetic')!r}, expected True. "
+        "Synthetic example tasks must be marked so calibration triad "
+        "skips them by default."
+    )

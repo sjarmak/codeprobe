@@ -144,7 +144,7 @@ class TestBuildSourcegraphMcpConfig:
         result = build_sourcegraph_mcp_config(token="tok_abc123")
         sg = result["mcpServers"]["sourcegraph"]
         assert sg["type"] == "http"
-        assert sg["url"] == "https://sourcegraph.com/.api/mcp/v1"
+        assert sg["url"] == "https://sourcegraph.com/.api/mcp/all"
         assert sg["headers"]["Authorization"] == "token tok_abc123"
 
     def test_custom_url(self) -> None:
@@ -154,7 +154,7 @@ class TestBuildSourcegraphMcpConfig:
             token="tok_abc123", url="https://demo.sourcegraph.com"
         )
         sg = result["mcpServers"]["sourcegraph"]
-        assert sg["url"] == "https://demo.sourcegraph.com/.api/mcp/v1"
+        assert sg["url"] == "https://demo.sourcegraph.com/.api/mcp/all"
 
     def test_url_trailing_slash_stripped(self) -> None:
         from codeprobe.cli.wizard import build_sourcegraph_mcp_config
@@ -163,7 +163,7 @@ class TestBuildSourcegraphMcpConfig:
             token="tok_abc123", url="https://demo.sourcegraph.com/"
         )
         sg = result["mcpServers"]["sourcegraph"]
-        assert sg["url"] == "https://demo.sourcegraph.com/.api/mcp/v1"
+        assert sg["url"] == "https://demo.sourcegraph.com/.api/mcp/all"
 
     def test_env_var_placeholder(self) -> None:
         from codeprobe.cli.wizard import build_sourcegraph_mcp_config

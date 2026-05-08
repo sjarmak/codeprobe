@@ -29,7 +29,7 @@ _SG_CONFIG = {
     "mcpServers": {
         "sourcegraph": {
             "type": "http",
-            "url": "https://sourcegraph.com/.api/mcp/v1",
+            "url": "https://sourcegraph.com/.api/mcp/all",
             "headers": {"Authorization": "token xyz"},
         }
     }

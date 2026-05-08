@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Detect the testing framework used"
 language = "python"
 task_type = "architecture_comprehension"
+synthetic = true
 
 [verification]
 type = "test_script"

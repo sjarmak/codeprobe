@@ -100,7 +100,7 @@ def _call_find_references(
         )
         return None
 
-    url = f"{sg_url.rstrip('/')}/.api/mcp/v1"
+    url = f"{sg_url.rstrip('/')}/.api/mcp/all"
     payload = {
         "jsonrpc": "2.0",
         "id": 1,

@@ -9,6 +9,7 @@ difficulty = "easy"
 description = "Count test files matching test_*.py"
 language = "python"
 task_type = "architecture_comprehension"
+synthetic = true
 
 [verification]
 type = "test_script"

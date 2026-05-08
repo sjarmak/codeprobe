@@ -74,6 +74,11 @@ class AgentConfig:
     built-in tools (useful for MCP-only experiments: MCP tools are still
     available because they come from ``mcp_config``, but no built-in
     ``Read``/``Grep``/``Bash``/etc. are).
+
+    ``max_turns`` caps the number of agent turns per task. ``None`` means
+    uncapped (the historical default — codeprobe relied on the per-task
+    subprocess timeout alone). Reference rigs cap aggressively: CSB at 30
+    turns, EB at 50 turns. See ``docs/agent_config.md`` for guidance.
     """
 
     model: str | None = None
@@ -84,6 +89,7 @@ class AgentConfig:
     disallowed_tools: list[str] | None = None
     extra: dict | None = None
     cwd: str | None = None
+    max_turns: int | None = None
 
 
 @runtime_checkable

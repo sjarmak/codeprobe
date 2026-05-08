@@ -276,7 +276,9 @@ def test_compose_instruction_sourcegraph_symbol_reference_is_authoritative(
     )
 
     assert "treat `sg_find_references` as authoritative" in prompt
-    assert "do not replace it with a grep union" in prompt
+    # jf28: under file-removal mode local Grep is unavailable; the
+    # corresponding union forbidden is the keyword-search union.
+    assert "do not replace it with a keyword-search union" in prompt
     assert "maximum recall" not in prompt
     # Regression: symbol-reference-trace must explicitly forbid sg_deepsearch.
     # We saw an Opus 4.7 run burn 3 deepsearch calls (most of the cost) on
@@ -309,9 +311,268 @@ def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
         ),
     )
 
-    assert "supplement with local Grep" in prompt
+    # jf28: under sg-only mode "supplement with local Grep" is no
+    # longer applicable — the workspace has no local source. The broad
+    # recall directive is now scoped to MCP-tool unions instead.
     assert "Union results when recall matters" in prompt
+    assert "sg_keyword_search" in prompt and "sg_nls_search" in prompt
     assert "treat `sg_find_references` as authoritative" not in prompt
+    # Regression (codeprobe-riad): default branch must carry the
+    # verify-before-denying rule. Sourcegraph false-negatives were
+    # leading agents to write confident denials of existence
+    # ("FlagAliases does not exist") even when broader queries would
+    # find them. The default branch is the place to land this rule
+    # because index-lag is generic, not category-specific.
+    assert "Verify before denying existence" in prompt
+    assert "Do not write a denial of existence" in prompt
+    assert "Sourcegraph's index can lag the working tree" in prompt
+
+
+def test_compose_instruction_sourcegraph_oracle_checks_uses_coverage_first(
+    tmp_path: Path,
+):
+    """oracle_checks tasks should get coverage-first rubric guidance.
+
+    Regression: 3oms eval saw oc_004 drop 1.000 → 0.643 because the default
+    branch encouraged unioning grep results, which steered the agent away
+    from the explicit `flag_aliases` rubric criterion. The oracle_checks
+    branch must instead enforce criterion-by-criterion coverage.
+    """
+    task_dir = tmp_path / "oc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Answer the rubric questions about feature flags.",
+        repo_path=Path("/repo"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="oc_004",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "oracle_checks",
+                    "sg_repo": "github.com/acme/widgets",
+                }
+            }
+        ),
+    )
+
+    # Coverage-first language must appear.
+    assert "address every declared criterion" in prompt
+    assert "Coverage-first synthesis" in prompt
+    assert "list the explicit criteria" in prompt
+    # Must NOT carry the broad-recall default that caused oc_004 to regress.
+    assert "Union results when recall matters" not in prompt
+    # Must NOT carry the symbol-reference-trace authoritative-only language.
+    assert "treat `sg_find_references` as authoritative" not in prompt
+    # Regression (codeprobe-riad): oracle_checks must carry an emphasised
+    # verify-before-denying rule. oc_004 reproducibly failed because the
+    # agent wrote "FlagAliases does not appear anywhere in the gascity
+    # codebase" after Sourcegraph (with a stale index) returned no hits.
+    # The rubric guarantees the symbol exists; the agent must fall back
+    # to local Grep before denying.
+    assert "Verify before denying existence" in prompt
+    assert "rubric guarantees the named symbol exists" in prompt
+    assert "Never write a denial of existence" in prompt
+
+
+def test_compose_instruction_sourcegraph_sdlc_uses_stop_signal(tmp_path: Path):
+    """SDLC tasks should be told to stop searching once file list is known.
+
+    Regression: 3oms eval saw SDLC family take +40% wall-clock under the
+    default broad-recall preamble. The sdlc branch must steer the agent
+    toward implementation effort rather than pre-discovery.
+    """
+    task_dir = tmp_path / "sdlc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Modify src/foo/bar.py to add a new field.",
+        repo_path=Path("/repo"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="0d4ec3ad",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "sdlc",
+                    "sg_repo": "github.com/acme/widgets",
+                }
+            }
+        ),
+    )
+
+    # Stop-signal language must appear.
+    assert "Stop searching when you have the file list" in prompt
+    assert "Implementation effort is the bottleneck" in prompt
+    assert "NOT to pre-discover file lists" in prompt
+    # Must NOT carry the broad-recall default.
+    assert "Union results when recall matters" not in prompt
+    # Must NOT carry the oracle_checks coverage-first language.
+    assert "Coverage-first synthesis" not in prompt
+
+
+def test_compose_instruction_sourcegraph_declares_no_local_source(
+    tmp_path: Path,
+):
+    """The v2 sourcegraph preamble must state local source is absent.
+
+    History (codeprobe-evjr): cross-rig audit showed codeprobe agents
+    routed all reads through `mcp__sourcegraph__read_file` even when the
+    file existed locally. The v1 preamble tried to fix that with a
+    "Prefer local-first" guardrail.
+
+    Resolution (codeprobe-jf28): the v2 preamble takes the opposite,
+    cleaner approach — pair it with file-removal isolation so local
+    source genuinely is not present, and have the preamble state that
+    fact explicitly. The MCP-vs-local guardrail is no longer needed
+    because there is nothing local to prefer.
+
+    This test pins the new invariant:
+      1. The preamble declares "Local source files are not present."
+      2. The preamble routes all reads through MCP.
+      3. The EFFICIENCY "don't over-read" rule still reaches every
+         category (covered by the dedicated test below).
+    """
+    task_dir = tmp_path / "sdlc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Add a new field.",
+        repo_path=Path("/work/grpc-go"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="sdlc-001",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "sdlc",
+                    "sg_repo": "github.com/acme/grpc-go",
+                }
+            }
+        ),
+    )
+
+    # The new mode declares local source absence.
+    assert "Local source files are not present" in prompt
+    # All reads go through MCP — sg_read_file is the canonical path.
+    assert "sg_read_file" in prompt
+    # repo_scope is rendered with the actual sg_repo value, not left
+    # as a literal template token.
+    assert "github.com/acme/grpc-go" in prompt
+    assert "{{repo_scope}}" not in prompt
+    assert "{{workflow_tail}}" not in prompt
+    # The EFFICIENCY rule still reaches the SDLC branch.
+    assert "Efficiency" in prompt
+
+
+def test_compose_instruction_sourcegraph_efficiency_rule_in_all_branches(
+    tmp_path: Path,
+):
+    """All four category branches must carry the 'don't over-read' efficiency rule.
+
+    Regression (codeprobe-evjr): Section 6.2 audit recommended placing the
+    EFFICIENCY guard in every branch of `task_preamble_context` so MCP-only
+    reading patterns don't survive when categories switch. Verifies the
+    SDLC, default, oracle_checks, and symbol-reference-trace branches all
+    include the EFFICIENCY rule.
+    """
+    task_dir = tmp_path / "task-001"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    categories = [
+        "sdlc",
+        "oracle_checks",
+        "symbol-reference-trace",
+        "change-scope-audit",  # exercises the default branch
+    ]
+    for category in categories:
+        prompt, _ = compose_instruction(
+            instruction="Do the task.",
+            repo_path=Path("/repo"),
+            preamble_names=["sourcegraph"],
+            resolver=resolver,
+            task_id="task-001",
+            extra_context=task_preamble_context(
+                {
+                    "metadata": {
+                        "category": category,
+                        "sg_repo": "github.com/acme/widgets",
+                    }
+                }
+            ),
+        )
+        assert "Efficiency" in prompt, (
+            f"Category {category!r} missing EFFICIENCY rule in synthesis step"
+        )
+
+
+# -- task_preamble_context guard tests ---------------------------------------
+
+
+def test_task_preamble_context_raises_when_sg_repo_empty_with_sourcegraph():
+    """Empty ``metadata.sg_repo`` plus a ``sourcegraph`` preamble is fatal.
+
+    Regression (codeprobe-evjr.3): gascity SDLC tasks were shipping with
+    ``metadata.sg_repo = ""``, which caused the Sourcegraph preamble's
+    ``repo:^{{sg_repo}}$`` filter to render as ``repo:^$ <query>`` — a
+    malformed scope that fell back to global search and inflated cost
+    without scoping. ``task_preamble_context`` must convert this silent
+    degradation into a fail-loud error at prompt-composition time.
+    """
+    with pytest.raises(ValueError, match="sg_repo is empty"):
+        task_preamble_context(
+            {"metadata": {"category": "sdlc", "sg_repo": ""}},
+            preamble_names=["sourcegraph"],
+            task_id="ba1f3675",
+        )
+
+
+def test_task_preamble_context_raises_when_sg_repo_missing_with_sourcegraph():
+    """Missing ``metadata.sg_repo`` key triggers the same guard."""
+    with pytest.raises(ValueError, match="ba1f3675"):
+        task_preamble_context(
+            {"metadata": {"category": "sdlc"}},
+            preamble_names=["sourcegraph"],
+            task_id="ba1f3675",
+        )
+
+
+def test_task_preamble_context_no_guard_without_sourcegraph_preamble():
+    """Empty ``sg_repo`` is tolerated when sourcegraph isn't requested."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": ""}},
+        preamble_names=["github"],
+        task_id="ba1f3675",
+    )
+    assert "sg_repo" not in ctx
+
+
+def test_task_preamble_context_no_guard_when_preamble_names_omitted():
+    """Backwards-compatible callers (no ``preamble_names``) don't trigger."""
+    ctx = task_preamble_context(
+        {"metadata": {"category": "sdlc", "sg_repo": ""}},
+    )
+    assert "sg_repo" not in ctx
+
+
+def test_task_preamble_context_passes_when_sg_repo_populated():
+    """Populated ``sg_repo`` flows through and propagates to the context."""
+    ctx = task_preamble_context(
+        {
+            "metadata": {
+                "category": "sdlc",
+                "sg_repo": "github.com/gastownhall/gascity",
+            }
+        },
+        preamble_names=["sourcegraph"],
+        task_id="ba1f3675",
+    )
+    assert ctx["sg_repo"] == "github.com/gastownhall/gascity"
 
 
 # -- Built-in preamble tests --------------------------------------------------
@@ -320,26 +581,43 @@ from codeprobe.preambles import get_builtin, list_builtins  # noqa: E402
 
 
 def test_builtin_sourcegraph_preamble_exists():
-    """The sourcegraph preamble ships as a built-in."""
+    """The sourcegraph preamble ships as a built-in.
+
+    jf28: The v2 template references ``{{repo_scope}}`` and
+    ``{{workflow_tail}}`` rather than substituting ``{{sg_repo}}``
+    directly. The repo identifier is composed into ``repo_scope`` by
+    ``task_preamble_context`` and substituted at compose time.
+    """
     block = get_builtin("sourcegraph")
     assert block.name == "sourcegraph"
-    assert "keyword_search" in block.template
-    assert "{{sg_repo}}" in block.template
+    assert "sg_keyword_search" in block.template
+    assert "{{repo_scope}}" in block.template
+    assert "{{workflow_tail}}" in block.template
 
 
 def test_builtin_preamble_renders_variables():
-    """Built-in preamble template variables resolve correctly."""
+    """Built-in preamble template variables resolve correctly.
+
+    jf28: The renderer fills ``{{repo_scope}}`` and ``{{workflow_tail}}``
+    via the slots produced by ``task_preamble_context``. We exercise
+    ``compose_instruction`` end-to-end below; this test covers the raw
+    block.render() contract — both slots are substituted, no literal
+    template tokens leak through.
+    """
     block = get_builtin("sourcegraph")
     rendered = block.render(
         {
             "repo_path": "/my/repo",
             "repo_name": "my-repo",
             "task_id": "task-42",
-            "sg_repo": "github.com/sg-evals/my-repo",
+            "repo_scope": "**Indexed repository:** `github.com/sg-evals/my-repo`.",
+            "workflow_tail": "3. **Trace references** — example tail step.",
         }
     )
     assert "github.com/sg-evals/my-repo" in rendered
-    assert "{{sg_repo}}" not in rendered
+    assert "Trace references" in rendered
+    assert "{{repo_scope}}" not in rendered
+    assert "{{workflow_tail}}" not in rendered
 
 
 def test_builtin_github_preamble_exists():
