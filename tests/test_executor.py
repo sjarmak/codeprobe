@@ -1886,3 +1886,158 @@ def test_execute_task_hide_local_source_default_false_keeps_source_visible(
     assert "src.py" in adapter.workspace_entries_during_run, (
         "source was hidden when hide_local_source defaulted to False"
     )
+
+
+# ---------------------------------------------------------------------------
+# scaffold-mode integration (codeprobe-2nw2.3 / codeprobe-sm9f)
+# ---------------------------------------------------------------------------
+
+
+class _ScaffoldEditAdapter(FakeAdapter):
+    """Adapter that grows a 0-byte scaffold placeholder during run()."""
+
+    def __init__(
+        self,
+        *,
+        workspace: Path,
+        rel_path: str,
+        content: str,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._workspace = workspace
+        self._rel_path = rel_path
+        self._content = content
+        self.placeholder_size_during_run: int | None = None
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
+        target = self._workspace / self._rel_path
+        if target.exists():
+            self.placeholder_size_during_run = target.stat().st_size
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self._content)
+        return super().run(prompt, config, session_env=session_env)
+
+
+def test_execute_task_scaffold_mode_overlays_agent_edits_before_scoring(
+    tmp_path: Path,
+):
+    """Verifier-side wiring: scaffold mode overlays agent edits onto
+    restored source before scoring, so the oracle sees the merged tree.
+
+    Uses the codeprobe-2nw2 smoke fixture (``tests/fixtures/sdlc_sgonly_smoke``)
+    with binary scoring so the exit code of ``tests/test.sh`` directly maps
+    to ``automated_score``. The oracle greps ``${TASK_REPO_ROOT}/src/math.go``
+    for ``func add`` — only matches if the scaffold context manager's
+    overlay step ran after restore. Passing ``worktree_path=workspace``
+    sets ``TASK_REPO_ROOT`` so test.sh resolves to the merged workspace.
+    """
+    import json as _json
+    import shutil as _shutil
+
+    smoke_root = Path(__file__).parent / "fixtures" / "sdlc_sgonly_smoke"
+
+    # Copy fixture into both a task_dir (for scoring sandbox) and a writable
+    # workspace (where the agent edits happen).
+    task_dir = tmp_path / "task"
+    _shutil.copytree(smoke_root, task_dir)
+    workspace = tmp_path / "ws"
+    _shutil.copytree(smoke_root, workspace)
+
+    # Flip the task's reward_type to binary so the oracle exit code is
+    # the headline score. The smoke fixture's continuous setting is the
+    # design-doc reference shape (codeprobe-hcnv exercises it end-to-end
+    # via reward.txt); this test only needs to prove that scoring sees
+    # the merged tree.
+    meta_path = task_dir / "metadata.json"
+    meta = _json.loads(meta_path.read_text())
+    meta["verification"]["reward_type"] = "binary"
+    meta_path.write_text(_json.dumps(meta, indent=2))
+
+    agent_program = (
+        "package math\n\n"
+        "// existing\n\n"
+        "func add(a int, b int) int {\n"
+        "    return a + b\n"
+        "}\n"
+    )
+
+    adapter = _ScaffoldEditAdapter(
+        workspace=workspace,
+        rel_path="src/math.go",
+        content=agent_program,
+        stdout="ok",
+    )
+
+    result = execute_task(
+        adapter,
+        task_dir,
+        workspace,
+        AgentConfig(),
+        worktree_path=workspace,
+        hide_local_source=True,
+        hide_local_source_mode="scaffold",
+    )
+
+    # During the yield the adapter saw a 0-byte placeholder, proving
+    # scaffold mode was active.
+    assert adapter.placeholder_size_during_run == 0, (
+        f"expected 0-byte scaffold during run, "
+        f"saw {adapter.placeholder_size_during_run!r}"
+    )
+
+    # Post-restore + overlay: workspace/src/math.go has the merged content.
+    merged = (workspace / "src" / "math.go").read_text()
+    assert "// existing" in merged, "restored source missing from merged tree"
+    assert "func add" in merged, "agent overlay missing from merged tree"
+
+    # The oracle (bash tests/test.sh with TASK_REPO_ROOT=workspace) saw
+    # the merged tree → exit 0 → binary score 1.0.
+    assert result.completed.status == "completed"
+    assert result.completed.automated_score == 1.0
+
+
+def test_execute_task_scaffold_mode_default_is_hide(tmp_path: Path):
+    """When ``hide_local_source_mode`` is not provided, the default
+    ``"hide"`` mode is used — no scaffolds, source disappears during
+    the yield, agent ``answer.txt`` writes survive.
+
+    This guards against a regression where the new parameter accidentally
+    flips its default to scaffold.
+    """
+    task_dir = _make_task(tmp_path / "task-default-mode", passing=True)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "src").mkdir()
+    (workspace / "src" / "main.py").write_text("ORIG")
+
+    adapter = _RecordingAdapter(workspace=workspace, stdout="ok")
+
+    execute_task(
+        adapter,
+        task_dir,
+        workspace,
+        AgentConfig(),
+        hide_local_source=True,
+        # hide_local_source_mode omitted — default should be "hide"
+    )
+
+    # In hide mode the agent sees an empty workspace (apart from any
+    # default-keep dirs that exist). Critically: NO 0-byte placeholders.
+    assert adapter.workspace_entries_during_run is not None
+    visible_during_run = [
+        e
+        for e in adapter.workspace_entries_during_run
+        if e != ".git" and e != "answer.txt"
+    ]
+    assert visible_during_run == [], (
+        f"hide-mode leaked source files during run: {visible_during_run!r}"
+    )
+    # Post-run: source restored, no 0-byte placeholder lingering.
+    assert (workspace / "src" / "main.py").read_text() == "ORIG"
