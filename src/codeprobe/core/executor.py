@@ -289,9 +289,8 @@ def execute_task(
     worktree_path: Path | None = None,
     session_env: dict[str, str] | None = None,
     dual_worktree_factory: Callable[[Path, str], IsolationStrategy] | None = None,
-    hide_local_source: bool = False,
+    hide_local_source: Literal["off", "hide", "scaffold"] = "off",
     hide_local_source_keep: tuple[str, ...] = (),
-    hide_local_source_mode: Literal["hide", "scaffold"] = "hide",
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -478,18 +477,18 @@ def execute_task(
         # parallel) or ``repo_path`` (single-tenant).  On context exit
         # the source is restored before scoring runs.
         #
-        # ``hide_local_source_mode`` selects ``hide`` (jf28 behaviour;
-        # workspace appears empty) or ``scaffold`` (codeprobe-2nw2;
-        # workspace shows 0-byte placeholders at tracked extensions and
-        # agent edits get overlaid on top of restored source so scoring
-        # sees the merged tree).
+        # ``hide_local_source`` selects ``"off"`` (default; no isolation),
+        # ``"hide"`` (jf28 behaviour; workspace appears empty) or
+        # ``"scaffold"`` (codeprobe-2nw2; workspace shows 0-byte
+        # placeholders at tracked extensions and agent edits get overlaid
+        # on top of restored source so scoring sees the merged tree).
         source_ctx = (
             quarantine_local_source(
                 effective_workspace,
                 keep=hide_local_source_keep,
-                mode=hide_local_source_mode,
+                mode=hide_local_source,
             )
-            if hide_local_source
+            if hide_local_source != "off"
             else contextlib.nullcontext()
         )
 
@@ -1042,9 +1041,6 @@ def execute_config(
                 worktree_path=worktree_path,
                 session_env=session_env,
                 hide_local_source=experiment_config.hide_local_source,
-                hide_local_source_mode=getattr(
-                    experiment_config, "hide_local_source_mode", "hide"
-                ),
             )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:

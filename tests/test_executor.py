@@ -1797,7 +1797,7 @@ class _RecordingAdapter(FakeAdapter):
     """FakeAdapter that snapshots the workspace contents during run().
 
     Used to verify that ``quarantine_local_source`` is active around the
-    adapter's run() call when ``hide_local_source=True``.
+    adapter's run() call when ``hide_local_source != "off"``.
     """
 
     def __init__(self, *, workspace: Path, **kwargs: object) -> None:
@@ -1821,7 +1821,7 @@ class _RecordingAdapter(FakeAdapter):
 
 
 def test_execute_task_hide_local_source_stashes_during_run(tmp_path: Path):
-    """When hide_local_source=True, the workspace is empty during run()
+    """When hide_local_source="hide", the workspace is empty during run()
     and source is restored before scoring."""
     task_dir = _make_task(tmp_path / "task-jf28", passing=True)
 
@@ -1840,7 +1840,7 @@ def test_execute_task_hide_local_source_stashes_during_run(tmp_path: Path):
         task_dir,
         repo_path,
         AgentConfig(),
-        hide_local_source=True,
+        hide_local_source="hide",
     )
 
     # During the run the agent saw an empty workspace (apart from .git).
@@ -1867,10 +1867,10 @@ def test_execute_task_hide_local_source_stashes_during_run(tmp_path: Path):
     assert result.completed.automated_score == 1.0
 
 
-def test_execute_task_hide_local_source_default_false_keeps_source_visible(
+def test_execute_task_hide_local_source_default_off_keeps_source_visible(
     tmp_path: Path,
 ):
-    """Default (hide_local_source=False) is no-op: source is visible
+    """Default (hide_local_source="off") is no-op: source is visible
     throughout the run."""
     task_dir = _make_task(tmp_path / "task-default", passing=True)
 
@@ -1884,7 +1884,7 @@ def test_execute_task_hide_local_source_default_false_keeps_source_visible(
 
     assert adapter.workspace_entries_during_run is not None
     assert "src.py" in adapter.workspace_entries_during_run, (
-        "source was hidden when hide_local_source defaulted to False"
+        "source was hidden when hide_local_source defaulted to 'off'"
     )
 
 
@@ -1980,8 +1980,7 @@ def test_execute_task_scaffold_mode_overlays_agent_edits_before_scoring(
         workspace,
         AgentConfig(),
         worktree_path=workspace,
-        hide_local_source=True,
-        hide_local_source_mode="scaffold",
+        hide_local_source="scaffold",
     )
 
     # During the yield the adapter saw a 0-byte placeholder, proving
@@ -2002,13 +2001,11 @@ def test_execute_task_scaffold_mode_overlays_agent_edits_before_scoring(
     assert result.completed.automated_score == 1.0
 
 
-def test_execute_task_scaffold_mode_default_is_hide(tmp_path: Path):
-    """When ``hide_local_source_mode`` is not provided, the default
-    ``"hide"`` mode is used — no scaffolds, source disappears during
-    the yield, agent ``answer.txt`` writes survive.
-
-    This guards against a regression where the new parameter accidentally
-    flips its default to scaffold.
+def test_execute_task_hide_mode_does_not_scaffold(tmp_path: Path):
+    """When ``hide_local_source="hide"``, the workspace is empty during
+    the yield (no 0-byte placeholders) and ``answer.txt`` writes survive
+    the restore — i.e. ``"hide"`` is NOT silently upgraded to scaffold
+    semantics.
     """
     task_dir = _make_task(tmp_path / "task-default-mode", passing=True)
 
@@ -2024,8 +2021,7 @@ def test_execute_task_scaffold_mode_default_is_hide(tmp_path: Path):
         task_dir,
         workspace,
         AgentConfig(),
-        hide_local_source=True,
-        # hide_local_source_mode omitted — default should be "hide"
+        hide_local_source="hide",
     )
 
     # In hide mode the agent sees an empty workspace (apart from any

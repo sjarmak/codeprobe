@@ -1199,14 +1199,20 @@ def init_experiment(
 )
 @click.option(
     "--hide-local-source",
-    is_flag=True,
-    default=False,
+    type=click.Choice(["off", "hide", "scaffold"]),
+    default="off",
+    show_default=True,
     help=(
-        "Stash local source files from the workspace for the duration of "
-        "the agent run (sg-only mode, codeprobe-jf28). The agent has no "
-        "local source to read; pair with --preamble sourcegraph whose v2 "
-        "body declares 'Local source files are not present.' Source is "
-        "restored before scoring runs."
+        "Source-isolation mode for sg-only / sg-hybrid runs. "
+        "'off' (default): source visible. "
+        "'hide' (codeprobe-jf28): source stashed for the agent run, "
+        "restored before scoring — use for oracle / symbol-reference "
+        "tasks where the agent answer is text. "
+        "'scaffold' (codeprobe-2nw2): source stashed AND replaced with "
+        "0-byte placeholder files at original paths so the agent can "
+        "write edits via MCP-only reads; agent edits are overlaid on "
+        "the restored source before scoring — use for SDLC code-edit "
+        "tasks."
     ),
 )
 def add_config(
@@ -1221,7 +1227,7 @@ def add_config(
     allowed_tools: str | None,
     disallowed_tools: str | None,
     mcp_mode: str,
-    hide_local_source: bool,
+    hide_local_source: str,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config

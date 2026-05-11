@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -43,13 +43,24 @@ class ExperimentConfig:
     preambles: tuple[str, ...] = ()
     reward_type: str = "binary"
     max_turns: int | None = None
-    # When True, the executor stashes local source from the workspace
-    # before running the agent and restores it after (codeprobe-jf28).
-    # Mirrors CSB's ``Dockerfile.sg_only`` and EB's
-    # ``generate_sg_only_dockerfile`` pattern. Pair with the v2
-    # ``sourcegraph`` preamble whose body declares "Local source
-    # files are not present."
-    hide_local_source: bool = False
+    # Source-isolation mode for sg-only / sg-hybrid runs.
+    #
+    # * ``"off"`` (default; codeprobe-2nw2.4): source visible — current
+    #   default for back-compat with non-sg-only configs.
+    # * ``"hide"`` (codeprobe-jf28): local source stashed for the
+    #   duration of the agent run, restored before scoring. Pair with
+    #   ``--preamble sourcegraph`` whose v2 body declares "Local source
+    #   files are not present." Use for oracle / symbol-reference tasks
+    #   whose verifier reads an agent-written text answer.
+    # * ``"scaffold"`` (codeprobe-2nw2): local source stashed AND
+    #   0-byte placeholder files left at the tracked extensions so the
+    #   agent can write edits to known paths via MCP-only reads. The
+    #   ``__exit__`` overlay merges agent edits on top of the restored
+    #   source before scoring runs. Use for SDLC code-edit tasks.
+    #
+    # Legacy boolean values are accepted by the loader for back-compat:
+    # ``True`` → ``"hide"``, ``False`` → ``"off"``.
+    hide_local_source: Literal["off", "hide", "scaffold"] = "off"
     extra: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:

@@ -59,15 +59,18 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # jf28: lines shifted +1 (signature gained `hide_local_source`)
         # for entries above the ExperimentConfig() call; +2 for entries
         # below (the ExperimentConfig() call also grew one line).
-        ("src/codeprobe/cli/experiment_cmd.py", 159),
-        ("src/codeprobe/cli/experiment_cmd.py", 168),
-        ("src/codeprobe/cli/experiment_cmd.py", 184),
-        ("src/codeprobe/cli/experiment_cmd.py", 213),
-        ("src/codeprobe/cli/experiment_cmd.py", 257),
-        ("src/codeprobe/cli/experiment_cmd.py", 327),
-        ("src/codeprobe/cli/experiment_cmd.py", 344),
-        ("src/codeprobe/cli/experiment_cmd.py", 426),
-        ("src/codeprobe/cli/experiment_cmd.py", 433),
+        # codeprobe-2nw2.4: experiment_add_config docstring grew by 6
+        # lines when `hide_local_source` was widened from bool to a
+        # typed Literal["off","hide","scaffold"]; all entries shifted +6.
+        ("src/codeprobe/cli/experiment_cmd.py", 165),
+        ("src/codeprobe/cli/experiment_cmd.py", 174),
+        ("src/codeprobe/cli/experiment_cmd.py", 190),
+        ("src/codeprobe/cli/experiment_cmd.py", 219),
+        ("src/codeprobe/cli/experiment_cmd.py", 263),
+        ("src/codeprobe/cli/experiment_cmd.py", 333),
+        ("src/codeprobe/cli/experiment_cmd.py", 350),
+        ("src/codeprobe/cli/experiment_cmd.py", 432),
+        ("src/codeprobe/cli/experiment_cmd.py", 439),
         ("src/codeprobe/cli/init_cmd.py", 46),
         ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),

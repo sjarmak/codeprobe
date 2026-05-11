@@ -97,6 +97,10 @@ def load_experiment(exp_dir: Path) -> Experiment:
     except (json.JSONDecodeError, KeyError) as exc:
         raise ValueError(f"Invalid experiment.json at {path}: {exc}") from exc
 
+    # Lazy import: codeprobe.config.loader imports models.experiment which
+    # imports this module — keep the coercion helper out of module init.
+    from codeprobe.config.loader import _coerce_hide_local_source
+
     configs = [
         ExperimentConfig(
             label=c["label"],
@@ -111,6 +115,9 @@ def load_experiment(exp_dir: Path) -> Experiment:
             preambles=tuple(c.get("preambles", ())),
             reward_type=c.get("reward_type", "binary"),
             max_turns=c.get("max_turns"),
+            hide_local_source=_coerce_hide_local_source(
+                c.get("hide_local_source")
+            ),
             extra=c.get("extra", {}),
         )
         for c in data.get("configs", [])

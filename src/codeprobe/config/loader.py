@@ -138,6 +138,40 @@ def _to_evalrc(data: dict) -> EvalrcConfig:
     )
 
 
+_HIDE_LOCAL_SOURCE_VALUES = frozenset({"off", "hide", "scaffold"})
+
+
+def _coerce_hide_local_source(raw: object) -> str:
+    """Map legacy bool / typed string into the new Literal field.
+
+    Accepted forms:
+
+    * ``True`` / ``False`` (legacy codeprobe-jf28 boolean) →
+      ``"hide"`` / ``"off"``.
+    * ``"off"`` / ``"hide"`` / ``"scaffold"`` (codeprobe-2nw2.4
+      string form) → passed through unchanged.
+    * Anything else raises ``ValueError`` so an experiment.json typo
+      fails loud at load time rather than silently turning into
+      ``"off"``.
+    """
+    if raw is None:
+        return "off"
+    if isinstance(raw, bool):
+        return "hide" if raw else "off"
+    if isinstance(raw, str):
+        if raw in _HIDE_LOCAL_SOURCE_VALUES:
+            return raw
+        raise ValueError(
+            f"hide_local_source must be one of {sorted(_HIDE_LOCAL_SOURCE_VALUES)} "
+            f"or a boolean; got {raw!r}"
+        )
+    raise ValueError(
+        "hide_local_source must be a string in "
+        f"{sorted(_HIDE_LOCAL_SOURCE_VALUES)} or a boolean; "
+        f"got {type(raw).__name__}"
+    )
+
+
 def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
     """Build ExperimentConfig list from explicit configs mapping."""
     for label, cfg in configs_dict.items():
@@ -159,7 +193,9 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             preambles=tuple(cfg.get("preambles", ())),
             reward_type=cfg.get("reward_type", "binary"),
             max_turns=cfg.get("max_turns"),
-            hide_local_source=bool(cfg.get("hide_local_source", False)),
+            hide_local_source=_coerce_hide_local_source(
+                cfg.get("hide_local_source")
+            ),
             extra={
                 k: v
                 for k, v in cfg.items()

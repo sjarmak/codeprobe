@@ -147,9 +147,15 @@ def experiment_add_config(
     allowed_tools: list[str] | None = None,
     disallowed_tools: list[str] | None = None,
     mcp_mode: str = "strict",
-    hide_local_source: bool = False,
+    hide_local_source: str = "off",
 ) -> None:
-    """Add a configuration to an existing experiment."""
+    """Add a configuration to an existing experiment.
+
+    ``hide_local_source`` must be one of ``"off"``, ``"hide"``, or
+    ``"scaffold"`` (see :class:`ExperimentConfig`). Passed straight
+    through to the persisted experiment.json; the loader handles
+    legacy boolean values for back-compat on subsequent reads.
+    """
     exp_dir = Path(path)
 
     try:
