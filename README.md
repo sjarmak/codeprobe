@@ -179,31 +179,54 @@ codeprobe interpret /path/to/repo/mcp-comparison
 
 ### sg-only mode (file-removal isolation, v0.10.0+)
 
-For oracle / symbol-reference-trace / change-scope-audit tasks where the
-agent's answer is text rather than code edits, you can isolate the
-comparison further by stashing the workspace's source files for the
-duration of the run. The agent then *must* use Sourcegraph MCP — there
-is nothing local to fall back on. Pair the v2 `sourcegraph` preamble
-(which declares "Local source files are not present") with the
-`--hide-local-source` flag:
+The `--hide-local-source` flag chooses the source-isolation mode for
+sg-only / sg-hybrid runs. Three values are accepted (v0.11.0+):
+
+- **`off`** (default): source is visible to the agent; no isolation.
+- **`hide`** (v0.10.0; codeprobe-jf28): source is stashed for the
+  duration of the agent run and restored on exit. The workspace
+  appears empty during the run so the agent *must* use Sourcegraph
+  MCP. Use this for **oracle / symbol-reference-trace / change-scope-
+  audit tasks** where the agent's answer is a text artifact
+  (`answer.txt`, `reward.txt`, etc.).
+- **`scaffold`** (v0.11.0; codeprobe-2nw2): source is stashed AND
+  replaced with 0-byte placeholder files at every original path under
+  a tracked extension set. The agent reads exclusively via MCP but can
+  write edits to the known paths. On exit, agent edits are overlaid on
+  top of the restored source, so the verifier sees the merged tree.
+  Use this for **SDLC code-edit tasks** where the verifier runs
+  against the workspace (e.g. `test.sh` greps a source file or
+  invokes a build).
+
+Pair either mode with the v2 `sourcegraph` preamble (which declares
+"Local source files are not present"):
 
 ```bash
+# Oracle / text-answer task
 codeprobe experiment add-config /path/to/repo/mcp-comparison \
   --label with-sg-isolated --agent claude --model claude-sonnet-4-6 \
   --preamble sourcegraph \
   --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}' \
-  --hide-local-source
+  --hide-local-source hide
+
+# SDLC code-edit task
+codeprobe experiment add-config /path/to/repo/mcp-comparison \
+  --label with-sg-isolated-sdlc --agent claude --model claude-sonnet-4-6 \
+  --preamble sourcegraph \
+  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}' \
+  --hide-local-source scaffold
 ```
 
-`--hide-local-source` mirrors CodeScaleBench's `Dockerfile.sg_only` and
-EnterpriseBench's `generate_sg_only_dockerfile` pattern. The workspace
-appears empty during the agent's run and is restored on exit (including
-on exception). `.git`, `.codeprobe`, and `.codeprobe-worktrees*` are
-preserved by default.
+The `hide` mode mirrors CodeScaleBench's `Dockerfile.sg_only` and
+EnterpriseBench's `generate_sg_only_dockerfile` pattern; the
+`scaffold` mode mirrors CodeScaleBench's "truncate at build time,
+restore at verify time" pattern in pure Python so codeprobe doesn't
+need per-task Docker. `.git`, `.codeprobe`, and `.codeprobe-worktrees*`
+are preserved by default in both modes.
 
-**Not compatible with SDLC tasks** — they need source files to edit.
-For SDLC, use `--preamble sourcegraph` without `--hide-local-source`;
-the v2 preamble alone (no isolation) is the relevant intervention.
+Legacy boolean values in `experiment.json` keep working — `true` is
+loaded as `"hide"` and `false` as `"off"` — so jf28-era experiments
+do not require migration.
 
 ### Preambles
 
@@ -266,12 +289,18 @@ codeprobe mine --list-profiles        # Show available profiles
 # Experiment configs
 codeprobe experiment add-config . --preamble sourcegraph  # Attach MCP preamble
 codeprobe experiment add-config . --mcp-config config.json  # Attach MCP server
-codeprobe experiment add-config . --hide-local-source     # sg-only mode (v0.10.0+):
-                                                          # stash workspace source for
-                                                          # the run; restore after.
-                                                          # Pair with --preamble
-                                                          # sourcegraph. Incompatible
-                                                          # with SDLC tasks.
+codeprobe experiment add-config . --hide-local-source hide      # sg-only oracle mode
+                                                                # (v0.10.0+): stash source
+                                                                # for the run, restore
+                                                                # after. Text answers only.
+codeprobe experiment add-config . --hide-local-source scaffold  # sg-only SDLC mode
+                                                                # (v0.11.0+): stash source
+                                                                # AND scaffold 0-byte
+                                                                # placeholders; overlay
+                                                                # agent edits before
+                                                                # scoring. Pair both modes
+                                                                # with --preamble
+                                                                # sourcegraph.
 
 # Diagnostics
 codeprobe doctor                      # Check agents, API keys, git, Python

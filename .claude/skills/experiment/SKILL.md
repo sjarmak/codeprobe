@@ -138,12 +138,18 @@ Then ask:
 - Build MCP config JSON: `{"mcpServers":{"sourcegraph":{"type":"http","url":"{SG_URL}/.api/mcp/all","headers":{"Authorization":"token {SG_TOKEN}"}}}}`
 - Use `--preamble sourcegraph` (built-in v2 preamble; `task_preamble_context` fills `{{repo_scope}}` from `metadata.sg_repo` and `{{workflow_tail}}` per `metadata.category`)
 - Mine tasks with `--org-scale --mcp-families --sg-repo {SG_REPO}` (see `/mine-tasks` MCP flow)
-- For oracle / symbol-reference-trace / change-scope-audit tasks
-  (text answers, not code edits): also pass `--hide-local-source` to
-  stash the workspace source for the duration of the run. Forces
-  MCP-only access, mirrors CSB `Dockerfile.sg_only` / EB
-  `generate_sg_only_dockerfile`. **Skip** for SDLC tasks — they need
-  files to edit.
+- `--hide-local-source` selects a source-isolation mode (v0.11.0+):
+  - **`hide`** — oracle / symbol-reference-trace / change-scope-audit
+    tasks where the agent's answer is text. Stashes workspace source
+    for the duration of the run; agent has nothing local to read.
+    Mirrors CSB `Dockerfile.sg_only` / EB `generate_sg_only_dockerfile`.
+  - **`scaffold`** — SDLC code-edit tasks. Stashes source AND leaves
+    0-byte placeholder files at the original paths so the agent reads
+    via MCP but can still write edits via the known paths; agent edits
+    are overlaid on top of the restored source before scoring. Mirrors
+    CSB's "truncate at build time, restore at verify time" pattern in
+    pure Python (codeprobe-2nw2).
+  - Default `off` — source visible; use for non-sg-only configs.
 
 **If GitHub:**
 
@@ -350,11 +356,16 @@ Template variables (filled by `task_preamble_context` at compose time):
   sdlc, or default)
 
 Pair the v2 sourcegraph preamble with `--hide-local-source` for a
-true sg-only comparison: workspace source is stashed for the run so
-the agent has nothing local to fall back on. Compatible with text-
-answer task families (oracle_checks, symbol-reference-trace,
-change-scope-audit). Not compatible with SDLC (which needs source
-to edit).
+true sg-only comparison:
+
+- `--hide-local-source hide` — workspace source stashed for the run;
+  agent has nothing local to fall back on. Use for text-answer task
+  families (oracle_checks, symbol-reference-trace, change-scope-audit).
+- `--hide-local-source scaffold` — same stashing, plus 0-byte
+  placeholder files at every original path so the agent can write
+  edits via MCP-only reads; codeprobe overlays agent edits on top of
+  the restored source before scoring. Use for SDLC code-edit tasks
+  (codeprobe-2nw2, v0.11.0+).
 
 ---
 
