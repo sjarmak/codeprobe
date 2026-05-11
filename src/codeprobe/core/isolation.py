@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as _dt
+import json
 import logging
 import queue
 import shutil
@@ -12,11 +14,18 @@ import threading
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from codeprobe.models.task import RepoRef
 
 logger = logging.getLogger(__name__)
+
+
+# Sentinel consumed by ``tests/test_isolation_scaffold.py`` to gate the
+# sg-only scaffold-mode test suite. Flipped from absent to True when
+# scaffold mode landed (codeprobe-yw6u, design in
+# ``docs/investigations/codeprobe-2nw2/design.md``).
+SGONLY_SCAFFOLD_AVAILABLE = True
 
 
 # Shared cache directory for cloned secondary repos.  Sibling beads may
@@ -187,27 +196,259 @@ def quarantine_sibling_experiments(
 _LOCAL_SOURCE_DEFAULT_KEEP: frozenset[str] = frozenset({".git", ".codeprobe"})
 
 
+# scaffold-mode: extensions that get 0-byte placeholders left at their
+# original paths so the agent can edit-in-place during a sg-only run.
+# Mirrors CodeScaleBench ``generate_sgonly_dockerfiles.py`` lines
+# 283-326 verbatim — this list is a security boundary (truncate
+# surface), not a convenience filter. Update in lockstep with CSB.
+# See ``docs/investigations/codeprobe-2nw2/design.md`` §TRUNCATE_EXTENSIONS.
+_SCAFFOLD_EXTENSIONS: frozenset[str] = frozenset({
+    # Python
+    ".py", ".pyx", ".pyi",
+    # JavaScript / TypeScript
+    ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+    # Go
+    ".go",
+    # Java / JVM
+    ".java", ".kt", ".scala", ".groovy", ".clj",
+    # C / C++
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
+    # Rust
+    ".rs",
+    # Ruby
+    ".rb",
+    # C# / .NET
+    ".cs", ".fs",
+    # Swift / Objective-C
+    ".swift", ".m", ".mm",
+    # Web frameworks
+    ".vue", ".svelte",
+    # Shell
+    ".sh", ".bash", ".zsh",
+    # Lua
+    ".lua",
+    # Protobuf / gRPC / IDL
+    ".proto", ".thrift", ".avsc", ".fbs",
+    # Config / data
+    ".yaml", ".yml", ".toml", ".json", ".xml", ".ini", ".cfg",
+    # Documentation
+    ".md", ".rst", ".txt", ".adoc",
+    # Build files
+    ".cmake", ".bzl", ".bazel",
+    # SQL
+    ".sql",
+    # Erlang / Elixir
+    ".erl", ".ex", ".exs",
+    # PHP
+    ".php",
+    # Perl
+    ".pl", ".pm",
+    # R
+    ".r",
+})
+
+# scaffold-mode: directory names that, when present anywhere in a path,
+# disqualify the file from getting a placeholder OR from being captured
+# in the agent overlay. ``.git`` and ``.codeprobe*`` are also in the
+# keep set so they're not actually in the stash; listing them here is
+# defense-in-depth.
+_SCAFFOLD_SKIP_DIR_NAMES: frozenset[str] = frozenset({
+    ".git",
+    ".codeprobe",
+    "node_modules",
+    "tests",
+})
+
+# scaffold-mode: extra prefixes excluded from the overlay capture.
+# Mirrors CSB ``backup_agent_files`` plus codeprobe-specific paths
+# called out in the design doc. Workflow files in particular must
+# never be overlaid (would let the agent inject CI).
+_SCAFFOLD_OVERLAY_EXCLUDED_RELPREFIXES: tuple[str, ...] = (
+    ".git/",
+    ".codeprobe/",
+    ".claude/",
+    "tests/",
+    ".github/workflows/",
+)
+
+
+def _matches_scaffold_extension(path: Path) -> bool:
+    """Return True if *path*'s suffix is in :data:`_SCAFFOLD_EXTENSIONS`."""
+    # ``Path.suffix`` is empty for dotfiles like ``.gitignore``; that
+    # matches the design — those are not in TRUNCATE_EXTENSIONS.
+    return path.suffix.lower() in _SCAFFOLD_EXTENSIONS
+
+
+def _path_under_skip_dir(rel_parts: tuple[str, ...]) -> bool:
+    """Return True if any ancestor segment of *rel_parts* is a skip dir."""
+    # ``rel_parts`` is the path components RELATIVE to the stash or
+    # workspace root. We exclude the last segment (the filename) and
+    # check parent directories against the skip set.
+    for part in rel_parts[:-1]:
+        if part in _SCAFFOLD_SKIP_DIR_NAMES:
+            return True
+    return False
+
+
+def _collect_scaffold_paths(stash_dir: Path) -> list[str]:
+    """Walk *stash_dir* and return workspace-relative POSIX paths for
+    every file under :data:`_SCAFFOLD_EXTENSIONS` not under a skip dir.
+
+    The stash mirrors the original workspace layout, so paths returned
+    here are exactly the relative paths where 0-byte placeholders must
+    be created in the workspace.
+    """
+    paths: list[str] = []
+    for file_path in stash_dir.rglob("*"):
+        if not file_path.is_file() or file_path.is_symlink():
+            continue
+        try:
+            rel = file_path.relative_to(stash_dir)
+        except ValueError:  # pragma: no cover — defensive
+            continue
+        rel_parts = rel.parts
+        if _path_under_skip_dir(rel_parts):
+            continue
+        if not _matches_scaffold_extension(file_path):
+            continue
+        paths.append(rel.as_posix())
+    return paths
+
+
+def _create_scaffold_placeholders(
+    workspace: Path, scaffold_paths: list[str]
+) -> None:
+    """Create 0-byte placeholder files in *workspace* for each path."""
+    for rel in scaffold_paths:
+        target = workspace / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+
+
+def _write_scaffold_manifest(
+    stash_dir: Path, scaffold_paths: list[str]
+) -> None:
+    """Write ``manifest.json`` inside *stash_dir* describing the scaffold."""
+    payload = {
+        "mode": "scaffold",
+        "stash_dir": str(stash_dir),
+        "scaffold_paths": sorted(scaffold_paths),
+        "created_at": _dt.datetime.now(_dt.UTC)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+    }
+    (stash_dir / "manifest.json").write_text(json.dumps(payload, indent=2))
+
+
+def _overlay_excluded(rel_posix: str) -> bool:
+    """Return True if a workspace-relative path is excluded from overlay.
+
+    Mirrors the design-doc filter rules: ``.git/``, ``.codeprobe/``,
+    ``.claude/``, ``tests/``, and ``.github/workflows/`` are all
+    rejected. Anywhere-named ``experiment.json`` and any path under a
+    directory containing an ``experiment.json`` are also excluded; the
+    caller passes those in via *experiment_excluded_prefixes*.
+    """
+    for prefix in _SCAFFOLD_OVERLAY_EXCLUDED_RELPREFIXES:
+        if rel_posix == prefix.rstrip("/") or rel_posix.startswith(prefix):
+            return True
+    return False
+
+
+def _collect_overlay_files(
+    workspace: Path,
+    scaffold_paths_set: frozenset[str],
+    keep_set: set[str],
+    experiment_dir_names: frozenset[str],
+) -> list[str]:
+    """Capture the agent overlay: files to copy out of the workspace.
+
+    A file qualifies if it's a non-symlink regular file with size > 0
+    (or, for scaffold paths, size > 0 means the agent grew it from
+    the placeholder), is not under any excluded prefix, and is not a
+    sibling experiment dir.
+    """
+    overlay: list[str] = []
+    for file_path in workspace.rglob("*"):
+        if not file_path.is_file() or file_path.is_symlink():
+            continue
+        try:
+            rel = file_path.relative_to(workspace)
+        except ValueError:  # pragma: no cover — defensive
+            continue
+        rel_posix = rel.as_posix()
+        # Untouched 0-byte placeholders: skip (real source wins).
+        try:
+            size = file_path.stat().st_size
+        except OSError:
+            continue
+        if rel_posix in scaffold_paths_set and size == 0:
+            continue
+        # Files of any size that aren't placeholders: still need to
+        # filter against the overlay-exclusion rules. (Agent-written
+        # 0-byte answer files are intentionally discarded — codeprobe's
+        # oracle assumes meaningful content.)
+        if size == 0 and rel_posix not in scaffold_paths_set:
+            continue
+        # Top-level keep / worktree-pool / stash dirs.
+        top = rel.parts[0] if rel.parts else ""
+        if top in keep_set:
+            continue
+        if top.startswith(".codeprobe-worktrees"):
+            continue
+        if top.startswith(".codeprobe-source-stash-"):
+            continue
+        if top in experiment_dir_names:
+            continue
+        # Path-prefix excludes (.git/, tests/, …).
+        if _overlay_excluded(rel_posix):
+            continue
+        # Anywhere-named experiment.json.
+        if file_path.name == "experiment.json":
+            continue
+        overlay.append(rel_posix)
+    return overlay
+
+
 @contextlib.contextmanager
 def quarantine_local_source(
     workspace: Path,
     *,
     keep: tuple[str, ...] = (),
+    mode: Literal["hide", "scaffold"] = "hide",
 ) -> Iterator[None]:
-    """Hide local source files from the agent during a sg-only run.
+    """Hide or scaffold local source files during a sg-only run.
 
-    All top-level entries of *workspace* except ``.git``, ``.codeprobe``,
-    ``.codeprobe-worktrees*``, and any names in *keep* are atomically
-    moved to a sibling stash directory on enter and restored on exit
-    (including on exception). Files the agent creates during the yield
-    window (e.g. ``answer.txt``) are left in place by the restore.
+    ``mode="hide"`` (default; codeprobe-jf28 behaviour) atomically
+    moves every non-kept top-level entry to a sibling stash on enter
+    and restores it on exit. Files the agent creates during the yield
+    window (e.g. ``answer.txt``) survive the restore; agent edits to
+    same-named entries win over the stash.
+
+    ``mode="scaffold"`` (codeprobe-2nw2) does everything ``hide`` does
+    AND leaves 0-byte placeholder files at every path under
+    :data:`_SCAFFOLD_EXTENSIONS` so the agent can edit-in-place. On
+    exit, the context manager runs the 6-step overlay contract from
+    ``docs/investigations/codeprobe-2nw2/design.md``:
+
+    1. Yield ends.
+    2. Capture every file the agent wrote (placeholders grown 0→N
+       bytes plus brand-new non-excluded files) into
+       ``<stash>/__agent_overlay__/<relpath>``.
+    3. Remove the scaffold placeholders and the originals of the
+       overlay files from the workspace.
+    4. Restore the stashed source.
+    5. Copy the overlay back on top of the restored source.
+    6. Remove the stash dir (manifest dies with it).
+
+    On an exception inside the yield window the agent overlay is
+    discarded — source is restored unconditionally so the next trial
+    starts from a clean state.
 
     Mirrors the CSB ``Dockerfile.sg_only`` and EB
     ``generate_sg_only_dockerfile`` pattern: the workspace appears
     empty so the agent must use Sourcegraph MCP for code access.
-    Codeprobe's verifier reads test scripts and oracle data from
-    ``task_dir`` (a path separate from the workspace), so the default
-    empty *keep* is the common case; SDLC-style tasks that need
-    in-tree fixtures would extend it.
 
     The stash sits in a temp directory placed next to *workspace*
     when that's writable, or in the system temp directory otherwise.
@@ -279,15 +520,25 @@ def quarantine_local_source(
         return
 
     moved: list[tuple[Path, Path]] = []  # (original, stashed)
+    scaffold_paths: list[str] = []
+    # Top-level experiment dirs at scaffold-creation time. Used by the
+    # overlay capture to skip sibling experiments that the agent should
+    # not be able to overwrite.
+    experiment_dir_names = frozenset(
+        _discover_experiment_dirs(workspace_resolved)
+    )
 
-    def _restore() -> None:
+    def _restore_hide() -> None:
+        """Default restore (hide mode and shared error path).
+
+        Keeps agent-written same-named entries. Drops the stash dir
+        unconditionally at the end.
+        """
         for original, stashed in moved:
             try:
                 if not stashed.exists():
                     continue
                 if original.exists():
-                    # Agent produced a same-named entry during the yield
-                    # window — keep the agent's version, drop the stash.
                     if stashed.is_dir() and not stashed.is_symlink():
                         shutil.rmtree(stashed)
                     else:
@@ -309,6 +560,161 @@ def quarantine_local_source(
                     "Failed to remove source-stash dir %s: %s", stash_dir, exc
                 )
 
+    def _restore_scaffold_exception() -> None:
+        """Scaffold-mode exception path: force source back, drop agent state.
+
+        Walks the workspace and deletes every non-kept entry (these
+        are the scaffold placeholders plus anything the agent wrote
+        before crashing), then moves stashed source back into place,
+        then removes the stash dir.
+        """
+        try:
+            for entry in list(workspace_resolved.iterdir()):
+                if not _is_quarantinable(entry.name):
+                    continue
+                try:
+                    if entry.is_dir() and not entry.is_symlink():
+                        shutil.rmtree(entry)
+                    else:
+                        entry.unlink()
+                except OSError as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "Failed to clear scaffold artefact %s: %s", entry, exc
+                    )
+        except OSError as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "Failed to enumerate workspace during scaffold rollback: %s", exc
+            )
+        for original, stashed in moved:
+            try:
+                if stashed.exists():
+                    shutil.move(str(stashed), str(original))
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to restore scaffold source %s -> %s: %s",
+                    stashed,
+                    original,
+                    exc,
+                )
+        if stash_dir is not None and stash_dir.exists():
+            try:
+                shutil.rmtree(stash_dir)
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to remove scaffold stash dir %s: %s", stash_dir, exc
+                )
+
+    def _scaffold_normal_exit() -> None:
+        """6-step overlay contract — see design doc §__exit__ ordering."""
+        scaffold_set = frozenset(scaffold_paths)
+        overlay_root = stash_dir / "__agent_overlay__"
+        # Step 2: capture overlay.
+        overlay_relpaths = _collect_overlay_files(
+            workspace_resolved,
+            scaffold_set,
+            keep_set,
+            experiment_dir_names,
+        )
+        overlay_root.mkdir(exist_ok=True)
+        for rel in overlay_relpaths:
+            src_file = workspace_resolved / rel
+            dst_file = overlay_root / rel
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src_file, dst_file)
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "scaffold overlay capture failed for %s: %s", src_file, exc
+                )
+        # Step 3: delete scaffold placeholders + workspace originals of
+        # overlay files. Placeholders first (cheap), then any non-empty
+        # files captured.
+        for rel in scaffold_paths:
+            target = workspace_resolved / rel
+            if target.exists() and not target.is_dir():
+                try:
+                    target.unlink()
+                except OSError as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "Failed to remove scaffold placeholder %s: %s", target, exc
+                    )
+        for rel in overlay_relpaths:
+            target = workspace_resolved / rel
+            if target.exists():
+                try:
+                    if target.is_dir() and not target.is_symlink():
+                        shutil.rmtree(target)
+                    else:
+                        target.unlink()
+                except OSError as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "Failed to remove overlay source %s: %s", target, exc
+                    )
+        # After steps 2-3 the workspace contains only the keep set
+        # plus possibly-empty parent directories the scaffolds lived
+        # in. Step 4 moves stashed entries back; if a top-level
+        # placeholder parent dir was created by scaffold mode (e.g.
+        # ``src/`` had only ``.py`` files all scaffolded), it now
+        # blocks the stash move and must be removed first.
+        for original, stashed in moved:
+            if original.exists() and original.is_dir() and not original.is_symlink():
+                try:
+                    shutil.rmtree(original)
+                except OSError as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "Failed to clear scaffold parent dir %s: %s", original, exc
+                    )
+            elif original.exists():
+                try:
+                    original.unlink()
+                except OSError as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "Failed to clear scaffold leftover %s: %s", original, exc
+                    )
+        # Step 4: restore stash.
+        for original, stashed in moved:
+            if stashed.exists():
+                try:
+                    shutil.move(str(stashed), str(original))
+                except OSError as exc:  # pragma: no cover — defensive
+                    logger.warning(
+                        "Failed to restore scaffold source %s -> %s: %s",
+                        stashed,
+                        original,
+                        exc,
+                    )
+        # Step 5: overlay agent files on top of restored source.
+        for rel in overlay_relpaths:
+            src_file = overlay_root / rel
+            dst_file = workspace_resolved / rel
+            if not src_file.exists():
+                continue
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if dst_file.exists():
+                    if dst_file.is_dir() and not dst_file.is_symlink():
+                        shutil.rmtree(dst_file)
+                    else:
+                        dst_file.unlink()
+                shutil.copy2(src_file, dst_file)
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to apply overlay %s -> %s: %s",
+                    src_file,
+                    dst_file,
+                    exc,
+                )
+        # Step 6: clean stash (manifest, overlay copies, and any
+        # leftover stashed dirs all die together).
+        if stash_dir is not None and stash_dir.exists():
+            try:
+                shutil.rmtree(stash_dir)
+            except OSError as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "Failed to remove scaffold stash dir %s: %s", stash_dir, exc
+                )
+
+    # ---- Stash top-level entries (shared by both modes). -----------
     try:
         for entry in entries:
             src = entry
@@ -324,17 +730,35 @@ def quarantine_local_source(
                     dst,
                     exc,
                 )
-                _restore()
+                _restore_hide()
                 yield
                 return
     except BaseException:
-        _restore()
+        _restore_hide()
         raise
 
+    # ---- Scaffold-only: create placeholders + manifest. ------------
+    if mode == "scaffold":
+        try:
+            scaffold_paths = _collect_scaffold_paths(stash_dir)
+            _create_scaffold_placeholders(workspace_resolved, scaffold_paths)
+            _write_scaffold_manifest(stash_dir, scaffold_paths)
+        except BaseException:
+            _restore_scaffold_exception()
+            raise
+
+    success = False
     try:
         yield
+        success = True
     finally:
-        _restore()
+        if mode == "scaffold":
+            if success:
+                _scaffold_normal_exit()
+            else:
+                _restore_scaffold_exception()
+        else:
+            _restore_hide()
 
 
 def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) -> None:

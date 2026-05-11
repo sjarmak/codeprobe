@@ -530,3 +530,35 @@ class TestQuarantineLocalSource:
             if p.name.startswith(".codeprobe-source-stash-")
         ]
         assert leftover == [], f"stash leaked: {leftover}"
+
+    def test_hide_mode_default_creates_no_scaffolds(self, tmp_path: Path) -> None:
+        """Regression: default hide mode must NOT leave 0-byte placeholders.
+
+        Scaffold mode (codeprobe-2nw2) adds a new branch to
+        ``quarantine_local_source``. The default must remain byte-
+        identical to the pre-scaffold codeprobe-jf28 behaviour.
+        """
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "src").mkdir()
+        (ws / "src" / "a.py").write_text("ORIG")
+        (ws / "src" / "b.go").write_text("ORIG")
+
+        observed_during_yield: list[str] = []
+        with quarantine_local_source(ws):  # default mode="hide"
+            observed_during_yield = sorted(p.name for p in ws.iterdir())
+
+        # Default hide mode: workspace empty during yield, no
+        # placeholders created at the original paths.
+        assert observed_during_yield == [], (
+            f"hide mode unexpectedly created placeholders: {observed_during_yield}"
+        )
+        # And no manifest was written anywhere.
+        leftover_stash = [
+            p for p in tmp_path.iterdir()
+            if p.name.startswith(".codeprobe-source-stash-")
+        ]
+        assert leftover_stash == []
+        # Source restored to original content (sanity).
+        assert (ws / "src" / "a.py").read_text() == "ORIG"
+        assert (ws / "src" / "b.go").read_text() == "ORIG"

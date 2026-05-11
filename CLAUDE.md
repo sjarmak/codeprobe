@@ -102,6 +102,7 @@ This project is AI-orchestration code — ZFC applies at two levels:
 
 - `analysis/stats.py` — arithmetic aggregation is deterministic math, not judgment
 - Secret redaction regex in `scoring.py` — pattern matching for known token formats is structural, not semantic
+- `core/isolation.py:_collect_scaffold_paths` / `_collect_overlay_files` (codeprobe-2nw2 scaffold mode) — TRUNCATE_EXTENSIONS allowlist + path-prefix excludes (`.git/`, `tests/`, `.codeprobe/`, `.claude/`, `.github/workflows/`) for sg-only scaffolding. Pure structural file-system metadata comparison (suffix membership, size > 0, prefix match against a manifest captured at context-manager entry) with no semantic judgment about file content. See `docs/investigations/codeprobe-2nw2/design.md` §ZFC compliance note.
 
 ### When to update this section
 
