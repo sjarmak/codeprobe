@@ -1,0 +1,22 @@
+{
+  "id": "smoke-sgonly",
+  "repo": "fake/math",
+  "metadata": {
+    "name": "sdlc-sgonly-smoke",
+    "description": "Smoke fixture for codeprobe-2nw2 scaffold-mode integration tests. Pre-populated src/math.go gives scaffold mode something to truncate; the test.sh oracle greps for the agent's edit.",
+    "language": "go",
+    "task_type": "sdlc_code_change",
+    "category": "sdlc",
+    "sg_repo": "github.com/fake/math"
+  },
+  "verification": {
+    "type": "test_script",
+    "verification_mode": "test_script",
+    "command": "bash tests/test.sh",
+    "reward_type": "continuous",
+    "oracle_type": "file_list",
+    "oracle_answer": [
+      "src/math.go"
+    ]
+  }
+}
