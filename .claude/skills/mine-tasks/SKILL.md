@@ -42,13 +42,16 @@ When the user selects MCP comparison, switch to org-scale mining with MCP famili
 
 **Question 2b** -- Header: "Sourcegraph repo identifier"
 
+> If the caller (e.g. `/experiment` Step 0d) supplied `SG_REPO`, **skip this question** and use the supplied value verbatim — see the **Caller contract** subsection of Distribution-Driven Mode below.
+
 - Question: "What's the Sourcegraph repo name? (e.g., github.com/sg-evals/kubernetes-api)"
 - This is needed so the ground truth can be enriched via Sourcegraph `find_references`, and so the preamble knows which repo to scope queries to.
-- If user doesn't know, derive from the repo's git remote: `github.com/sg-evals/{repo_name}`
+- If user doesn't know, derive from the repo's git remote: parse origin URL (`git@github.com:OWNER/REPO` or `https://github.com/OWNER/REPO`) and propose `github.com/OWNER/REPO`. **Credential safety:** if the URL contains a `userinfo@` component (e.g. `https://TOKEN@github.com/...`), treat the parse as failed — do not echo the raw URL. When the remote is unparsable AND `--mcp-families` is selected, the CLI's org-scale default `github.com/sg-evals/{repo_name}` applies (no origin probe in that path).
+- **Validate** the value matches `^[A-Za-z0-9._/-]+$` (no spaces, no shell metacharacters). Re-prompt on mismatch.
 
 **Question 2c** -- Header: "Which MCP families?"
 
-> If the caller (e.g. `/experiment` Phase 0e) supplied `TASK_DISTRIBUTION` as a non-`auto` JSON object, **skip this question** — see the **Distribution-Driven Mode** section below for routing. Only ask when distribution is `auto`.
+> If the caller (e.g. `/experiment` Step 0f) supplied `TASK_DISTRIBUTION` as a non-`auto` JSON object, **skip this question** — see the **Distribution-Driven Mode** section below for routing. Only ask when distribution is `auto`.
 
 - Options (all selected by default):
   - **symbol-reference-trace** -- Find all files referencing a symbol (catches aliases, re-exports)
@@ -86,22 +89,40 @@ Skip Phase 1 questions about git host (not needed for org-scale mining).
 
 When invoked from `/experiment` with `TASK_DISTRIBUTION` set to a JSON object (e.g. `{"symbol-reference-trace": 5, "sdlc": 5, "oracle_checks": 5}`), bypass the goal-bound default and mine per-family per the supplied counts.
 
+### Caller contract
+
+Variables `/experiment` (or any orchestrating caller) may supply when delegating to `/mine-tasks`. Each variable has an explicit fallback when unset, so the skill remains usable standalone.
+
+| Variable             | Supplied by                  | Format / validation                                  | When unset                                                                                              |
+| -------------------- | ---------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `REPO_PATH`          | `/experiment` Phase 2a       | Absolute or relative filesystem path                 | Skill asks Question 2 ("Target codebase"). Required — mining cannot proceed without a path.             |
+| `TASK_COUNT`         | `/experiment` Step 0e (mapped from `TASK_COUNT_TARGET`) | Positive integer                                     | Skill asks Question 3 ("How many tasks?").                                                              |
+| `TASK_DISTRIBUTION`  | `/experiment` Step 0f        | `"auto"` or JSON object `{family: count}`            | Skill falls through to goal-bound default (e.g. `--mcp-families` for Goal 1) — see Phase 0.             |
+| `SG_REPO`            | `/experiment` Step 0d        | `^[A-Za-z0-9._/-]+$` (no spaces, no shell metachars) | Skill asks Question 2b (only in MCP / Tool Comparison Flow). For non-MCP families the CLI auto-derives from the repo's origin remote. |
+
+**Skip rules when caller-supplied:**
+
+- `SG_REPO` set → Question 2b is skipped; the supplied value is used verbatim **after format validation** (`^[A-Za-z0-9._/-]+$`). The value is double-quoted in every CLI invocation (`--sg-repo "{SG_REPO}"`) as a defense-in-depth layer; reject if validation fails rather than passing through to the shell.
+- `TASK_DISTRIBUTION` is a non-`auto` JSON object → Question 2c (MCP families) is skipped; routing follows the Family → mining mode mapping below.
+
 ### Family → mining mode mapping
+
+`{SG_REPO}` is interpolated when set (per the Caller contract); double-quote it in every invocation (`--sg-repo "{SG_REPO}"`). When unset, the `--sg-repo` argument is **omitted** and the CLI applies its own per-path fallback: SDLC families auto-derive from the origin remote via `resolve_sg_repo_from_origin` (`github.com/{owner}/{repo}`), while `--org-scale --mcp-families` jumps directly to `github.com/sg-evals/{repo_name}` with no origin probe (`src/codeprobe/cli/mine_cmd.py:2691`).
 
 | Task family                  | Mining invocation                                                    | Status |
 | ---------------------------- | -------------------------------------------------------------------- | ------ |
-| `symbol-reference-trace`     | `--org-scale --mcp-families --family symbol-reference-trace --count N` | Wired |
-| `type-hierarchy-consumers`   | `--org-scale --mcp-families --family type-hierarchy-consumers --count N` | Wired |
-| `change-scope-audit`         | `--org-scale --mcp-families --family change-scope-audit --count N`   | Wired |
-| `mcp-fbeta`                  | Same as `symbol-reference-trace` + write `verification.fbeta_beta` per task | Wired |
-| `org-scale-tier-weighted`    | `--org-scale --count N`                                              | Wired |
-| `org-scale-recall-tilted`    | `--org-scale --recall --count N`                                     | Wired |
-| `dependency-chain`           | `--min-files 3 --bias dependency-chain --count N`                    | Wired (general SDLC bias) |
-| `sdlc`                       | `--min-files 2 --count N`                                            | Wired |
-| `binary-test`                | `--min-files 2 --bias binary --count N`                              | Wired (general SDLC bias) |
-| `continuous`                 | `--min-files 2 --bias continuous --count N`                          | Wired (general SDLC bias) |
-| `exact-match`                | `--min-files 2 --bias exact-match --count N`                         | Wired (general SDLC bias) |
-| `dual-composite`             | `--min-files 2 --bias dual-composite --count N`                      | Wired (general SDLC bias) |
+| `symbol-reference-trace`     | `--org-scale --mcp-families --family symbol-reference-trace --count N --sg-repo {SG_REPO}` | Wired |
+| `type-hierarchy-consumers`   | `--org-scale --mcp-families --family type-hierarchy-consumers --count N --sg-repo {SG_REPO}` | Wired |
+| `change-scope-audit`         | `--org-scale --mcp-families --family change-scope-audit --count N --sg-repo {SG_REPO}` | Wired |
+| `mcp-fbeta`                  | `--org-scale --mcp-families --family symbol-reference-trace --count N --sg-repo {SG_REPO}` + write `verification.fbeta_beta` per task | Wired |
+| `org-scale-tier-weighted`    | `--org-scale --count N --sg-repo {SG_REPO}`                          | Wired |
+| `org-scale-recall-tilted`    | `--org-scale --recall --count N --sg-repo {SG_REPO}`                 | Wired |
+| `dependency-chain`           | `--min-files 3 --bias dependency-chain --count N --sg-repo {SG_REPO}` | Wired (general SDLC bias) |
+| `sdlc`                       | `--min-files 2 --count N --sg-repo {SG_REPO}`                        | Wired |
+| `binary-test`                | `--min-files 2 --bias binary --count N --sg-repo {SG_REPO}`          | Wired (general SDLC bias) |
+| `continuous`                 | `--min-files 2 --bias continuous --count N --sg-repo {SG_REPO}`      | Wired (general SDLC bias) |
+| `exact-match`                | `--min-files 2 --bias exact-match --count N --sg-repo {SG_REPO}`     | Wired (general SDLC bias) |
+| `dual-composite`             | `--min-files 2 --bias dual-composite --count N --sg-repo {SG_REPO}`  | Wired (general SDLC bias) |
 | `oracle_checks`              | _no dedicated miner yet_                                              | **Hardcoded for follow-up** — port the CSB rubric-builder. Track as successor to `codeprobe-bln9`. |
 
 ### Execution

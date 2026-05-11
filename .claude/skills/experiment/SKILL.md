@@ -68,7 +68,34 @@ If **Point me to a directory**: ask for path. Record `TASK_SOURCE=path`.
 
 **If Goal is 5** (existing tasks): Go directly to the scan/path flow above.
 
-### Step 0d: Task Count Guidance (only if TASK_SOURCE=mine)
+### Step 0d: Sourcegraph Repo (only if EXPERIMENT_GOAL=1 AND TASK_SOURCE=mine)
+
+Collect the Sourcegraph repo identifier so it flows into Phase 2a's delegation to `/mine-tasks` for **every** family. Without an explicit `SG_REPO`, the CLI auto-derives `metadata.sg_repo` from each task's origin remote — which may not match the targeted Sourcegraph instance (e.g. enterprise SG pointing at a mirror, or an unparseable remote). Passing `SG_REPO` explicitly guarantees the correct repo scope; the alternative is that `task_preamble_context` raises `ValueError` at prompt-composition time when a Sourcegraph preamble is requested with empty `metadata.sg_repo` (see `src/codeprobe/core/preamble.py:267`).
+
+**Auto-derive default:**
+
+```bash
+git -C {REPO_PATH} remote get-url origin 2>/dev/null
+```
+
+Parse the URL — accept `git@github.com:OWNER/REPO(.git)?` or `https://github.com/OWNER/REPO(.git)?` — and propose `github.com/OWNER/REPO` as the default. If the parse fails, present an empty prompt with no default.
+
+**Credential safety:** if the URL contains a `userinfo@` component (e.g. `https://TOKEN@github.com/OWNER/REPO`), treat the parse as failed and present an empty prompt — do not echo or display the raw URL, since it may carry an embedded token.
+
+**Question** -- Header: "Sourcegraph repo identifier"
+
+- Question: "What's the Sourcegraph repo name? (e.g., `github.com/sg-evals/kubernetes-api`)"
+- Default: auto-derived from origin remote (see above), or empty.
+- Validate: must match `^[A-Za-z0-9._/-]+$` (no spaces, no shell metacharacters). Re-prompt on mismatch.
+- Record as `SG_REPO`.
+
+`SG_REPO` is passed to `/mine-tasks` in Phase 2a (every Wired family invocation receives `--sg-repo "{SG_REPO}"`, double-quoted to defend against any future relaxation of the format check) and is consumed by the Sourcegraph preamble's `{{repo_scope}}` substitution (see Step 1a).
+
+When this step is skipped (other goals or sources), `SG_REPO` is unset and downstream mining falls back to the CLI's own per-path defaults: SDLC families auto-derive from the origin remote (`github.com/{owner}/{repo}`), while `--org-scale --mcp-families` jumps directly to `github.com/sg-evals/{repo_name}` without an origin-remote probe (`src/codeprobe/cli/mine_cmd.py:2691`). See `/mine-tasks` **Caller contract** for the full fallback chain.
+
+> **Limitation:** Step 0d only fires for Goal 1. If a Goal 2/3/4 experiment supplies a `TASK_DISTRIBUTION` that includes MCP-family tasks (e.g. `{"symbol-reference-trace": 5, "sdlc": 5}` under model comparison), `SG_REPO` is not collected here and `/mine-tasks` will prompt for it interactively via its Question 2b. Tracked as a follow-up to this bead.
+
+### Step 0e: Task Count Guidance (only if TASK_SOURCE=mine)
 
 **Question** -- Header: "How thorough should the evaluation be?"
 
@@ -80,7 +107,7 @@ If **Point me to a directory**: ask for path. Record `TASK_SOURCE=path`.
 
 Record as `TASK_COUNT_TARGET`.
 
-### Step 0e: Task Type Distribution (only if TASK_SOURCE=mine)
+### Step 0f: Task Type Distribution (only if TASK_SOURCE=mine)
 
 **Question** -- Header: "What kinds of tasks should the eval cover?"
 
@@ -234,7 +261,8 @@ Delegate to `/mine-tasks` with experiment context:
 
 - Target repo: `{REPO_URL}`
 - Task count target: `{TASK_COUNT_TARGET}`
-- **Task distribution:** `{TASK_DISTRIBUTION}` (from Step 0e — `"auto"` or a JSON object of `{family: count}`). When `auto`, mine-tasks falls back to its goal-bound default (e.g. `--mcp-families` for Goal 1). When a custom mix is supplied, mine-tasks honors per-family counts where supported and reports `MINING_HARDCODED_FOR=<list>` for any unsupported families.
+- **Task distribution:** `{TASK_DISTRIBUTION}` (from Step 0f — `"auto"` or a JSON object of `{family: count}`). When `auto`, mine-tasks falls back to its goal-bound default (e.g. `--mcp-families` for Goal 1). When a custom mix is supplied, mine-tasks honors per-family counts where supported and reports `MINING_HARDCODED_FOR=<list>` for any unsupported families.
+- **Sourcegraph repo:** `{SG_REPO}` (from Step 0d — only set when `EXPERIMENT_GOAL=1 AND TASK_SOURCE=mine`). When set, `/mine-tasks` passes `--sg-repo "{SG_REPO}"` (double-quoted) on every Wired family invocation. When unset, `/mine-tasks` falls back to its own Question 2b or the CLI's per-path default — see `/mine-tasks` **Caller contract** for the full fallback chain.
 - Output directory: the experiment's tasks directory
 
 After mining, re-validate:
@@ -371,7 +399,7 @@ true sg-only comparison:
 
 ## Available Task Types
 
-The eval framework supports the following task families. Each maps to a `scorer_family` from `codeprobe.core.scoring.SCORER_FAMILIES`. When you choose a Custom task type mix in Step 0e, pick one or more from this table.
+The eval framework supports the following task families. Each maps to a `scorer_family` from `codeprobe.core.scoring.SCORER_FAMILIES`. When you choose a Custom task type mix in Step 0f, pick one or more from this table.
 
 | Task type                    | scorer_family            | What it tests                                                              | Mining support             |
 | ---------------------------- | ------------------------ | -------------------------------------------------------------------------- | -------------------------- |
@@ -389,7 +417,7 @@ The eval framework supports the following task families. Each maps to a `scorer_
 | `exact-match`                | `exact_match`            | Count, boolean, or text equality                                           | Wired (general SDLC mining) |
 | `dual-composite`             | `dual_composite`         | Composite of direct + artifact scoring                                     | Wired (general SDLC mining) |
 
-> **Backward compatibility:** if Step 0e is set to `auto`, the eval uses whatever family the chosen Goal would have used previously (Goal 1 → MCP families; Goals 2/3/4 → SDLC mix). No existing eval invocation breaks.
+> **Backward compatibility:** if Step 0f is set to `auto`, the eval uses whatever family the chosen Goal would have used previously (Goal 1 → MCP families; Goals 2/3/4 → SDLC mix). No existing eval invocation breaks.
 
 > **Distribution honored vs hardcoded:** mining honors `TASK_DISTRIBUTION` for families marked **Wired** above. For any family marked **Hardcoded for follow-up**, the experiment skill will surface the gap as `MINING_HARDCODED_FOR=<list>` after mining, and the eval will run on whatever subset the miner could produce. Currently `oracle_checks` mining is the open follow-up — track in the codeprobe rig as a successor to `bln9`.
 
@@ -405,6 +433,6 @@ The eval framework supports the following task families. Each maps to a `scorer_
 | "compare Sonnet vs Opus"  | Starts at Goal 2, pre-fills model configs |
 | "test different prompts"  | Starts at Goal 3                          |
 | "I have tasks, run them"  | Starts at Goal 5, skips mining            |
-| "mix task types"          | Branches to Step 0e Custom mix            |
+| "mix task types"          | Branches to Step 0f Custom mix            |
 | "resume experiment X"     | Loads experiment, checks status, resumes  |
 | "experiment status"       | Runs `codeprobe experiment status`        |
