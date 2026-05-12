@@ -92,6 +92,37 @@ def read_task_verification(task_dir: Path) -> dict:
     return verification if isinstance(verification, dict) else {}
 
 
+#: Canonical set of values for ``ScoreResult.verdict``. Splits the legacy
+#: pass/fail boolean into four cases so a verifier-infrastructure failure
+#: (e.g. ``git apply`` rejected the agent's diff because of a binary hunk)
+#: is reported distinctly from an agent failure (test.sh exited non-zero).
+#: The premortem for hybrid-execution-v1 identified silently collapsing
+#: ``verifier_error`` into ``incorrect`` as the single most damaging
+#: failure mode for hosted-agent comparisons.
+ALLOWED_VERDICTS: frozenset[str] = frozenset(
+    {
+        "correct",
+        "incorrect",
+        "verifier_error",
+        "inconclusive",
+    }
+)
+
+#: Canonical set of values for ``ScoreResult.materialized_via``. Records
+#: HOW the verifier got at the agent's final state. ``in_place`` is the
+#: legacy worktree-mutation behavior; ``git_apply`` is the harness-
+#: controlled clean-checkout path that lands in Slice 1b. ``file_overlay``
+#: is reserved for vendor adapters (Devin, Codex Cloud) that return raw
+#: file blobs rather than a unified diff.
+ALLOWED_MATERIALIZATION: frozenset[str] = frozenset(
+    {
+        "in_place",
+        "git_apply",
+        "file_overlay",
+    }
+)
+
+
 @dataclass(frozen=True)
 class ScoreResult:
     """Result of scoring a task's agent output.
@@ -163,6 +194,18 @@ class ScoreResult:
     sub_scores: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
     reward: float | None = None
+    # ``verdict`` distinguishes agent-failure (incorrect) from verifier-
+    # infrastructure failure (verifier_error) so a `git apply` rejection or a
+    # missing test fixture doesn't get silently graded as an agent failure.
+    # ``None`` means a caller hasn't migrated yet (legacy path); new call
+    # sites MUST populate it. See ALLOWED_VERDICTS for the canonical set.
+    verdict: str | None = None
+    # ``materialized_via`` records HOW the verifier got at the agent's final
+    # state. ``in_place`` is the legacy worktree-mutation behavior; new code
+    # paths set ``git_apply`` (diff applied onto a clean checkout) or
+    # ``file_overlay`` (vendor-returned files written into a clean tree).
+    # See ALLOWED_MATERIALIZATION for the canonical set.
+    materialized_via: str = "in_place"
 
     def __post_init__(self) -> None:
         # ``reward`` mirrors ``score`` when callers don't pass it explicitly.
@@ -170,6 +213,16 @@ class ScoreResult:
         # default after init.
         if self.reward is None:
             object.__setattr__(self, "reward", self.score)
+        if self.verdict is not None and self.verdict not in ALLOWED_VERDICTS:
+            raise ValueError(
+                f"verdict={self.verdict!r} not in ALLOWED_VERDICTS "
+                f"({sorted(ALLOWED_VERDICTS)})"
+            )
+        if self.materialized_via not in ALLOWED_MATERIALIZATION:
+            raise ValueError(
+                f"materialized_via={self.materialized_via!r} not in "
+                f"ALLOWED_MATERIALIZATION ({sorted(ALLOWED_MATERIALIZATION)})"
+            )
 
 
 # ---------------------------------------------------------------------------
