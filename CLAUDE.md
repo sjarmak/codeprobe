@@ -46,10 +46,28 @@ Field semantics:
 - **`evidence.reviewer_verdict`** — short freeform string. `pass`, `fail`, `pass-with-caveats` are typical; longer cycle markers like `9th-cycle-verified` are also accepted.
 - **`evidence.reviewer_agent`** — who is signing off. Typically your own session ID or agent name.
 
-**Verify reachability before close:**
+**Verify reachability before close (mandatory):**
+
+Run the structural check that walks `metadata.evidence.artifact_path` for every `git:<sha>` entry and confirms each is an ancestor of `main`, plus rejects banned future-tense `gate_bypass` strings:
 
 ```bash
-# Confirm the commit is on main (or your default branch). Exit 0 = merged.
+# Single bead
+python3 scripts/check_bead_reachability.py <bead-id>
+
+# Whole epic at once
+python3 scripts/check_bead_reachability.py --epic <epic-id>
+
+# Agent-friendly JSON for downstream skills
+python3 scripts/check_bead_reachability.py <bead-id> --json
+```
+
+Exit 0 = safe to close. Exit 1 = at least one `git:<sha>` is feature-branch-only OR `gate_bypass` contains banned future-tense language ("will", "pending", "WIP", "in-progress", "TBD", "soon", "later", "next sprint", "next quarter").
+
+The same check fires automatically as a PostToolUse hook (`~/.claude/hooks/validate-bead-close.sh`) on every `bd update --status=closed` and `bd close` command, so a forgotten manual run is still caught — but agents should run it explicitly **before** close so the diagnostic shows up before the bead reopens.
+
+Lower-level fallback if the script is unavailable (e.g. on a fresh checkout where `scripts/check_bead_reachability.py` hasn't landed):
+
+```bash
 git merge-base --is-ancestor <commit-sha> main && echo "OK: merged" || echo "NOT MERGED — do not close yet"
 ```
 
@@ -57,7 +75,7 @@ A commit on a feature branch is NOT shipped. Closing a bead with `evidence.artif
 
 **Why the metadata even matters:** the reaper has no view into git. It only checks bead metadata. If you make a commit but don't set `evidence.artifact_path`, the reaper sees an empty field and reopens the close. This is the surface-level cause of the evjr.* 13-cycle reopen loops in May 2026 — workers shipped real commits but never wrote the metadata, so each close was rolled back automatically. The deeper cause (commits not reaching `main`) is what the reachability requirement above addresses.
 
-**Bypass for legitimate exception cases** (e.g. duplicate-of, superseded-by): set `metadata.gate_bypass="<reason>"` instead of evidence fields. The reaper respects bypass and won't reopen.
+**Bypass for legitimate exception cases:** set `metadata.gate_bypass="<reason>"` instead of evidence fields, where `<reason>` starts with one of: `duplicate-of`, `superseded-by`, `abandoned`, `obsolete`, `won't-fix`. The reaper respects bypass and won't reopen. **Future-tense bypass strings are banned** ("will merge as one squash", "WIP", "in-progress integration", "pending review", etc.) — these became release valves for deferred work in the premortem narrative and the reachability script will flag them. If you genuinely need to defer, open a follow-up bead and use a legitimate prefix on the original.
 
 **Tracking:** the upstream proposal `gascity gc-n5j` (close-time policy hook) would let `bd close` reject the close at source with a clear error instead of relying on post-hoc reopen. Until that lands, the workaround is this ritual.
 
