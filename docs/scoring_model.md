@@ -553,6 +553,96 @@ reviewer sign-off; deleting an entry once the offender is fixed is
 mandatory (the `test_scorer_honesty_known_offenders_still_present`
 test flags stale entries).
 
+## Verifier materialization — verdict + materialized_via
+
+> Slice 1b of bead `codeprobe-xysn` (2026-05). Pairs with the
+> `verdict` and `materialized_via` fields landed in Slice 1a
+> (commit `e6c312c`).
+
+The headline `score` answers "did the agent solve it?", but two
+distinct failure modes used to collapse onto the same `score=0.0`
+result: an *agent failure* (test.sh exited non-zero because the
+agent shipped the wrong answer) and a *verifier-infrastructure
+failure* (the harness couldn't honestly run the test against the
+agent's output, e.g. a malformed diff that `git apply --check`
+rejected). The premortem flagged this collision as the most
+damaging silent failure for hosted-agent comparisons (Theme C,
+risk R1). Slice 1b separates them via the `verdict` field.
+
+### The 5-state outcome table
+
+| apply_check | test.sh   | verdict          | materialized_via | what happened                                          |
+| ----------- | --------- | ---------------- | ---------------- | ------------------------------------------------------ |
+| ok          | exit 0    | `correct`        | `git_apply`      | diff applied cleanly; test passed                      |
+| ok          | exit ≠ 0  | `incorrect`      | `git_apply`      | diff applied; test rejected the agent's answer         |
+| ok, empty   | exit 0    | `correct`        | `git_apply`      | agent shipped no change; verifier ran on pristine base |
+| failed      | (skipped) | `verifier_error` | `git_apply`      | apply rejected; agent NOT graded                       |
+| n/a         | exit 0/≠0 | `correct/incorrect` | `in_place`    | legacy path — workspace not a git repo, or task multi-repo / scaffold-isolated |
+
+`materialized_via` records *how* the verifier got at the agent's
+final state:
+
+* `git_apply` — fresh `git clone --local --no-hardlinks` at the
+  executor-captured `base_commit`, then the agent's full diff
+  (committed + staged + unstaged + untracked) applied via
+  `git apply --binary`. The verifier sees an isolated tree.
+* `in_place` — legacy behaviour: the verifier reads the agent's
+  worktree directly. Used as a fallback when `base_commit` capture
+  was not eligible (no `.git`, multi-repo, scaffold/hide source).
+* `file_overlay` — reserved for vendor adapters that return raw
+  file blobs rather than a unified diff (not used in Slice 1b).
+
+### When `git_apply` is used
+
+The executor (`core/executor.py`) captures
+`base_commit = git rev-parse HEAD` of the agent's effective
+workspace BEFORE `adapter.run` and threads it into
+`BinaryScorer.score(... agent_state=...)` when ALL of these hold:
+
+1. The agent's effective workspace is a single-repo checkout
+   (no `metadata.additional_repos`).
+2. `hide_local_source == "off"` — scaffold/hide modes mutate the
+   workspace and would pollute the diff with overlay artefacts.
+3. The workspace has a `.git` directory.
+4. `git rev-parse HEAD` succeeds.
+
+If any condition fails, the scorer falls through to `in_place`.
+This is silently consistent with legacy behaviour for non-git
+workspaces and IR / discovery tasks that operate against an
+extracted corpus.
+
+### Diff capture is non-destructive
+
+`_capture_workspace_diff` uses a private `GIT_INDEX_FILE`
+tempfile so `git add -A` never touches the agent's real index.
+After scoring, the workspace's porcelain output is identical to
+what the agent left behind. This matters for retries, dual
+scorers, and human follow-up inspection.
+
+### Limits
+
+* Diff is capped at `_MAX_DIFF_BYTES = 100 MiB`. Larger diffs
+  route to `verifier_error` to avoid pinning multiple GB of
+  patch bytes in memory.
+* Every git subprocess has a `_GIT_TIMEOUT_SECONDS = 60` ceiling.
+* `BinaryScorer` is the only scorer that consumes `agent_state`
+  in Slice 1b. `ContinuousScorer`, `CheckpointScorer`,
+  `OracleChecksScorer`, and `DualScorer`'s direct/artifact legs
+  keep the legacy `in_place` path. Extending `git_apply` to the
+  dual direct-leg lands in a follow-up slice.
+
+### What downstream consumers see
+
+* `ScoreResult.verdict` — `correct` / `incorrect` /
+  `verifier_error` / `inconclusive` / `None` (legacy / unmigrated).
+* `ScoreResult.materialized_via` — `in_place` / `git_apply` /
+  `file_overlay`.
+* `completed.json#scoring_details["verdict"]` — same value.
+* `completed.json#scoring_details["materialized_via"]` — same.
+
+Aggregate consumers that want to distinguish agent failure from
+verifier failure should branch on `verdict`, not just `score`.
+
 ## Out of scope
 
 * The on-disk oracle script (`mining/writer.py:_ORACLE_PY`) writes

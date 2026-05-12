@@ -46,6 +46,8 @@ from codeprobe.core.preamble import (
 )
 from codeprobe.core.scoring import (
     _COPYTREE_IGNORE,
+    BinaryScorer,
+    _AgentState,
     get_scorer,
     read_task_metadata,
     sanitize_secrets,
@@ -470,6 +472,44 @@ def execute_task(
                     error_category="system",
                 )
 
+        # Capture base_commit BEFORE adapter.run so the scorer can later
+        # materialise a clean checkout at that SHA (Slice 1b — bead
+        # codeprobe-xysn). Eligible when single-repo, no source-quarantine
+        # active, and the workspace IS a git repo. Multi-repo and
+        # scaffold/hide modes intentionally fall through to in_place
+        # because:
+        #   * a single SHA cannot honestly represent N additional_repos,
+        #     each pinned to its own ground_truth_commit;
+        #   * scaffold/hide mode mutates the workspace under
+        #     ``source_ctx`` and the diff would include overlay artifacts.
+        base_commit: str | None = None
+        materialise_eligible = (
+            hide_local_source == "off"
+            and not additional_repos
+            and (effective_workspace / ".git").exists()
+        )
+        if materialise_eligible:
+            try:
+                rev = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=effective_workspace,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=10,
+                )
+                base_commit = rev.stdout.strip() or None
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+                # Workspace looked git-ish but rev-parse failed (corrupt
+                # repo, unborn HEAD). Fall through to in_place rather
+                # than crash the run. Warning-level so the degradation
+                # is visible without flipping the whole run to DEBUG.
+                logger.warning(
+                    "[%s] base_commit capture failed; falling back to in_place",
+                    task_id,
+                    exc_info=True,
+                )
+
         # Optional file-removal isolation (codeprobe-jf28).  When enabled,
         # local source files are stashed for the duration of the agent
         # run so the agent has no choice but to use Sourcegraph MCP.
@@ -672,8 +712,29 @@ def execute_task(
             env_overrides: dict[str, str] | None = None
             if _effective_wt is not None:
                 env_overrides = {"TASK_REPO_ROOT": str(_effective_wt)}
+
+            # When eligible (single-repo, no source-quarantine, git
+            # workspace), pass the captured base_commit to BinaryScorer
+            # so the verifier runs against a fresh checkout with the
+            # agent's full diff materialised (Slice 1b — codeprobe-xysn).
+            # Only BinaryScorer takes this kwarg today; other scorers
+            # keep the legacy in_place behavior.
+            agent_state: _AgentState | None = None
+            if base_commit is not None and isinstance(scorer, BinaryScorer):
+                agent_state = _AgentState(
+                    base_commit=base_commit, workspace=effective_workspace
+                )
+
+            # Only BinaryScorer accepts ``agent_state``; other Scorer
+            # implementations would reject the kwarg, so we splat it in
+            # conditionally.
+            score_kwargs: dict[str, _AgentState] = (
+                {"agent_state": agent_state} if agent_state is not None else {}
+            )
             with scorer_env_override(env_overrides):
-                score_result = scorer.score(output.stdout, scoring_dir)
+                score_result = scorer.score(
+                    output.stdout, scoring_dir, **score_kwargs
+                )
 
         metadata: dict = {}
         if resolved_preambles:
@@ -694,6 +755,13 @@ def execute_task(
             scoring_details["scorer_family"] = score_result.scorer_family
         if score_result.sub_scores:
             scoring_details["sub_scores"] = dict(score_result.sub_scores)
+        # Slice 1b: surface verdict (correct/incorrect/verifier_error) and
+        # materialized_via (in_place/git_apply) so aggregate.json and
+        # downstream review tooling can distinguish agent failure from
+        # verifier-infrastructure failure.
+        if score_result.verdict is not None:
+            scoring_details["verdict"] = score_result.verdict
+        scoring_details["materialized_via"] = score_result.materialized_via
         if score_result.diagnostics:
             # Carry the IR-metrics diagnostics into scoring_details so
             # aggregate.json and downstream consumers see the same shape
