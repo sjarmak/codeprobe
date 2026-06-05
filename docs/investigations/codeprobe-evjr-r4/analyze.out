@@ -1,0 +1,43 @@
+========================================================================================
+config              n   reward    cost$  cost/t   time_s   out_tok localRead%
+----------------------------------------------------------------------------------------
+baseline           15    0.197    34.81    2.32      565     22251       100%
+with-sourcegraph   15    0.075    46.70    3.11     1027     53049         1%
+with-sg-narrow     15    0.323    36.88    2.46      622     24692       100%
+========================================================================================
+
+# Acceptance-criteria checks
+1. output_tokens narrow vs with-sourcegraph: 24692 vs 53049  => +53.5%  (predicted >= -30%): PASS
+2. narrow local Read share of read traffic: 100% (local=285, mcp_read=0) (>= 30%): PASS
+3. reward narrow vs baseline: 0.323 vs 0.197 => +0.126  (within +/-0.05: NO; direction: better)
+
+# Cost / time context
+   cost narrow vs with-sourcegraph: $36.88 vs $46.70 (-21.0%)
+   cost narrow vs baseline:         $36.88 vs $34.81 (+5.9%)
+
+# Per-config tool histograms
+
+[baseline]  (n=15)
+       527  Bash
+       303  Read
+        46  Edit
+         3  Agent
+
+[with-sourcegraph]  (n=15)
+       544  mcp__sourcegraph__read_file
+       235  mcp__sourcegraph__keyword_search
+        63  mcp__sourcegraph__diff_search
+        37  Write
+        34  mcp__sourcegraph__commit_search
+        29  mcp__sourcegraph__list_files
+         5  Read
+         5  mcp__sourcegraph__nls_search
+         4  mcp__sourcegraph__evaluator
+         1  mcp__sourcegraph__list_repos
+
+[with-sg-narrow]  (n=15)
+       477  Bash
+       285  Read
+        54  Edit
+
+wrote per_config_summary.json

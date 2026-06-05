@@ -1,0 +1,12 @@
+[suite]
+name = "codeprobe-evjr-r4-sdlc"
+description = "mcn7's 5 SDLC tasks, three-arm: baseline / with-sourcegraph / with-sg-narrow"
+task_dir = "tasks"
+eval_goal = "Does blocking sourcegraph read/browse MCP tools force local Read and cut output_tokens while holding reward?"
+task_ids = [
+  "ba1f3675",
+  "d906ac3d",
+  "0d4ec3ad",
+  "45b581b5",
+  "fde8e6e0",
+]

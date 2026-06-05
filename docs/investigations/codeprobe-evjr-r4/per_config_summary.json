@@ -1,0 +1,67 @@
+[
+  {
+    "config": "baseline",
+    "n": 15,
+    "reward_mean": 0.19662666666666667,
+    "cost_total": 34.8142245,
+    "cost_mean": 2.3209483,
+    "time_mean": 564.7318295229848,
+    "out_tok_mean": 22251.466666666667,
+    "out_tok_sum": 333772,
+    "tool_hist": {
+      "Bash": 527,
+      "Read": 303,
+      "Edit": 46,
+      "Agent": 3
+    },
+    "local_read": 303,
+    "mcp_read_file": 0,
+    "read_total": 303,
+    "local_read_share": 1.0
+  },
+  {
+    "config": "with-sourcegraph",
+    "n": 15,
+    "reward_mean": 0.07519333333333333,
+    "cost_total": 46.69944135,
+    "cost_mean": 3.11329609,
+    "time_mean": 1026.8548955293372,
+    "out_tok_mean": 53049.4,
+    "out_tok_sum": 795741,
+    "tool_hist": {
+      "mcp__sourcegraph__read_file": 544,
+      "mcp__sourcegraph__keyword_search": 235,
+      "mcp__sourcegraph__diff_search": 63,
+      "Write": 37,
+      "mcp__sourcegraph__commit_search": 34,
+      "mcp__sourcegraph__list_files": 29,
+      "Read": 5,
+      "mcp__sourcegraph__nls_search": 5,
+      "mcp__sourcegraph__evaluator": 4,
+      "mcp__sourcegraph__list_repos": 1
+    },
+    "local_read": 5,
+    "mcp_read_file": 544,
+    "read_total": 549,
+    "local_read_share": 0.009107468123861567
+  },
+  {
+    "config": "with-sg-narrow",
+    "n": 15,
+    "reward_mean": 0.3226,
+    "cost_total": 36.88409385,
+    "cost_mean": 2.45893959,
+    "time_mean": 621.6543858928605,
+    "out_tok_mean": 24692,
+    "out_tok_sum": 370380,
+    "tool_hist": {
+      "Bash": 477,
+      "Read": 285,
+      "Edit": 54
+    },
+    "local_read": 285,
+    "mcp_read_file": 0,
+    "read_total": 285,
+    "local_read_share": 1.0
+  }
+]

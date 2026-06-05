@@ -1,0 +1,53 @@
+Suite 'codeprobe-evjr-r4-sdlc': 5/15 tasks selected
+
+Running config: baseline (5 tasks)
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 654.3605135064572, "cost_usd": 2.4511538, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 695.6787770222872, "cost_usd": 2.93721115, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.6296, "duration_seconds": 278.9749046312645, "cost_usd": 1.6272411, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.6296, "duration_seconds": 366.6454100329429, "cost_usd": 2.1554581500000003, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.0, "duration_seconds": 333.412783280015, "cost_usd": 2.6990935499999993, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 1321.8059967150912, "cost_usd": 3.4813831499999996, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 570.4781020237133, "cost_usd": 2.744871450000001, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 561.3822571188211, "cost_usd": 2.885937900000001, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5634, "duration_seconds": 343.1898777615279, "cost_usd": 1.7040897, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5634, "duration_seconds": 161.57744544371963, "cost_usd": 0.87724185, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5634, "duration_seconds": 265.51942109223455, "cost_usd": 1.5248769000000004, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 452.079230774194, "cost_usd": 1.8525410999999998, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 1225.9739198544994, "cost_usd": 2.936469299999999, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 674.8632586123422, "cost_usd": 2.5626183000000005, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 565.0355449756607, "cost_usd": 2.3740371, "record_type": "event"}
+
+Running config: with-sourcegraph (5 tasks)
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 600.6889403760433, "cost_usd": 2.7416165999999986, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 882.3572856439278, "cost_usd": 3.07889115, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 1063.5147642567754, "cost_usd": 3.2123869500000004, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.0, "duration_seconds": 528.339432541281, "cost_usd": 2.4878016000000005, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.0, "duration_seconds": 593.5686834789813, "cost_usd": 2.5125546000000005, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.0, "duration_seconds": 1266.137446373701, "cost_usd": 3.4919709, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 543.0223516495898, "cost_usd": 2.66428875, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 639.7393648643047, "cost_usd": 3.0286941, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 1439.8392579052597, "cost_usd": 3.7919176500000003, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5645, "duration_seconds": 1521.1292240060866, "cost_usd": 3.3121769999999997, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5634, "duration_seconds": 1419.5156840197742, "cost_usd": 3.5203335000000004, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 883.4258834831417, "cost_usd": 2.7877461, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 816.7003247849643, "cost_usd": 2.415139799999999, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.0, "duration_seconds": 2320.734804100357, "cost_usd": 5.032003950000001, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 884.1099854558706, "cost_usd": 2.6219186999999997, "record_type": "event"}
+
+Running config: with-sg-narrow (5 tasks)
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 791.9212251584977, "cost_usd": 3.2399662499999997, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.0, "duration_seconds": 838.1280179545283, "cost_usd": 3.0763576500000003, "record_type": "event"}
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.6267, "duration_seconds": 1185.5131935384125, "cost_usd": 3.1299304500000007, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.6296, "duration_seconds": 463.6572897527367, "cost_usd": 2.1665410499999997, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.6296, "duration_seconds": 441.2692049704492, "cost_usd": 2.0713561499999997, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.5872, "duration_seconds": 675.8025005534291, "cost_usd": 2.001633299999999, "record_type": "event"}
+{"event": "task_done", "task_id": "45b581b5", "score": 0.6296, "duration_seconds": 763.2298854403198, "cost_usd": 2.5423467000000004, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.0, "duration_seconds": 728.1963687557727, "cost_usd": 2.799033149999999, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5634, "duration_seconds": 341.25170724932104, "cost_usd": 1.5369279, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.5634, "duration_seconds": 288.1453209258616, "cost_usd": 1.4907195000000002, "record_type": "event"}
+{"event": "task_done", "task_id": "ba1f3675", "score": 0.6095, "duration_seconds": 554.646874031052, "cost_usd": 2.652869699999999, "record_type": "event"}
+{"event": "task_done", "task_id": "d906ac3d", "score": 0.0, "duration_seconds": 356.1734748343006, "cost_usd": 1.7690161500000003, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 655.883703735657, "cost_usd": 2.409609599999999, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 590.2939920462668, "cost_usd": 2.8324066500000007, "record_type": "event"}
+{"event": "task_done", "task_id": "fde8e6e0", "score": 0.0, "duration_seconds": 650.7030294463038, "cost_usd": 3.165379649999999, "record_type": "event"}
+{"record_type": "envelope", "ok": true, "command": "run", "version": "0.5.5", "schema_version": "1", "exit_code": 0, "data": {"experiment": "gascity-mcp-comparison", "configs": [{"label": "baseline", "tasks": 15, "mean_score": 0.19662666666666667, "perfect": 0, "cost_usd": 34.8142245}, {"label": "with-sourcegraph", "tasks": 15, "mean_score": 0.07519333333333332, "perfect": 0, "cost_usd": 46.69944135}, {"label": "with-sg-narrow", "tasks": 15, "mean_score": 0.32260000000000005, "perfect": 0, "cost_usd": 36.88409385}], "total_tasks": 45, "total_cost_usd": 118.3977597, "tenant": "github.com-gastownhall-gascity@ds", "tenant_source": "git-remote+user", "command_schema_version": "1"}, "error": null, "warnings": [], "next_steps": []}
