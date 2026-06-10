@@ -414,26 +414,33 @@ def test_compose_instruction_sourcegraph_sdlc_uses_stop_signal(tmp_path: Path):
     assert "Coverage-first synthesis" not in prompt
 
 
-def test_compose_instruction_sourcegraph_declares_no_local_source(
+def test_compose_instruction_sourcegraph_carries_workspace_priority_guardrail(
     tmp_path: Path,
 ):
-    """The v2 sourcegraph preamble must state local source is absent.
+    """The sourcegraph preamble must carry the workspace-source-priority guardrail.
 
     History (codeprobe-evjr): cross-rig audit showed codeprobe agents
     routed all reads through `mcp__sourcegraph__read_file` even when the
-    file existed locally. The v1 preamble tried to fix that with a
-    "Prefer local-first" guardrail.
+    file existed locally — driving 3× output tokens and +69% wall-clock
+    vs baseline. The v1 preamble had a "Prefer local-first" guardrail.
 
-    Resolution (codeprobe-jf28): the v2 preamble takes the opposite,
-    cleaner approach — pair it with file-removal isolation so local
-    source genuinely is not present, and have the preamble state that
-    fact explicitly. The MCP-vs-local guardrail is no longer needed
-    because there is nothing local to prefer.
+    Detour (codeprobe-jf28): the v2 preamble dropped the guardrail and
+    declared local source absent on the assumption that file-removal
+    isolation would always be paired. That assumption is wrong for the
+    default `evalrc-mcp-comparison.yaml` template, which runs without
+    isolation — so the absolute "no local source" claim was misleading
+    and the agent still over-read remotely.
 
-    This test pins the new invariant:
-      1. The preamble declares "Local source files are not present."
-      2. The preamble routes all reads through MCP.
-      3. The EFFICIENCY "don't over-read" rule still reaches every
+    Resolution: re-add the EB-style guardrail so the preamble is
+    correct in both isolated (scaffold/hide) and non-isolated modes.
+
+    This test pins the current invariant:
+      1. The preamble carries a workspace-source-priority guardrail
+         that tells the agent to use local Read when files exist.
+      2. The preamble does NOT make the absolute "Local source files
+         are not present" claim (false in non-isolated runs).
+      3. The preamble still routes cross-repo reads through MCP.
+      4. The EFFICIENCY "don't over-read" rule still reaches every
          category (covered by the dedicated test below).
     """
     task_dir = tmp_path / "sdlc-task"
@@ -456,9 +463,12 @@ def test_compose_instruction_sourcegraph_declares_no_local_source(
         ),
     )
 
-    # The new mode declares local source absence.
-    assert "Local source files are not present" in prompt
-    # All reads go through MCP — sg_read_file is the canonical path.
+    # Workspace-source-priority guardrail is present.
+    assert "Workspace Source Priority" in prompt
+    assert "do NOT call `sg_read_file`" in prompt
+    # The absolute no-local-source claim is gone.
+    assert "Local source files are not present" not in prompt
+    # MCP is still the canonical path for cross-repo reads.
     assert "sg_read_file" in prompt
     # repo_scope is rendered with the actual sg_repo value, not left
     # as a literal template token.

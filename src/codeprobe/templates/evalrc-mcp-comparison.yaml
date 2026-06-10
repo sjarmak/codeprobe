@@ -8,6 +8,12 @@ description: "Does adding an MCP tool (Sourcegraph) improve agent performance?"
 task_source: git-history
 task_count: 10
 
+# Hard cap on agent turns per task. evjr cross-rig audit found uncapped MCP
+# runs looped on sg_read_file (median 46 tool calls, max 412), driving 3×
+# output tokens and +69% wall-clock vs baseline. CSB caps at 30, EB at 50.
+# Override per-run with --max-turns or CODEPROBE_MAX_TURNS.
+max_turns: 50
+
 dimensions:
   models:
     sonnet: claude-sonnet-4-6

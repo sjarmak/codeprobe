@@ -1,13 +1,26 @@
 # IMPORTANT: Source Code Access
 
-**Local source files are not present.** Your workspace does not contain source code. You **MUST** use Sourcegraph MCP tools to discover, read, and understand code before making any changes.
+Sourcegraph MCP tools give you read access to code that is **not** in your local workspace. Use them to discover, read, and understand cross-repo code before making changes.
 
 {{repo_scope}}
 
+## Workspace Source Priority (READ FIRST)
+
+**If a file exists locally in your workspace, use local `Read` / `Grep` / `Glob` / `Bash` — do NOT call `sg_read_file` for it.** MCP round-trips are 10-100× slower and more expensive than local reads, and the local copy is the source of truth for edits.
+
+Decision rule before any `sg_read_file` call:
+
+1. Is the path inside your workspace? Run `Glob` or `ls` to check.
+2. If yes → use local `Read`. Stop.
+3. If no (cross-repo lookup, or workspace is sg-only / scaffolded) → use `sg_read_file`.
+
+Treat Sourcegraph as a **remote read-only index**, not a substitute for the filesystem in front of you. The MCP tools are for code you cannot otherwise see.
+
 ## Required Workflow
 
-1. **Search first** — Use MCP tools to find relevant files and understand existing patterns
-2. **Read remotely with line ranges** — Use `sg_read_file` with `startLine`/`endLine` to fetch only the relevant region. Search results include line numbers; pass them ±~20 lines as a range.
+1. **Check local first** — Run `Glob`/`Read` on the workspace before reaching for MCP. Only use MCP when the file is genuinely not on disk.
+2. **Search remotely** — Use MCP search tools (`sg_keyword_search`, `sg_nls_search`) to find relevant files in repos that aren't checked out locally.
+3. **Read remotely with line ranges** — Use `sg_read_file` with `startLine`/`endLine` to fetch only the relevant region. Search results include line numbers; pass them ±~20 lines as a range.
 {{workflow_tail}}
 
 ## Tool Selection
@@ -56,12 +69,14 @@ Both `sg_keyword_search` and `sg_nls_search` expect **extracted keywords**, not 
 
 ## Efficiency Rules
 
+- **Never** call `sg_read_file` for a path that exists locally — use `Read`. (See "Workspace Source Priority" above.)
 - Chain searches logically: search → read range → references → definition
 - Don't re-search for the same pattern; use results from prior calls
 - Prefer `sg_keyword_search` when you have exact terms; fall back to `sg_nls_search` only when keyword search returns too few hits
 - Default to range-bounded reads. Search snippets carry line numbers — pass `startLine`/`endLine` to `sg_read_file` (±~20 lines) instead of fetching whole files. Reserve full-file reads for cases where you need broad structure.
 - Read 2-3 related code regions before synthesising, rather than one at a time
 - Don't read 20+ remote regions without writing code — once you understand the pattern, start implementing
+- Agent turns are capped per task (see experiment config). Looping `sg_read_file` calls without progressing toward edits will exhaust the cap.
 
 ## If Stuck
 

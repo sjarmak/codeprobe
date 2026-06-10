@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from itertools import product
 from pathlib import Path
+
+import yaml
 
 from codeprobe.models.evalrc import EvalrcConfig
 from codeprobe.models.experiment import Experiment, ExperimentConfig
@@ -43,6 +46,12 @@ def to_experiment(config: EvalrcConfig) -> Experiment:
             ExperimentConfig(label=agent, agent=agent) for agent in config.agents
         ]
 
+    if config.max_turns is not None:
+        configs = [
+            replace(c, max_turns=config.max_turns) if c.max_turns is None else c
+            for c in configs
+        ]
+
     return Experiment(
         name=config.name,
         description=config.description,
@@ -68,44 +77,18 @@ def _find_evalrc(directory: Path) -> Path:
 
 
 def _parse_yaml(raw: str, path: Path) -> dict:
-    """Parse YAML string into a dict, falling back to manual parsing."""
+    """Parse YAML string into a dict."""
     if not raw.strip():
         raise ValueError(f"Invalid .evalrc.yaml at {path}: file is empty")
     try:
-        import yaml
-
         data = yaml.safe_load(raw)
-    except ImportError:
-        data = _manual_parse(raw)
-    except Exception as exc:
+    except yaml.YAMLError as exc:
         raise ValueError(f"Invalid .evalrc.yaml at {path}: {exc}") from exc
 
     if not isinstance(data, dict):
         raise ValueError(
             f"Invalid .evalrc.yaml at {path}: expected a mapping, got {type(data).__name__}"
         )
-    return data
-
-
-def _manual_parse(raw: str) -> dict:
-    """Minimal YAML-subset parser for flat key: value pairs and lists."""
-    data: dict = {}
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if value.startswith("[") and value.endswith("]"):
-            items = [
-                v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()
-            ]
-            data[key] = items
-        elif value:
-            data[key] = value
     return data
 
 
@@ -127,6 +110,13 @@ def _to_evalrc(data: dict) -> EvalrcConfig:
     if not isinstance(dimensions_raw, dict):
         dimensions_raw = {}
 
+    max_turns_raw = data.get("max_turns")
+    if max_turns_raw is not None:
+        if not isinstance(max_turns_raw, int) or isinstance(max_turns_raw, bool) or max_turns_raw <= 0:
+            raise ValueError(
+                f"max_turns must be a positive integer, got {max_turns_raw!r}"
+            )
+
     return EvalrcConfig(
         name=data.get("name", "default"),
         description=data.get("description", ""),
@@ -135,6 +125,7 @@ def _to_evalrc(data: dict) -> EvalrcConfig:
         models=models,
         configs=configs_raw,
         dimensions=dimensions_raw,
+        max_turns=max_turns_raw,
     )
 
 
@@ -172,6 +163,58 @@ def _coerce_hide_local_source(raw: object) -> str:
     )
 
 
+# Keys that map 1:1 onto ExperimentConfig fields.
+_CONFIG_KEYS = frozenset(
+    {
+        "agent",
+        "model",
+        "permission_mode",
+        "mcp_config",
+        "allowed_tools",
+        "disallowed_tools",
+        "mcp_mode",
+        "instruction_variant",
+        "preambles",
+        "reward_type",
+        "max_turns",
+        "hide_local_source",
+    }
+)
+
+# Keys consumed downstream via ExperimentConfig.extra (api.py, cli/run_cmd.py).
+_EXTRA_PASSTHROUGH_KEYS = frozenset({"timeout_seconds"})
+
+
+def _validated_extra(label: str, cfg: dict) -> dict:
+    """Build the ``extra`` dict for a config entry, rejecting unknown keys.
+
+    A typo like ``permision_mode`` must fail loud at load time instead of
+    silently routing into ``extra`` and being ignored at run time. Keys the
+    runtime genuinely reads from ``extra`` (``timeout_seconds``) pass through;
+    anything else must be nested under an explicit ``extra:`` mapping.
+    """
+    unknown = set(cfg) - _CONFIG_KEYS - _EXTRA_PASSTHROUGH_KEYS - {"extra"}
+    if unknown:
+        raise ValueError(
+            f"Config entry {label!r} has unknown key(s): {sorted(unknown)}. "
+            f"Allowed keys: {sorted(_CONFIG_KEYS | _EXTRA_PASSTHROUGH_KEYS)}. "
+            "To pass custom values through to the adapter, nest them under "
+            "an explicit 'extra:' mapping."
+        )
+
+    extra_raw = cfg.get("extra", {})
+    if not isinstance(extra_raw, dict):
+        raise ValueError(
+            f"Config entry {label!r}: 'extra' must be a mapping, "
+            f"got {type(extra_raw).__name__}"
+        )
+    extra = dict(extra_raw)
+    for key in _EXTRA_PASSTHROUGH_KEYS:
+        if key in cfg:
+            extra[key] = cfg[key]
+    return extra
+
+
 def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
     """Build ExperimentConfig list from explicit configs mapping."""
     for label, cfg in configs_dict.items():
@@ -196,25 +239,7 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             hide_local_source=_coerce_hide_local_source(
                 cfg.get("hide_local_source")
             ),
-            extra={
-                k: v
-                for k, v in cfg.items()
-                if k
-                not in {
-                    "agent",
-                    "model",
-                    "permission_mode",
-                    "mcp_config",
-                    "allowed_tools",
-                    "disallowed_tools",
-                    "mcp_mode",
-                    "instruction_variant",
-                    "preambles",
-                    "reward_type",
-                    "max_turns",
-                    "hide_local_source",
-                }
-            },
+            extra=_validated_extra(label, cfg),
         )
         for label, cfg in configs_dict.items()
     ]

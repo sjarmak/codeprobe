@@ -16,3 +16,4 @@ class EvalrcConfig:
     models: list[str] = field(default_factory=list)
     configs: dict = field(default_factory=dict)
     dimensions: dict = field(default_factory=dict)
+    max_turns: int | None = None
