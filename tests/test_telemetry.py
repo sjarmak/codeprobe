@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codeprobe.adapters.telemetry import (
-    _PRICING_LAST_VERIFIED,
     COPILOT_PRICING,
     ApiResponseCollector,
     JsonStdoutCollector,
@@ -320,21 +319,20 @@ class TestPricingMetadata:
         assert inp > 0
         assert out > 0
 
-    def test_pricing_last_verified_is_date(self):
+    def test_every_table_has_last_verified_date(self):
         from datetime import date
 
-        assert isinstance(_PRICING_LAST_VERIFIED, date)
+        from codeprobe.adapters.pricing import ALL_PRICING_TABLES
 
-    def test_pricing_staleness_constants(self):
-        """Verify staleness detection constants exist and are sensible."""
-        from codeprobe.adapters.telemetry import _PRICING_STALENESS_DAYS
+        for table in ALL_PRICING_TABLES:
+            assert isinstance(table.last_verified, date), table.vendor
+            age = (date.today() - table.last_verified).days
+            assert age >= 0, f"{table.vendor} verified date is in the future"
 
-        assert _PRICING_STALENESS_DAYS == 90
-        # The verified date should not be unreasonably far in the past
-        from datetime import date as _date
+    def test_pricing_staleness_constant(self):
+        from codeprobe.adapters.pricing import PRICING_STALENESS_DAYS
 
-        age = (_date.today() - _PRICING_LAST_VERIFIED).days
-        assert age >= 0, "Verified date is in the future"
+        assert PRICING_STALENESS_DAYS == 90
 
 
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "golden"

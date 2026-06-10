@@ -4,50 +4,29 @@ from __future__ import annotations
 
 import json
 import logging
-import warnings
 from dataclasses import dataclass
-from datetime import date
 from typing import Any, Protocol, runtime_checkable
 
+from codeprobe.adapters.pricing import (
+    CLAUDE_PRICING,
+    CODEX_PRICING,
+    COPILOT_PRICING,
+    PricingTable,
+)
 from codeprobe.adapters.protocol import ALLOWED_COST_MODELS, ALLOWED_COST_SOURCES
 
 logger = logging.getLogger(__name__)
 
-# Date when pricing tables were last verified against vendor pages.
-# If today is >90 days past this date, a warning is emitted at import time.
-_PRICING_LAST_VERIFIED: date = date(2026, 4, 2)
-
-_PRICING_STALENESS_DAYS = 90
-
-if (date.today() - _PRICING_LAST_VERIFIED).days > _PRICING_STALENESS_DAYS:
-    warnings.warn(
-        f"Pricing tables were last verified on {_PRICING_LAST_VERIFIED}. "
-        f"They may be outdated (>{_PRICING_STALENESS_DAYS} days). "
-        "Update _PRICING_LAST_VERIFIED after re-checking vendor pricing pages.",
-        UserWarning,
-        stacklevel=1,
-    )
-
-# Pricing per 1M tokens: (input, output)
-CODEX_PRICING: dict[str, tuple[float, float]] = {
-    "codex-mini-latest": (1.50, 6.00),
-    "codex-latest": (2.00, 8.00),
-}
-
-# Claude pricing per 1M tokens: (input, output, cache_read, cache_creation)
-# Cache creation is billed at 1.25x the input rate.
-CLAUDE_PRICING: dict[str, tuple[float, float, float, float]] = {
-    "claude-opus-4-6": (15.00, 75.00, 1.50, 18.75),
-    "claude-sonnet-4-6": (3.00, 15.00, 0.30, 3.75),
-    "claude-haiku-4-5": (0.80, 4.00, 0.08, 1.00),
-}
-
-# Copilot pricing per 1M tokens: (input, output)
-# GPT-4o rates — Copilot's underlying model for code tasks.
-COPILOT_PRICING: dict[str, tuple[float, float]] = {
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-}
+__all__ = [
+    "CLAUDE_PRICING",
+    "CODEX_PRICING",
+    "COPILOT_PRICING",
+    "ApiResponseCollector",
+    "JsonStdoutCollector",
+    "NdjsonStreamCollector",
+    "TelemetryCollector",
+    "UsageData",
+]
 
 
 @dataclass(frozen=True)
@@ -237,12 +216,15 @@ class JsonStdoutCollector:
                     task_id=str(trace_task_id),
                 )
             except Exception:  # noqa: BLE001 — trace must not break telemetry
+                # Best-effort by contract: a trace.db failure (locked
+                # sqlite, full disk) must not be laundered into an
+                # "Output parse failed" AgentOutput that loses the
+                # agent's actual result and telemetry.
                 logger.exception(
                     "Trace recorder failed to ingest stream for config=%s task=%s",
                     trace_config,
                     trace_task_id,
                 )
-                raise
         trimmed = raw_output.lstrip()
         if trimmed.startswith("{\n") or trimmed.startswith("{"):
             # Try single-envelope path first — most adapters still use
@@ -505,7 +487,9 @@ class ApiResponseCollector:
     via ``**context``.  Calculates cost from a pricing table.
     """
 
-    def __init__(self, pricing: dict[str, tuple[float, float]] | None = None) -> None:
+    def __init__(
+        self, pricing: PricingTable | dict[str, tuple[float, float]] | None = None
+    ) -> None:
         self._pricing = pricing if pricing is not None else CODEX_PRICING
 
     def collect(self, raw_output: str, **context: Any) -> UsageData:
