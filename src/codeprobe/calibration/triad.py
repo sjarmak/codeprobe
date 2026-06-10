@@ -37,7 +37,7 @@ from time import monotonic
 from typing import Literal
 
 from codeprobe.core.scoring import (
-    _COPYTREE_IGNORE,
+    COPYTREE_IGNORE,
     BinaryScorer,
     ScoreResult,
     get_scorer,
@@ -312,7 +312,7 @@ def _scratched_task_dir(task_dir: Path) -> Iterator[Path]:
             task_dir,
             scratch_task,
             symlinks=False,
-            ignore=shutil.ignore_patterns(*_COPYTREE_IGNORE),
+            ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
         )
         ans = scratch_task / "answer.txt"
         if ans.exists():

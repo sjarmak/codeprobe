@@ -45,12 +45,12 @@ from codeprobe.core.preamble import (
     task_preamble_context,
 )
 from codeprobe.core.scoring import (
-    _COPYTREE_IGNORE,
-    BinaryScorer,
-    _AgentState,
+    COPYTREE_IGNORE,
+    AgentState,
     get_scorer,
     read_task_metadata,
     sanitize_secrets,
+    scorer_accepts_agent_state,
     scorer_env_override,
 )
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -653,7 +653,7 @@ def execute_task(
                     task_dir,
                     scoring_dir,
                     symlinks=True,
-                    ignore=shutil.ignore_patterns(*_COPYTREE_IGNORE),
+                    ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
                 )
             except OSError as exc:
                 return TaskResult(
@@ -714,21 +714,19 @@ def execute_task(
                 env_overrides = {"TASK_REPO_ROOT": str(_effective_wt)}
 
             # When eligible (single-repo, no source-quarantine, git
-            # workspace), pass the captured base_commit to BinaryScorer
-            # so the verifier runs against a fresh checkout with the
-            # agent's full diff materialised (Slice 1b — codeprobe-xysn).
-            # Only BinaryScorer takes this kwarg today; other scorers
-            # keep the legacy in_place behavior.
-            agent_state: _AgentState | None = None
-            if base_commit is not None and isinstance(scorer, BinaryScorer):
-                agent_state = _AgentState(
+            # workspace), pass the captured base_commit to scorers that
+            # accept it so the verifier runs against a fresh checkout
+            # with the agent's full diff materialised (Slice 1b —
+            # codeprobe-xysn). Support is detected structurally — any
+            # scorer opting into the ``agent_state`` kwarg gets it;
+            # the rest keep the legacy in_place behavior.
+            agent_state: AgentState | None = None
+            if base_commit is not None and scorer_accepts_agent_state(scorer):
+                agent_state = AgentState(
                     base_commit=base_commit, workspace=effective_workspace
                 )
 
-            # Only BinaryScorer accepts ``agent_state``; other Scorer
-            # implementations would reject the kwarg, so we splat it in
-            # conditionally.
-            score_kwargs: dict[str, _AgentState] = (
+            score_kwargs: dict[str, AgentState] = (
                 {"agent_state": agent_state} if agent_state is not None else {}
             )
             with scorer_env_override(env_overrides):

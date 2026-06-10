@@ -56,12 +56,22 @@ class TestScoreResultRewardMirror:
         assert d["reward"] == pytest.approx(0.42)
         assert d["score"] == pytest.approx(0.42)
 
-    def test_explicit_reward_preserved(self) -> None:
-        # Frozen dataclass: callers passing reward explicitly should not
-        # have it overwritten on __post_init__.
-        r = ScoreResult(score=1.0, passed=True, reward=0.85)
-        assert r.reward == pytest.approx(0.85)
-        assert r.score == pytest.approx(1.0)
+    def test_explicit_matching_reward_accepted(self) -> None:
+        # Passing the alias explicitly is redundant but legal when it
+        # agrees with score.
+        r = ScoreResult(score=1.0, passed=True, reward=1.0, reward_score=1.0)
+        assert r.reward == pytest.approx(1.0)
+        assert r.reward_score == pytest.approx(1.0)
+
+    def test_contradictory_reward_rejected(self) -> None:
+        # ``reward`` / ``reward_score`` are aliases of ``score`` by
+        # contract ("always equal by definition"); a contradictory value
+        # means a bug at the construction site and must fail loud rather
+        # than ship two different headline numbers.
+        with pytest.raises(ValueError, match="contradicts score"):
+            ScoreResult(score=1.0, passed=True, reward=0.85)
+        with pytest.raises(ValueError, match="contradicts score"):
+            ScoreResult(score=1.0, passed=True, reward_score=0.85)
 
 
 # ---------------------------------------------------------------------------

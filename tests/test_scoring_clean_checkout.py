@@ -28,7 +28,7 @@ table and ``docs/prd/premortem_hybrid_execution_evaluation.md`` Theme C
 for the silent-pollution failure mode this slice closes.
 
 This file is intentionally written before the implementation lands —
-TDD RED expected at first run. Once ``_AgentState`` and the
+TDD RED expected at first run. Once ``AgentState`` and the
 ``agent_state`` kwarg ship on ``BinaryScorer.score``, every test goes
 green.
 """
@@ -42,7 +42,7 @@ from pathlib import Path
 import pytest
 
 from codeprobe.core import scoring
-from codeprobe.core.scoring import BinaryScorer, _AgentState
+from codeprobe.core.scoring import BinaryScorer, AgentState
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -148,7 +148,7 @@ class TestCommittedEdits:
         )
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "correct"
@@ -186,7 +186,7 @@ class TestUnstagedAndUntrackedEdits:
         )
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "correct"
@@ -206,7 +206,7 @@ class TestUnstagedAndUntrackedEdits:
         )
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "correct"
@@ -252,7 +252,7 @@ class TestApplyRejected:
         monkeypatch.setattr(scoring, "_capture_workspace_diff", _bad_diff)
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "verifier_error"
@@ -326,7 +326,7 @@ class TestCapturedBaseSurvivesHeadMovement:
         )
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "correct"
@@ -366,7 +366,7 @@ class TestInPlaceFallback:
         task = _make_task_dir(tmp_path, "exit 0\n", name="task-non-git")
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit="deadbeef", workspace=ws)
+        agent_state = AgentState(base_commit="deadbeef", workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "correct"
@@ -398,7 +398,7 @@ class TestTestFailureMapsToIncorrect:
         )
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
 
         assert result.verdict == "incorrect"
@@ -432,7 +432,7 @@ class TestTempdirCleanup:
         }
 
         scorer = BinaryScorer()
-        agent_state = _AgentState(base_commit=base, workspace=ws)
+        agent_state = AgentState(base_commit=base, workspace=ws)
         result = scorer.score("", task, agent_state=agent_state)
         assert result.verdict == "correct"
 
@@ -453,15 +453,15 @@ class TestTempdirCleanup:
 
 
 class TestAgentStateShape:
-    """Pin the public-ish shape of ``_AgentState`` so callers can rely on it."""
+    """Pin the public-ish shape of ``AgentState`` so callers can rely on it."""
 
     def test_is_frozen_dataclass(self) -> None:
-        state = _AgentState(base_commit="abc123", workspace=Path("/tmp"))
+        state = AgentState(base_commit="abc123", workspace=Path("/tmp"))
         with pytest.raises((AttributeError, Exception)):
             # Frozen dataclasses raise FrozenInstanceError on mutation.
             state.base_commit = "different"  # type: ignore[misc]
 
     def test_fields_are_accessible(self) -> None:
-        state = _AgentState(base_commit="abc123", workspace=Path("/tmp/ws"))
+        state = AgentState(base_commit="abc123", workspace=Path("/tmp/ws"))
         assert state.base_commit == "abc123"
         assert state.workspace == Path("/tmp/ws")

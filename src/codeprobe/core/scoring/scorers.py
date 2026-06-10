@@ -1,12 +1,9 @@
-"""Task output scoring — run test.sh and return typed results.
+"""Scorer classes — Binary, Continuous, Checkpoint, OracleChecks, Artifact,
+and Dual — plus ground-truth validation, the oracle answer-type dispatch
+table, scorer registry resolution (``get_scorer``), and the scoring CLI.
 
-Provides a Scorer protocol with three implementations:
-- BinaryScorer: exit 0 = 1.0, else 0.0 (wraps legacy score_task_output)
-- ContinuousScorer: reads float from reward.txt or stdout (0.0-1.0)
-- CheckpointScorer: weighted checkpoint verifiers with partial credit
-
-All scorers inherit the same sandbox security: temp dir isolation, filtered
-environment, secret redaction, and configurable timeout.
+Split out of the original ``codeprobe/core/scoring.py`` module (pure
+mechanical move — see the package ``__init__`` for the public surface).
 """
 
 from __future__ import annotations
@@ -14,811 +11,38 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
-import re
 import shutil
-import subprocess
-import tempfile
-import threading
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol, cast, runtime_checkable
+from typing import cast
 
 from codeprobe.analysis.stats import PASS_THRESHOLD
+from codeprobe.core.scoring.ir import (
+    _ZERO_SCORE,
+    _compute_f1,
+    _fbeta,
+    _ir_metrics,
+    _ir_reward_from_family,
+    _normalize_path,
+    score_count,
+    score_dependency_chain,
+    score_exact_match,
+    score_file_list,
+    score_symbol_list,
+)
+from codeprobe.core.scoring.materialize import AgentState
+from codeprobe.core.scoring.result import (
+    DEFAULT_FBETA_BETA,
+    DEFAULT_IR_FAMILY,
+    ScoreResult,
+    Scorer,
+    _read_fbeta_beta,
+    _select_ir_family,
+    read_task_verification,
+)
+from codeprobe.core.scoring.sandbox import _run_in_sandbox, sanitize_secrets
 
 logger = logging.getLogger(__name__)
-
-_TOKEN_PATTERN = re.compile(
-    r"("
-    r"ghp_[A-Za-z0-9]{36}"  # GitHub personal access token
-    r"|gho_[A-Za-z0-9]{36}"  # GitHub OAuth token
-    r"|github_pat_[A-Za-z0-9_]{80,}"  # GitHub fine-grained PAT
-    r"|sk-[A-Za-z0-9]{32,}"  # OpenAI / Anthropic API key
-    r"|sk-ant-[A-Za-z0-9\-]{80,}"  # Anthropic API key (long form)
-    r"|AKIA[0-9A-Z]{16}"  # AWS access key ID
-    r"|Bearer\s+\S{20,}"  # Authorization bearer tokens
-    r"|token\s+\S{20,}"  # Generic token patterns
-    r")",
-    re.IGNORECASE,
-)
-
-SCORE_TIMEOUT_SECONDS = 300
-
-# Named constant for zero-score returns — ensures every zero path is
-# either (a) legitimate arithmetic (F1 with empty sets) or (b) paired
-# with an explicit logger.warning (R16: fail-loud, no silent fallbacks).
-_ZERO_SCORE: float = 0.0
-
-# Patterns excluded from sandbox copytree to keep per-task IO bounded.
-# Any future task format that legitimately needs one of these paths
-# should override this at the writer level, not suppress it here.
-_COPYTREE_IGNORE = (
-    ".git",
-    "node_modules",
-    "__pycache__",
-    ".venv",
-    "venv",
-    "target",
-    "build",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".tox",
-)
-
-
-def read_task_metadata(task_dir: Path) -> dict:
-    """Parse ``task_dir/metadata.json`` into a dict.
-
-    Returns an empty dict on any failure (missing file, invalid JSON,
-    unreadable). Callers apply their own defaults on missing keys.
-    Single source of truth for metadata parsing — used by both the
-    executor and DualScorer so the error handling stays consistent.
-    """
-    meta_path = task_dir / "metadata.json"
-    if not meta_path.is_file():
-        return {}
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def read_task_verification(task_dir: Path) -> dict:
-    """Return the ``verification`` block from ``task_dir/metadata.json``."""
-    verification = read_task_metadata(task_dir).get("verification") or {}
-    return verification if isinstance(verification, dict) else {}
-
-
-#: Canonical set of values for ``ScoreResult.verdict``. Splits the legacy
-#: pass/fail boolean into four cases so a verifier-infrastructure failure
-#: (e.g. ``git apply`` rejected the agent's diff because of a binary hunk)
-#: is reported distinctly from an agent failure (test.sh exited non-zero).
-#: The premortem for hybrid-execution-v1 identified silently collapsing
-#: ``verifier_error`` into ``incorrect`` as the single most damaging
-#: failure mode for hosted-agent comparisons.
-ALLOWED_VERDICTS: frozenset[str] = frozenset(
-    {
-        "correct",
-        "incorrect",
-        "verifier_error",
-        "inconclusive",
-    }
-)
-
-#: Canonical set of values for ``ScoreResult.materialized_via``. Records
-#: HOW the verifier got at the agent's final state. ``in_place`` is the
-#: legacy worktree-mutation behavior; ``git_apply`` is the harness-
-#: controlled clean-checkout path that lands in Slice 1b. ``file_overlay``
-#: is reserved for vendor adapters (Devin, Codex Cloud) that return raw
-#: file blobs rather than a unified diff.
-ALLOWED_MATERIALIZATION: frozenset[str] = frozenset(
-    {
-        "in_place",
-        "git_apply",
-        "file_overlay",
-    }
-)
-
-
-@dataclass(frozen=True)
-class ScoreResult:
-    """Result of scoring a task's agent output.
-
-    ``score`` is the headline reward — the number that drives ranking,
-    pass/fail, and ``mean_automated_score`` in aggregate.json. The exact
-    rubric used to compute it is declared in ``scorer_family`` so reviewers
-    can interpret the number. Per-task families let symbol-reference-trace
-    use F1 (penalises both over-shipping and missing) while file-discovery
-    triage tasks can opt into a recall-tilted family where over-shipping is
-    free.
-
-    ``reward`` mirrors ``score`` and exposes the unified ScoreResult
-    contract field name. The two are always equal by definition; keep
-    ``score`` as the legacy field for the executor / aggregate consumers
-    that read it directly, and read ``reward`` when working against the
-    multi-rig contract (codeprobe / EB / CSB).
-
-    ``scorer_family`` is the registered rubric name. See
-    :data:`SCORER_FAMILIES` for the canonical set. Empty string means the
-    scorer didn't declare one (treat as opaque).
-
-    ``sub_scores`` exposes the rubric breakdown that produced the reward —
-    e.g. ``{"recall": 0.94, "precision": 0.24, "f1": 0.38}`` for an IR
-    family, or ``{"exit_code": 0}`` for binary. Callers MUST NOT use
-    ``sub_scores`` to derive a different headline number; treat it as
-    diagnostics.
-
-    ``diagnostics`` is a free-form bag of run-time observations that don't
-    affect reward but are useful for debugging. The unified contract
-    surfaces ``ir_metrics`` here (mirror of the IR breakdown for callers
-    that want a single canonical IR view); the executor injects
-    ``task_time_seconds``, ``token_cost_usd``, ``input_tokens``, and
-    ``output_tokens`` into the serialised ``scoring_details.diagnostics``
-    block at scoring.json write time so the per-task contract is
-    self-contained without forcing the scorer to know about run-level
-    metadata. ``input_tokens`` / ``output_tokens`` are raw counts (sum
-    across the multi-turn conversation for the trial); cost-Pareto plots
-    that aren't dollar-locked need them to compare across models with
-    different per-token pricing.
-
-    ``ir_metrics`` is kept at the top level for back-compat with existing
-    aggregate consumers (``cli/experiment_cmd.py`` reads
-    ``scoring_details["recall"]`` / ``"precision"`` / ``"f1"`` directly).
-    It mirrors ``diagnostics["ir_metrics"]``.
-
-    ``reward_score`` mirrors ``score`` and is preserved so older callers
-    that distinguish "human-shown score" from "ranking number" keep
-    working. Today the two are equal by definition.
-
-    ``details`` continues to carry the precision/recall/f1 fields for
-    backward compatibility with aggregate.json consumers that read
-    ``scoring_details["f1"]`` directly. Treat ``sub_scores`` /
-    ``ir_metrics`` as the canonical source going forward.
-
-    ``passed`` is preserved for back-compat (``score_passed`` in
-    ``analysis/stats.py`` still consults it). For continuous rewards
-    callers should compare ``score`` to a context-specific threshold
-    rather than read this flag.
-    """
-
-    score: float
-    passed: bool
-    error: str | None = None
-    details: dict = field(default_factory=dict)
-    reward_score: float | None = None
-    ir_metrics: dict = field(default_factory=dict)
-    scorer_family: str = ""
-    sub_scores: dict = field(default_factory=dict)
-    diagnostics: dict = field(default_factory=dict)
-    reward: float | None = None
-    # ``verdict`` distinguishes agent-failure (incorrect) from verifier-
-    # infrastructure failure (verifier_error) so a `git apply` rejection or a
-    # missing test fixture doesn't get silently graded as an agent failure.
-    # ``None`` means a caller hasn't migrated yet (legacy path); new call
-    # sites MUST populate it. See ALLOWED_VERDICTS for the canonical set.
-    verdict: str | None = None
-    # ``materialized_via`` records HOW the verifier got at the agent's final
-    # state. ``in_place`` is the legacy worktree-mutation behavior; new code
-    # paths set ``git_apply`` (diff applied onto a clean checkout) or
-    # ``file_overlay`` (vendor-returned files written into a clean tree).
-    # See ALLOWED_MATERIALIZATION for the canonical set.
-    materialized_via: str = "in_place"
-
-    def __post_init__(self) -> None:
-        # ``reward`` mirrors ``score`` when callers don't pass it explicitly.
-        # Frozen dataclass requires ``object.__setattr__`` to populate the
-        # default after init.
-        if self.reward is None:
-            object.__setattr__(self, "reward", self.score)
-        if self.verdict is not None and self.verdict not in ALLOWED_VERDICTS:
-            raise ValueError(
-                f"verdict={self.verdict!r} not in ALLOWED_VERDICTS "
-                f"({sorted(ALLOWED_VERDICTS)})"
-            )
-        if self.materialized_via not in ALLOWED_MATERIALIZATION:
-            raise ValueError(
-                f"materialized_via={self.materialized_via!r} not in "
-                f"ALLOWED_MATERIALIZATION ({sorted(ALLOWED_MATERIALIZATION)})"
-            )
-
-
-# ---------------------------------------------------------------------------
-# Scorer family registry — names + rubric signature
-# ---------------------------------------------------------------------------
-#
-# Each family is a label declaring how the reward was computed. The family
-# is recorded on every ScoreResult so downstream tooling can interpret the
-# number (e.g. "this F1 came from oracle_overlap_f1, not oracle_overlap_recall").
-# Routing for IR-style tasks reads ``verification.scorer_family`` from
-# task metadata; non-IR scorers (binary, continuous-without-metrics,
-# exact_match, etc.) declare a fixed family at the scorer class.
-#
-# Adding a new family: update SCORER_FAMILIES, register a sub_scores shape
-# in docs/scoring_model.md, and add a fixture-backed test in
-# tests/test_scoring_reward.py.
-
-SCORER_FAMILIES: frozenset[str] = frozenset(
-    {
-        # IR-style — oracle is a set of expected files / symbols
-        "oracle_overlap_f1",  # symbol-reference-trace, file-list-tight (default)
-        "oracle_overlap_fbeta",  # F-beta with per-task beta from verification.fbeta_beta
-        "oracle_overlap_recall",  # file-discovery / triage (opt-in)
-        "oracle_weighted_f1",  # org-scale tier-weighted oracle
-        "oracle_weighted_recall",  # tier-weighted oracle, recall-tilted
-        # Sequence-style — order matters
-        "sequence_lcs",  # dependency_chain
-        # Equality / scalar
-        "exact_match",  # count, boolean, text
-        # Test-script style — verifier emits reward directly
-        "binary_test",  # test.sh exit code
-        "continuous",  # reward.txt or stdout float, no IR
-        # Composite
-        "weighted_checkpoints",  # CheckpointScorer
-        "oracle_checks",  # OracleChecksScorer — structured-rubric criteria
-        "dual_composite",  # DualScorer (direct + artifact)
-    }
-)
-
-# Default IR family when a task does not declare one. F1 is the
-# conservative choice — symbol-reference-trace style tasks where shipping
-# every file in the repo is "didn't solve" rather than "found everything".
-# Tasks where dump-and-filter is fine (file-discovery / triage) opt into
-# ``oracle_overlap_recall`` via ``verification.scorer_family``.
-DEFAULT_IR_FAMILY: str = "oracle_overlap_f1"
-
-# Default F-beta value when a task selects ``oracle_overlap_fbeta`` but
-# doesn't pin ``verification.fbeta_beta``. ``beta=1.0`` makes the family
-# numerically identical to F1; tasks that want over-ship penalised harder
-# (symbol-reference-trace) configure beta < 1.0 (e.g. 0.5 weights
-# precision twice as heavily as recall).
-DEFAULT_FBETA_BETA: float = 1.0
-
-
-def _read_fbeta_beta(task_dir: Path | None) -> float:
-    """Resolve the per-task ``beta`` parameter for ``oracle_overlap_fbeta``.
-
-    Reads ``verification.fbeta_beta`` from ``task_dir/metadata.json``.
-    Falls back to :data:`DEFAULT_FBETA_BETA` (=1.0, F1-equivalent) when:
-      * ``task_dir`` is None
-      * the metadata field is absent / non-numeric / non-finite
-      * the value is non-positive (F-beta is undefined for ``beta <= 0``)
-
-    The fallback is silent — F1-equivalent behaviour is the documented
-    default and surfacing a finding here would force tests that don't care
-    about beta to set the field.
-    """
-    if task_dir is None:
-        return DEFAULT_FBETA_BETA
-    verification = read_task_verification(task_dir)
-    raw = verification.get("fbeta_beta")
-    if raw is None:
-        return DEFAULT_FBETA_BETA
-    try:
-        beta = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_FBETA_BETA
-    if not math.isfinite(beta) or beta <= 0.0:
-        return DEFAULT_FBETA_BETA
-    return beta
-
-
-def _select_ir_family(task_dir: Path | None, *, weighted: bool = False) -> str:
-    """Resolve the scorer family for an IR scorer.
-
-    Routing order:
-      1. ``verification.scorer_family`` in ``task_dir/metadata.json`` —
-         explicit override always wins.
-      2. ``oracle_weighted_f1`` when the oracle reports tier weights
-         (caller passes ``weighted=True``).
-      3. ``DEFAULT_IR_FAMILY`` otherwise.
-
-    Unknown family strings are passed through as-is — the registry is
-    advisory, not enforced. New per-task rubrics that haven't been added
-    to ``SCORER_FAMILIES`` yet still flow through, so users aren't blocked
-    by registry churn.
-    """
-    if task_dir is not None:
-        verification = read_task_verification(task_dir)
-        explicit = verification.get("scorer_family")
-        if isinstance(explicit, str) and explicit:
-            return explicit
-    if weighted:
-        return "oracle_weighted_f1"
-    return DEFAULT_IR_FAMILY
-
-
-# ---------------------------------------------------------------------------
-# Scorer protocol
-# ---------------------------------------------------------------------------
-
-
-@runtime_checkable
-class Scorer(Protocol):
-    """Protocol for scoring agent output against a task.
-
-    Implementations must accept the agent's raw output and the task directory,
-    returning a ScoreResult with a normalised score in [0.0, 1.0].
-    """
-
-    def score(self, agent_output: str, task_dir: Path) -> ScoreResult: ...
-
-
-# ---------------------------------------------------------------------------
-# Shared sandbox helpers
-# ---------------------------------------------------------------------------
-
-
-def sanitize_secrets(text: str) -> str:
-    """Redact potential secrets (API keys, tokens) from text."""
-    return _TOKEN_PATTERN.sub("[REDACTED]", text)
-
-
-_SAFE_ENV_KEYS = frozenset(
-    {
-        "PATH",
-        "HOME",
-        "LANG",
-        "TERM",
-        "TMPDIR",
-        "LC_ALL",
-        # Go toolchain
-        "GOPATH",
-        "GOROOT",
-        "GOMODCACHE",
-        "GOCACHE",
-        "GOFLAGS",
-        # Rust toolchain
-        "CARGO_HOME",
-        "RUSTUP_HOME",
-        # Node/npm
-        "NODE_PATH",
-        "NPM_CONFIG_PREFIX",
-        # Python
-        "VIRTUAL_ENV",
-        "PYTHONPATH",
-    }
-)
-
-
-# Thread-local env overrides for sandboxed scorer subprocesses. Callers use
-# :func:`scorer_env_override` as a context manager to bind extra env vars
-# (e.g. ``TASK_REPO_ROOT`` for dual tasks) so test.sh can cd into a
-# per-run worktree instead of the shared mined repo_path. Raw threads
-# each get their own override — no cross-thread leakage.
-_scorer_env_tls = threading.local()
-
-
-def _thread_env_overrides() -> dict[str, str]:
-    return getattr(_scorer_env_tls, "overrides", None) or {}
-
-
-@contextmanager
-def scorer_env_override(overrides: dict[str, str] | None) -> Iterator[None]:
-    """Bind a thread-local env overlay visible to sandboxed scorer processes.
-
-    ``overrides`` is merged into the filtered env built by :func:`_safe_env`.
-    The previous overlay is restored on exit, so nested overrides compose
-    in LIFO order.
-    """
-    previous = _thread_env_overrides()
-    _scorer_env_tls.overrides = dict(overrides) if overrides else {}
-    try:
-        yield
-    finally:
-        _scorer_env_tls.overrides = previous
-
-
-def _safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Build a filtered environment with only safe keys.
-
-    Prevents secret leakage via inherited environment variables. Any
-    thread-local overrides bound via :func:`scorer_env_override` are merged
-    on top of the filtered env, and the caller's ``extra`` takes highest
-    precedence.
-    """
-    env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
-    env.update(_thread_env_overrides())
-    if extra:
-        env.update(extra)
-    return env
-
-
-@dataclass(frozen=True)
-class _AgentState:
-    """Captured agent-workspace state for the diff-materialisation path.
-
-    The executor stashes ``base_commit = git rev-parse HEAD`` of the
-    agent's workspace BEFORE ``adapter.run`` so the scorer can later
-    materialise a clean checkout at that SHA and replay the agent's
-    full diff on top. Slice 1b (bead codeprobe-xysn).
-
-    ``base_commit`` is the workspace HEAD SHA at executor-time.
-    ``workspace`` is the agent's effective workspace directory (the
-    per-trial worktree in dual mode, or ``repo_path`` for single-tenant
-    runs). The scorer treats this as opaque — it only reads ``.git/``
-    and runs ``git`` commands against it.
-
-    When ``workspace`` is not a git repo (or ``base_commit`` is empty),
-    the scorer falls back to the legacy ``in_place`` path.
-    """
-
-    base_commit: str
-    workspace: Path
-
-
-@dataclass(frozen=True)
-class _SandboxRun:
-    """Result of running a script inside the sandbox."""
-
-    returncode: int
-    stdout: str
-    stderr: str
-    sandbox_dir: Path | None = None
-    error: str | None = None
-    materialized_via: str = "in_place"
-    verifier_error: bool = False
-
-    @property
-    def sandbox_task(self) -> Path | None:
-        return self.sandbox_dir / "task" if self.sandbox_dir else None
-
-
-# ---------------------------------------------------------------------------
-# Diff materialisation helpers (Slice 1b — codeprobe-xysn)
-# ---------------------------------------------------------------------------
-#
-# These run a strict three-step pipeline:
-#
-#   1. _capture_workspace_diff  → stage everything and capture the unified
-#      diff (committed + staged + unstaged + untracked) relative to the
-#      executor's captured base_commit.
-#   2. _create_fresh_checkout   → clone the workspace (local, no hardlinks)
-#      into a sandbox-owned tempdir, then detach to base_commit so the
-#      clone tree is exactly what the agent started from.
-#   3. _apply_diff              → git apply --check first (fail-loud on
-#      conflict / binary corruption / missing renames), then git apply
-#      --binary to land the changes.
-#
-# ``materialize_workspace`` orchestrates them. On any failure the path
-# routes to ``verifier_error`` and the verifier is NOT run.
-
-
-_GIT_TIMEOUT_SECONDS = 60
-
-# Cap on the materialised diff so a malicious or runaway agent can't
-# pin multiple GB of patch bytes in memory (three copies live at peak:
-# the captured stdout buffer plus two pipe buffers for apply --check
-# and apply). 100 MiB covers the largest legitimate eval diffs we've
-# observed by ~10x and short-circuits to ``verifier_error`` beyond it.
-_MAX_DIFF_BYTES: int = 100 * 1024 * 1024
-
-
-def _is_git_repo(workspace: Path) -> bool:
-    """Return True if *workspace* has a ``.git`` directory (or file)."""
-    return (workspace / ".git").exists()
-
-
-def _run_git(
-    args: list[str],
-    cwd: Path,
-    *,
-    label: str,
-    input_bytes: bytes | None = None,
-    env: dict[str, str] | None = None,
-) -> tuple[bytes, str | None]:
-    """Run a git subprocess with shared timeout / capture / error shape.
-
-    Returns ``(stdout_bytes, error)`` where ``error`` is ``None`` on
-    success. *label* prefixes the error string so callers don't have
-    to repeat the operation name in every except block. Stderr from
-    git is run through :func:`sanitize_secrets` before being bundled
-    into the error string — a rejected diff can echo file contents
-    back, and the error flows verbatim into ``ScoreResult.error`` and
-    ``scoring.json``.
-    """
-    kwargs: dict[str, object] = {}
-    if input_bytes is not None:
-        kwargs["input"] = input_bytes
-    if env is not None:
-        kwargs["env"] = env
-    try:
-        result = subprocess.run(
-            args,
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            timeout=_GIT_TIMEOUT_SECONDS,
-            **kwargs,
-        )
-        return result.stdout, None
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode(errors="replace").strip() if exc.stderr else ""
-        return b"", sanitize_secrets(f"{label} failed: {stderr or exc}")
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        return b"", sanitize_secrets(f"{label} failed: {exc}")
-
-
-def _capture_workspace_diff(
-    workspace: Path, base_commit: str
-) -> tuple[bytes, str | None]:
-    """Capture diff bytes against *base_commit* without mutating *workspace*.
-
-    Uses a private ``GIT_INDEX_FILE`` so the agent workspace's real
-    index is never modified — repeated scoring (retries, dual scorers)
-    and human follow-up inspection see the workspace exactly as the
-    agent left it. The temporary index is seeded with ``base_commit``'s
-    tree, then ``git add -A`` updates it to match the working tree
-    (respecting ``.gitignore``). The cached diff against ``base_commit``
-    is the difference between that tree-equivalent index and the base.
-
-    The ``--binary`` flag emits binary patches as base85 so apply can
-    round-trip them. Returns ``(diff_bytes, err)``; ``err`` is ``None``
-    on success. Captures EVERYTHING the agent did regardless of HEAD
-    position — see Slice 1b plan §"Decisions to make in Slice 1b" #1.
-    """
-    # NamedTemporaryFile + delete=False so we can pass the path to git
-    # subprocesses without holding an open fd.
-    tmp = tempfile.NamedTemporaryFile(
-        prefix="codeprobe-index-", delete=False
-    )
-    index_path = tmp.name
-    tmp.close()
-    # NamedTemporaryFile creates the file; git read-tree wants it to
-    # NOT pre-exist as an empty index (or it complains). Remove it,
-    # then GIT_INDEX_FILE will create it fresh.
-    Path(index_path).unlink(missing_ok=True)
-    env = os.environ.copy()
-    env["GIT_INDEX_FILE"] = index_path
-    try:
-        # Seed the temp index with the tree at ``base_commit`` so that
-        # ``git add -A`` produces a meaningful delta. Without the seed,
-        # the empty index would make every workspace file look "added"
-        # and the diff would be larger than necessary (though still
-        # correct after apply).
-        _, err = _run_git(
-            ["git", "read-tree", base_commit],
-            workspace,
-            label="git read-tree",
-            env=env,
-        )
-        if err is not None:
-            return b"", err
-        _, err = _run_git(
-            ["git", "add", "-A"],
-            workspace,
-            label="git add",
-            env=env,
-        )
-        if err is not None:
-            return b"", err
-        return _run_git(
-            ["git", "diff", "--binary", "--cached", base_commit],
-            workspace,
-            label="git diff",
-            env=env,
-        )
-    finally:
-        Path(index_path).unlink(missing_ok=True)
-
-
-def _create_fresh_checkout(
-    workspace: Path, base_commit: str, dest: Path
-) -> str | None:
-    """Clone *workspace* into *dest* and detach to *base_commit*.
-
-    Uses ``--local --no-hardlinks`` so the clone is a real filesystem
-    copy (hardlinks would mean an apply that modifies a file mutates
-    the source workspace too). Returns ``None`` on success, an error
-    string on failure.
-    """
-    _, err = _run_git(
-        [
-            "git",
-            "clone",
-            "--local",
-            "--no-hardlinks",
-            "--quiet",
-            str(workspace),
-            str(dest),
-        ],
-        # ``git clone`` doesn't actually need a real cwd, but passing
-        # workspace keeps relative-path resolution predictable.
-        workspace,
-        label="git clone",
-    )
-    if err is not None:
-        return err
-    _, err = _run_git(
-        ["git", "checkout", "--detach", "--quiet", base_commit],
-        dest,
-        label=f"git checkout {base_commit}",
-    )
-    return err
-
-
-def _apply_diff(checkout: Path, diff_bytes: bytes) -> str | None:
-    """Run ``git apply --check`` then ``git apply --binary`` in *checkout*.
-
-    An empty diff is treated as a successful no-op so an agent that
-    didn't modify anything still goes through the materialised path.
-    Returns ``None`` on success, an error string on rejection.
-    """
-    if not diff_bytes.strip():
-        # Empty diff — nothing to apply, fresh checkout IS the result.
-        return None
-    _, err = _run_git(
-        ["git", "apply", "--binary", "--check", "-"],
-        checkout,
-        label="git apply --check",
-        input_bytes=diff_bytes,
-    )
-    if err is not None:
-        return err
-    _, err = _run_git(
-        ["git", "apply", "--binary", "-"],
-        checkout,
-        label="git apply",
-        input_bytes=diff_bytes,
-    )
-    return err
-
-
-def _materialize_workspace(
-    agent_state: _AgentState, sandbox_dir: Path
-) -> tuple[Path | None, str | None]:
-    """Run the three-step pipeline; return (checkout_path, error).
-
-    The fresh checkout lives under ``sandbox_dir / "checkout"`` so the
-    existing ``_run_in_sandbox`` cleanup reclaims it. On any failure
-    return ``(None, "<reason>")`` and the caller routes to
-    ``verifier_error``.
-    """
-    diff_bytes, err = _capture_workspace_diff(
-        agent_state.workspace, agent_state.base_commit
-    )
-    if err is not None:
-        return None, err
-    if len(diff_bytes) > _MAX_DIFF_BYTES:
-        # Fail loudly rather than try to apply a multi-GB patch. The
-        # cap protects against runaway / malicious agents that stage
-        # huge binary artefacts before the verifier runs.
-        return None, (
-            f"materialisation refused: diff size {len(diff_bytes)} bytes "
-            f"exceeds limit {_MAX_DIFF_BYTES}"
-        )
-
-    checkout = sandbox_dir / "checkout"
-    err = _create_fresh_checkout(
-        agent_state.workspace, agent_state.base_commit, checkout
-    )
-    if err is not None:
-        return None, err
-
-    err = _apply_diff(checkout, diff_bytes)
-    if err is not None:
-        return None, err
-
-    return checkout, None
-
-
-def _run_in_sandbox(
-    script_path: Path,
-    agent_output: str,
-    task_dir: Path,
-    *,
-    timeout: int | None = None,
-    cleanup: bool = True,
-    agent_state: _AgentState | None = None,
-) -> _SandboxRun:
-    """Execute *script_path* inside a sandboxed copy of *task_dir*.
-
-    Returns a _SandboxRun with process results and paths into the sandbox
-    so callers can inspect files written by the script.  When *cleanup* is
-    True the sandbox is removed before returning; set to False when the
-    caller needs to read sandbox artefacts (caller must clean up).
-
-    When *agent_state* is set AND its workspace is a git repo, the
-    sandbox additionally materialises a clean checkout at
-    ``agent_state.base_commit`` with the agent's full diff applied;
-    ``TASK_REPO_ROOT`` is overridden to that checkout so the verifier
-    sees an isolated tree rather than the agent's dirty worktree.
-    Failures in the materialisation route to a ``_SandboxRun`` with
-    ``verifier_error=True`` — the script is NOT run.
-    """
-    if timeout is None:
-        timeout = SCORE_TIMEOUT_SECONDS
-    sandbox_dir = None
-    try:
-        sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
-        sandbox_task = sandbox_dir / "task"
-        shutil.copytree(
-            task_dir,
-            sandbox_task,
-            symlinks=False,
-            ignore=shutil.ignore_patterns(*_COPYTREE_IGNORE),
-        )
-
-        rel = script_path.relative_to(task_dir)
-        sandbox_script = sandbox_task / rel
-
-        output_file = sandbox_dir / "agent_output.txt"
-        output_file.write_text(agent_output, encoding="utf-8")
-
-        materialized_via = "in_place"
-        env_extra: dict[str, str] = {"AGENT_OUTPUT": str(output_file)}
-
-        # Bind ``agent_state`` to a local so the narrowing carries through
-        # without a mypy ``# for mypy`` assert. The double-condition reads
-        # cleanly: passed + non-empty commit + workspace is a git repo.
-        ws_state = agent_state
-        if (
-            ws_state is not None
-            and ws_state.base_commit
-            and _is_git_repo(ws_state.workspace)
-        ):
-            checkout, err = _materialize_workspace(ws_state, sandbox_dir)
-            if err is not None:
-                # apply_check failure / clone failure / diff capture failure
-                # — surface as verifier_error and skip script execution.
-                if cleanup:
-                    shutil.rmtree(sandbox_dir, ignore_errors=True)
-                    sandbox_dir = None
-                return _SandboxRun(
-                    returncode=-1,
-                    stdout="",
-                    stderr=err,
-                    sandbox_dir=sandbox_dir,
-                    error=err,
-                    materialized_via="git_apply",
-                    verifier_error=True,
-                )
-            # The (checkout, err) contract of ``_materialize_workspace``
-            # is: exactly one of them is set. Defensive raise here
-            # surfaces a contract bug loudly rather than NoneType-
-            # crashing inside the test.sh subprocess.
-            if checkout is None:
-                raise RuntimeError(
-                    "_materialize_workspace returned (None, None) — "
-                    "contract violation"
-                )
-            materialized_via = "git_apply"
-            # test.sh that hardcodes ``cd $TASK_REPO_ROOT`` (mined dual
-            # tasks do) now lands inside the materialised checkout.
-            env_extra["TASK_REPO_ROOT"] = str(checkout)
-
-        env = _safe_env(env_extra)
-
-        result = subprocess.run(
-            ["bash", str(sandbox_script)],
-            env=env,
-            cwd=str(sandbox_task),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        if cleanup:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
-            sandbox_dir = None
-        return _SandboxRun(
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            sandbox_dir=sandbox_dir,
-            materialized_via=materialized_via,
-        )
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        if sandbox_dir is not None:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
-        if isinstance(exc, subprocess.TimeoutExpired):
-            error = "Scoring timed out"
-        else:
-            error = str(exc)
-            logger.warning("Sandbox setup failed (OSError): %s", error)
-        return _SandboxRun(returncode=-1, stdout="", stderr="", error=error)
-
 
 # ---------------------------------------------------------------------------
 # Legacy function (preserved for backward compatibility)
@@ -865,7 +89,7 @@ class BinaryScorer:
         agent_output: str,
         task_dir: Path,
         *,
-        agent_state: _AgentState | None = None,
+        agent_state: AgentState | None = None,
     ) -> ScoreResult:
         test_sh = task_dir / "tests" / "test.sh"
         if not test_sh.is_file():
@@ -1124,49 +348,50 @@ class ContinuousScorer:
         if weighted_recall is not None:
             ir_metrics["weighted_recall"] = weighted_recall
 
-        # Pick reward by family
+        # Compute F1 on the fly when the oracle emitted precision/recall
+        # but didn't precompute it, so F1 families don't have to fall back.
+        if f1 is None and precision is not None and recall is not None:
+            f1 = _fbeta(precision, recall, DEFAULT_FBETA_BETA)
+
+        # Pick reward by family. The formula itself lives in
+        # _ir_reward_from_family — the single family→reward table — so the
+        # metrics.json path and the bare-list path can never diverge. This
+        # block only decides whether metrics.json carries what the family's
+        # formula needs; when it doesn't, the reward honestly falls back to
+        # ``fallback`` (reward.txt) for every family alike. An F1-family
+        # reward never silently becomes recall (the voxa-class regression).
         if family == "oracle_overlap_recall":
-            reward = recall if recall is not None else max(0.0, min(1.0, fallback))
-        elif family == "oracle_overlap_fbeta":
-            if precision is not None and recall is not None:
-                reward = _fbeta(precision, recall, beta)
-            elif f1 is not None and beta == DEFAULT_FBETA_BETA:
-                # beta=1 collapses to F1; honour the precomputed value.
-                reward = f1
-            else:
-                reward = max(0.0, min(1.0, fallback))
+            usable = recall is not None
         elif family == "oracle_weighted_recall":
-            if weighted_recall is not None:
-                reward = weighted_recall
-            elif recall is not None:
-                reward = recall
-            else:
-                reward = max(0.0, min(1.0, fallback))
-        elif family == "oracle_weighted_f1":
-            # On-disk oracle stores weighted_f1 in the ``f1`` field when
-            # ``metric == "weighted_f1"`` (see mining/writer.py:_ORACLE_PY).
-            # Fall back to recall, then to reward.txt, in that order.
-            if f1 is not None:
-                reward = f1
-            elif weighted_recall is not None:
-                reward = weighted_recall
-            elif recall is not None:
-                reward = recall
-            else:
-                reward = max(0.0, min(1.0, fallback))
+            usable = weighted_recall is not None or recall is not None
+        elif family == "oracle_overlap_fbeta":
+            # The F-beta formula needs precision and recall; a precomputed
+            # f1 alone suffices only at β=1 (handled below).
+            usable = precision is not None and recall is not None
         else:
-            # Default IR family — F1 (penalises over-ship and under-ship)
-            if f1 is not None:
-                reward = f1
-            elif recall is not None and precision is not None:
-                # Compute on the fly when oracle didn't precompute F1
-                reward = (
-                    2 * precision * recall / (precision + recall)
-                    if (precision + recall) > 0
-                    else 0.0
-                )
-            else:
-                reward = max(0.0, min(1.0, fallback))
+            # F1 families (oracle_overlap_f1, oracle_weighted_f1) and
+            # unrecognised families.
+            usable = f1 is not None
+
+        if usable:
+            reward = _ir_reward_from_family(
+                family,
+                precision=precision if precision is not None else 0.0,
+                recall=recall if recall is not None else 0.0,
+                f1=f1 if f1 is not None else 0.0,
+                beta=beta,
+                weighted_recall=weighted_recall,
+            )
+        elif (
+            family == "oracle_overlap_fbeta"
+            and f1 is not None
+            and beta == DEFAULT_FBETA_BETA
+        ):
+            # β=1 collapses to F1 — honour the oracle's precomputed value
+            # when precision/recall weren't emitted.
+            reward = f1
+        else:
+            reward = max(0.0, min(1.0, fallback))
 
         sub_scores: dict[str, float] = {}
         if precision is not None:
@@ -1612,16 +837,6 @@ class OracleChecksScorer:
 # ArtifactScorer
 # ---------------------------------------------------------------------------
 
-
-def _normalize_path(p: str) -> str:
-    """Normalize a file path for comparison — strip prefixes and separators."""
-    p = p.replace("\\", "/").strip()
-    for pfx in ("./", "/workspace/", "/tmp/", "/app/"):
-        while p.startswith(pfx):
-            p = p[len(pfx) :]
-    return p.lstrip("/")
-
-
 _MAX_GROUND_TRUTH_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # Confidence below which we log a warning about low-confidence ground
@@ -1660,292 +875,6 @@ def _find_answer_file(task_dir: Path) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
-
-
-# ---------------------------------------------------------------------------
-# Oracle answer_type scoring functions (module-level for registry use)
-# ---------------------------------------------------------------------------
-
-
-def _ir_metrics(
-    expected_set: frozenset[str], actual_set: frozenset[str]
-) -> tuple[float, float, float]:
-    """Return ``(precision, recall, f1)`` for two normalized sets.
-
-    Empty inputs collapse to zero — same convention as ``_compute_f1``.
-    Used by the IR scorers to populate ``ScoreResult.ir_metrics`` next to
-    the reward. Pure arithmetic, no judgment.
-    """
-    if not expected_set or not actual_set:
-        return 0.0, 0.0, 0.0
-    intersection = len(expected_set & actual_set)
-    precision = intersection / len(actual_set)
-    recall = intersection / len(expected_set)
-    if precision + recall == 0:
-        return precision, recall, 0.0
-    f1 = 2 * precision * recall / (precision + recall)
-    return precision, recall, f1
-
-
-def _compute_f1(expected: list[str], actual: list[str]) -> float:
-    """Compute F1 score from two lists of file paths.
-
-    Zero returns here are legitimate arithmetic (empty sets, no overlap),
-    not silent error fallbacks — they use ``_ZERO_SCORE`` to make the
-    distinction explicit and to keep the regex in criteria.toml#R16 honest.
-    """
-    expected_set = frozenset(_normalize_path(p) for p in expected if p)
-    actual_set = frozenset(_normalize_path(p) for p in actual if p)
-    if not expected_set:
-        return _ZERO_SCORE
-    if not actual_set:
-        return _ZERO_SCORE
-    _, _, f1 = _ir_metrics(expected_set, actual_set)
-    return f1 if f1 > 0.0 else _ZERO_SCORE
-
-
-def score_file_list(
-    expected: object,
-    actual: object,
-    *,
-    family: str = DEFAULT_IR_FAMILY,
-    beta: float = DEFAULT_FBETA_BETA,
-) -> ScoreResult:
-    """Score a file_list answer_type under the given scorer ``family``.
-
-    Default family is ``oracle_overlap_f1`` — F1 penalises both over-
-    shipping (low precision) and under-shipping (low recall). Tasks where
-    dump-and-filter is fine (file-discovery / triage) opt into
-    ``oracle_overlap_recall`` and reward becomes pure recall.
-
-    The family routing usually happens upstream in
-    :class:`ArtifactScorer` from ``verification.scorer_family``; passing
-    ``family`` directly is supported for tests and for callers that score
-    bare lists outside the artifact-scorer flow. ``beta`` only matters
-    when ``family == "oracle_overlap_fbeta"``; defaults to 1.0 (≡ F1).
-    """
-    if not isinstance(expected, list):
-        return ScoreResult(
-            score=0.0,
-            passed=False,
-            error=f"file_list expected answer must be a list, got {type(expected).__name__}",
-            scorer_family=family,
-        )
-    if not isinstance(actual, list):
-        return ScoreResult(
-            score=0.0,
-            passed=False,
-            error=f"file_list actual answer must be a list, got {type(actual).__name__}",
-            scorer_family=family,
-        )
-    expected_set = frozenset(_normalize_path(p) for p in expected if p)
-    actual_set = frozenset(_normalize_path(p) for p in actual if p)
-    precision, recall, f1 = _ir_metrics(expected_set, actual_set)
-    ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
-    reward = _ir_reward_from_family(
-        family, precision=precision, recall=recall, f1=f1, beta=beta
-    )
-    sub_scores = {**ir_metrics, "reward": reward}
-    if family == "oracle_overlap_fbeta":
-        sub_scores["fbeta_beta"] = beta
-    return ScoreResult(
-        score=reward,
-        passed=reward >= PASS_THRESHOLD,
-        details=dict(ir_metrics),
-        reward_score=reward,
-        ir_metrics=ir_metrics,
-        scorer_family=family,
-        sub_scores=sub_scores,
-        diagnostics={"ir_metrics": dict(ir_metrics)},
-    )
-
-
-def _fbeta(precision: float, recall: float, beta: float) -> float:
-    """Compute the F-beta score from precision and recall.
-
-    F-beta = (1 + β²) · P · R / (β² · P + R), with the standard convention
-    that an empty intersection (precision = recall = 0) returns 0. Same
-    convention as :func:`_ir_metrics`.
-    """
-    if beta <= 0.0 or not math.isfinite(beta):
-        beta = DEFAULT_FBETA_BETA
-    beta_sq = beta * beta
-    denom = beta_sq * precision + recall
-    if denom <= 0.0:
-        return 0.0
-    return (1.0 + beta_sq) * precision * recall / denom
-
-
-def _ir_reward_from_family(
-    family: str,
-    *,
-    precision: float,
-    recall: float,
-    f1: float,
-    beta: float = DEFAULT_FBETA_BETA,
-) -> float:
-    """Derive an IR reward from precision/recall/f1 under ``family``.
-
-    Centralised so :func:`score_file_list`, :func:`score_symbol_list`, and
-    the legacy file-list scorer share one formula table. Falls back to F1
-    for any unrecognised family — the conservative choice since over-
-    shipping should generally cost something.
-
-    ``beta`` is consumed only by the ``oracle_overlap_fbeta`` family. The
-    default (1.0) makes that family numerically equivalent to F1; callers
-    that want a different bias supply the value resolved from per-task
-    metadata via :func:`_read_fbeta_beta`.
-    """
-    if family == "oracle_overlap_recall":
-        return recall
-    if family == "oracle_weighted_recall":
-        return recall  # IR list scorers don't see tier weights; tier-weight
-        # families surface via ContinuousScorer over the on-disk oracle
-    if family == "oracle_overlap_fbeta":
-        return _fbeta(precision, recall, beta)
-    return f1
-
-
-def score_count(expected: object, actual: object) -> ScoreResult:
-    """Exact integer match."""
-    try:
-        passed = int(expected) == int(actual)  # type: ignore[call-overload]
-    except (ValueError, TypeError):
-        return ScoreResult(
-            score=0.0,
-            passed=False,
-            error="count values must be convertible to int",
-            scorer_family="exact_match",
-        )
-    score_val = 1.0 if passed else 0.0
-    return ScoreResult(
-        score=score_val,
-        passed=passed,
-        scorer_family="exact_match",
-        sub_scores={"match": score_val},
-    )
-
-
-def score_exact_match(expected: object, actual: object) -> ScoreResult:
-    """Normalised exact match (strip + lowercase). Used for boolean and text."""
-    passed = str(expected).strip().lower() == str(actual).strip().lower()
-    score_val = 1.0 if passed else 0.0
-    return ScoreResult(
-        score=score_val,
-        passed=passed,
-        scorer_family="exact_match",
-        sub_scores={"match": score_val},
-    )
-
-
-def _normalize_symbol(s: str) -> str:
-    """Normalize a symbol name for comparison.
-
-    Strips module prefixes (split on '.' and '::'), lowercases, and strips
-    whitespace.  E.g. ``"foo.bar.MyClass"`` -> ``"myclass"``.
-    """
-    # Split on '::' first, take last segment, then split on '.', take last
-    s = s.split("::")[-1].split(".")[-1]
-    return s.strip().lower()
-
-
-def score_symbol_list(
-    expected: object,
-    actual: object,
-    *,
-    family: str = DEFAULT_IR_FAMILY,
-    beta: float = DEFAULT_FBETA_BETA,
-) -> ScoreResult:
-    """Score a symbol_list answer_type under the given scorer ``family``.
-
-    Same family routing as :func:`score_file_list` — see that docstring
-    for rationale. The default is ``oracle_overlap_f1``. ``beta`` only
-    matters under ``oracle_overlap_fbeta``.
-    """
-    exp = expected if isinstance(expected, list) else []
-    act = actual if isinstance(actual, list) else []
-    exp_set = frozenset(_normalize_symbol(str(s)) for s in exp if s)
-    act_set = frozenset(_normalize_symbol(str(s)) for s in act if s)
-    if not exp_set or not act_set:
-        empty = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
-        sub_scores: dict = {**empty, "reward": 0.0}
-        if family == "oracle_overlap_fbeta":
-            sub_scores["fbeta_beta"] = beta
-        return ScoreResult(
-            score=0.0,
-            passed=False,
-            details=dict(empty),
-            reward_score=0.0,
-            ir_metrics=empty,
-            scorer_family=family,
-            sub_scores=sub_scores,
-            diagnostics={"ir_metrics": dict(empty)},
-        )
-    precision, recall, f1 = _ir_metrics(exp_set, act_set)
-    ir_metrics = {"precision": precision, "recall": recall, "f1": f1}
-    reward = _ir_reward_from_family(
-        family, precision=precision, recall=recall, f1=f1, beta=beta
-    )
-    sub_scores = {**ir_metrics, "reward": reward}
-    if family == "oracle_overlap_fbeta":
-        sub_scores["fbeta_beta"] = beta
-    return ScoreResult(
-        score=reward,
-        passed=reward >= PASS_THRESHOLD,
-        details=dict(ir_metrics),
-        reward_score=reward,
-        ir_metrics=ir_metrics,
-        scorer_family=family,
-        sub_scores=sub_scores,
-        diagnostics={"ir_metrics": dict(ir_metrics)},
-    )
-
-
-def _lcs_length(a: list[str], b: list[str]) -> int:
-    """Compute the length of the longest common subsequence (DP)."""
-    m, n = len(a), len(b)
-    if m == 0 or n == 0:
-        return 0
-    # Use 1D DP array for space efficiency
-    prev = [0] * (n + 1)
-    for i in range(1, m + 1):
-        curr = [0] * (n + 1)
-        for j in range(1, n + 1):
-            if a[i - 1] == b[j - 1]:
-                curr[j] = prev[j - 1] + 1
-            else:
-                curr[j] = max(prev[j], curr[j - 1])
-        prev = curr
-    return prev[n]
-
-
-def score_dependency_chain(expected: object, actual: object) -> ScoreResult:
-    """Score a dependency_chain answer_type using LCS / max(len(expected), len(actual))."""
-    exp = (
-        [str(s).strip().lower() for s in expected] if isinstance(expected, list) else []
-    )
-    act = [str(s).strip().lower() for s in actual] if isinstance(actual, list) else []
-    max_len = max(len(exp), len(act))
-    if max_len == 0:
-        return ScoreResult(
-            score=0.0,
-            passed=False,
-            scorer_family="sequence_lcs",
-            sub_scores={"lcs_length": 0, "max_len": 0},
-        )
-    lcs = _lcs_length(exp, act)
-    score = lcs / max_len
-    return ScoreResult(
-        score=score,
-        passed=score >= PASS_THRESHOLD,
-        scorer_family="sequence_lcs",
-        sub_scores={
-            "lcs_length": lcs,
-            "expected_len": len(exp),
-            "actual_len": len(act),
-            "max_len": max_len,
-        },
-    )
 
 
 _ORACLE_TYPE_SCORERS: dict[str, Callable[..., ScoreResult]] = {
@@ -2064,11 +993,21 @@ class ArtifactScorer:
             gt_path = task_dir / "ground_truth.json"
         gt = _load_json_file(gt_path)
         if gt is None or not isinstance(gt, dict):
+            # Oracle-side failure: a missing or corrupt answer key is
+            # verifier infrastructure breaking, not the agent failing the
+            # task. Route to verdict="verifier_error" so it can never be
+            # silently collapsed into an agent loss (premortem Theme C).
+            detail = (
+                "ground_truth.json is invalid or oversized"
+                if gt_path.is_file()
+                else "ground_truth.json not found"
+            )
             return ScoreResult(
                 score=0.0,
                 passed=False,
-                error="ground_truth.json not found or invalid",
+                error=detail,
                 scorer_family=ir_family,
+                verdict="verifier_error",
             )
 
         # Warn on low-confidence ground truth
@@ -2125,7 +1064,8 @@ class ArtifactScorer:
         """Score using v2 multi-check format with weighted composite."""
         checks: list[dict] = gt.get("checks", [])
 
-        # Validate structure
+        # Validate structure — a malformed oracle is a verifier-side
+        # failure, not an agent failure.
         validation_error = validate_ground_truth(gt)
         if validation_error is not None:
             return ScoreResult(
@@ -2133,6 +1073,7 @@ class ArtifactScorer:
                 passed=False,
                 error=validation_error,
                 scorer_family="weighted_checkpoints",
+                verdict="verifier_error",
             )
 
         # Build answer lookup: {answer_type: answer_value} from agent answers.
@@ -2251,11 +1192,13 @@ class ArtifactScorer:
             error_family = ""
 
         if expected is None:
+            # Oracle-side failure → verifier_error, not an agent loss.
             return ScoreResult(
                 score=0.0,
                 passed=False,
                 error="ground_truth.json missing 'answer' field",
                 scorer_family=error_family,
+                verdict="verifier_error",
             )
 
         if actual is None:
@@ -2306,11 +1249,13 @@ class ArtifactScorer:
         expected = gt.get("expected", [])
         actual = answer_data.get("answer", [])
         if not isinstance(expected, list):
+            # Oracle-side failure → verifier_error, not an agent loss.
             return ScoreResult(
                 score=0.0,
                 passed=False,
                 error="Legacy ground_truth.json 'expected' is not a list",
                 scorer_family=ir_family,
+                verdict="verifier_error",
             )
         if not isinstance(actual, list):
             return ScoreResult(
@@ -2602,7 +1547,3 @@ def _cli_main() -> None:
         )
     )
     sys.exit(0)
-
-
-if __name__ == "__main__":
-    _cli_main()

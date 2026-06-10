@@ -60,7 +60,15 @@ from codeprobe.core.scoring import SCORER_FAMILIES
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCORING_FILE = REPO_ROOT / "src" / "codeprobe" / "core" / "scoring.py"
+_SCORING_PKG = REPO_ROOT / "src" / "codeprobe" / "core" / "scoring"
+SCORING_FILES: tuple[Path, ...] = (
+    _SCORING_PKG / "__init__.py",
+    _SCORING_PKG / "result.py",
+    _SCORING_PKG / "sandbox.py",
+    _SCORING_PKG / "materialize.py",
+    _SCORING_PKG / "ir.py",
+    _SCORING_PKG / "scorers.py",
+)
 BIAS_FILE = REPO_ROOT / "src" / "codeprobe" / "core" / "bias_detection.py"
 
 
@@ -91,27 +99,6 @@ class Offender:
 
 
 _KNOWN_OFFENDERS: tuple[Offender, ...] = (
-    # Quiet recall fallbacks under F1-family.
-    #
-    # ``_derive_reward_and_metrics`` resolves reward by family. Under
-    # ``oracle_weighted_f1`` the function falls back to ``weighted_recall``
-    # (line ~740) and then to ``recall`` (line ~743) when ``f1`` is
-    # absent in metrics.json. That is the voxa-class regression: the
-    # caller asked for an F1-family reward and got recall. The honest
-    # fix is to fail closed (or compute F1 from precision+recall when
-    # both are present), not silently degrade to recall.
-    Offender(
-        relpath="src/codeprobe/core/scoring.py",
-        rule="quiet-recall-fallback",
-        line_start=1148,
-        line_end=1158,
-        reason=(
-            "ContinuousScorer._derive_reward_and_metrics: oracle_weighted_f1 "
-            "branch falls back to weighted_recall / recall when f1 is missing "
-            "from metrics.json. Family says F1 but reward becomes recall."
-        ),
-        follow_up_bead="codeprobe-jdkq-followup-weighted-f1-fallback",
-    ),
     # Bias-detection hardcoded thresholds.
     #
     # The ``_OVERSHIPPING_*`` constants in ``bias_detection.py`` are
@@ -156,10 +143,10 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
     # codeprobe-jdkq commit; the named form is honest documentation but
     # still hardcoded. Same follow-up bead covers the config plumbing.
     Offender(
-        relpath="src/codeprobe/core/scoring.py",
+        relpath="src/codeprobe/core/scoring/scorers.py",
         rule="hardcoded-threshold",
-        line_start=1625,
-        line_end=1640,
+        line_start=820,
+        line_end=880,
         reason=(
             "_LOW_CONFIDENCE_THRESHOLD warns when ground_truth.confidence "
             "< 0.5. Named, documented, but not config-sourced."
@@ -626,7 +613,7 @@ def _split_findings(
 
 @pytest.mark.parametrize(
     "target",
-    [SCORING_FILE, BIAS_FILE],
+    [*SCORING_FILES, BIAS_FILE],
     ids=lambda p: p.name,
 )
 def test_scorer_honesty_no_new_offenders(target: Path) -> None:
@@ -652,7 +639,7 @@ def test_scorer_honesty_known_offenders_still_present() -> None:
     that cleanup is missed, forcing maintenance of the allowlist.
     """
     findings: list[Finding] = []
-    for target in (SCORING_FILE, BIAS_FILE):
+    for target in (*SCORING_FILES, BIAS_FILE):
         if not target.is_file():
             continue
         findings.extend(_run_lint(target))
