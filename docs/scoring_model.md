@@ -146,6 +146,21 @@ and to the in-process `score_file_list` / `score_symbol_list`. The
 existing oracle script writes F1 today — we just stopped throwing it
 away in favour of recall.
 
+### Known limitation: symbol normalization discards module paths
+
+`score_symbol_list` normalizes both sides through
+`core/scoring.py:_normalize_symbol`, which strips everything before the
+last `.` / `::` separator and lowercases — `foo.bar.MyClass` and
+`baz.MyClass` both normalize to `myclass` and **count as a match**. This
+buys tolerance to agents that report bare names where the oracle stores
+fully-qualified ones (and vice versa), at the cost of false-positive
+credit when two genuinely different symbols share a leaf name. The same
+trade applies to `_normalize_path` stripping `/workspace/`-style
+prefixes. For oracles where leaf-name collisions are plausible (common
+names like `run`, `Config`, `Handler` across modules), prefer a
+file-list oracle or an `oracle_checks` rubric that pins paths. Making
+the stripping behaviour per-task-configurable is open follow-up work.
+
 ### `oracle_checks` — structured-rubric criteria
 
 `oracle_checks` is the structured-rubric scorer family. Use it for tasks

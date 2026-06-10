@@ -81,7 +81,7 @@ A commit on a feature branch is NOT shipped. Closing a bead with `evidence.artif
 
 ## Architecture
 
-See `prd_agent_adapter_architecture.md` for the full PRD with converge debate results.
+Adapter contract guide: `docs/adapters.md`. Converge debate results: `docs/prd/prd_hybrid_execution_evaluation.md`.
 
 Key architecture: Adapter + Collector hybrid
 
