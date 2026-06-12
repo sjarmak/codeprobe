@@ -1,0 +1,110 @@
+{
+  "family": {
+    "with-sg-cap75": {
+      "n_trials": 15,
+      "mean_reward": 0.5070733333333333,
+      "total_time_s": 30535.99514948856,
+      "mean_time_s_per_trial": 2035.733009965904,
+      "total_cost_usd": 84.36812429999999,
+      "total_input_tokens": 37439,
+      "total_output_tokens": 1662179,
+      "total_cache_read_tokens": 80977140,
+      "cap_hits": 4
+    },
+    "aupz-with-sg-fixed-cap50": {
+      "n_trials": 15,
+      "mean_reward": 0.15484666666666666,
+      "total_time_s": 20448.241027879063,
+      "mean_time_s_per_trial": 1363.2160685252709,
+      "total_cost_usd": 54.358551150000004,
+      "total_input_tokens": 15998,
+      "total_output_tokens": 1251436,
+      "total_cache_read_tokens": 80080353,
+      "cap_hits": 0
+    },
+    "mcn7-baseline": {
+      "n_trials": 15,
+      "mean_reward": 0.6831,
+      "total_time_s": 16769.190375061706,
+      "mean_time_s_per_trial": 1117.9460250041136,
+      "total_cost_usd": 69.1132478,
+      "total_input_tokens": 1247,
+      "total_output_tokens": 600745,
+      "total_cache_read_tokens": 152102759,
+      "cap_hits": 0
+    },
+    "mcn7-with-sourcegraph": {
+      "n_trials": 15,
+      "mean_reward": 0.6865533333333333,
+      "total_time_s": 28342.46612497978,
+      "mean_time_s_per_trial": 1889.4977416653187,
+      "total_cost_usd": 85.1691963,
+      "total_input_tokens": 45047,
+      "total_output_tokens": 1739453,
+      "total_cache_read_tokens": 148388201,
+      "cap_hits": 0
+    }
+  },
+  "contrasts": {
+    "cap75_vs_aupz-cap50": {
+      "n": 5,
+      "deltas": [
+        0.7873,
+        0.0005333333333332746,
+        0.0,
+        0.48669999999999997,
+        0.48660000000000003
+      ],
+      "mean": 0.35222666666666663,
+      "std": 0.3439403657935809,
+      "se": 0.15381480762411806,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.07476323929788509,
+        0.7792165726312184
+      ],
+      "t_stat": 2.2899399096048914
+    },
+    "cap75_vs_mcn7-baseline": {
+      "n": 5,
+      "deltas": [
+        0.25329999999999997,
+        -0.03823333333333334,
+        -0.8,
+        -0.3133000000000001,
+        0.018100000000000005
+      ],
+      "mean": -0.1760266666666667,
+      "std": 0.40285861070879725,
+      "se": 0.18016384777319908,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.6761615080850673,
+        0.3241081747517339
+      ],
+      "t_stat": -0.9770365633412731
+    },
+    "cap75_vs_mcn7-with-sg": {
+      "n": 5,
+      "deltas": [
+        0.24703333333333333,
+        -0.04303333333333337,
+        -0.8,
+        -0.3133000000000001,
+        0.011900000000000022
+      ],
+      "mean": -0.17948000000000003,
+      "std": 0.4000345246211743,
+      "se": 0.17890087807995178,
+      "df": 4,
+      "t_crit_95": 2.776,
+      "ci_95": [
+        -0.6761088375499462,
+        0.3171488375499461
+      ],
+      "t_stat": -1.0032371105511815
+    }
+  }
+}
