@@ -40,7 +40,11 @@ _QUOTA_PATTERN = re.compile(
     r"(monthly\s+usage\s+limit"
     r"|rate\s+limit\s+(?:exceeded|reached)"
     r"|quota\s+(?:exceeded|exhausted)"
-    r"|usage\s+limit\s+reached)"
+    r"|usage\s+limit\s+reached"
+    # 2026-06 OAuth wording: "You've hit your session limit · resets 1:10pm".
+    # Anchored on "hit your" because bare "session limit" appears in agent
+    # prose on session-management tasks and must not halt the run.
+    r"|hit\s+your\s+session\s+limit)"
 )
 
 
