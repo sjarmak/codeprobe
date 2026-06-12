@@ -61,6 +61,24 @@ class TestQuotaDetection:
         assert _detect_quota_error("", None) is None
         assert _detect_quota_error("", "") is None
 
+    def test_detects_session_limit_stub(self) -> None:
+        """The 2026-06 OAuth wording (codeprobe-4cl6.3): the CLI returns a
+        bare ``You've hit your session limit · resets …`` line instead of a
+        JSON envelope. This poisoned the entire 4cl6 cap75 sweep undetected.
+        """
+        msg = "You've hit your session limit · resets 1:10pm (America/New_York)"
+        result = _detect_quota_error(msg, None)
+        assert result is not None
+        assert "session limit" in result
+
+    def test_bare_session_limit_prose_does_not_trigger(self) -> None:
+        """Agent prose discussing session limits (common in gascity tasks,
+        which edit session-management code) must NOT halt the run — only
+        the anchored ``hit your session limit`` stub counts.
+        """
+        prose = "I will increase the session limit in the pool config."
+        assert _detect_quota_error(prose, None) is None
+
     @pytest.mark.parametrize(
         "phrase",
         [
@@ -70,6 +88,8 @@ class TestQuotaDetection:
             "Rate Limit Exceeded",
             "quota exceeded",
             "usage limit reached",
+            "hit your session limit",
+            "You've HIT YOUR SESSION LIMIT",
         ],
     )
     def test_wording_variants(self, phrase: str) -> None:
