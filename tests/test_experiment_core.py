@@ -100,6 +100,41 @@ def test_save_and_load_config_results(tmp_path: Path):
     assert loaded.completed[0].automated_score == 1.0
 
 
+def test_config_results_roundtrip_preserves_all_fields(tmp_path: Path):
+    """Every CompletedTask field survives save/load (codeprobe-8up).
+
+    Guards against the stale-hand-enumeration bug class: a field added
+    to the dataclass but forgotten in a loader was silently dropped.
+    """
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    original = CompletedTask(
+        task_id="t-full",
+        automated_score=0.83,
+        repeat_index=2,
+        status="failed",
+        duration_seconds=2032.0,
+        input_tokens=54321,
+        output_tokens=9876,
+        cost_usd=6.99,
+        cost_model="per_token",
+        cost_source="api_reported",
+        tool_call_count=99,
+        tool_use_by_name={"Read": 5, "Grep": 2},
+        num_turns=90,
+        result_subtype="error_max_turns",
+        duration_api_ms=1854321,
+        error_category="agent",
+        scoring_details={"passed": False, "error": None},
+        metadata={"error": "Reached maximum number of turns (90)"},
+    )
+    save_config_results(exp_dir, "baseline", [original])
+
+    loaded = load_config_results(exp_dir, "baseline").completed[0]
+    assert loaded == original
+
+
 def test_load_config_results_missing_raises(tmp_path: Path):
     exp = _sample_experiment()
     exp_dir = create_experiment_dir(tmp_path, exp)

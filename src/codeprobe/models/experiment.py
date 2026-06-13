@@ -152,6 +152,13 @@ class CompletedTask:
     task_id: str
     automated_score: float
     repeat_index: int = 0
+    # Trial outcome taxonomy (codeprobe-8up):
+    #   'completed' — scoring ran end-to-end.
+    #   'failed'    — terminal agent failure (e.g. error_max_turns): a
+    #                 genuine 0.0-reward measurement, KEPT on checkpoint
+    #                 resume.
+    #   'error'     — infra casualty (quota stub, crash, no result
+    #                 record): RETRIED on checkpoint resume.
     status: str = "completed"
     duration_seconds: float = 0.0
     input_tokens: int | None = None
@@ -165,6 +172,13 @@ class CompletedTask:
     # Per-tool usage breakdown (e.g. {"Read": 5,
     # "mcp__sourcegraph__keyword_search": 2}). None when not captured.
     tool_use_by_name: dict[str, int] | None = None
+    # CLI result-record fields, persisted for ALL trials — success and
+    # error — so cap-retune analysis can read the turn distribution of
+    # finished trials directly instead of proxying with tool_call_count
+    # (codeprobe-8up). Additive: None when the adapter had no record.
+    num_turns: int | None = None
+    result_subtype: str | None = None
+    duration_api_ms: int | None = None
     error_category: str | None = None
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)

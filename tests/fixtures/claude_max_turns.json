@@ -1,0 +1,1 @@
+{"type": "result", "subtype": "error_max_turns", "is_error": false, "result": "Reached maximum number of turns (90)", "num_turns": 90, "duration_api_ms": 1854321, "usage": {"input_tokens": 54321, "output_tokens": 9876, "cache_read_input_tokens": 4000, "cache_creation_input_tokens": 800}, "total_cost_usd": 6.99}

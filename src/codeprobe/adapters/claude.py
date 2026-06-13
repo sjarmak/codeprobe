@@ -70,6 +70,15 @@ def _detect_quota_error(stdout: str, stderr: str | None) -> str | None:
             return match.group(0)
     return None
 
+# Result-record subtypes that mark a TERMINAL agent outcome — the CLI ran
+# the agent to a protocol-defined stop condition, so a 0.0 reward is a
+# genuine measurement (kept on checkpoint resume), not an infra casualty
+# (retried). Deliberately conservative: misclassifying an infra casualty
+# as terminal banks a bogus 0.0 forever, while misclassifying a terminal
+# failure as infra merely re-runs it (codeprobe-8up). Structural protocol
+# classification over verbatim CLI enum values, not semantic judgment.
+_TERMINAL_RESULT_SUBTYPES = frozenset({"error_max_turns"})
+
 # Credential files whose presence marks a file-based login.  Used by
 # ``isolate_session`` to decide whether to mirror ~/.claude per slot.
 _FILE_CRED_NAMES: tuple[str, ...] = ("credentials.json", ".credentials.json")
@@ -511,6 +520,13 @@ class ClaudeAdapter(BaseAdapter):
             error_text = usage.error
             error_category = None
 
+        # Quota wins over subtype: a quota stub is an infra casualty even
+        # when the CLI also produced a result envelope.
+        error_terminal = (
+            quota_message is None
+            and usage.result_subtype in _TERMINAL_RESULT_SUBTYPES
+        )
+
         return AgentOutput(
             stdout=stdout_text,
             stderr=result.stderr or None,
@@ -525,6 +541,10 @@ class ClaudeAdapter(BaseAdapter):
             cost_source=usage.cost_source,
             error=error_text,
             error_category=error_category,
+            error_terminal=error_terminal,
             tool_call_count=usage.tool_call_count,
             tool_use_by_name=usage.tool_use_by_name,
+            num_turns=usage.num_turns,
+            result_subtype=usage.result_subtype,
+            duration_api_ms=usage.duration_api_ms,
         )

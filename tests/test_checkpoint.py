@@ -370,3 +370,101 @@ class TestCorruptRecovery:
         assert e["cost_model"] == "per_token"
         assert e["cost_source"] == "calculated"
         assert e["scoring_details"] == {"passed": True, "error": None}
+
+
+# ---------------------------------------------------------------------------
+# Status taxonomy: 'completed' / 'failed' kept on resume, 'error' retried
+# ---------------------------------------------------------------------------
+
+
+class TestFailedStatusResume:
+    """Terminal agent failures (status='failed') are valid measurements.
+
+    Regression guard for codeprobe-8up: cap-hit trials
+    (``error_max_turns``) were stored as ``status='error'`` and silently
+    re-run on checkpoint resume, discarding paid-for 0.0-reward samples.
+    """
+
+    def test_failed_status_kept_in_load_ids(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(task_id="t-caphit", automated_score=0.0, status="failed")
+        )
+
+        assert store.load_ids() == {("t-caphit", 0)}
+
+    def test_failed_status_kept_in_load_entries(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(
+                task_id="t-caphit",
+                automated_score=0.0,
+                status="failed",
+                error_category="agent",
+            )
+        )
+
+        entries = store.load_entries()
+        assert len(entries) == 1
+        assert entries[0]["task_id"] == "t-caphit"
+        assert entries[0]["status"] == "failed"
+
+    def test_mixed_halt_resume_retries_only_infra_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Simulated mixed halt: 1 cap-hit + 1 quota stub.
+
+        On resume only the quota stub (infra casualty, status='error')
+        is missing from load_ids — the cap-hit measurement is kept.
+        """
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(task_id="t-done", automated_score=0.83, status="completed")
+        )
+        store.append(
+            CompletedTask(
+                task_id="t-caphit",
+                automated_score=0.0,
+                status="failed",
+                error_category="agent",
+                num_turns=90,
+                result_subtype="error_max_turns",
+            )
+        )
+        store.append(
+            CompletedTask(
+                task_id="t-quota",
+                automated_score=0.0,
+                status="error",
+                error_category="quota",
+            )
+        )
+
+        assert store.load_ids() == {("t-done", 0), ("t-caphit", 0)}
+
+    def test_num_turns_roundtrips_through_checkpoint(self, tmp_path: Path) -> None:
+        """Result-record fields survive checkpoint save/load."""
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+
+        store.append(
+            CompletedTask(
+                task_id="t-turns",
+                automated_score=0.91,
+                status="completed",
+                num_turns=64,
+                result_subtype="success",
+                duration_api_ms=1854321,
+            )
+        )
+
+        e = store.load_entries()[0]
+        assert e["num_turns"] == 64
+        assert e["result_subtype"] == "success"
+        assert e["duration_api_ms"] == 1854321

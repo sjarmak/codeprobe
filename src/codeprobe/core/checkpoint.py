@@ -88,13 +88,16 @@ class CheckpointStore:
         self._conn.commit()
 
     def load_ids(self) -> set[tuple[str, int]]:
-        """Return the set of successfully completed (task_id, repeat_index) for this config.
+        """Return the (task_id, repeat_index) pairs to skip on resume.
 
-        Tasks with status ``'error'`` are excluded so they get retried.
+        Keeps ``'completed'`` and ``'failed'`` rows; ``'error'`` rows are
+        retried (taxonomy: ``CompletedTask.status``). The positive-form
+        predicate means an unknown status falls into the retry path —
+        the conservative default.
         """
         rows = self._conn.execute(
             "SELECT task_id, repeat_index FROM checkpoints "
-            "WHERE config_name = ? AND status != 'error'",
+            "WHERE config_name = ? AND status IN ('completed', 'failed')",
             (self._config_name,),
         ).fetchall()
         return {(row[0], row[1]) for row in rows}
@@ -102,16 +105,16 @@ class CheckpointStore:
     def load_entries(self) -> list[dict]:
         """Return checkpoint entries for this config as dicts.
 
-        Only returns successfully completed entries (status != 'error')
-        so that failed tasks are retried on the next run.
-        Ordered by insertion (rowid).
+        Same keep/retry split as :meth:`load_ids`. Ordered by insertion
+        (rowid).
 
         When ``result_json`` is present (new schema), returns the full
         CompletedTask fields.  Falls back to minimal fields for old rows.
         """
         rows = self._conn.execute(
             "SELECT task_id, automated_score, completed_at, metadata, status, result_json, repeat_index "
-            "FROM checkpoints WHERE config_name = ? AND status != 'error' "
+            "FROM checkpoints "
+            "WHERE config_name = ? AND status IN ('completed', 'failed') "
             "ORDER BY rowid",
             (self._config_name,),
         ).fetchall()
