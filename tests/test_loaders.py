@@ -362,3 +362,60 @@ name = "no-task-section"
         task = load_task(p)
         with pytest.raises(AttributeError):
             task.id = "mutated"  # type: ignore[misc]
+
+
+class TestMaxTurnsOverride:
+    """task.toml / metadata.json accept an optional max_turns_override."""
+
+    def test_absent_defaults_to_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "task.toml"
+        p.write_text(MINIMAL_TOML)
+        task = load_task(p)
+        assert task.metadata.max_turns_override is None
+
+    def test_set_in_task_section(self, tmp_path: Path) -> None:
+        toml = """\
+[task]
+id = "ovr-001"
+repo = "org/repo"
+max_turns_override = 120
+
+[metadata]
+name = "ovr"
+"""
+        p = tmp_path / "task.toml"
+        p.write_text(toml)
+        task = load_task(p)
+        assert task.metadata.max_turns_override == 120
+
+    def test_set_in_metadata_section(self, tmp_path: Path) -> None:
+        toml = """\
+[task]
+id = "ovr-002"
+repo = "org/repo"
+
+[metadata]
+name = "ovr"
+max_turns_override = 60
+"""
+        p = tmp_path / "task.toml"
+        p.write_text(toml)
+        task = load_task(p)
+        assert task.metadata.max_turns_override == 60
+
+    def test_round_trips_through_json(self, tmp_path: Path) -> None:
+        payload = dict(LEGACY_JSON)
+        payload["metadata"] = {**LEGACY_JSON["metadata"], "max_turns_override": 90}
+        p = tmp_path / "metadata.json"
+        p.write_text(json.dumps(payload), encoding="utf-8")
+        task = load_task(p)
+        assert task.metadata.max_turns_override == 90
+
+    @pytest.mark.parametrize("bad", [0, -5, True, 1.5, "90"])
+    def test_invalid_override_raises(self, tmp_path: Path, bad: object) -> None:
+        payload = dict(LEGACY_JSON)
+        payload["metadata"] = {**LEGACY_JSON["metadata"], "max_turns_override": bad}
+        p = tmp_path / "metadata.json"
+        p.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="max_turns_override"):
+            load_task(p)

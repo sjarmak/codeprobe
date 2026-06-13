@@ -158,6 +158,10 @@ def run_experiment(
             if exp_config.max_turns is not None
             else exp_config.extra.get("max_turns")
         )
+        # No CLI override on this path — an explicit cap can only come from
+        # the experiment config. The per-trial resolver fills in task /
+        # family defaults when this is None.
+        config_max_turns_source = "experiment" if resolved_max_turns is not None else ""
         policy = resolve_tool_policy(exp_config)
         if policy.warning is not None:
             logger.warning("[%s] %s", exp_config.label, policy.warning)
@@ -198,6 +202,7 @@ def run_experiment(
                 checkpoint_store=checkpoint_store,
                 runs_dir=config_runs_dir,
                 max_cost_usd=max_cost_usd,
+                config_max_turns_source=config_max_turns_source,
             )
         finally:
             checkpoint_store.close()

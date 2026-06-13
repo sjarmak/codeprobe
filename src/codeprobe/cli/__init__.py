@@ -894,9 +894,12 @@ def mine(
     type=int,
     envvar="CODEPROBE_MAX_TURNS",
     help=(
-        "Hard cap on agent turns per task (overrides experiment.json max_turns). "
-        "None = uncapped (historical default). Reference rigs: CSB caps at 30, "
-        "EB at 50. See docs/agent_config.md. Env: CODEPROBE_MAX_TURNS."
+        "Hard cap on agent turns per task. Highest-precedence override: wins "
+        "over experiment.json max_turns, a task's max_turns_override, and the "
+        "per-family default. When unset, the cap is resolved per task "
+        "(task.toml > family default: sdlc uncapped, oracle_checks 50, "
+        "others 75). See docs/scoring_model.md §Turn cap. "
+        "Env: CODEPROBE_MAX_TURNS."
     ),
 )
 @click.option(

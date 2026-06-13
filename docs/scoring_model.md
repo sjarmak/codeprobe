@@ -658,6 +658,56 @@ scorers, and human follow-up inspection.
 Aggregate consumers that want to distinguish agent failure from
 verifier failure should branch on `verdict`, not just `score`.
 
+## Turn cap
+
+`--max-turns` bounds how many turns the agent may take per task. It is a
+resource budget (like the per-task timeout and `--max-cost-usd`), not a
+scoring knob — but it interacts with reward, so it lives here.
+
+`codeprobe-aupz` found a single global cap is the wrong shape: a
+`--max-turns=50` is harmless for **oracle_checks** (those finish in <10
+turns) but collapses **SDLC** reward — 87% of SDLC trials hit
+`error_max_turns`. The 4cl6 retune then showed *every* finite SDLC cap
+depresses reward, so SDLC is left uncapped.
+
+### Resolution precedence
+
+Resolved per trial in `core/turn_cap.py` (`resolve_turn_cap`), highest
+priority first:
+
+1. **CLI** `--max-turns` — explicit global override, always wins.
+2. **experiment.json** `max_turns` on the config — the experiment
+   author's explicit per-run cap.
+3. **task** `max_turns_override` — optional `int` in `task.toml` /
+   `metadata.json` under `metadata.max_turns_override`.
+4. **family default** — `core.turn_cap.FAMILY_DEFAULT_MAX_TURNS`:
+
+   | family          | default cap                       |
+   | --------------- | --------------------------------- |
+   | `sdlc`          | `None` (**uncapped**)             |
+   | `oracle_checks` | `50`                              |
+   | _anything else_ | `75` (`DEFAULT_FAMILY_MAX_TURNS`) |
+
+The family is read mechanically from existing task metadata —
+`verification.type` / `verification.reward_type == "oracle_checks"`, else
+`metadata.category` — by `resolve_turn_cap_family`. No heuristic
+classification (ZFC-safe); the author set these fields at mine time.
+
+Rungs 1–2 fold into the same "explicit config cap" tier inside the
+resolver: the executor receives the already-resolved config value plus a
+`config_max_turns_source` of `"cli"` or `"experiment"`.
+
+### Telemetry
+
+Every trial envelope (`completed.json#metadata`, on success **and** on the
+`error_max_turns` path) carries:
+
+* `max_turns_chosen` — the resolved cap (`int` or `null` when uncapped).
+* `max_turns_source` — `cli` / `experiment` / `task` / `family_default`.
+
+Cap-retune analysis reads these directly to confirm which cap each trial
+actually ran under instead of inferring it from the run command.
+
 ## Out of scope
 
 * The on-disk oracle script (`mining/writer.py:_ORACLE_PY`) writes

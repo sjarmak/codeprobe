@@ -46,7 +46,8 @@ _CLI_ROOT = _REPO_ROOT / "src" / "codeprobe" / "cli"
 INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
     {
         # codeprobe-emez: line shifted +15 by the --config-parallel option block.
-        ("src/codeprobe/cli/__init__.py", 1134),
+        # codeprobe-gg9f: line shifted +3 by the expanded --max-turns help text.
+        ("src/codeprobe/cli/__init__.py", 1137),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),

@@ -54,6 +54,10 @@ from codeprobe.core.scoring import (
     scorer_accepts_agent_state,
     scorer_env_override,
 )
+from codeprobe.core.turn_cap import (
+    resolve_turn_cap,
+    resolve_turn_cap_family,
+)
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 if TYPE_CHECKING:
@@ -294,6 +298,7 @@ def execute_task(
     dual_worktree_factory: Callable[[Path, str], IsolationStrategy] | None = None,
     hide_local_source: Literal["off", "hide", "scaffold"] = "off",
     hide_local_source_keep: tuple[str, ...] = (),
+    config_max_turns_source: str = "",
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -332,6 +337,38 @@ def execute_task(
         if task_rt and task_rt != "binary":
             reward_type = task_rt
 
+    # Task-category-aware turn cap (codeprobe-gg9f). Precedence:
+    # CLI / experiment.json > task.max_turns_override > per-family default.
+    # A global cap collapses SDLC reward (codeprobe-aupz) so SDLC is left
+    # uncapped while oracle_checks keeps a tight cap. Inject the resolved
+    # value into a fresh AgentConfig so the adapter sees the per-trial cap,
+    # and record the choice + source on every result envelope so cap-retune
+    # analysis can verify it — including the error_max_turns trials, which
+    # exit through the agent-error path below rather than scoring.
+    _meta_block = _task_meta.get("metadata") or {}
+    _raw_override = _meta_block.get("max_turns_override")
+    _task_override = (
+        _raw_override
+        if isinstance(_raw_override, int)
+        and not isinstance(_raw_override, bool)
+        and _raw_override > 0
+        else None
+    )
+    _turn_cap = resolve_turn_cap(
+        config_max_turns=agent_config.max_turns,
+        config_source=config_max_turns_source,
+        task_override=_task_override,
+        family=resolve_turn_cap_family(_meta_block, _verification),
+    )
+    _turn_cap_meta = {
+        "max_turns_chosen": _turn_cap.max_turns,
+        "max_turns_source": _turn_cap.source,
+    }
+    if _turn_cap.max_turns != agent_config.max_turns:
+        agent_config = dataclasses.replace(
+            agent_config, max_turns=_turn_cap.max_turns
+        )
+
     # NOTE: task_dir is intentionally never mutated here. Stale agent
     # artifacts are removed inside the per-run scoring sandbox (after the
     # snapshot copytree) so concurrent runs can't race on the shared
@@ -344,7 +381,7 @@ def execute_task(
                 automated_score=0.0,
                 status="error",
                 error_category=error_category,
-                metadata={"error": error},
+                metadata={"error": error, **_turn_cap_meta},
             ),
         )
 
@@ -599,7 +636,7 @@ def execute_task(
                     automated_score=0.0,
                     status="error",
                     error_category="agent",
-                    metadata={"error": sanitize_secrets(error_msg)},
+                    metadata={"error": sanitize_secrets(error_msg), **_turn_cap_meta},
                     **_output_fields(),
                 ),
                 agent_stdout=output.stdout,
@@ -629,7 +666,7 @@ def execute_task(
                     automated_score=0.0,
                     status="failed" if output.error_terminal else "error",
                     error_category=error_cat,
-                    metadata={"error": sanitize_secrets(output.error)},
+                    metadata={"error": sanitize_secrets(output.error), **_turn_cap_meta},
                     **_output_fields(),
                 ),
                 agent_stdout=output.stdout,
@@ -644,7 +681,7 @@ def execute_task(
                     task_id=task_id,
                     automated_score=0.0,
                     status="error",
-                    metadata={"error": f"Invalid reward_type: {exc}"},
+                    metadata={"error": f"Invalid reward_type: {exc}", **_turn_cap_meta},
                     **_output_fields(),
                 ),
                 agent_stdout=output.stdout,
@@ -670,7 +707,10 @@ def execute_task(
                         task_id=task_id,
                         automated_score=0.0,
                         status="error",
-                        metadata={"error": f"Failed to snapshot task dir: {exc}"},
+                        metadata={
+                            "error": f"Failed to snapshot task dir: {exc}",
+                            **_turn_cap_meta,
+                        },
                         **_output_fields(),
                     ),
                     agent_stdout=output.stdout,
@@ -707,7 +747,7 @@ def execute_task(
                         task_id=task_id,
                         automated_score=0.0,
                         status="error",
-                        metadata={"error": artifact_copy_error},
+                        metadata={"error": artifact_copy_error, **_turn_cap_meta},
                         **_output_fields(),
                     ),
                     agent_stdout=output.stdout,
@@ -743,7 +783,7 @@ def execute_task(
                     output.stdout, scoring_dir, **score_kwargs
                 )
 
-        metadata: dict = {}
+        metadata: dict = dict(_turn_cap_meta)
         if resolved_preambles:
             metadata["resolved_preambles"] = resolved_preambles
 
@@ -1004,6 +1044,7 @@ def execute_config(
     clean_excludes: tuple[str, ...] = (),
     event_dispatcher: EventDispatcher | None = None,
     trace_recorder: TraceRecorder | None = None,
+    config_max_turns_source: str = "",
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -1113,6 +1154,7 @@ def execute_config(
                 worktree_path=worktree_path,
                 session_env=session_env,
                 hide_local_source=experiment_config.hide_local_source,
+                config_max_turns_source=config_max_turns_source,
             )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:
@@ -1353,7 +1395,14 @@ def execute_config(
                                     repeat_index=repeat_index,
                                     status="error",
                                     error_category=_classify_error(exc),
-                                    metadata={"error": str(exc)},
+                                    # Thread-pool crash before the per-trial
+                                    # cap was resolved — keep the envelope
+                                    # schema uniform with an unresolved cap.
+                                    metadata={
+                                        "error": str(exc),
+                                        "max_turns_chosen": None,
+                                        "max_turns_source": "",
+                                    },
                                 ),
                             )
                         _handle_result(task_result)
