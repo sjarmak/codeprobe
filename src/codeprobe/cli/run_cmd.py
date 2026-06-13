@@ -714,6 +714,16 @@ def run_eval(
             resolved_max_turns = (
                 max_turns if max_turns is not None else cfg_max_turns
             )
+            # Source of the explicit config-level cap (if any), threaded
+            # into the executor so the per-trial turn-cap resolver can
+            # label max_turns_source honestly. Empty when no explicit cap
+            # is set and the family default / task override decides.
+            if max_turns is not None:
+                config_max_turns_source = "cli"
+            elif cfg_max_turns is not None:
+                config_max_turns_source = "experiment"
+            else:
+                config_max_turns_source = ""
 
             logger.debug(
                 "Config resolution: model=%s (%s), timeout=%ds (%s), max_turns=%s (%s)",
@@ -872,6 +882,7 @@ def run_eval(
                     event_dispatcher=dispatcher,
                     preamble_resolver=preamble_resolver,
                     trace_recorder=trace_recorder,
+                    config_max_turns_source=config_max_turns_source,
                 )
             except KeyboardInterrupt:
                 interrupted = True

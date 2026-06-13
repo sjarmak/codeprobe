@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import time
 from pathlib import Path
@@ -39,6 +40,26 @@ def _make_task_dir(base: Path, name: str, *, passing: bool = True) -> Path:
     test_sh.write_text(f"#!/bin/bash\nexit {exit_code}\n")
     test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
     return task_dir
+
+
+def _write_metadata(
+    task_dir: Path,
+    *,
+    category: str | None = None,
+    verification_type: str | None = None,
+    max_turns_override: int | None = None,
+) -> None:
+    """Write a metadata.json with the fields the turn-cap resolver reads."""
+    meta_block: dict = {"name": task_dir.name}
+    if category is not None:
+        meta_block["category"] = category
+    if max_turns_override is not None:
+        meta_block["max_turns_override"] = max_turns_override
+    verification: dict = {}
+    if verification_type is not None:
+        verification["type"] = verification_type
+    payload = {"id": task_dir.name, "metadata": meta_block, "verification": verification}
+    (task_dir / "metadata.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
 class RecordingListener:
@@ -422,3 +443,100 @@ class TestPlainTextListener:
         assert "Finished: 5/5 tasks" in captured.out
         assert "mean score 0.80" in captured.out
         assert "$0.50" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Task-category-aware turn cap (codeprobe-gg9f)
+# ---------------------------------------------------------------------------
+
+
+class TestTurnCapResolution:
+    """execute_config resolves the per-trial turn cap and surfaces it.
+
+    Asserts both the cap the adapter actually receives (after the resolver
+    injects it into AgentConfig) and the ``max_turns_chosen`` /
+    ``max_turns_source`` envelope fields on the CompletedTask.
+    """
+
+    def _run(
+        self,
+        task_dir: Path,
+        *,
+        agent_config: AgentConfig,
+        config_max_turns_source: str = "",
+    ) -> tuple[FakeAdapter, CompletedTask]:
+        adapter = FakeAdapter(stdout="output", cost_usd=0.01, cost_model="per_token")
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=[task_dir],
+            repo_path=Path("/repo"),
+            experiment_config=ExperimentConfig(label="turncap"),
+            agent_config=agent_config,
+            config_max_turns_source=config_max_turns_source,
+        )
+        assert len(results) == 1
+        return adapter, results[0]
+
+    def test_sdlc_without_override_is_uncapped(self, tmp_path: Path) -> None:
+        task = _make_task_dir(tmp_path, "sdlc-task")
+        _write_metadata(task, category="sdlc")
+
+        adapter, result = self._run(task, agent_config=AgentConfig())
+
+        assert adapter.run_calls[0][1].max_turns is None
+        assert result.metadata["max_turns_chosen"] is None
+        assert result.metadata["max_turns_source"] == "family_default"
+
+    def test_oracle_checks_gets_family_default_50(self, tmp_path: Path) -> None:
+        task = _make_task_dir(tmp_path, "oracle-task")
+        _write_metadata(task, verification_type="oracle_checks")
+
+        adapter, result = self._run(task, agent_config=AgentConfig())
+
+        assert adapter.run_calls[0][1].max_turns == 50
+        assert result.metadata["max_turns_chosen"] == 50
+        assert result.metadata["max_turns_source"] == "family_default"
+
+    def test_unknown_family_gets_default_fallback_75(self, tmp_path: Path) -> None:
+        task = _make_task_dir(tmp_path, "micro-task")
+        _write_metadata(task, category="micro_probe")
+
+        adapter, result = self._run(task, agent_config=AgentConfig())
+
+        assert adapter.run_calls[0][1].max_turns == 75
+        assert result.metadata["max_turns_source"] == "family_default"
+
+    def test_task_override_beats_family_default(self, tmp_path: Path) -> None:
+        task = _make_task_dir(tmp_path, "override-task")
+        _write_metadata(task, category="sdlc", max_turns_override=30)
+
+        adapter, result = self._run(task, agent_config=AgentConfig())
+
+        assert adapter.run_calls[0][1].max_turns == 30
+        assert result.metadata["max_turns_chosen"] == 30
+        assert result.metadata["max_turns_source"] == "task"
+
+    def test_cli_cap_beats_task_override_and_family(self, tmp_path: Path) -> None:
+        task = _make_task_dir(tmp_path, "cli-task")
+        _write_metadata(task, category="sdlc", max_turns_override=30)
+
+        adapter, result = self._run(
+            task,
+            agent_config=AgentConfig(max_turns=42),
+            config_max_turns_source="cli",
+        )
+
+        assert adapter.run_calls[0][1].max_turns == 42
+        assert result.metadata["max_turns_chosen"] == 42
+        assert result.metadata["max_turns_source"] == "cli"
+
+    def test_invalid_override_falls_through_to_family(self, tmp_path: Path) -> None:
+        # A non-positive / malformed override is ignored at runtime; the
+        # family default decides instead.
+        task = _make_task_dir(tmp_path, "bad-override")
+        _write_metadata(task, verification_type="oracle_checks", max_turns_override=0)
+
+        adapter, result = self._run(task, agent_config=AgentConfig())
+
+        assert adapter.run_calls[0][1].max_turns == 50
+        assert result.metadata["max_turns_source"] == "family_default"

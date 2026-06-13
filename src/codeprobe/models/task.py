@@ -90,6 +90,11 @@ class TaskMetadata:
     tags: tuple[str, ...] = ()
     estimated_duration_sec: int = 300
     resource_tier: str = "medium"
+    # Per-task turn cap. ``None`` defers to the per-family default (see
+    # ``core.turn_cap``); a positive int pins this task's ``--max-turns``
+    # above the family default but below an explicit CLI / experiment.json
+    # cap. Surfaced in metadata.json as ``metadata.max_turns_override``.
+    max_turns_override: int | None = None
     issue_title: str = ""
     issue_body: str = ""
     quality_score: float = 0.0

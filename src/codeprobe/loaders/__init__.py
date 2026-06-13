@@ -63,6 +63,24 @@ def _build_task(
             f"Expected one of: {sorted(valid_resource_tiers)}"
         )
 
+    # max_turns_override: optional per-task turn cap. Validate at the
+    # boundary — bool is rejected (``True`` is an int subclass) and the
+    # value must be a positive int when present.
+    max_turns_override = meta.get("max_turns_override")
+    if max_turns_override is not None:
+        if isinstance(max_turns_override, bool) or not isinstance(
+            max_turns_override, int
+        ):
+            raise ValueError(
+                f"max_turns_override must be a positive integer or absent, "
+                f"got {max_turns_override!r}"
+            )
+        if max_turns_override <= 0:
+            raise ValueError(
+                f"max_turns_override must be a positive integer, "
+                f"got {max_turns_override!r}"
+            )
+
     # Parse [[checkpoints]] into frozen Checkpoint dataclasses
     parsed_checkpoints: tuple[Checkpoint, ...] = ()
     if checkpoints_raw:
@@ -92,6 +110,7 @@ def _build_task(
             tags=tuple(tags_raw),
             estimated_duration_sec=meta.get("estimated_duration_sec", 300),
             resource_tier=resource_tier,
+            max_turns_override=max_turns_override,
         ),
         verification=TaskVerification(
             type=verif.get("type", "test_script"),
@@ -136,6 +155,7 @@ def _load_toml(path: Path) -> Task:
         "tags": task_sec.get("tags", ()),
         "estimated_duration_sec": task_sec.get("estimated_duration_sec", 300),
         "resource_tier": task_sec.get("resource_tier", "medium"),
+        "max_turns_override": task_sec.get("max_turns_override"),
         **meta_sec,
     }
 
