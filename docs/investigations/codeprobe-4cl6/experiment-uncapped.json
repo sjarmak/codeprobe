@@ -1,0 +1,36 @@
+{
+  "name": "gascity-mcp-comparison",
+  "description": "codeprobe-4cl6.3: SDLC max-turns retune, uncapped control. Base config = aupz with-sg-fixed (sourcegraph MCP + preamble v2 + sg_repo backfill + ovz2/riad fixes on main) with NO max_turns. Confirms uncapped behavior matches mcn7's with-sourcegraph distribution (reward mean ~0.687) — the ceiling against which cap75/cap90 are measured. timeout_seconds stays 5400 to match the cap75/cap90 sweep points (mcn7 with-sg max observed trial 2913s, so 5400 does not clip the uncapped distribution).",
+  "tasks_dir": "tasks",
+  "configs": [
+    {
+      "label": "with-sg-uncapped",
+      "agent": "claude",
+      "model": "claude-sonnet-4-6",
+      "permission_mode": "default",
+      "mcp_config": {
+        "mcpServers": {
+          "sourcegraph": {
+            "type": "http",
+            "url": "$SOURCEGRAPH_MCP_URL",
+            "headers": {
+              "Authorization": "token $SOURCEGRAPH_ACCESS_TOKEN"
+            }
+          }
+        }
+      },
+      "allowed_tools": null,
+      "disallowed_tools": null,
+      "mcp_mode": "strict",
+      "instruction_variant": null,
+      "preambles": [
+        "sourcegraph"
+      ],
+      "reward_type": "binary",
+      "max_turns": null,
+      "extra": {
+        "timeout_seconds": 5400
+      }
+    }
+  ]
+}
