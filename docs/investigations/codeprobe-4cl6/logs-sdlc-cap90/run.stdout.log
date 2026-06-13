@@ -1,0 +1,4 @@
+Suite 'codeprobe-aupz-sdlc': 5/15 tasks selected
+
+Running config: with-sg-cap90 (5 tasks)
+{"event": "task_done", "task_id": "0d4ec3ad", "score": 0.8257, "duration_seconds": 2717.953393485397, "cost_usd": 7.020504750000002, "record_type": "event"}
