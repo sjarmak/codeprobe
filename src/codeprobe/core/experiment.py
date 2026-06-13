@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 
 from codeprobe.config.redact import redact_mcp_headers
@@ -259,26 +259,12 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
 
     data = json.loads(path.read_text(encoding="utf-8"))
 
+    # Generic over the dataclass fields so a field added to CompletedTask
+    # can never be silently dropped on load (codeprobe-8up); unknown keys
+    # from newer schemas are ignored, absent keys fall back to defaults.
+    field_names = {f.name for f in fields(CompletedTask)}
     completed = [
-        CompletedTask(
-            task_id=t["task_id"],
-            automated_score=t["automated_score"],
-            repeat_index=t.get("repeat_index", 0),
-            status=t.get("status", "completed"),
-            duration_seconds=t.get("duration_seconds", 0.0),
-            input_tokens=t.get("input_tokens"),
-            output_tokens=t.get("output_tokens"),
-            cache_read_tokens=t.get("cache_read_tokens"),
-            cache_creation_tokens=t.get("cache_creation_tokens"),
-            cost_usd=t.get("cost_usd"),
-            cost_model=t.get("cost_model", "unknown"),
-            cost_source=t.get("cost_source", "unavailable"),
-            tool_call_count=t.get("tool_call_count"),
-            tool_use_by_name=t.get("tool_use_by_name"),
-            error_category=t.get("error_category"),
-            scoring_details=t.get("scoring_details", {}),
-            metadata=t.get("metadata", {}),
-        )
+        CompletedTask(**{k: v for k, v in t.items() if k in field_names})
         for t in data.get("completed", [])
     ]
 

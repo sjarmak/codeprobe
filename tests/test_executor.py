@@ -265,6 +265,86 @@ def test_execute_task_adapter_error_with_answer_file_still_scored(tmp_path: Path
     assert result.automated_score == 0.0
 
 
+def test_execute_task_max_turns_is_terminal_failed(tmp_path: Path):
+    """A cap-hit (subtype=error_max_turns) is a terminal agent failure.
+
+    It must be marked status='failed' — a valid 0.0-reward measurement
+    kept on checkpoint resume — not status='error' (infra, retried).
+    Regression guard for codeprobe-8up.
+    """
+    task_dir = _make_task(tmp_path / "task-caphit", passing=True)
+    adapter = FakeAdapter(
+        stdout="Reached maximum number of turns (90)",
+        exit_code=0,
+        error="Reached maximum number of turns (90)",
+        error_terminal=True,
+        num_turns=90,
+        result_subtype="error_max_turns",
+    )
+    config = AgentConfig()
+
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+    assert result.status == "failed"
+    assert result.automated_score == 0.0
+    assert result.error_category == "agent"
+    assert result.num_turns == 90
+    assert result.result_subtype == "error_max_turns"
+
+
+def test_execute_task_quota_error_stays_retryable(tmp_path: Path):
+    """Quota exhaustion is an infra casualty: status='error', retried on resume."""
+    task_dir = _make_task(tmp_path / "task-quota", passing=True)
+    adapter = FakeAdapter(
+        stdout="You've hit your session limit",
+        exit_code=0,
+        error="OAuth quota exhausted: You've hit your session limit",
+        error_category="quota",
+    )
+    config = AgentConfig()
+
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+    assert result.status == "error"
+    assert result.error_category == "quota"
+
+
+def test_execute_task_undeclared_error_stays_retryable(tmp_path: Path):
+    """Errors the adapter did not declare terminal keep retry semantics.
+
+    Marking an infra casualty 'failed' would bank a bogus 0.0 forever;
+    re-running a terminal failure merely costs a retry — so the default
+    is conservative.
+    """
+    task_dir = _make_task(tmp_path / "task-exec-err", passing=True)
+    adapter = FakeAdapter(
+        stdout="API connection dropped",
+        exit_code=0,
+        error="Claude CLI reported error (subtype=error_during_execution)",
+        result_subtype="error_during_execution",
+    )
+    config = AgentConfig()
+
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+    assert result.status == "error"
+
+
+def test_execute_task_success_carries_num_turns(tmp_path: Path):
+    """Successful trials persist num_turns (codeprobe-8up gap 2)."""
+    task_dir = _make_task(tmp_path / "task-turns", passing=True)
+    adapter = FakeAdapter(
+        stdout="correct answer",
+        num_turns=64,
+        result_subtype="success",
+        duration_api_ms=987654,
+    )
+    config = AgentConfig()
+
+    result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+    assert result.status == "completed"
+    assert result.num_turns == 64
+    assert result.result_subtype == "success"
+    assert result.duration_api_ms == 987654
+
+
 def test_execute_config_forwards_reward_type(tmp_path: Path):
     """reward_type from ExperimentConfig is forwarded to execute_task."""
     task_dir = _make_task(tmp_path / "task-001", passing=True)

@@ -13,6 +13,9 @@ def _git_init(tmp_path: Path) -> Path:
         capture_output=True,
         check=True,
     )
+    # git >= 2.42 may not create .git/info/ on init; tests that pre-seed
+    # .git/info/exclude rely on it existing.
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
     return tmp_path
 
 

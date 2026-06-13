@@ -51,6 +51,12 @@ class UsageData:
     # adapter captured a streaming transcript. None means "not captured",
     # not "no tool calls".
     tool_use_by_name: dict[str, int] | None = None
+    # Result-record fields extracted verbatim from the CLI's terminal
+    # envelope (codeprobe-8up). None when the output had no parseable
+    # result record (quota stubs, malformed output).
+    num_turns: int | None = None
+    result_subtype: str | None = None
+    duration_api_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:
@@ -106,6 +112,16 @@ def _extract_envelope_error(envelope: dict[str, Any]) -> str | None:
     if not parts:
         parts.append("is_error=true")
     return "Claude CLI reported error (" + ", ".join(parts) + ")"
+
+
+def _envelope_field(envelope: dict[str, Any], key: str, typ: type) -> Any:
+    """Return ``envelope[key]`` when it is an instance of ``typ``, else None.
+
+    Mechanical structural guard for verbatim result-record extraction —
+    wrong-typed values are dropped, never coerced.
+    """
+    value = envelope.get(key)
+    return value if isinstance(value, typ) else None
 
 
 def _count_tool_use_blocks(envelope: dict[str, Any]) -> int | None:
@@ -301,6 +317,9 @@ class JsonStdoutCollector:
             tool_call_count=tool_call_count,
             tool_use_by_name=stream_tool_by_name or None,
             error=envelope_error,
+            num_turns=_envelope_field(envelope, "num_turns", int),
+            result_subtype=_envelope_field(envelope, "subtype", str),
+            duration_api_ms=_envelope_field(envelope, "duration_api_ms", int),
         )
 
 

@@ -1,1 +1,1 @@
-{"result": "Here is the fix for the bug...", "usage": {"input_tokens": 12345, "output_tokens": 6789, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 500}, "total_cost_usd": 0.0423}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Here is the fix for the bug...", "num_turns": 42, "duration_api_ms": 123456, "usage": {"input_tokens": 12345, "output_tokens": 6789, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 500}, "total_cost_usd": 0.0423}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import inspect
 import json as _json
 import logging
@@ -558,6 +559,9 @@ def execute_task(
                 cost_source=output.cost_source,
                 tool_call_count=output.tool_call_count,
                 tool_use_by_name=output.tool_use_by_name,
+                num_turns=output.num_turns,
+                result_subtype=output.result_subtype,
+                duration_api_ms=output.duration_api_ms,
             )
 
         # For oracle tasks, the agent writes answer.txt / answer.json to the
@@ -614,11 +618,16 @@ def execute_task(
             # the historical "agent" classification when the adapter
             # didn't pin a category.
             error_cat = output.error_category or "agent"
+            # Adapter-declared terminal agent failure (codeprobe-8up):
+            # a genuine 0.0-reward measurement — status='failed' keeps it
+            # on checkpoint resume instead of silently re-running it.
+            # Infra casualties (quota, crashes, unknown subtypes) stay
+            # status='error' and are retried.
             return TaskResult(
                 completed=CompletedTask(
                     task_id=task_id,
                     automated_score=0.0,
-                    status="error",
+                    status="failed" if output.error_terminal else "error",
                     error_category=error_cat,
                     metadata={"error": sanitize_secrets(output.error)},
                     **_output_fields(),
@@ -936,6 +945,12 @@ def _save_task_artifacts(
         diagnostics["cache_creation_tokens"] = int(completed.cache_creation_tokens)
     if completed.output_tokens is not None:
         diagnostics["output_tokens"] = int(completed.output_tokens)
+    if completed.num_turns is not None:
+        diagnostics["num_turns"] = int(completed.num_turns)
+    if completed.result_subtype is not None:
+        diagnostics["result_subtype"] = completed.result_subtype
+    if completed.duration_api_ms is not None:
+        diagnostics["duration_api_ms"] = int(completed.duration_api_ms)
     scoring["diagnostics"] = diagnostics
     (task_dir / "scoring.json").write_text(
         _json.dumps(scoring, indent=2) + "\n", encoding="utf-8"
@@ -952,6 +967,12 @@ def _restore_checkpointed(
     """
     if checkpoint_store is None:
         return set(), []
+    # Generic over the dataclass fields so a field added to CompletedTask
+    # can never be silently dropped on resume (codeprobe-8up; previously
+    # ``tool_use_by_name`` was hand-mapped out of existence here). Keys
+    # absent from older checkpoint entries fall back to field defaults;
+    # unknown keys from newer schemas are ignored.
+    field_names = {f.name for f in dataclasses.fields(CompletedTask)}
     ids: set[tuple[str, int]] = set()
     results: list[CompletedTask] = []
     for entry in checkpoint_store.load_entries():
@@ -959,22 +980,7 @@ def _restore_checkpointed(
         ids.add((entry["task_id"], repeat_index))
         results.append(
             CompletedTask(
-                task_id=entry["task_id"],
-                automated_score=entry.get("automated_score", 0.0),
-                repeat_index=repeat_index,
-                status=entry.get("status", "completed"),
-                duration_seconds=entry.get("duration_seconds", 0.0),
-                input_tokens=entry.get("input_tokens"),
-                output_tokens=entry.get("output_tokens"),
-                cache_read_tokens=entry.get("cache_read_tokens"),
-                cache_creation_tokens=entry.get("cache_creation_tokens"),
-                cost_usd=entry.get("cost_usd"),
-                cost_model=entry.get("cost_model", "unknown"),
-                cost_source=entry.get("cost_source", "unavailable"),
-                tool_call_count=entry.get("tool_call_count"),
-                error_category=entry.get("error_category"),
-                scoring_details=entry.get("scoring_details", {}),
-                metadata=entry.get("metadata", {}),
+                **{k: v for k, v in entry.items() if k in field_names}
             )
         )
     return ids, results

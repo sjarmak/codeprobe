@@ -50,11 +50,27 @@ class AgentOutput:
     # Recognised values include "quota" (codeprobe-9xrl). None means
     # "use the executor's default classification".
     error_category: str | None = None
+    # Adapter-declared: ``error`` is a TERMINAL agent outcome (the agent
+    # ran to a protocol-defined stop condition such as a turn cap, so the
+    # 0.0 reward is a genuine measurement) rather than an infra casualty.
+    # The executor maps this to status='failed', which checkpoint resume
+    # keeps instead of retrying (codeprobe-8up). Adapters must only set
+    # this for stop conditions they positively recognise.
+    error_terminal: bool = False
     cost_source: str = "unavailable"
     tool_call_count: int | None = None
     # Per-tool usage counts (e.g. {"Read": 5, "mcp__sourcegraph__...": 2}).
     # None when the adapter couldn't capture a streaming transcript.
     tool_use_by_name: dict[str, int] | None = None
+    # CLI result-record fields (codeprobe-8up). Populated when the agent
+    # CLI emits a terminal result envelope (Claude CLI ``type: "result"``);
+    # None when no such record exists (quota stubs, crashes, adapters
+    # that don't surface one). ``result_subtype`` is the verbatim protocol
+    # value (e.g. "success", "error_max_turns") — the executor uses it to
+    # distinguish terminal agent failures from infra casualties.
+    num_turns: int | None = None
+    result_subtype: str | None = None
+    duration_api_ms: int | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:

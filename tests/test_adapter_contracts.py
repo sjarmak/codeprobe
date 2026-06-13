@@ -151,6 +151,48 @@ class TestClaudeParseContract:
         out = self._adapter().parse_output(_completed(raw), duration=1.0)
         assert out.error_category == "quota"
         assert out.error is not None and "quota" in out.error.lower()
+        # No JSON envelope was parsed — result-record fields stay None
+        # and the failure is not declared terminal (it must be retried).
+        assert out.num_turns is None
+        assert out.result_subtype is None
+        assert out.error_terminal is False
+
+    def test_envelope_extracts_result_record_fields(self) -> None:
+        """num_turns / subtype / duration_api_ms persist for successes (codeprobe-8up)."""
+        raw = (FIXTURES / "claude_normal.json").read_text()
+        out = self._adapter().parse_output(_completed(raw), duration=1.0)
+        assert out.num_turns == 42
+        assert out.result_subtype == "success"
+        assert out.duration_api_ms == 123456
+        assert out.error is None
+
+    def test_max_turns_envelope_preserves_result_record(self) -> None:
+        """A cap-hit is an error envelope but keeps its result record."""
+        raw = (FIXTURES / "claude_max_turns.json").read_text()
+        out = self._adapter().parse_output(_completed(raw), duration=1.0)
+        assert out.error is not None
+        assert out.result_subtype == "error_max_turns"
+        assert out.num_turns == 90
+        assert out.duration_api_ms == 1854321
+        # Mid-run failure: real token/cost data is preserved.
+        assert out.input_tokens == 54321
+        assert out.cost_usd == pytest.approx(6.99)
+        assert out.cost_source == "api_reported"
+        # A cap-hit is a terminal agent outcome — a genuine 0.0-reward
+        # measurement, kept on checkpoint resume (codeprobe-8up).
+        assert out.error_terminal is True
+
+    def test_non_cap_error_subtype_not_declared_terminal(self) -> None:
+        """Only positively-recognised stop conditions are terminal."""
+        import json as _json
+
+        envelope = _json.loads((FIXTURES / "claude_max_turns.json").read_text())
+        envelope["subtype"] = "error_during_execution"
+        out = self._adapter().parse_output(
+            _completed(_json.dumps(envelope)), duration=1.0
+        )
+        assert out.error is not None
+        assert out.error_terminal is False
 
 
 class TestCopilotParseContract:

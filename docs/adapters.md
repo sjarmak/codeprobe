@@ -91,7 +91,13 @@ Immutable dataclass returned by `run()`:
 | `cost_model`        | `str`           | `"unknown"`     | See [cost_model values](#cost_model-values)         |
 | `cost_source`       | `str`           | `"unavailable"` | See [cost_source values](#cost_source-values)       |
 | `tool_call_count`   | `int \| None`   | `None`          | Number of `tool_use` blocks in agent output         |
+| `tool_use_by_name`  | `dict[str, int] \| None` | `None` | Per-tool usage counts; `None` = not captured        |
 | `error`             | `str \| None`   | `None`          | Error description (partial results still preserved) |
+| `error_category`    | `str \| None`   | `None`          | Adapter-declared class (e.g. `"quota"`); `None` = executor default |
+| `error_terminal`    | `bool`          | `False`         | Adapter-declared: `error` is a terminal agent outcome (e.g. turn cap) — a genuine 0.0-reward measurement kept on checkpoint resume, not an infra casualty to retry. Only set for positively recognised stop conditions. |
+| `num_turns`         | `int \| None`   | `None`          | From the CLI result record, when one exists         |
+| `result_subtype`    | `str \| None`   | `None`          | Verbatim CLI result subtype (e.g. `"success"`, `"error_max_turns"`) |
+| `duration_api_ms`   | `int \| None`   | `None`          | API-side duration from the CLI result record        |
 
 Validation rules enforced by `__post_init__`:
 
