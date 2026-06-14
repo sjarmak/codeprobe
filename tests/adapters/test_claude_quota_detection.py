@@ -11,6 +11,8 @@ executor halts the run on first detection.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from codeprobe.adapters.claude import _detect_quota_error
@@ -94,6 +96,73 @@ class TestQuotaDetection:
     )
     def test_wording_variants(self, phrase: str) -> None:
         assert _detect_quota_error(f"agent: {phrase} — halting", None) is not None
+
+
+class TestQuotaDetectionIgnoresAgentStreamJson:
+    """codeprobe-9tk: the detector must scan only the CLI's literal output,
+    not the agent's stream-json tool I/O. On the gascity corpus the agent
+    edits/reasons about code containing "quota exhausted" / "session limit",
+    which previously false-tripped the detector and halted a whole run.
+    """
+
+    def test_agent_tool_result_mentioning_quota_does_not_trigger(self) -> None:
+        # A real stream-json ``type=user`` event whose tool_result content
+        # is the agent editing gascity session/quota code — must NOT trigger.
+        ev = {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "content": (
+                            "Updated session_reconciler.go: return "
+                            "ErrQuotaExhausted when the monthly usage limit "
+                            "is reached / quota exhausted."
+                        ),
+                    }
+                ],
+            },
+        }
+        stdout = json.dumps(ev)
+        assert _detect_quota_error(stdout, None) is None
+
+    def test_assistant_event_reasoning_about_quota_does_not_trigger(self) -> None:
+        ev = {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "I'll handle the 'quota exceeded' branch."}
+                ],
+            },
+        }
+        assert _detect_quota_error(json.dumps(ev), None) is None
+
+    def test_result_event_answer_mentioning_quota_does_not_trigger(self) -> None:
+        # Even the CLI's ``type=result`` envelope carries the agent's final
+        # answer (agent content), so a quota mention there is not a stub.
+        ev = {"type": "result", "subtype": "success", "result": "Fixed quota exhausted handling."}
+        assert _detect_quota_error(json.dumps(ev), None) is None
+
+    def test_real_stub_amid_stream_json_still_detected(self) -> None:
+        # The genuine OAuth stub is a NON-JSON literal line; it must still be
+        # caught even when surrounded by agent stream-json events.
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "editing quota code"}}),
+            "You've hit your session limit · resets 1:10pm",
+            json.dumps({"type": "assistant", "message": {"content": "done"}}),
+        ]
+        result = _detect_quota_error("\n".join(lines), None)
+        assert result is not None
+        assert "session limit" in result
+
+    def test_real_stub_in_stderr_still_detected_with_jsonl_stdout(self) -> None:
+        stdout = json.dumps(
+            {"type": "user", "message": {"content": "the agent wrote quota exhausted"}}
+        )
+        result = _detect_quota_error(stdout, "transport: rate limit exceeded")
+        assert result is not None
 
 
 class TestAgentOutputErrorCategoryField:

@@ -48,16 +48,50 @@ _QUOTA_PATTERN = re.compile(
 )
 
 
+def _cli_origin_text(stdout: str) -> str:
+    """Return only the CLI's own literal lines of *stdout*.
+
+    A real OAuth/quota stub is a short literal message that the CLI prints
+    *instead of* a JSON envelope ("returns a short literal message and exits
+    successfully"). The agent's tool I/O, by contrast, is always emitted as
+    ``stream-json`` events — one JSON object per line
+    (``type=user/assistant/result/system``). Scanning the whole stdout for
+    the quota pattern therefore false-positives whenever the agent merely
+    *edits or reasons about* code containing "quota exhausted" / "session
+    limit" — which is endemic on the gascity agent-orchestration corpus
+    (codeprobe-9tk: one such edit halted a whole run).
+
+    Keeping only the lines that do NOT parse as a JSON object isolates the
+    CLI's literal output (the genuine stub) from the agent's structured
+    events, so quota detection fires on real exhaustion (codeprobe-9xrl)
+    without tripping on agent content.
+    """
+    literal: list[str] = []
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            literal.append(line)  # not a stream-json event → CLI literal
+            continue
+        # A bare JSON scalar/string is still CLI literal output, not an
+        # agent event (those are always objects with a ``type`` field).
+        if not isinstance(parsed, dict) or "type" not in parsed:
+            literal.append(line)
+    return "\n".join(literal)
+
+
 def _detect_quota_error(stdout: str, stderr: str | None) -> str | None:
     """Return a normalised quota-error message if either stream matches.
 
-    The match looks at both stdout (where Claude CLI writes the OAuth
-    "monthly usage limit" stub) and stderr (where API/CLI surfaces
-    rate-limit messages from the underlying transport). Returns the
-    triggering line so the executor can include it in the task's
-    error metadata.
+    Scans stderr (where the API/CLI transport surfaces rate-limit messages)
+    and the CLI's literal stdout lines only — NOT the agent's stream-json
+    tool I/O (see :func:`_cli_origin_text`). Returns the triggering line so
+    the executor can include it in the task's error metadata.
     """
-    for stream in (stdout, stderr or ""):
+    for stream in (_cli_origin_text(stdout), stderr or ""):
         if not stream:
             continue
         match = _QUOTA_PATTERN.search(stream)
