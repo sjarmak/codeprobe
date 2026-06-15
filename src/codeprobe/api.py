@@ -225,4 +225,6 @@ def run_experiment(
             ConfigResults(config=exp_config.label, completed=results)
         )
 
-    return generate_report(experiment.name, all_config_results)
+    return generate_report(
+        experiment.name, all_config_results, configs=experiment_configs
+    )

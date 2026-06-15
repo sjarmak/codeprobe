@@ -18,7 +18,11 @@ from codeprobe.analysis.stats import (
     summarize_config,
     task_passed,
 )
-from codeprobe.models.experiment import CompletedTask, ConfigResults
+from codeprobe.models.experiment import (
+    CompletedTask,
+    ConfigResults,
+    ExperimentConfig,
+)
 
 
 @dataclass(frozen=True)
@@ -57,18 +61,28 @@ def generate_report(
     all_results: list[ConfigResults],
     *,
     total_tasks: int | None = None,
+    configs: list[ExperimentConfig] | None = None,
 ) -> Report:
     """Generate a full report from config results.
 
     When *total_tasks* is provided and exceeds completed tasks, the report
-    is flagged as partial with a completion ratio.
+    is flagged as partial with a completion ratio. When *configs* is
+    provided, each summary's ``abandoned_surface_count`` is populated by the
+    tool-surface audit (codeprobe-1gg): configs are matched to results by
+    label so an arm that declared a surface but never used it is flagged.
 
     1. summarize_config() for each
     2. rank_configs()
     3. compare_configs() for all pairs
     4. Return Report
     """
-    summaries = [summarize_config(r, total_tasks=total_tasks) for r in all_results]
+    config_by_label = {c.label: c for c in (configs or [])}
+    summaries = [
+        summarize_config(
+            r, total_tasks=total_tasks, config=config_by_label.get(r.config)
+        )
+        for r in all_results
+    ]
     rankings = rank_configs(summaries)
 
     # Build per-config raw scores keyed by task_id. compare_configs
@@ -246,9 +260,18 @@ def format_text_report(report: Report) -> str:
         quota_suffix = ""
         if s.quota_error_count > 0:
             quota_suffix = f" ⚠ {s.quota_error_count} quota error(s)"
+        # codeprobe-1gg: flag arms where the agent abandoned an enabled tool
+        # surface (zero calls on a trial that ran). A nonzero count means
+        # this arm's effect is partly "the agent ignored the tooling" — the
+        # comparison is INVALID, not a clean null result.
+        abandoned_suffix = ""
+        if s.abandoned_surface_count > 0:
+            abandoned_suffix = (
+                f" ⚠ {s.abandoned_surface_count} abandoned-surface trial(s)"
+            )
         lines.append(
             f"{rc.rank}. {rc.label} — {headline}{dual_suffix}, "
-            f"{cost_str}{quota_suffix} — {rc.recommendation}"
+            f"{cost_str}{quota_suffix}{abandoned_suffix} — {rc.recommendation}"
         )
     if any(rc.summary.quota_error_count > 0 for rc in report.rankings):
         lines.append("")
@@ -258,6 +281,15 @@ def format_text_report(report: Report) -> str:
             "rankings shown include those zeros. To get a clean "
             "comparison, rerun the affected trials after quota resets "
             "or with API-key billing."
+        )
+    if any(rc.summary.abandoned_surface_count > 0 for rc in report.rankings):
+        lines.append("")
+        lines.append(
+            "> **Tool-surface note:** arms marked with an abandoned-surface "
+            "warning enabled a tool surface the agent never called on one or "
+            "more trials. Any 'tooling effect' for those arms is confounded "
+            "by non-use — treat the comparison as INVALID, not a null "
+            "result, until the surface is exercised (codeprobe-1gg)."
         )
     lines.append("")
 

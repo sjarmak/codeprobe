@@ -143,7 +143,12 @@ def run_interpret(
     # Detect incomplete sweeps by comparing checkpoint results to task manifest
     total_tasks = _count_expected_tasks(exp_dir / experiment.tasks_dir)
 
-    report = generate_report(experiment.name, all_results, total_tasks=total_tasks)
+    report = generate_report(
+        experiment.name,
+        all_results,
+        total_tasks=total_tasks,
+        configs=list(experiment.configs),
+    )
 
     if mode.mode == "pretty":
         if report.is_partial:

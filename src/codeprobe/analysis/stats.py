@@ -9,7 +9,11 @@ from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
-from codeprobe.models.experiment import CompletedTask, ConfigResults
+from codeprobe.models.experiment import (
+    CompletedTask,
+    ConfigResults,
+    ExperimentConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -280,6 +284,13 @@ class ConfigSummary:
     # ``mean_score`` (codeprobe-9xrl). Renderers surface this as a
     # warning so users see how much of the data is contaminated.
     quota_error_count: int = 0
+    # Count of trials that abandoned at least one ENABLED tool surface —
+    # the agent made zero calls into a surface its config declared, on a
+    # trial that actually ran (codeprobe-1gg). A nonzero count means this
+    # arm's "tooling effect" is partly "the agent ignored the tooling": the
+    # comparison is INVALID, not a null result. Zero when no config was
+    # supplied to the summarizer (the audit needs the declared surface).
+    abandoned_surface_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -301,12 +312,17 @@ class PairwiseComparison:
 
 
 def summarize_config(
-    results: ConfigResults, *, total_tasks: int | None = None
+    results: ConfigResults,
+    *,
+    total_tasks: int | None = None,
+    config: ExperimentConfig | None = None,
 ) -> ConfigSummary:
     """Compute summary statistics for a single config's results.
 
     When *total_tasks* is provided and exceeds the number of completed tasks,
-    the summary is flagged as partial.
+    the summary is flagged as partial. When *config* is provided, the
+    tool-surface audit (codeprobe-1gg) runs and ``abandoned_surface_count``
+    counts trials that ignored an enabled surface.
     """
     tasks = results.completed
     total = len(tasks)
@@ -333,6 +349,18 @@ def summarize_config(
     completed_tasks = [t for t in tasks if t.status == "completed"]
     errored_tasks = [t for t in tasks if t.status != "completed"]
     quota_count = sum(1 for t in tasks if t.error_category == "quota")
+    # Deferred import: tool_surface_audit lives under codeprobe.core, whose
+    # package __init__ pulls in the executor → scoring → stats chain. A
+    # module-level import here would close that cycle (see the dual import
+    # note above), so the audit is imported at call time.
+    if config is not None:
+        from codeprobe.core.tool_surface_audit import task_abandoned_any_surface
+
+        abandoned_count = sum(
+            1 for t in tasks if task_abandoned_any_surface(t, config)
+        )
+    else:
+        abandoned_count = 0
 
     scores = [t.automated_score for t in tasks]
     passed = sum(1 for t in tasks if task_passed(t))
@@ -384,6 +412,8 @@ def summarize_config(
         dual_task_count=dual_count,
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
+        quota_error_count=quota_count,
+        abandoned_surface_count=abandoned_count,
     )
 
 
@@ -392,6 +422,7 @@ def summarize_completed_tasks(
     tasks: Iterator[CompletedTask],
     *,
     total_tasks: int | None = None,
+    config: ExperimentConfig | None = None,
 ) -> ConfigSummary:
     """Compute summary statistics from an iterator of tasks (single-pass).
 
@@ -419,6 +450,10 @@ def summarize_completed_tasks(
     direct_passes = 0
     artifact_passes = 0
     quota_count = 0
+    abandoned_count = 0
+    # Deferred import — see summarize_config() for the cycle rationale.
+    if config is not None:
+        from codeprobe.core.tool_surface_audit import task_abandoned_any_surface
 
     for task in tasks:
         total += 1
@@ -428,6 +463,8 @@ def summarize_completed_tasks(
             errored_count += 1
         if task.error_category == "quota":
             quota_count += 1
+        if config is not None and task_abandoned_any_surface(task, config):
+            abandoned_count += 1
 
         scores.append(task.automated_score)
         if task_passed(task):
@@ -513,6 +550,7 @@ def summarize_completed_tasks(
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
         quota_error_count=quota_count,
+        abandoned_surface_count=abandoned_count,
     )
 
 
