@@ -522,9 +522,9 @@ class NdjsonStreamCollector:
                     input_chars,
                 )
             elif input_chars > 0:
-                input_tokens = _estimate_tokens(
-                    "x" * input_chars  # placeholder, only length matters
-                )
+                # ~4 chars/token (mirrors _estimate_tokens) computed from the
+                # length directly — no need to materialize a throwaway string.
+                input_tokens = max(1, input_chars // 4)
                 logger.debug(
                     "Copilot input_tokens=%d estimated from %d stream chars",
                     input_tokens,
