@@ -278,6 +278,48 @@ class TestCompareConfigs:
 
         assert cmp.winner == "b"
 
+    def test_same_score_cost_speed_breaks_tie(self) -> None:
+        """codeprobe-b9c #9: equal score+cost → faster mean duration wins."""
+        base = dict(
+            total_tasks=3,
+            completed=3,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.8,
+            median_score=0.8,
+            total_cost_usd=0.40,
+            total_tokens=1000,
+        )
+        slow = ConfigSummary(
+            label="slow", total_duration_sec=60.0, mean_duration_sec=20.0, **base
+        )
+        fast = ConfigSummary(
+            label="fast", total_duration_sec=30.0, mean_duration_sec=10.0, **base
+        )
+        # Order-independent: the faster config wins regardless of arg order.
+        assert compare_configs(slow, fast).winner == "fast"
+        assert compare_configs(fast, slow).winner == "fast"
+
+    def test_total_tie_defaults_to_first(self) -> None:
+        """codeprobe-b9c #9: a full tie (score+cost+speed) falls back to the
+        first config — the deterministic last-resort tiebreaker."""
+        base = dict(
+            total_tasks=3,
+            completed=3,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.8,
+            median_score=0.8,
+            total_duration_sec=30.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.40,
+            total_tokens=1000,
+        )
+        a = ConfigSummary(label="a", **base)
+        b = ConfigSummary(label="b", **base)
+        assert compare_configs(a, b).winner == "a"
+        assert compare_configs(b, a).winner == "b"
+
 
 # ---------------------------------------------------------------------------
 # rank_configs
