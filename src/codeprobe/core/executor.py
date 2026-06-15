@@ -1172,6 +1172,40 @@ def execute_config(
             if sem is not None:
                 sem.release()
 
+    def _crash_result(
+        task_dir: Path, repeat_index: int, exc: BaseException
+    ) -> TaskResult:
+        """Preserve a per-task crash as one ``status="error"`` result.
+
+        Shared by both the sequential and parallel dispatch paths so an
+        uncaught exception (a scorer bug, a KeyError, …) is scored as a
+        single error trial instead of being dropped or aborting the whole
+        config (codeprobe-s6o). CLAUDE.md: don't drop score failures.
+        """
+        logger.error(
+            "[%s] %s repeat %d raised: %s",
+            experiment_config.label,
+            task_dir.name,
+            repeat_index,
+            exc,
+        )
+        return TaskResult(
+            completed=CompletedTask(
+                task_id=task_dir.name,
+                automated_score=0.0,
+                repeat_index=repeat_index,
+                status="error",
+                error_category=_classify_error(exc),
+                # Crash before the per-trial cap was resolved — keep the
+                # envelope schema uniform with an unresolved cap.
+                metadata={
+                    "error": str(exc),
+                    "max_turns_chosen": None,
+                    "max_turns_source": "",
+                },
+            ),
+        )
+
     budget_warning_emitted = False
     # Set when an adapter signals an unrecoverable error category (e.g.
     # OAuth quota exhausted) — the dispatch loop checks this and halts
@@ -1313,7 +1347,15 @@ def execute_config(
                         extra_excludes=clean_excludes,
                         restore_ref=original_ref,
                     )
-                task_result = _run_one(task_dir, repeat_index=repeat_index)
+                try:
+                    task_result = _run_one(task_dir, repeat_index=repeat_index)
+                except Exception as exc:  # noqa: BLE001 — preserve, don't drop
+                    # Mirror the parallel path: a per-task crash becomes one
+                    # error result and the rest of the config still runs
+                    # (codeprobe-s6o). Without this, an uncaught scorer
+                    # exception aborted execute_config and dropped every
+                    # already-collected result for this config.
+                    task_result = _crash_result(task_dir, repeat_index, exc)
                 _handle_result(task_result)
             # Restore original HEAD after all sequential tasks complete so
             # the repo isn't left on a detached commit from the last task.
@@ -1380,31 +1422,8 @@ def execute_config(
                         task_dir, repeat_index = future_to_work[future]
                         try:
                             task_result = future.result()
-                        except Exception as exc:
-                            logger.error(
-                                "[%s] %s repeat %d raised: %s",
-                                experiment_config.label,
-                                task_dir.name,
-                                repeat_index,
-                                exc,
-                            )
-                            task_result = TaskResult(
-                                completed=CompletedTask(
-                                    task_id=task_dir.name,
-                                    automated_score=0.0,
-                                    repeat_index=repeat_index,
-                                    status="error",
-                                    error_category=_classify_error(exc),
-                                    # Thread-pool crash before the per-trial
-                                    # cap was resolved — keep the envelope
-                                    # schema uniform with an unresolved cap.
-                                    metadata={
-                                        "error": str(exc),
-                                        "max_turns_chosen": None,
-                                        "max_turns_source": "",
-                                    },
-                                ),
-                            )
+                        except Exception as exc:  # noqa: BLE001 — preserve, don't drop
+                            task_result = _crash_result(task_dir, repeat_index, exc)
                         _handle_result(task_result)
 
                         # Halt on either budget exhaustion or quota

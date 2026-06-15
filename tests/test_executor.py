@@ -386,6 +386,69 @@ def test_execute_config_runs_all_tasks(tmp_path: Path):
     assert len(adapter.run_calls) == 3
 
 
+class _RaisingScorer:
+    """A scorer whose .score() raises an unexpected exception (not one of the
+    OSError/JSONDecodeError/ValueError/TypeError types execute_task handles)."""
+
+    def score(self, *args, **kwargs):
+        raise KeyError("simulated scorer bug")
+
+
+def test_execute_config_sequential_preserves_scorer_crash(tmp_path: Path):
+    """codeprobe-s6o A1: in the DEFAULT sequential path, an uncaught scorer
+    exception is preserved as one status='error' trial — not propagated (which
+    used to abort execute_config and DROP every already-collected result)."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    with patch(
+        "codeprobe.core.executor.get_scorer", return_value=_RaisingScorer()
+    ):
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=1,
+        )
+
+    assert len(results) == 3  # nothing dropped
+    assert all(r.status == "error" for r in results)  # scored incorrect, not dropped
+    assert all(r.automated_score == 0.0 for r in results)
+    assert {r.task_id for r in results} == {t.name for t in tasks}
+
+
+def test_execute_config_parallel_preserves_scorer_crash(tmp_path: Path):
+    """codeprobe-s6o A2: the parallel path preserves the same crash identically
+    (both paths route through the shared _crash_result envelope)."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    fake_iso = MagicMock()
+    fake_iso.acquire.return_value = tmp_path
+    with (
+        patch("codeprobe.core.executor.get_scorer", return_value=_RaisingScorer()),
+        patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso),
+    ):
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=tmp_path,
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=3,
+        )
+
+    assert len(results) == 3
+    assert all(r.status == "error" for r in results)
+    assert all(r.automated_score == 0.0 for r in results)
+
+
 def test_execute_config_skips_checkpointed(tmp_path: Path):
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
     adapter = FakeAdapter(stdout="output")
