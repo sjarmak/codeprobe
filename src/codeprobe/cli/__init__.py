@@ -1328,6 +1328,68 @@ def assess(
     )
 
 
+@main.command()
+@add_json_flags
+@click.argument("run_dir", default=None, required=False, type=click.Path(exists=True))
+@click.option(
+    "--output",
+    "output",
+    default=None,
+    type=click.Path(),
+    help="Output HTML path (default: <run-dir>/explorer.html).",
+)
+def explore(
+    run_dir: str | None,
+    output: str | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
+    """Generate a self-contained HTML explorer for a run's trial data.
+
+    Reads a ``runs/<id>/`` directory's ``per_trial.json`` and writes one
+    offline ``explorer.html`` (no server, no network) for manual validity
+    audits — sort/filter every trial and spot infra/invalid trials at a
+    glance. With no RUN_DIR, picks the newest run under ``./runs``.
+    """
+    from pathlib import Path as _Path
+
+    from codeprobe.analysis.run_explorer import newest_run_dir, write_explorer
+    from codeprobe.cli.errors import PrescriptiveError
+
+    mode = resolve_mode("explore", json_flag, no_json_flag, json_lines_flag)
+
+    if run_dir is not None:
+        target = _Path(run_dir).resolve()
+    else:
+        runs_root = _Path("runs")
+        try:
+            target = newest_run_dir(runs_root)
+        except FileNotFoundError as exc:
+            raise PrescriptiveError(
+                code="NO_RUNS_DIR",
+                message=(
+                    "No RUN_DIR given and no run directory with per_trial.json "
+                    "was found under ./runs. Pass one explicitly: "
+                    "codeprobe explore runs/<id>."
+                ),
+                next_try_flag="run-dir",
+                next_try_value="runs/<id>",
+            ) from exc
+
+    out_path = _Path(output).resolve() if output else None
+    written = write_explorer(target, out_path)
+
+    if mode.mode == "pretty":
+        click.echo(f"Wrote {written}")
+        click.echo(f"Open it from disk: file://{written}")
+    else:
+        emit_envelope(
+            command="explore",
+            data={"run_dir": str(target), "explorer_html": str(written)},
+        )
+
+
 @main.command("oracle-check")
 @add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True))
