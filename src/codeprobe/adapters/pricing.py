@@ -39,7 +39,12 @@ class PricingTable:
 
 
 def staleness_warn(table: PricingTable) -> None:
-    """Emit a ``UserWarning`` when *table* is past the staleness threshold."""
+    """Warn if *table* was last verified over ``PRICING_STALENESS_DAYS`` ago.
+
+    No-op when the table is still fresh. Called once per table at import so a
+    rate that has gone unchecked past the threshold surfaces a ``UserWarning``
+    pointing at the file and date to re-verify.
+    """
     age_days = (date.today() - table.last_verified).days
     if age_days > PRICING_STALENESS_DAYS:
         warnings.warn(
