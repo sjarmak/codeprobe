@@ -207,7 +207,7 @@ class TestNdjsonStreamCollector:
         assert usage.input_tokens > 0
         assert usage.cost_model == "per_token"
         assert usage.cost_source == "estimated"
-        gpt4o = COPILOT_PRICING["gpt-4o"]
+        gpt4o = COPILOT_PRICING.rates["gpt-4o"]
         expected_cost = (
             usage.input_tokens * gpt4o[0] / 1_000_000 + 87 * gpt4o[1] / 1_000_000
         )
@@ -314,8 +314,8 @@ class TestApiResponseCollector:
 
 class TestPricingMetadata:
     def test_copilot_pricing_has_gpt4o(self):
-        assert "gpt-4o" in COPILOT_PRICING
-        inp, out = COPILOT_PRICING["gpt-4o"]
+        assert "gpt-4o" in COPILOT_PRICING.rates
+        inp, out = COPILOT_PRICING.rates["gpt-4o"]
         assert inp > 0
         assert out > 0
 
@@ -391,7 +391,7 @@ class TestGoldenFileContracts:
             usage.cost_model == "per_token"
         ), f"Golden contract broken: expected cost_model='per_token', got {usage.cost_model!r}"
         # Verify cost is computed from GPT-4o pricing
-        gpt4o = COPILOT_PRICING["gpt-4o"]
+        gpt4o = COPILOT_PRICING.rates["gpt-4o"]
         expected_cost = 9200 * gpt4o[0] / 1_000_000 + 198 * gpt4o[1] / 1_000_000
         assert usage.cost_usd == pytest.approx(
             expected_cost, abs=1e-8
@@ -422,7 +422,7 @@ class TestNdjsonCostSourceEstimated:
             '{"type":"assistant.message","data":{"content":"resp","outputTokens":100}}\n'
         )
         usage = self.collector.collect(raw)
-        gpt4o = COPILOT_PRICING["gpt-4o"]
+        gpt4o = COPILOT_PRICING.rates["gpt-4o"]
         assert usage.input_tokens is not None
         expected = (
             usage.input_tokens * gpt4o[0] / 1_000_000 + 100 * gpt4o[1] / 1_000_000
@@ -521,7 +521,7 @@ class TestNdjsonTiktokenIntegration:
         assert usage.error is None
 
         # Verify cost is computed from exact token count
-        gpt4o = COPILOT_PRICING["gpt-4o"]
+        gpt4o = COPILOT_PRICING.rates["gpt-4o"]
         expected_cost = 7 * gpt4o[0] / 1_000_000 + 10 * gpt4o[1] / 1_000_000
         assert usage.cost_usd == pytest.approx(expected_cost, abs=1e-10)
 

@@ -535,7 +535,7 @@ class NdjsonStreamCollector:
         # underlying model).  Even on a subscription plan, token-based cost
         # estimates allow meaningful comparisons across configs and agents.
         estimated_cost: float | None = None
-        gpt4o_pricing = COPILOT_PRICING.get("gpt-4o")
+        gpt4o_pricing = COPILOT_PRICING.rates.get("gpt-4o")
         if gpt4o_pricing is not None and output_tokens is not None:
             out_cost = output_tokens * gpt4o_pricing[1] / 1_000_000
             in_cost = (
@@ -571,7 +571,10 @@ class ApiResponseCollector:
     def __init__(
         self, pricing: PricingTable | dict[str, tuple[float, float]] | None = None
     ) -> None:
-        self._pricing = pricing if pricing is not None else CODEX_PRICING
+        source = pricing if pricing is not None else CODEX_PRICING
+        # The collector only needs the model→rate mapping, so normalize a
+        # PricingTable down to its rates dict and keep a plain-dict lookup.
+        self._rates = source.rates if isinstance(source, PricingTable) else source
 
     def collect(self, raw_output: str, **context: Any) -> UsageData:
         input_tokens: int | None = context.get("input_tokens")
@@ -581,7 +584,7 @@ class ApiResponseCollector:
         if input_tokens is None or output_tokens is None:
             return UsageData(error="OpenAI response contained no usage data")
 
-        pricing = self._pricing.get(model)
+        pricing = self._rates.get(model)
         if pricing is not None:
             cost_usd = (
                 input_tokens * pricing[0] / 1_000_000

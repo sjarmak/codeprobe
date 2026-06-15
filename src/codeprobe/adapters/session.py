@@ -142,7 +142,7 @@ def _calculate_cost(
     cache_creation_tokens: int = 0,
 ) -> float | None:
     """Calculate USD cost from token counts and Claude pricing table."""
-    pricing = CLAUDE_PRICING.get(model)
+    pricing = CLAUDE_PRICING.rates.get(model)
     if pricing is None:
         return None
     input_rate, output_rate, cache_read_rate, cache_write_rate = pricing
