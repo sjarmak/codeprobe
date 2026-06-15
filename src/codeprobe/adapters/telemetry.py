@@ -216,8 +216,13 @@ def parse_mcp_init_manifest(raw_output: str) -> McpInitManifest:
             continue
         # First system event carrying the init surface wins. Some CLI
         # versions tag it ``subtype: "init"``; tolerate the field's absence
-        # as long as the surface keys are present.
+        # as long as the surface keys are present. Requiring at least one
+        # surface key stops a bare ``{"type": "system"}`` event from
+        # matching first and shadowing a real init event later in the
+        # stream with an empty ``captured=True`` manifest.
         if ev.get("subtype") not in (None, "init"):
+            continue
+        if "tools" not in ev and "mcp_servers" not in ev:
             continue
         raw_tools = ev.get("tools")
         tools: tuple[str, ...] = tuple(

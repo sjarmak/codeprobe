@@ -119,6 +119,16 @@ class TestParseMcpInitManifest:
         assert m.captured is True
         assert set(m.mcp_tools) == set(_NAV_TOOLS)
 
+    def test_bare_system_event_does_not_shadow_real_init(self) -> None:
+        # A bare ``{"type": "system"}`` carrying no surface keys must not
+        # match first and return an empty ``captured=True`` manifest — the
+        # real init event later in the stream must win.
+        bare = json.dumps({"type": "system"})
+        stream = bare + "\n" + _stream(tools=["Read", *_NAV_TOOLS])
+        m = parse_mcp_init_manifest(stream)
+        assert m.captured is True
+        assert set(m.mcp_tools) == set(_NAV_TOOLS)
+
 
 class TestToDict:
     def test_to_dict_shape(self) -> None:
