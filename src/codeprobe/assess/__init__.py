@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from codeprobe.assess.heuristics import (
+    ALLOWED_SCORING_METHODS,
     RUBRIC_V1,
     AssessmentScore,
     DimensionScore,
@@ -22,6 +23,7 @@ from codeprobe.assess.oracle_diff import (
 )
 
 __all__ = [
+    "ALLOWED_SCORING_METHODS",
     "AssessmentScore",
     "CheckOutcome",
     "DimensionScore",

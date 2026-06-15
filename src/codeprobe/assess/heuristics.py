@@ -124,6 +124,12 @@ class DimensionScore:
     reasoning: str
 
 
+# Every assessment must declare how it was scored so a heuristic-fallback
+# score is never mistaken for a model judgment (codeprobe-b9c #2, ZFC L3).
+# Mirrors the cost_model / cost_source allow-list pattern.
+ALLOWED_SCORING_METHODS: frozenset[str] = frozenset({"model", "heuristic"})
+
+
 @dataclass(frozen=True)
 class AssessmentScore:
     """Benchmarking potential score with per-dimension breakdown."""
@@ -131,9 +137,19 @@ class AssessmentScore:
     overall: float
     recommendation: str
     dimensions: tuple[DimensionScore, ...]
-    scoring_method: str  # "model" or "heuristic"
+    scoring_method: str  # one of ALLOWED_SCORING_METHODS
     model_used: str | None = None
     details: dict[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Structural guarantee: an AssessmentScore cannot exist with an
+        # empty/unknown method, so ``overall`` can never be presented
+        # without an honest, known ``scoring_method`` label.
+        if self.scoring_method not in ALLOWED_SCORING_METHODS:
+            raise ValueError(
+                f"Unknown scoring_method: {self.scoring_method!r}. "
+                f"Expected one of: {sorted(ALLOWED_SCORING_METHODS)}"
+            )
 
 
 # ---------------------------------------------------------------------------
