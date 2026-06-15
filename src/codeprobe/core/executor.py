@@ -48,6 +48,8 @@ from codeprobe.core.preamble import (
 from codeprobe.core.scoring import (
     COPYTREE_IGNORE,
     AgentState,
+    ScoreResult,
+    Scorer,
     get_scorer,
     read_task_metadata,
     sanitize_secrets,
@@ -61,7 +63,7 @@ from codeprobe.core.turn_cap import (
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 
 if TYPE_CHECKING:
-    from codeprobe.adapters.protocol import AgentAdapter, AgentConfig
+    from codeprobe.adapters.protocol import AgentAdapter, AgentConfig, AgentOutput
     from codeprobe.trace.recorder import TraceRecorder
 
 
@@ -282,6 +284,162 @@ def resolve_instruction_variant(
     if (task_dir / _MCP_INSTRUCTION_VARIANT).is_file():
         return _MCP_INSTRUCTION_VARIANT
     return None
+
+
+def _build_scoring_details(score_result: ScoreResult) -> dict:
+    """Project a ScoreResult into the CompletedTask.scoring_details dict.
+
+    Keeps the backward-compatible passed/error fields and surfaces the voxa
+    contract (scorer_family, sub_scores) plus the Slice 1b verdict /
+    materialized_via / diagnostics so aggregate reporting can tell agent
+    failure from verifier-infrastructure failure. Extracted from
+    ``execute_task`` so the scoring projection is independently testable
+    (codeprobe-s6o).
+    """
+    details: dict = {"passed": score_result.passed, "error": score_result.error}
+    if score_result.details:
+        details.update(dict(score_result.details))
+    if score_result.scorer_family:
+        details["scorer_family"] = score_result.scorer_family
+    if score_result.sub_scores:
+        details["sub_scores"] = dict(score_result.sub_scores)
+    if score_result.verdict is not None:
+        details["verdict"] = score_result.verdict
+    details["materialized_via"] = score_result.materialized_via
+    if score_result.diagnostics:
+        details["diagnostics"] = dict(score_result.diagnostics)
+    return details
+
+
+def _score_in_sandbox(
+    *,
+    task_id: str,
+    task_dir: Path,
+    output: AgentOutput,
+    scorer: Scorer,
+    found_answer: Path | None,
+    found_answer_json: Path | None,
+    dual_mode: bool,
+    effective_wt: Path | None,
+    base_commit: str | None,
+    effective_workspace: Path,
+    turn_cap_meta: dict,
+    output_fields: dict,
+    resolved_preambles: list[dict[str, str]],
+) -> TaskResult:
+    """Score the agent output in an isolated per-run sandbox.
+
+    Snapshots the task files (and any agent-produced answer artifacts) into a
+    fresh temp dir so concurrent runs never share mutable scoring state, runs
+    the scorer, and projects the result into a ``TaskResult``. Extracted from
+    ``execute_task`` (codeprobe-s6o, HIGH #3) so the scoring stage is a named,
+    independently-testable unit. Behaviour is unchanged.
+    """
+    with tempfile.TemporaryDirectory(prefix=f"codeprobe-score-{task_id}-") as _tmp:
+        scoring_dir = Path(_tmp) / task_id
+        try:
+            shutil.copytree(
+                task_dir,
+                scoring_dir,
+                symlinks=True,
+                ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
+            )
+        except OSError as exc:
+            return TaskResult(
+                completed=CompletedTask(
+                    task_id=task_id,
+                    automated_score=0.0,
+                    status="error",
+                    metadata={
+                        "error": f"Failed to snapshot task dir: {exc}",
+                        **turn_cap_meta,
+                    },
+                    **output_fields,
+                ),
+                agent_stdout=output.stdout,
+                agent_stderr=output.stderr or "",
+            )
+
+        # Drop any stale answer files copied from the source task dir
+        # — we only want the current run's artifacts in the sandbox.
+        _drop_stale_answers(scoring_dir)
+
+        artifact_copy_error: str | None = None
+        if found_answer is not None:
+            try:
+                shutil.copy2(found_answer, scoring_dir / "answer.txt")
+            except OSError as exc:
+                artifact_copy_error = (
+                    f"failed to stage answer.txt from {found_answer}: {exc}"
+                )
+        if found_answer_json is not None and artifact_copy_error is None:
+            try:
+                shutil.copy2(found_answer_json, scoring_dir / "answer.json")
+            except OSError as exc:
+                artifact_copy_error = (
+                    f"failed to stage answer.json from {found_answer_json}: {exc}"
+                )
+
+        # In dual mode the artifact leg is load-bearing for scoring;
+        # a missing copy would silently fall through to a 0-score
+        # artifact result that default/weighted policy can still
+        # clamp into a pass. Fail closed instead.
+        if dual_mode and artifact_copy_error is not None:
+            return TaskResult(
+                completed=CompletedTask(
+                    task_id=task_id,
+                    automated_score=0.0,
+                    status="error",
+                    metadata={"error": artifact_copy_error, **turn_cap_meta},
+                    **output_fields,
+                ),
+                agent_stdout=output.stdout,
+                agent_stderr=output.stderr or "",
+            )
+
+        # Bind TASK_REPO_ROOT so a dual task's ``tests/test.sh`` cd's
+        # into the per-run worktree instead of the shared mined
+        # ``repo_path`` fallback. Non-dual runs and runs without an
+        # owned worktree see no override.
+        env_overrides: dict[str, str] | None = None
+        if effective_wt is not None:
+            env_overrides = {"TASK_REPO_ROOT": str(effective_wt)}
+
+        # When eligible (single-repo, no source-quarantine, git
+        # workspace), pass the captured base_commit to scorers that
+        # accept it so the verifier runs against a fresh checkout
+        # with the agent's full diff materialised (Slice 1b —
+        # codeprobe-xysn). Support is detected structurally — any
+        # scorer opting into the ``agent_state`` kwarg gets it;
+        # the rest keep the legacy in_place behavior.
+        agent_state: AgentState | None = None
+        if base_commit is not None and scorer_accepts_agent_state(scorer):
+            agent_state = AgentState(
+                base_commit=base_commit, workspace=effective_workspace
+            )
+
+        score_kwargs: dict[str, AgentState] = (
+            {"agent_state": agent_state} if agent_state is not None else {}
+        )
+        with scorer_env_override(env_overrides):
+            score_result = scorer.score(output.stdout, scoring_dir, **score_kwargs)
+
+    metadata: dict = dict(turn_cap_meta)
+    if resolved_preambles:
+        metadata["resolved_preambles"] = resolved_preambles
+
+    return TaskResult(
+        completed=CompletedTask(
+            task_id=task_id,
+            automated_score=score_result.score,
+            status="completed",
+            scoring_details=_build_scoring_details(score_result),
+            metadata=metadata,
+            **output_fields,
+        ),
+        agent_stdout=output.stdout,
+        agent_stderr=output.stderr or "",
+    )
 
 
 def execute_task(
@@ -688,146 +846,23 @@ def execute_task(
                 agent_stderr=output.stderr or "",
             )
 
-        # Per-run scoring sandbox: snapshot the task files (and any
-        # agent-produced answer artifacts) into a fresh temp directory so
-        # concurrent runs never share mutable scoring state. The original
-        # task_dir on disk is never mutated by scoring.
-        with tempfile.TemporaryDirectory(prefix=f"codeprobe-score-{task_id}-") as _tmp:
-            scoring_dir = Path(_tmp) / task_id
-            try:
-                shutil.copytree(
-                    task_dir,
-                    scoring_dir,
-                    symlinks=True,
-                    ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
-                )
-            except OSError as exc:
-                return TaskResult(
-                    completed=CompletedTask(
-                        task_id=task_id,
-                        automated_score=0.0,
-                        status="error",
-                        metadata={
-                            "error": f"Failed to snapshot task dir: {exc}",
-                            **_turn_cap_meta,
-                        },
-                        **_output_fields(),
-                    ),
-                    agent_stdout=output.stdout,
-                    agent_stderr=output.stderr or "",
-                )
-
-            # Drop any stale answer files copied from the source task dir
-            # — we only want the current run's artifacts in the sandbox.
-            _drop_stale_answers(scoring_dir)
-
-            artifact_copy_error: str | None = None
-            if found_answer is not None:
-                try:
-                    shutil.copy2(found_answer, scoring_dir / "answer.txt")
-                except OSError as exc:
-                    artifact_copy_error = (
-                        f"failed to stage answer.txt from {found_answer}: {exc}"
-                    )
-            if found_answer_json is not None and artifact_copy_error is None:
-                try:
-                    shutil.copy2(found_answer_json, scoring_dir / "answer.json")
-                except OSError as exc:
-                    artifact_copy_error = (
-                        f"failed to stage answer.json from {found_answer_json}: {exc}"
-                    )
-
-            # In dual mode the artifact leg is load-bearing for scoring;
-            # a missing copy would silently fall through to a 0-score
-            # artifact result that default/weighted policy can still
-            # clamp into a pass. Fail closed instead.
-            if dual_mode and artifact_copy_error is not None:
-                return TaskResult(
-                    completed=CompletedTask(
-                        task_id=task_id,
-                        automated_score=0.0,
-                        status="error",
-                        metadata={"error": artifact_copy_error, **_turn_cap_meta},
-                        **_output_fields(),
-                    ),
-                    agent_stdout=output.stdout,
-                    agent_stderr=output.stderr or "",
-                )
-
-            # Bind TASK_REPO_ROOT so a dual task's ``tests/test.sh`` cd's
-            # into the per-run worktree instead of the shared mined
-            # ``repo_path`` fallback. Non-dual runs and runs without an
-            # owned worktree see no override.
-            env_overrides: dict[str, str] | None = None
-            if _effective_wt is not None:
-                env_overrides = {"TASK_REPO_ROOT": str(_effective_wt)}
-
-            # When eligible (single-repo, no source-quarantine, git
-            # workspace), pass the captured base_commit to scorers that
-            # accept it so the verifier runs against a fresh checkout
-            # with the agent's full diff materialised (Slice 1b —
-            # codeprobe-xysn). Support is detected structurally — any
-            # scorer opting into the ``agent_state`` kwarg gets it;
-            # the rest keep the legacy in_place behavior.
-            agent_state: AgentState | None = None
-            if base_commit is not None and scorer_accepts_agent_state(scorer):
-                agent_state = AgentState(
-                    base_commit=base_commit, workspace=effective_workspace
-                )
-
-            score_kwargs: dict[str, AgentState] = (
-                {"agent_state": agent_state} if agent_state is not None else {}
-            )
-            with scorer_env_override(env_overrides):
-                score_result = scorer.score(
-                    output.stdout, scoring_dir, **score_kwargs
-                )
-
-        metadata: dict = dict(_turn_cap_meta)
-        if resolved_preambles:
-            metadata["resolved_preambles"] = resolved_preambles
-
-        # Propagate ScoreResult.details into CompletedTask.scoring_details
-        # as a plain dict, keeping the backward-compatible passed/error
-        # fields so existing consumers continue to work. The new voxa
-        # contract surfaces scorer_family and sub_scores too so the
-        # aggregate report can show which rubric drove each task's reward.
-        scoring_details: dict = {
-            "passed": score_result.passed,
-            "error": score_result.error,
-        }
-        if score_result.details:
-            scoring_details.update(dict(score_result.details))
-        if score_result.scorer_family:
-            scoring_details["scorer_family"] = score_result.scorer_family
-        if score_result.sub_scores:
-            scoring_details["sub_scores"] = dict(score_result.sub_scores)
-        # Slice 1b: surface verdict (correct/incorrect/verifier_error) and
-        # materialized_via (in_place/git_apply) so aggregate.json and
-        # downstream review tooling can distinguish agent failure from
-        # verifier-infrastructure failure.
-        if score_result.verdict is not None:
-            scoring_details["verdict"] = score_result.verdict
-        scoring_details["materialized_via"] = score_result.materialized_via
-        if score_result.diagnostics:
-            # Carry the IR-metrics diagnostics into scoring_details so
-            # aggregate.json and downstream consumers see the same shape
-            # the scorer emitted. The serialiser in _save_task_artifacts
-            # adds run-level fields (task_time_seconds / token_cost_usd)
-            # on top.
-            scoring_details["diagnostics"] = dict(score_result.diagnostics)
-
-        return TaskResult(
-            completed=CompletedTask(
-                task_id=task_id,
-                automated_score=score_result.score,
-                status="completed",
-                scoring_details=scoring_details,
-                metadata=metadata,
-                **_output_fields(),
-            ),
-            agent_stdout=output.stdout,
-            agent_stderr=output.stderr or "",
+        # Scoring runs in an isolated per-run sandbox; the projection of the
+        # ScoreResult into a TaskResult lives in _score_in_sandbox so the
+        # scoring stage is a named, independently-testable unit (codeprobe-s6o).
+        return _score_in_sandbox(
+            task_id=task_id,
+            task_dir=task_dir,
+            output=output,
+            scorer=scorer,
+            found_answer=found_answer,
+            found_answer_json=found_answer_json,
+            dual_mode=dual_mode,
+            effective_wt=_effective_wt,
+            base_commit=base_commit,
+            effective_workspace=effective_workspace,
+            turn_cap_meta=_turn_cap_meta,
+            output_fields=_output_fields(),
+            resolved_preambles=resolved_preambles,
         )
     finally:
         if _owned_dual_iso is not None:

@@ -449,6 +449,36 @@ def test_execute_config_parallel_preserves_scorer_crash(tmp_path: Path):
     assert all(r.automated_score == 0.0 for r in results)
 
 
+def test_build_scoring_details_projects_score_result():
+    """codeprobe-s6o A3: the extracted scoring-details projection is
+    independently testable — voxa + Slice 1b fields surface, empties omitted."""
+    from codeprobe.core.executor import _build_scoring_details
+    from codeprobe.core.scoring import ScoreResult
+
+    sr = ScoreResult(
+        score=0.8,
+        passed=True,
+        scorer_family="continuous",
+        sub_scores={"raw_score": 0.8},
+        verdict="correct",
+        materialized_via="git_apply",
+        diagnostics={"precision": 0.9},
+    )
+    d = _build_scoring_details(sr)
+    assert d["passed"] is True
+    assert d["scorer_family"] == "continuous"
+    assert d["sub_scores"] == {"raw_score": 0.8}
+    assert d["verdict"] == "correct"
+    assert d["materialized_via"] == "git_apply"
+    assert d["diagnostics"] == {"precision": 0.9}
+
+    # Empty optionals are omitted (not emitted as empty dicts/None family).
+    minimal = _build_scoring_details(ScoreResult(score=0.0, passed=False))
+    assert "scorer_family" not in minimal
+    assert "sub_scores" not in minimal
+    assert minimal["materialized_via"] == "in_place"
+
+
 def test_execute_config_skips_checkpointed(tmp_path: Path):
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
     adapter = FakeAdapter(stdout="output")
