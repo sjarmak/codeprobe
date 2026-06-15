@@ -599,6 +599,9 @@ def execute_task(
                 num_turns=output.num_turns,
                 result_subtype=output.result_subtype,
                 duration_api_ms=output.duration_api_ms,
+                mcp_init=output.mcp_init.to_dict()
+                if output.mcp_init is not None
+                else None,
             )
 
         # For oracle tasks, the agent writes answer.txt / answer.json to the
@@ -941,6 +944,7 @@ def _save_task_artifacts(
     Creates runs/{config_label}/{task_id}/ with:
       - agent_output.txt  — raw agent stdout (for trace/debug)
       - agent_error.txt   — raw agent stderr (only if non-empty)
+      - mcp_init.json     — offered tool surface (only when captured)
       - scoring.json      — scoring details
     """
     task_dir = runs_dir / task_id
@@ -956,6 +960,16 @@ def _save_task_artifacts(
     if task_result.agent_stderr:
         (task_dir / "agent_error.txt").write_text(
             sanitize_secrets(task_result.agent_stderr), encoding="utf-8"
+        )
+
+    # Offered tool surface (codeprobe-9p6) — zero-inference proof of which
+    # tools/MCP servers were available this trial. Written whenever the
+    # adapter captured a manifest, including the captured-but-empty and
+    # failed-attach cases, so an MCP-vs-local comparison can verify the
+    # surface per arm instead of inferring it.
+    if completed.mcp_init is not None:
+        (task_dir / "mcp_init.json").write_text(
+            _json.dumps(completed.mcp_init, indent=2) + "\n", encoding="utf-8"
         )
 
     # Scoring details — emit the unified ScoreResult contract: ``reward``

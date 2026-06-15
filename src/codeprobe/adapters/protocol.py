@@ -30,6 +30,63 @@ class AdapterExecutionError(AdapterError):
 
 
 @dataclass(frozen=True)
+class McpServerStatus:
+    """Attach status of a single MCP server, verbatim from the CLI init event.
+
+    ``status`` is the raw string the agent CLI reported (Claude emits e.g.
+    ``"connected"`` / ``"failed"`` / ``"pending"``). It is NOT normalised so
+    an arm-level audit can read the exact attach outcome.
+    """
+
+    name: str
+    status: str
+
+
+@dataclass(frozen=True)
+class McpInitManifest:
+    """The tool surface actually offered to the agent for one trial.
+
+    Captured from the ``--output-format stream-json --verbose`` ``init`` /
+    ``system`` event the CLI emits before the first turn. This is the
+    zero-inference record of which tools and MCP servers were *available*
+    in an arm (codeprobe-9p6): a server that silently fails to attach is
+    distinguishable from an agent that simply chose not to call it.
+
+    ``captured`` is ``False`` when no init event was found in the stream
+    (single-envelope ``--output-format json``, a quota stub, or a crashed
+    run). The empty manifest is recorded explicitly rather than dropped, so
+    "no tools offered" is never confused with "tools not measured"
+    (adapter-contract: preserve partial data with an error field).
+    """
+
+    captured: bool
+    offered_tools: tuple[str, ...] = ()
+    mcp_servers: tuple[McpServerStatus, ...] = ()
+
+    @property
+    def mcp_tools(self) -> tuple[str, ...]:
+        """The ``mcp__<server>__<tool>`` subset of the offered tools."""
+        return tuple(t for t in self.offered_tools if t.startswith("mcp__"))
+
+    @property
+    def failed_servers(self) -> tuple[McpServerStatus, ...]:
+        """Configured servers the CLI could not attach (status != connected)."""
+        return tuple(s for s in self.mcp_servers if s.status != "connected")
+
+    def to_dict(self) -> dict:
+        """Plain-dict form for per-trial artifacts and checkpoint storage."""
+        return {
+            "captured": self.captured,
+            "offered_tools": list(self.offered_tools),
+            "mcp_tools": list(self.mcp_tools),
+            "mcp_servers": [
+                {"name": s.name, "status": s.status} for s in self.mcp_servers
+            ],
+            "failed_servers": [s.name for s in self.failed_servers],
+        }
+
+
+@dataclass(frozen=True)
 class AgentOutput:
     """Result from running an agent on a task."""
 
@@ -71,6 +128,12 @@ class AgentOutput:
     num_turns: int | None = None
     result_subtype: str | None = None
     duration_api_ms: int | None = None
+    # The tool surface actually offered to the agent this trial, parsed
+    # from the stream-json init event (codeprobe-9p6). None when the
+    # adapter has no streaming transcript to parse; a captured-but-empty
+    # manifest is represented as McpInitManifest(captured=...) so a failed
+    # attach is never silently indistinguishable from a declined tool.
+    mcp_init: McpInitManifest | None = None
 
     def __post_init__(self) -> None:
         if self.cost_model not in ALLOWED_COST_MODELS:

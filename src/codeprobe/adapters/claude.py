@@ -19,7 +19,10 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
-from codeprobe.adapters.telemetry import JsonStdoutCollector
+from codeprobe.adapters.telemetry import (
+    JsonStdoutCollector,
+    parse_mcp_init_manifest,
+)
 from codeprobe.core.sandbox import is_sandboxed
 
 # Claude CLI accepts aliases (sonnet, opus, haiku) or short model IDs
@@ -486,6 +489,11 @@ class ClaudeAdapter(BaseAdapter):
             result.stdout, **self._current_trace_context()
         )
 
+        # Zero-inference proof of the offered tool surface (codeprobe-9p6).
+        # Parsed from the stream-json init event; a captured-but-empty or
+        # failed-attach manifest is recorded explicitly, never dropped.
+        mcp_init = parse_mcp_init_manifest(result.stdout)
+
         # Extract content text. For stream-json, the terminal result event
         # has a ``result`` field; iterate events to find it. For single
         # envelope, json.loads works directly.
@@ -547,4 +555,5 @@ class ClaudeAdapter(BaseAdapter):
             num_turns=usage.num_turns,
             result_subtype=usage.result_subtype,
             duration_api_ms=usage.duration_api_ms,
+            mcp_init=mcp_init,
         )

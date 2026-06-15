@@ -13,7 +13,12 @@ from codeprobe.adapters.pricing import (
     COPILOT_PRICING,
     PricingTable,
 )
-from codeprobe.adapters.protocol import ALLOWED_COST_MODELS, ALLOWED_COST_SOURCES
+from codeprobe.adapters.protocol import (
+    ALLOWED_COST_MODELS,
+    ALLOWED_COST_SOURCES,
+    McpInitManifest,
+    McpServerStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +188,58 @@ def _parse_stream_json(raw_output: str) -> tuple[dict[str, Any] | None, int, dic
         if ev.get("type") == "result":
             result_event = ev
     return result_event, tool_use_count, by_name
+
+
+def parse_mcp_init_manifest(raw_output: str) -> McpInitManifest:
+    """Extract the offered tool surface from a stream-json ``init`` event.
+
+    The Claude CLI run with ``--output-format stream-json --verbose`` emits
+    a ``type: "system"`` / ``subtype: "init"`` event before the first turn
+    that lists the ``tools`` offered (built-in + ``mcp__<server>__<tool>``)
+    and the ``mcp_servers`` it attached, each with a ``status``. This is the
+    only on-disk proof of which tools were actually available in an arm
+    (codeprobe-9p6).
+
+    Returns a captured manifest when the init event is present; otherwise a
+    ``McpInitManifest(captured=False)`` — never None — so callers record an
+    explicit "not measured" rather than silently dropping the surface.
+    """
+    for line in raw_output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "system":
+            continue
+        # First system event carrying the init surface wins. Some CLI
+        # versions tag it ``subtype: "init"``; tolerate the field's absence
+        # as long as the surface keys are present.
+        if ev.get("subtype") not in (None, "init"):
+            continue
+        raw_tools = ev.get("tools")
+        tools: tuple[str, ...] = tuple(
+            t for t in raw_tools if isinstance(t, str)
+        ) if isinstance(raw_tools, list) else ()
+        raw_servers = ev.get("mcp_servers")
+        servers: tuple[McpServerStatus, ...] = (
+            tuple(
+                McpServerStatus(
+                    name=str(s.get("name", "")),
+                    status=str(s.get("status", "")),
+                )
+                for s in raw_servers
+                if isinstance(s, dict)
+            )
+            if isinstance(raw_servers, list)
+            else ()
+        )
+        return McpInitManifest(
+            captured=True, offered_tools=tools, mcp_servers=servers
+        )
+    return McpInitManifest(captured=False)
 
 
 class JsonStdoutCollector:
