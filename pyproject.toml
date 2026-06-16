@@ -134,3 +134,5 @@ ignore = ["N802", "UP028", "UP042"]
 "src/codeprobe/cli/__init__.py" = ["F401"]
 # Wide HTML template string that reads better on one line than broken up.
 "src/codeprobe/snapshot/exporters/browse.py" = ["E501"]
+# Same: the self-contained run-explorer HTML/JS template (codeprobe-3cs).
+"src/codeprobe/analysis/run_explorer.py" = ["E501"]
