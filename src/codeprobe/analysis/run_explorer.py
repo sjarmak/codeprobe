@@ -86,19 +86,85 @@ def newest_run_dir(runs_root: Path) -> Path:
     return max(candidates, key=lambda d: (d / PER_TRIAL_FILE).stat().st_mtime)
 
 
+RESULTS_FILE = "results.json"
+
+# Reverse of _PER_TRIAL_TO_TASK: map a results.json ``completed`` entry
+# (CompletedTask shape: automated_score / cost_usd / …) back onto the
+# run-facing trial keys the explorer/comparison renderers use.
+_TASK_TO_TRIAL = {v: k for k, v in _PER_TRIAL_TO_TASK.items()}
+
+
+def _normalize_completed_entry(entry: dict, config: str) -> dict:
+    """Normalize a results.json ``completed`` entry into a trial dict.
+
+    Renames CompletedTask keys to the run-facing trial keys, mirrors
+    automated_score into both ``reward`` and ``score``, and lifts the
+    scorer's ``passed`` out of scoring_details when present. Fields the
+    results.json layout doesn't carry (e.g. hit_max_turns) are left ABSENT
+    rather than fabricated — the renderer shows them blank, so partial data
+    is preserved honestly, never invented or dropped (adapter-contract).
+    """
+    trial: dict = {}
+    for key, value in entry.items():
+        trial[_TASK_TO_TRIAL.get(key, key)] = value
+    trial.setdefault("config", config)
+    if "reward" in trial and "score" not in trial:
+        trial["score"] = trial["reward"]
+    scoring_details = entry.get("scoring_details") or {}
+    if isinstance(scoring_details, dict) and "passed" in scoring_details:
+        trial.setdefault("passed", scoring_details["passed"])
+    return trial
+
+
+def _load_per_arm_results(run_dir: Path) -> list[dict]:
+    """Load every arm's results.json under *run_dir* into one trial list.
+
+    The per-arm layout (the 9tk Sourcegraph comparison) is
+    ``<run-dir>/<arm>/results.json`` with ``{config, completed, summary}``.
+    Each ``completed`` entry is normalized and tagged with its arm so the
+    comparison view can group columns by arm. Returns [] when no arm has a
+    results.json (the caller decides whether that's an error).
+    """
+    trials: list[dict] = []
+    for arm_dir in sorted(p for p in run_dir.iterdir() if p.is_dir()):
+        results_path = arm_dir / RESULTS_FILE
+        if not results_path.is_file():
+            continue
+        data = json.loads(results_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            continue
+        config = str(data.get("config") or arm_dir.name)
+        for entry in data.get("completed", []):
+            trials.append(_normalize_completed_entry(entry, config))
+    return trials
+
+
 def load_run_trials(run_dir: Path) -> list[dict]:
-    """Load the per-trial list from a run dir, preserving every field.
+    """Load a run's trials, accepting both on-disk layouts (codeprobe-00e).
+
+    Two layouts are supported (A3):
+      * ``<run-dir>/per_trial.json`` — a flat JSON list of trial dicts
+        (the codeprobe-3cs single-run shape).
+      * ``<run-dir>/<arm>/results.json`` — per-arm CompletedTask lists
+        (the 9tk arm-vs-arm comparison shape), normalized + arm-tagged.
 
     Partial/missing fields are kept as-is (never dropped) so the audit view
     is honest about incomplete data (adapter-contract).
     """
     path = run_dir / PER_TRIAL_FILE
-    if not path.is_file():
-        raise FileNotFoundError(f"{PER_TRIAL_FILE} not found in {run_dir}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise ValueError(f"{path} must contain a JSON list of trials")
-    return data
+    if path.is_file():
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"{path} must contain a JSON list of trials")
+        return data
+
+    per_arm = _load_per_arm_results(run_dir)
+    if per_arm:
+        return per_arm
+
+    raise FileNotFoundError(
+        f"No {PER_TRIAL_FILE} and no <arm>/{RESULTS_FILE} found under {run_dir}"
+    )
 
 
 def compute_validity_flags(trial: dict) -> list[str]:

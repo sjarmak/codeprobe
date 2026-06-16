@@ -175,7 +175,7 @@
       "exit_code": 2,
       "since": "0.7.0",
       "description": "The requested backend identifier does not match any registered codeprobe backend.",
-      "remediation_pattern": "Pass --backend=<one of: claude|codex|copilot|...> — see `codeprobe run --help` for the current registry."
+      "remediation_pattern": "Pass --backend=<one of: claude|codex|copilot|...> \u2014 see `codeprobe run --help` for the current registry."
     },
     {
       "code": "NO_BACKENDS_CONFIGURED",
@@ -190,7 +190,7 @@
       "kind": "diagnostic",
       "exit_code": 2,
       "since": "0.7.0",
-      "description": "Offline preflight checks failed — required cached artifacts or local binaries are unavailable.",
+      "description": "Offline preflight checks failed \u2014 required cached artifacts or local binaries are unavailable.",
       "remediation_pattern": "Run `codeprobe doctor --offline` to list missing prerequisites before retrying."
     },
     {
@@ -231,7 +231,7 @@
       "exit_code": 2,
       "since": "0.7.0",
       "description": "The run exceeded its configured cost/time budget. This error is intentionally diagnostic (not prescriptive): auto-retrying with a higher budget is unsafe and must be an explicit human decision.",
-      "remediation_pattern": "Review the run's cost report and, if intentional, re-run with an explicitly increased --budget — but only after confirming the previous run's behaviour."
+      "remediation_pattern": "Review the run's cost report and, if intentional, re-run with an explicitly increased --budget \u2014 but only after confirming the previous run's behaviour."
     },
     {
       "code": "GOAL_UNDETECTABLE",
@@ -296,6 +296,14 @@
       "since": "0.9.0",
       "description": "The Class E fairness scan found one or more oracle paths or symbols leaking into agent-facing files (CLAUDE.md, AGENTS.md, README, .cursor/rules) or rendered preambles. Agents reading those files would receive an unfair hint about the answer.",
       "remediation_pattern": "Run `codeprobe snapshot fairness <task_root> --report fairness.json` to inspect the leaks, then either redact the offending agent-facing file or remove the leaking task from the corpus before retrying."
+    },
+    {
+      "code": "NO_RUNS_DIR",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "`codeprobe explore` was run with no RUN_DIR and no run directory (a per_trial.json file or per-arm <arm>/results.json dirs) was found under ./runs.",
+      "remediation_pattern": "Pass a run directory explicitly: codeprobe explore runs/<id> (optionally with --serve --port 8766)."
     }
   ]
 }

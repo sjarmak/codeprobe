@@ -136,3 +136,5 @@ ignore = ["N802", "UP028", "UP042"]
 "src/codeprobe/snapshot/exporters/browse.py" = ["E501"]
 # Same: the self-contained run-explorer HTML/JS template (codeprobe-3cs).
 "src/codeprobe/analysis/run_explorer.py" = ["E501"]
+# Same: the arm-vs-arm comparison-viewer HTML/JS template (codeprobe-00e).
+"src/codeprobe/analysis/comparison_viewer.py" = ["E501"]

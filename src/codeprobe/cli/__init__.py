@@ -1338,23 +1338,42 @@ def assess(
     type=click.Path(),
     help="Output HTML path (default: <run-dir>/explorer.html).",
 )
+@click.option(
+    "--serve",
+    "serve_flag",
+    is_flag=True,
+    default=False,
+    help="Serve the viewer over HTTP instead of writing a file (Ctrl-C to stop).",
+)
+@click.option(
+    "--port",
+    "port",
+    default=8766,
+    type=int,
+    help="Port for --serve (default: 8766).",
+)
 def explore(
     run_dir: str | None,
     output: str | None,
+    serve_flag: bool,
+    port: int,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
 ) -> None:
-    """Generate a self-contained HTML explorer for a run's trial data.
+    """Generate or serve an interactive HTML explorer for a run's trial data.
 
-    Reads a ``runs/<id>/`` directory's ``per_trial.json`` and writes one
-    offline ``explorer.html`` (no server, no network) for manual validity
-    audits — sort/filter every trial and spot infra/invalid trials at a
-    glance. With no RUN_DIR, picks the newest run under ``./runs``.
+    Reads a run directory in either layout — a ``per_trial.json`` file or
+    per-arm ``<arm>/results.json`` dirs — and renders a validity-audit view:
+    a single-run trial table for one arm, or an arm-vs-arm side-by-side
+    comparison when >=2 arms are present. Offline (default) writes one
+    self-contained HTML; ``--serve`` serves it over a port (default 8766).
+    With no RUN_DIR, picks the newest run under ``./runs``.
     """
     from pathlib import Path as _Path
 
-    from codeprobe.analysis.run_explorer import newest_run_dir, write_explorer
+    from codeprobe.analysis.comparison_viewer import build_html, serve
+    from codeprobe.analysis.run_explorer import newest_run_dir
     from codeprobe.cli.errors import PrescriptiveError
 
     mode = resolve_mode("explore", json_flag, no_json_flag, json_lines_flag)
@@ -1369,24 +1388,30 @@ def explore(
             raise PrescriptiveError(
                 code="NO_RUNS_DIR",
                 message=(
-                    "No RUN_DIR given and no run directory with per_trial.json "
-                    "was found under ./runs. Pass one explicitly: "
-                    "codeprobe explore runs/<id>."
+                    "No RUN_DIR given and no run directory (per_trial.json or "
+                    "<arm>/results.json) was found under ./runs. Pass one "
+                    "explicitly: codeprobe explore runs/<id>."
                 ),
                 next_try_flag="run-dir",
                 next_try_value="runs/<id>",
             ) from exc
 
-    out_path = _Path(output).resolve() if output else None
-    written = write_explorer(target, out_path)
+    if serve_flag:
+        # Blocking serve loop (stdlib http.server, no new deps).
+        serve(target, port=port)
+        return
+
+    out_path = _Path(output).resolve() if output else target / "explorer.html"
+    out_path.write_text(build_html(target), encoding="utf-8")
 
     if mode.mode == "pretty":
-        click.echo(f"Wrote {written}")
-        click.echo(f"Open it from disk: file://{written}")
+        click.echo(f"Wrote {out_path}")
+        click.echo(f"Open it from disk: file://{out_path}")
+        click.echo(f"Or serve it: codeprobe explore {target} --serve --port {port}")
     else:
         emit_envelope(
             command="explore",
-            data={"run_dir": str(target), "explorer_html": str(written)},
+            data={"run_dir": str(target), "explorer_html": str(out_path)},
         )
 
 
