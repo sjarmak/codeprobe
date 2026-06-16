@@ -180,6 +180,11 @@ class CompletedTask:
     result_subtype: str | None = None
     duration_api_ms: int | None = None
     error_category: str | None = None
+    # Plain-dict form of the offered tool surface (codeprobe-9p6), as
+    # produced by ``McpInitManifest.to_dict()``. None when the adapter had
+    # no streaming transcript to parse. Stored as a dict (not the typed
+    # manifest) so checkpoint asdict()/round-trip stays trivial.
+    mcp_init: dict | None = None
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 

@@ -7,6 +7,8 @@ from codeprobe.adapters.protocol import (
     AgentAdapter,
     AgentConfig,
     AgentOutput,
+    McpInitManifest,
+    McpServerStatus,
 )
 
 __all__ = [
@@ -16,4 +18,6 @@ __all__ = [
     "AgentAdapter",
     "AgentConfig",
     "AgentOutput",
+    "McpInitManifest",
+    "McpServerStatus",
 ]
