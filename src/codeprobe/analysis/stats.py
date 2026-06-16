@@ -60,6 +60,22 @@ def task_passed(task: CompletedTask) -> bool:
     return score_passed(task.automated_score, task.scoring_details)
 
 
+def is_quota_casualty(task: CompletedTask) -> bool:
+    """Return whether a task is a quota-error infrastructure casualty.
+
+    Quota-errored trials are assigned ``automated_score=0.0`` by the
+    executor, but that 0.0 is an unrecoverable infrastructure failure, not
+    a task-quality measurement. Such trials are therefore excluded from the
+    reward population — ``scores``, ``durations``, and the pass-rate — and
+    surfaced separately via ``ConfigSummary.quota_error_count`` instead of
+    silently dragging ``mean_score`` toward zero (codeprobe-a8r; the
+    ``quota_error_count`` contract is codeprobe-9xrl). Single source of
+    truth so both summarizers and the pairwise comparison agree on which
+    trials count.
+    """
+    return task.error_category == "quota"
+
+
 # ---------------------------------------------------------------------------
 # Statistical helper functions
 # ---------------------------------------------------------------------------
@@ -348,7 +364,13 @@ def summarize_config(
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
     errored_tasks = [t for t in tasks if t.status != "completed"]
-    quota_count = sum(1 for t in tasks if t.error_category == "quota")
+    # Reward population: real trials only. Quota casualties are kept in the
+    # structural counts (total_tasks/completed/errored) and surfaced via
+    # quota_error_count, but excluded from scores/durations/pass-rate so
+    # their 0.0 stub never rolls into mean_score (codeprobe-a8r).
+    reward_tasks = [t for t in tasks if not is_quota_casualty(t)]
+    scored_total = len(reward_tasks)
+    quota_count = total - scored_total
     # Deferred import: tool_surface_audit lives under codeprobe.core, whose
     # package __init__ pulls in the executor → scoring → stats chain. A
     # module-level import here would close that cycle (see the dual import
@@ -362,16 +384,16 @@ def summarize_config(
     else:
         abandoned_count = 0
 
-    scores = [t.automated_score for t in tasks]
-    passed = sum(1 for t in tasks if task_passed(t))
-    pass_rate = passed / total
+    scores = [t.automated_score for t in reward_tasks]
+    passed = sum(1 for t in reward_tasks if task_passed(t))
+    pass_rate = passed / scored_total if scored_total else 0.0
 
-    mean_score = statistics.mean(scores)
-    median_score = statistics.median(scores)
+    mean_score = statistics.mean(scores) if scores else 0.0
+    median_score = statistics.median(scores) if scores else 0.0
 
-    durations = [t.duration_seconds for t in tasks]
+    durations = [t.duration_seconds for t in reward_tasks]
     total_duration = sum(durations)
-    mean_duration = statistics.mean(durations)
+    mean_duration = statistics.mean(durations) if durations else 0.0
 
     costs = [t.cost_usd for t in tasks if t.cost_usd is not None]
     total_cost: float | None = sum(costs) if costs else None
@@ -383,9 +405,11 @@ def summarize_config(
     ]
     total_tokens: int | None = sum(tokens) if tokens else None
 
-    ci_lo, ci_hi, score_type = _choose_summary_ci(scores, passed, total)
+    ci_lo, ci_hi, score_type = _choose_summary_ci(scores, passed, scored_total)
     warning = (
-        f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
+        f"Small sample size (N={scored_total})"
+        if scored_total < _SMALL_SAMPLE_THRESHOLD
+        else None
     )
     billing = _dominant_billing_model(tasks)
     dual_count, direct_rate, artifact_rate = _dual_leg_stats(tasks)
@@ -461,16 +485,21 @@ def summarize_completed_tasks(
             completed_count += 1
         else:
             errored_count += 1
-        if task.error_category == "quota":
-            quota_count += 1
         if config is not None and task_abandoned_any_surface(task, config):
             abandoned_count += 1
 
-        scores.append(task.automated_score)
-        if task_passed(task):
-            passed += 1
-
-        durations.append(task.duration_seconds)
+        # Reward population: real trials only. Quota casualties are counted
+        # (quota_count) and kept in the cost/token/structural totals, but
+        # their 0.0 stub is excluded from scores/durations/pass-rate so it
+        # never rolls into mean_score (codeprobe-a8r). Mirrors the exclusion
+        # in summarize_config() so the two summarizers stay identical.
+        if is_quota_casualty(task):
+            quota_count += 1
+        else:
+            scores.append(task.automated_score)
+            if task_passed(task):
+                passed += 1
+            durations.append(task.duration_seconds)
 
         if task.cost_usd is not None:
             costs.append(task.cost_usd)
@@ -509,12 +538,16 @@ def summarize_completed_tasks(
             tasks_expected=total_tasks,
         )
 
+    # Number of real (non-quota) trials — the reward population size.
+    scored_total = len(scores)
     total_duration = sum(durations)
     total_cost: float | None = sum(costs) if costs else None
 
-    ci_lo, ci_hi, score_type = _choose_summary_ci(scores, passed, total)
+    ci_lo, ci_hi, score_type = _choose_summary_ci(scores, passed, scored_total)
     warning = (
-        f"Small sample size (N={total})" if total < _SMALL_SAMPLE_THRESHOLD else None
+        f"Small sample size (N={scored_total})"
+        if scored_total < _SMALL_SAMPLE_THRESHOLD
+        else None
     )
     billing = (
         Counter(billing_models).most_common(1)[0][0] if billing_models else "unknown"
@@ -532,11 +565,11 @@ def summarize_completed_tasks(
         total_tasks=total,
         completed=completed_count,
         errored=errored_count,
-        pass_rate=passed / total,
-        mean_score=statistics.mean(scores),
-        median_score=statistics.median(scores),
+        pass_rate=passed / scored_total if scored_total else 0.0,
+        mean_score=statistics.mean(scores) if scores else 0.0,
+        median_score=statistics.median(scores) if scores else 0.0,
         total_duration_sec=total_duration,
-        mean_duration_sec=statistics.mean(durations),
+        mean_duration_sec=statistics.mean(durations) if durations else 0.0,
         total_cost_usd=total_cost,
         total_tokens=token_sum if has_tokens else None,
         is_partial=is_partial,

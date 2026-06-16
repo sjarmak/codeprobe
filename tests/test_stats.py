@@ -315,3 +315,128 @@ class TestVerdictSoftening:
         cmp = self._run_compare(baseline, with_mcp)
         # score_diff ~0.02, small cohen's d, high p → softened verdict
         assert "nominally ahead" in cmp.summary
+
+
+def _quota_task(task_id: str, *, duration: float = 99.0) -> CompletedTask:
+    """A quota-errored infrastructure casualty: the executor stamps it
+    automated_score=0.0 and error_category='quota' (codeprobe-a8r)."""
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=0.0,
+        status="error",
+        duration_seconds=duration,
+        cost_usd=0.05,
+        error_category="quota",
+    )
+
+
+def _real_task(
+    task_id: str, score: float, *, duration: float = 10.0
+) -> CompletedTask:
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=score,
+        status="completed",
+        duration_seconds=duration,
+        cost_usd=0.05,
+    )
+
+
+class TestQuotaExclusion:
+    """Quota-errored trials must NOT contaminate the reward population.
+
+    Regression (codeprobe-a8r / DEEP_AUDIT 2026-06-15 CRITICAL #1): the
+    executor assigns automated_score=0.0 to quota casualties, and the
+    summarizers rolled that 0.0 into mean_score/median_score/pass-rate/CIs,
+    contradicting quota_error_count's own contract (codeprobe-9xrl). The
+    fix excludes error_category=='quota' trials from scores, durations, and
+    pass-rate while still counting them in quota_error_count.
+    """
+
+    # K=2 quota casualties + M=3 real trials (scores 1.0, 1.0, 0.0).
+    # Reward population: mean=2/3, median=1.0, pass_rate=2/3.
+    # If quota leaked in: mean would be 2/5=0.4, pass_rate 2/5=0.4.
+    def _mixed(self) -> list[CompletedTask]:
+        return [
+            _quota_task("q1"),
+            _real_task("r1", 1.0),
+            _quota_task("q2"),
+            _real_task("r2", 1.0),
+            _real_task("r3", 0.0),
+        ]
+
+    def test_summarize_config_mean_excludes_quota(self) -> None:
+        # A1: mean over the M=3 real trials only.
+        cr = ConfigResults(config="cfg", completed=self._mixed())
+        s = summarize_config(cr)
+        assert s.mean_score == 2 / 3
+        assert s.median_score == 1.0
+        assert s.pass_rate == 2 / 3
+        # A2: quota casualties still surfaced.
+        assert s.quota_error_count == 2
+        # Durations exclude the inflated quota wall-time (99.0 each).
+        assert s.total_duration_sec == 30.0
+        assert s.mean_duration_sec == 10.0
+        # Structural counts keep all 5 trials.
+        assert s.total_tasks == 5
+        assert s.errored == 2
+
+    def test_summarize_completed_tasks_mean_excludes_quota(self) -> None:
+        # A1/A2 for the streaming summarizer — must match summarize_config.
+        s = summarize_completed_tasks("cfg", iter(self._mixed()))
+        assert s.mean_score == 2 / 3
+        assert s.median_score == 1.0
+        assert s.pass_rate == 2 / 3
+        assert s.quota_error_count == 2
+        assert s.total_duration_sec == 30.0
+        assert s.mean_duration_sec == 10.0
+        assert s.total_tasks == 5
+        assert s.errored == 2
+
+    def test_both_summarizers_agree_on_quota_mix(self) -> None:
+        cr = ConfigResults(config="cfg", completed=self._mixed())
+        batch = summarize_config(cr)
+        stream = summarize_completed_tasks("cfg", iter(self._mixed()))
+        assert batch.mean_score == stream.mean_score
+        assert batch.pass_rate == stream.pass_rate
+        assert batch.quota_error_count == stream.quota_error_count
+        assert batch.mean_duration_sec == stream.mean_duration_sec
+
+    def test_all_quota_reports_no_reward_signal(self) -> None:
+        # Edge case: every trial was a quota casualty. No reward population →
+        # zeroed stats, but the count is still surfaced (no ZeroDivision /
+        # StatisticsError crash).
+        tasks = [_quota_task("q1"), _quota_task("q2")]
+        cr = ConfigResults(config="cfg", completed=tasks)
+        for s in (
+            summarize_config(cr),
+            summarize_completed_tasks("cfg", iter(tasks)),
+        ):
+            assert s.mean_score == 0.0
+            assert s.median_score == 0.0
+            assert s.pass_rate == 0.0
+            assert s.quota_error_count == 2
+            assert s.total_tasks == 2
+
+    def test_no_quota_is_unchanged(self) -> None:
+        # Backwards-compat: with zero quota trials, behaviour is identical
+        # to the pre-fix summarizer.
+        tasks = [_real_task("r1", 1.0), _real_task("r2", 0.0)]
+        cr = ConfigResults(config="cfg", completed=tasks)
+        s = summarize_config(cr)
+        assert s.mean_score == 0.5
+        assert s.pass_rate == 0.5
+        assert s.quota_error_count == 0
+
+    def test_compare_configs_paired_scores_exclude_quota(self) -> None:
+        # Step 2: the paired score lists feeding compare_configs's hypothesis
+        # tests must omit quota casualties too, so the tests match the
+        # reward population the summaries report.
+        from codeprobe.analysis.report import _tee_task_scores
+
+        sink: dict[str, float] = {}
+        consumed = list(_tee_task_scores(iter(self._mixed()), sink))
+        # All trials still flow through (so the summarizer counts quota)...
+        assert len(consumed) == 5
+        # ...but only the 3 real trials land in the paired-score sink.
+        assert set(sink) == {"r1", "r2", "r3"}

@@ -14,6 +14,7 @@ from codeprobe.analysis.stats import (
     ConfigSummary,
     PairwiseComparison,
     compare_configs,
+    is_quota_casualty,
     summarize_completed_tasks,
     summarize_config,
     task_passed,
@@ -91,8 +92,13 @@ def generate_report(
     # Cohen's d for continuous).
     config_scores: dict[str, dict[str, float]] = {}
     for cr in all_results:
+        # Exclude quota casualties so the paired hypothesis tests and
+        # effect sizes in compare_configs match the reward population the
+        # summaries report (codeprobe-a8r).
         config_scores[cr.config] = {
-            t.task_id: float(t.automated_score) for t in cr.completed
+            t.task_id: float(t.automated_score)
+            for t in cr.completed
+            if not is_quota_casualty(t)
         }
 
     comparisons: list[PairwiseComparison] = []
@@ -123,15 +129,22 @@ def _tee_task_scores(
     tasks: Iterator[CompletedTask],
     sink: dict[str, float],
 ) -> Iterator[CompletedTask]:
-    """Yield tasks unchanged while recording raw scores into *sink*.
+    """Yield tasks unchanged while recording real trials' raw scores into *sink*.
 
     Stores ``automated_score`` (continuous) rather than a binarized pass/fail
     indicator so pairwise statistical tests can operate on the true score
     distribution and choose Wilcoxon + Cohen's d for continuous scorers
-    vs McNemar + Cliff's delta for binary ones.
+    vs McNemar + Cliff's delta for binary ones. Quota casualties are yielded
+    but omitted from *sink* so the paired tests match the reward population
+    (codeprobe-a8r).
     """
     for t in tasks:
-        sink[t.task_id] = float(t.automated_score)
+        # Quota casualties are still yielded (so the summarizer counts them
+        # in quota_error_count) but kept out of the paired-score sink so
+        # compare_configs's statistical tests match the reward population
+        # (codeprobe-a8r).
+        if not is_quota_casualty(t):
+            sink[t.task_id] = float(t.automated_score)
         yield t
 
 
