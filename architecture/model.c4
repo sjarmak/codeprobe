@@ -1,0 +1,442 @@
+// `codeprobe` — benchmark AI coding agents against your own codebase.
+//
+// One Python package (src/codeprobe/) exposed through a `codeprobe` CLI. The
+// pipeline is assess → mine → run → score → interpret: mine real tasks from a
+// repo's git history, replay AI coding agents against them in isolation, score
+// the output against oracle ground truth, and rank the configurations.
+//
+// codeprobe is AI-orchestration code — ZFC applies: the app layer is mechanism
+// (IO, isolation, deterministic arithmetic, structural checks) and all semantic
+// judgment (task quality, scoring rubrics, enrichment) is delegated to models.
+//
+// Elements carry `link`s to their source so a reviewer can jump from any box to
+// the code. Delivery state is tagged (see spec.c4 for the legend) so evolving
+// and design-only work renders distinctly from what is built and exercised.
+
+model {
+
+  developer = actor 'Developer / CI' {
+    description 'Runs the codeprobe CLI against a repo to compare agent setups'
+  }
+
+  agentUnderTest = actor 'AI coding agent (under test)' {
+    description 'Claude Code / Copilot / Codex CLI replayed against each mined task'
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // External systems — the substrate codeprobe reads, drives, and measures.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  gitHost = externalSystem 'Git host' {
+    description 'GitHub / GitLab / Bitbucket / Azure DevOps / Gitea — merged PRs/MRs + linked issues, the task corpus'
+
+    repoHistory = datastore 'Repo history' {
+      description 'Merge commits, diffs, file changes — the raw material tasks are mined from'
+    }
+  }
+
+  sourcegraph = externalSystem 'Sourcegraph' {
+    description 'Code-intelligence API — one consensus backend for org-scale oracle ground truth'
+  }
+
+  tracker = externalSystem 'Issue tracker' {
+    description 'Jira — enriches tasks with issue context (one tracker implemented)'
+  }
+
+  llmBackend = externalSystem 'LLM / inference backends' {
+    description 'Anthropic / OpenAI / Bedrock / Vertex / Azure — enrichment, assessment, and judge scoring'
+  }
+
+  containerEngine = externalSystem 'Container engine' {
+    description 'Docker / Podman — read-only-mount sandbox for sg-only / untrusted execution'
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // The codeprobe system.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  codeprobe = system 'codeprobe' {
+    description 'Mines tasks from a repo, replays agents against them in isolation, scores against oracles, and ranks configs'
+    link ../README.md 'README'
+    link ../AGENTS.md 'AGENTS.md — conventions & architecture'
+    link ../docs/conventions/zfc-compliance.md 'ZFC compliance'
+
+    // ── The command surface ────────────────────────────────────────────────
+    cli = container 'CLI (codeprobe)' {
+      description 'cli/ — Click command group: assess, mine, run, interpret, experiment, probe, snapshot, …'
+      technology 'Python / Click'
+      link ../src/codeprobe/cli 'cli/'
+
+      cliEntry = component 'command group + envelopes' {
+        #built
+        description 'main() wires ~20 subcommands; JSON/YAML/text output envelope + Rich Live dashboard'
+        link ../src/codeprobe/cli/__init__.py '__init__.py'
+        link ../src/codeprobe/cli/_output_helpers.py '_output_helpers.py'
+      }
+      runCmd = component 'run / mine / interpret commands' {
+        #built
+        description 'Resolves tenant + experiment, dispatches to the execution engine, mining, and analysis'
+        link ../src/codeprobe/cli/run_cmd.py 'run_cmd.py'
+        link ../src/codeprobe/cli/mine_cmd.py 'mine_cmd.py'
+        link ../src/codeprobe/cli/interpret_cmd.py 'interpret_cmd.py'
+      }
+      doctorCmd = component 'doctor / check-infra / auth' {
+        #built
+        description 'Environment readiness: agents, API keys, git, offline preflight, credential TTL'
+        link ../src/codeprobe/cli/doctor_cmd.py 'doctor_cmd.py'
+        link ../src/codeprobe/cli/check_infra.py 'check_infra.py'
+      }
+    }
+
+    // ── Mining: repo history → executable tasks with oracle ground truth ────
+    mining = container 'Mining' {
+      description 'mining/ — extract eval tasks from git history; build oracle ground truth via multi-backend consensus'
+      technology 'Python'
+      link ../src/codeprobe/mining 'mining/'
+
+      extractor = component 'extractor + task types' {
+        #built
+        description 'Mines SDLC code-change tasks from merge commits; subsystem detection; instruction generation'
+        link ../src/codeprobe/mining/extractor.py 'extractor.py'
+        link ../src/codeprobe/mining/task_types.py 'task_types.py'
+      }
+      orgScale = component 'org-scale comprehension families' {
+        #evolving
+        description 'symbol-reference-trace / type-hierarchy-consumers / change-scope-audit — families still expanding'
+        link ../src/codeprobe/mining/org_scale.py 'org_scale.py'
+        link ../src/codeprobe/mining/org_scale_families.py 'org_scale_families.py'
+      }
+      consensus = component 'multi-backend consensus + cross-validate' {
+        #built
+        #risk
+        description 'Ships a task only when ≥2 backends agree (pairwise file-level F1 ≥ threshold). RISK: the MCP-bias tautology (codeprobe-ekhi) — if mining writes GT with the same backend a config later uses, the with-MCP win is measuring "did the agent call the answer key", not tool value. Consensus + AST oracle + aggregate-time bias detection are the structural mitigations'
+        link ../src/codeprobe/mining/consensus.py 'consensus.py'
+        link ../src/codeprobe/mining/cross_validate.py 'cross_validate.py'
+        link ../README.md 'README — avoid the ground-truth tautology'
+      }
+      curator = component 'curator backends + tiers' {
+        #built
+        description 'grep / sourcegraph / ast / pr-diff backends; tier-weighted ground truth construction'
+        link ../src/codeprobe/mining/curator_backends.py 'curator_backends.py'
+        link ../src/codeprobe/mining/curator_tiers.py 'curator_tiers.py'
+      }
+      astScan = component 'AST oracle (Python + Go)' {
+        #built
+        description 'Tool-independent ground truth via Python `ast` and a Go scanner — the independent consensus leg'
+        link ../src/codeprobe/mining/ast_scan.py 'ast_scan.py'
+        link ../src/codeprobe/mining/_go_ast_scanner 'go AST scanner'
+      }
+      vcs = component 'VCS host abstraction' {
+        #evolving
+        description 'MergeRequest fetch per platform; GitLab implemented, others fall back to git log'
+        link ../src/codeprobe/mining/vcs/base.py 'vcs/base.py'
+        link ../src/codeprobe/mining/vcs/gitlab.py 'vcs/gitlab.py'
+      }
+      trackers = component 'issue-tracker enrichment' {
+        #evolving
+        description 'Jira REST adapter (PAT/OAuth, redacted payloads); one tracker so far'
+        link ../src/codeprobe/mining/trackers/jira.py 'trackers/jira.py'
+      }
+      writer = component 'task writer' {
+        #built
+        description 'Emits task dir: metadata TOML, test.sh / oracle, instruction.md'
+        link ../src/codeprobe/mining/writer.py 'writer.py'
+      }
+    }
+
+    // ── Execution: replay agents against tasks in isolation ─────────────────
+    execution = container 'Execution engine' {
+      description 'core/ — drive each agent config against each task in an isolated worktree; collect telemetry'
+      technology 'Python'
+      link ../src/codeprobe/core 'core/'
+
+      executor = component 'executor (orchestration)' {
+        #built
+        description 'Parallel task/config dispatch, checkpoint resume, cost-budget enforcement, event stream'
+        link ../src/codeprobe/core/executor.py 'executor.py'
+        link ../src/codeprobe/core/events.py 'events.py'
+      }
+      isolation = component 'worktree isolation' {
+        #built
+        description 'Pin to task commit, clean-state restore, multi-repo workspace, hide-local-source off/hide/scaffold'
+        link ../src/codeprobe/core/isolation.py 'isolation.py'
+      }
+      registry = component 'adapter registry + turn cap' {
+        #built
+        description 'Discovers AgentAdapters via entry_points; per-family turn limits'
+        link ../src/codeprobe/core/registry.py 'registry.py'
+        link ../src/codeprobe/core/turn_cap.py 'turn_cap.py'
+      }
+      mcpPolicy = component 'MCP policy + discovery' {
+        #evolving
+        description 'Tool-surface policy + MCP server discovery; capability abstraction over concrete MCP tools'
+        link ../src/codeprobe/core/mcp_policy.py 'mcp_policy.py'
+        link ../src/codeprobe/mcp/capabilities.py 'mcp/capabilities.py'
+      }
+    }
+
+    // ── Adapters: the AI-agent integration boundary ─────────────────────────
+    adapters = container 'Agent adapters' {
+      description 'adapters/ — Adapter + Collector hybrid: drive each agent CLI, collect token/cost telemetry'
+      technology 'Python'
+      link ../src/codeprobe/adapters 'adapters/'
+      link ../docs/adapters.md 'adapter contract guide'
+
+      protocol = component 'AgentAdapter / SessionCollector / TelemetryCollector' {
+        #built
+        description 'The three Protocols: headless run(), interactive capture, shared token/cost extraction'
+        link ../src/codeprobe/adapters/protocol.py 'protocol.py'
+        link ../src/codeprobe/adapters/session.py 'session.py'
+        link ../src/codeprobe/adapters/telemetry.py 'telemetry.py'
+      }
+      claudeAdapter = component 'Claude Code adapter' {
+        #built
+        description 'Headless `claude -p`: streaming, MCP config, turn tracking — the primary, well-exercised path'
+        link ../src/codeprobe/adapters/claude.py 'claude.py'
+      }
+      otherAdapters = component 'Codex / Copilot adapters' {
+        #evolving
+        description 'OpenAI Codex + GitHub Copilot CLI behind the same contract; all adapters must extract token/cost'
+        link ../src/codeprobe/adapters/codex.py 'codex.py'
+        link ../src/codeprobe/adapters/copilot.py 'copilot.py'
+      }
+    }
+
+    // ── Scoring: reward from agent output against the oracle ────────────────
+    scoring = container 'Scoring / verifier' {
+      description 'core/scoring/ — score agent output against oracle ground truth; honesty-linted reward families'
+      technology 'Python'
+      link ../src/codeprobe/core/scoring 'core/scoring/'
+      link ../docs/scoring_model.md 'scorer family rubrics'
+
+      families = component 'SCORER_FAMILIES + ScoreResult' {
+        #built
+        description 'Registry of reward families; every ScoreResult declares scorer_family= (lint-enforced)'
+        link ../src/codeprobe/core/scoring/result.py 'result.py'
+      }
+      scorers = component 'binary / continuous / checkpoint / dual / oracle-checks' {
+        #built
+        description 'Concrete scorers — exit-0 test, reward.txt float, weighted checkpoints, structured rubric'
+        link ../src/codeprobe/core/scoring/scorers.py 'scorers.py'
+      }
+      ir = component 'IR reward (F1 / Fβ / recall / LCS)' {
+        #built
+        #risk
+        description 'Overlap reward against an oracle file/symbol list. RISK: must never silently fall back to recall from an F1-family branch (voxa-class regression) — guarded by tests/lint/test_scorer_honesty.py'
+        link ../src/codeprobe/core/scoring/ir.py 'ir.py'
+        link ../docs/conventions/verifier-honesty.md 'verifier honesty'
+      }
+      scoreSandbox = component 'scoring sandbox + secret redaction' {
+        #built
+        description 'Runs test.sh / oracle in a filtered environment; sanitizes secrets before they enter the store'
+        link ../src/codeprobe/core/scoring/sandbox.py 'sandbox.py'
+      }
+      biasDetect = component 'aggregate-time bias detection' {
+        #built
+        #risk
+        description 'Flags backend_overlap / overshipping / no_independent_baseline before printing the score table. RISK: when no independent baseline exists, the aggregate winner is suppressed by design'
+        link ../src/codeprobe/core/bias_detection.py 'bias_detection.py'
+      }
+    }
+
+    // ── Analysis: rank configs, surface a recommendation ────────────────────
+    analysis = container 'Analysis / interpret' {
+      description 'analysis/ — compare configs statistically and emit a ranked, formatted report'
+      technology 'Python'
+      link ../src/codeprobe/analysis 'analysis/'
+
+      ranking = component 'ranking (deterministic)' {
+        #built
+        description 'rank_configs — transparent arithmetic ranking with explicit tiebreakers'
+        link ../src/codeprobe/analysis/ranking.py 'ranking.py'
+      }
+      stats = component 'stats (Wilcoxon / McNemar / effect size)' {
+        #built
+        description 'Paired significance tests, Cohen-d, Cliff-delta, Wilson CI — arithmetic only'
+        link ../src/codeprobe/analysis/stats.py 'stats.py'
+      }
+      report = component 'report (text / json / csv / html)' {
+        #built
+        description 'Per-config metrics, pairwise deltas, bias warnings surfaced above the table'
+        link ../src/codeprobe/analysis/report.py 'report.py'
+      }
+    }
+
+    // ── Assessment + probes: pre-flight scoring & fast micro-benchmarks ─────
+    assess = container 'Assess + probe' {
+      description 'assess/ + probe/ — score a repo benchmarking potential; generate 30s micro-benchmarks'
+      technology 'Python'
+      link ../src/codeprobe/assess 'assess/'
+
+      heuristics = component 'repo heuristics + RUBRIC_V1' {
+        #built
+        description 'Deterministic heuristics; score_repo_with_model delegates the judgment to a model under RUBRIC_V1'
+        link ../src/codeprobe/assess/heuristics.py 'heuristics.py'
+      }
+      probe = component 'micro-benchmark generator' {
+        #built
+        description 'find-function / count-callers / return-type / module-dependency — exact-match, no sandbox'
+        link ../src/codeprobe/probe/generator.py 'probe/generator.py'
+      }
+    }
+
+    // ── Calibration + QA: validity gates on the task corpus ─────────────────
+    calibration = container 'Calibration + QA' {
+      description 'calibration/ + qa/ — validity gates: inter-curator agreement and cross-task leakage'
+      technology 'Python'
+      link ../src/codeprobe/calibration 'calibration/'
+
+      gate = component 'R11 calibration gate' {
+        #built
+        description 'Holdout Pearson ≥ 0.6 over ≥100 tasks / ≥3 repos, or the task set is rejected'
+        link ../src/codeprobe/calibration/gate.py 'gate.py'
+      }
+      triad = component 'triad fixture validation' {
+        #built
+        description 'Null-baseline / golden / adversarial fixtures confirm scorers land in expected bands'
+        link ../src/codeprobe/calibration/triad.py 'triad.py'
+      }
+      qa = component 'cross-task leakage + oracle QA' {
+        #built
+        description 'Symbolic analysis to detect leakage across tasks; oracle validation'
+        link ../src/codeprobe/qa/verify.py 'qa/verify.py'
+      }
+    }
+
+    // ── Snapshot + trace: shareable, redacted artifacts ─────────────────────
+    snapshot = container 'Snapshot + trace' {
+      description 'snapshot/ + trace/ — deterministic redacted experiment snapshots; SQLite agent-trace recorder'
+      technology 'Python'
+      link ../src/codeprobe/snapshot 'snapshot/'
+
+      create = component 'snapshot create + redact' {
+        #built
+        description 'Deterministic, redacted snapshot with manifest + attestation; symlink-containment preflight'
+        link ../src/codeprobe/snapshot/create.py 'create.py'
+        link ../src/codeprobe/snapshot/redact.py 'redact.py'
+      }
+      canary = component 'canary secret gate + scanners' {
+        #built
+        description 'Plants a secret and verifies the scanner (gitleaks / trufflehog) catches it before publish'
+        link ../src/codeprobe/snapshot/canary.py 'canary.py'
+        link ../src/codeprobe/snapshot/scanners.py 'scanners.py'
+      }
+      recorder = component 'trace recorder (SQLite)' {
+        #built
+        description 'Records tool calls / results with a write-time budget; content policy redacts secrets at the door'
+        link ../src/codeprobe/trace/recorder.py 'recorder.py'
+        link ../src/codeprobe/trace/store.py 'store.py'
+      }
+    }
+
+    // ── Supporting libraries ────────────────────────────────────────────────
+    support = container 'Supporting libraries' {
+      description 'models/ config/ loaders/ llm/ preambles/ net/ ratings/ — shared domain + IO plumbing'
+      technology 'Python'
+      link ../src/codeprobe/models 'models/'
+
+      models = component 'domain models (frozen dataclasses)' {
+        #built
+        description 'Task, Experiment, ExperimentConfig, Checkpoint, Suite — immutable domain types'
+        link ../src/codeprobe/models/task.py 'task.py'
+        link ../src/codeprobe/models/experiment.py 'experiment.py'
+      }
+      config = component 'config + defaults' {
+        #built
+        description 'Loads .evalrc.yaml → experiment.json; goal/preset resolution with deterministic fallback'
+        link ../src/codeprobe/config/loader.py 'config/loader.py'
+        link ../src/codeprobe/config/defaults.py 'config/defaults.py'
+      }
+      llmRegistry = component 'LLM model registry + backends' {
+        #built
+        description 'Logical-name → per-backend id; auto-detect Anthropic / OpenAI / Bedrock / Vertex / Azure'
+        link ../src/codeprobe/llm/__init__.py 'llm/__init__.py'
+        link ../src/codeprobe/llm/backends/anthropic.py 'backends/anthropic.py'
+      }
+      preambles = component 'preambles' {
+        #built
+        description 'Composable instruction blocks (sourcegraph / github) prepended for MCP-enabled configs'
+        link ../src/codeprobe/preambles/__init__.py 'preambles/__init__.py'
+        link ../src/codeprobe/core/preamble.py 'core/preamble.py'
+      }
+      net = component 'offline guard + credential TTL' {
+        #built
+        description 'guard_offline() and credential-TTL diagnostics for the offline preflight'
+        link ../src/codeprobe/net/offline.py 'net/offline.py'
+      }
+      ratings = component 'session quality ratings' {
+        #evolving
+        description 'Local JSONL micro-ratings of agent sessions with a config snapshot; nothing transmitted'
+        link ../src/codeprobe/ratings/collector.py 'ratings/collector.py'
+      }
+    }
+
+    // ── Container sandbox: opt-in hardened execution ────────────────────────
+    sandbox = container 'Container sandbox (sg-only)' {
+      #evolving
+      description 'sandbox/ — Docker/Podman read-only-mount execution; opt-in, needs a built sandbox image'
+      technology 'Python / Docker'
+      link ../src/codeprobe/sandbox/runner.py 'sandbox/runner.py'
+    }
+
+    // ── Research / opt-in library track ─────────────────────────────────────
+    contrib = container 'contrib (advanced methods)' {
+      #research
+      description 'contrib/ — SPRT, Elo, tournament, Pareto, counterfactual, mutation — importable, not on the CLI'
+      link ../src/codeprobe/contrib/sprt.py 'contrib/sprt.py'
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Relationships.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  developer -> codeprobe.cli 'runs assess / mine / run / interpret'
+
+  // CLI dispatch
+  codeprobe.cli.runCmd -> codeprobe.mining 'mine tasks'
+  codeprobe.cli.runCmd -> codeprobe.execution 'run agents against tasks'
+  codeprobe.cli.runCmd -> codeprobe.analysis 'interpret results'
+  codeprobe.cli.runCmd -> codeprobe.assess 'assess repo'
+
+  // Mining pipeline (history → tasks + oracle)
+  codeprobe.mining.extractor -> gitHost.repoHistory 'reads merge commits + diffs'
+  codeprobe.mining.vcs -> gitHost 'fetches PRs/MRs + linked issues'
+  codeprobe.mining.trackers -> tracker 'fetches issue context'
+  codeprobe.mining.curator -> sourcegraph 'sourcegraph backend ground truth'
+  codeprobe.mining.curator -> codeprobe.mining.astScan 'AST backend (independent leg)'
+  codeprobe.mining.curator -> codeprobe.mining.consensus '≥2-backend agreement'
+  codeprobe.mining.consensus -> codeprobe.mining.writer 'ships tasks that pass consensus'
+  codeprobe.mining.extractor -> llmBackend 'enrich weak instructions (--enrich)'
+
+  // Execution (replay agents in isolation)
+  codeprobe.execution.executor -> codeprobe.execution.isolation 'isolated worktree per run'
+  codeprobe.execution.executor -> codeprobe.execution.registry 'resolve adapter for config'
+  codeprobe.execution.registry -> codeprobe.adapters 'AgentAdapter discovered via entry_points'
+  codeprobe.adapters.claudeAdapter -> agentUnderTest 'headless run() under each config'
+  codeprobe.adapters.otherAdapters -> agentUnderTest 'headless run() under each config'
+  codeprobe.execution.mcpPolicy -> codeprobe.support 'composes preamble for MCP configs'
+  codeprobe.adapters -> codeprobe.snapshot 'tool-call events → trace recorder'
+  codeprobe.execution.isolation -> codeprobe.sandbox 'hide/scaffold → container run' {
+    #evolving
+  }
+
+  // Scoring + analysis
+  codeprobe.execution.executor -> codeprobe.scoring 'score each completed task'
+  codeprobe.scoring.scorers -> codeprobe.scoring.ir 'overlap reward vs oracle'
+  codeprobe.scoring.scorers -> llmBackend 'LLM-judge rubric (where used)'
+  codeprobe.sandbox -> containerEngine 'docker/podman read-only mount'
+  codeprobe.scoring -> codeprobe.analysis 'completed + scored tasks'
+  codeprobe.analysis.report -> codeprobe.scoring.biasDetect 'bias warnings above the table'
+
+  // Validity gates over the corpus
+  codeprobe.calibration.gate -> codeprobe.mining 'rejects task sets below agreement'
+  codeprobe.calibration.qa -> codeprobe.mining 'leakage + oracle QA on mined tasks'
+
+  // Assess + LLM
+  codeprobe.assess.heuristics -> llmBackend 'score_repo_with_model under RUBRIC_V1'
+  codeprobe.support.llmRegistry -> llmBackend 'resolves + calls the detected backend'
+
+  // Snapshot publishing
+  codeprobe.cli -> codeprobe.snapshot 'snapshot create / export'
+}

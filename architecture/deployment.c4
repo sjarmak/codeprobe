@@ -1,0 +1,84 @@
+// Deployment model — where each piece runs at review time.
+//
+// codeprobe is a single Python CLI process on a developer or CI host. It spawns
+// the AI coding agent CLIs as child processes inside isolated git worktrees,
+// optionally under a Docker/Podman sandbox; it reaches out to git hosts, the
+// Sourcegraph API, issue trackers, and LLM backends. This is the
+// "what runs where / what's the process & trust boundary" view a review asks for.
+
+deployment {
+
+  devHost = host 'Developer / CI host' {
+    description 'Runs the codeprobe CLI and isolates each agent run in a git worktree'
+
+    cliProc = proc 'Python — codeprobe CLI + engine' {
+      instanceOf codeprobe.cli
+      instanceOf codeprobe.mining
+      instanceOf codeprobe.execution
+      instanceOf codeprobe.scoring
+      instanceOf codeprobe.analysis
+      instanceOf codeprobe.assess
+      instanceOf codeprobe.calibration
+      instanceOf codeprobe.snapshot
+      instanceOf codeprobe.support
+      instanceOf codeprobe.adapters
+    }
+
+    agentProc = proc 'Agent CLI child process (per run)' {
+      description 'claude / codex / copilot spawned in an isolated worktree pinned to the task commit'
+      instanceOf agentUnderTest
+    }
+
+    sandboxProc = proc 'Container sandbox (opt-in)' {
+      description 'Docker/Podman with read-only host mounts for sg-only / untrusted execution'
+      instanceOf codeprobe.sandbox
+    }
+
+    artifacts = proc 'Local artifacts — .codeprobe/ + runs/ + traces' {
+      description 'Tasks, experiment.json, completed runs, SQLite traces, redacted snapshots (gitignored)'
+    }
+  }
+
+  gitHostNode = host 'Git host' {
+    description 'Source of the task corpus — read-only to codeprobe'
+    instanceOf gitHost
+  }
+
+  sourcegraphNode = host 'Sourcegraph' {
+    description 'Code-intelligence API — one consensus backend for org-scale ground truth'
+    instanceOf sourcegraph
+  }
+
+  trackerNode = host 'Issue tracker' {
+    description 'Jira — issue context for task enrichment'
+    instanceOf tracker
+  }
+
+  inferenceNode = host 'LLM / inference host' {
+    description 'Anthropic / OpenAI / Bedrock / Vertex / Azure — enrichment, assessment, judge scoring'
+    instanceOf llmBackend
+  }
+
+  engineNode = host 'Container engine daemon' {
+    description 'Local docker/podman daemon backing the opt-in sandbox'
+    instanceOf containerEngine
+  }
+
+  // Runtime data & control flow between processes/hosts.
+  cliProc -> artifacts 'writes tasks / runs / traces / snapshots'
+  cliProc -> agentProc 'spawns agent in isolated worktree'
+  cliProc -> sandboxProc 'hide/scaffold → container run'
+  sandboxProc -> engineNode 'docker/podman read-only mount'
+  cliProc -> gitHostNode 'mines merge history + PRs/MRs'
+  cliProc -> sourcegraphNode 'ground-truth backend'
+  cliProc -> trackerNode 'issue enrichment'
+  cliProc -> inferenceNode 'enrichment / assessment / judge'
+}
+
+views {
+
+  deployment view deployment {
+    title 'Deployment — where each piece runs'
+    include *
+  }
+}

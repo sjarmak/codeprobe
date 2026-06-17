@@ -1,0 +1,207 @@
+// Views over the codeprobe model. Evolving (#evolving) renders amber; planned
+// (#planned) and research (#research) elements/relationships are dimmed + dashed
+// so "what is built and exercised vs what is moving or opt-in" reads at a glance.
+
+views {
+
+  // Landscape — the whole system in context.
+  view index {
+    title 'codeprobe — system landscape'
+    include *
+
+    style * {
+      opacity 25%
+    }
+    style element.tag == #built, element.tag == #evolving {
+      opacity 100%
+    }
+    style element.tag == #planned {
+      color muted
+      border dashed
+    }
+    style element.tag == #research {
+      color indigo
+      border dashed
+    }
+  }
+
+  // The codeprobe system, decomposed into its containers.
+  view codeprobeSystem of codeprobe {
+    title 'codeprobe — containers (the assess → mine → run → score → interpret spine)'
+    include *
+
+    style element.tag == #research {
+      color indigo
+      border dashed
+    }
+    style element.tag == #planned {
+      color muted
+      border dashed
+    }
+  }
+
+  // ── Per-container component views ─────────────────────────────────────────
+
+  view cliContainer of codeprobe.cli {
+    title 'CLI — command group & subcommands'
+    include *
+  }
+
+  view miningContainer of codeprobe.mining {
+    title 'Mining — repo history → tasks + consensus oracle'
+    include *
+
+    style element.tag == #evolving {
+      color amber
+    }
+  }
+
+  view executionContainer of codeprobe.execution {
+    title 'Execution engine — isolated agent replay'
+    include *
+
+    style element.tag == #evolving {
+      color amber
+    }
+  }
+
+  view adaptersContainer of codeprobe.adapters {
+    title 'Agent adapters — the Adapter + Collector boundary'
+    include *
+
+    style element.tag == #evolving {
+      color amber
+    }
+  }
+
+  view scoringContainer of codeprobe.scoring {
+    title 'Scoring / verifier — reward families & honesty guards'
+    include *
+  }
+
+  view analysisContainer of codeprobe.analysis {
+    title 'Analysis — deterministic ranking + statistics + report'
+    include *
+  }
+
+  view calibrationContainer of codeprobe.calibration {
+    title 'Calibration + QA — validity gates on the corpus'
+    include *
+  }
+
+  view snapshotContainer of codeprobe.snapshot {
+    title 'Snapshot + trace — redacted shareable artifacts'
+    include *
+  }
+
+  view supportContainer of codeprobe.support {
+    title 'Supporting libraries — domain, config, LLM, preambles'
+    include *
+
+    style element.tag == #evolving {
+      color amber
+    }
+  }
+
+  // Risks & open questions — the elements carrying a #risk flag, with the open
+  // question stated in each box's description. What a reviewer should probe.
+  view risks {
+    title 'Risks & open questions'
+    include
+      codeprobe,
+      element.tag == #risk,
+      codeprobe.mining,
+      codeprobe.scoring
+
+    style * {
+      opacity 30%
+    }
+    style element.tag == #risk {
+      opacity 100%
+      color red
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // Walkthrough flows (dynamic views) — the narrative spine of a review.
+  // ───────────────────────────────────────────────────────────────────────
+
+  // Flow 1 — mine tasks from a repo with a consensus oracle.
+  dynamic view mineFlow {
+    title 'Walkthrough — mining tasks with a consensus oracle'
+    description 'Multi-source consensus is on by default: every backend runs and a task ships only when ≥2 agree above the F1 threshold. This is the structural defense against the MCP-bias tautology — do not pass --no-consensus for MCP-vs-no-MCP comparisons.'
+
+    developer -> codeprobe.cli.runCmd 'codeprobe mine . --mcp-families'
+    codeprobe.cli.runCmd -> codeprobe.mining.extractor 'extract from history'
+    codeprobe.mining.extractor -> gitHost.repoHistory 'merge commits + diffs'
+    codeprobe.mining.curator -> sourcegraph 'sourcegraph backend GT'
+    codeprobe.mining.curator -> codeprobe.mining.astScan 'AST backend GT (independent)'
+    codeprobe.mining.curator -> codeprobe.mining.consensus 'pairwise file-level F1'
+    codeprobe.mining.consensus -> codeprobe.mining.writer 'ship tasks ≥2 backends agree'
+    codeprobe.calibration.qa -> codeprobe.mining.writer 'leakage + oracle QA'
+  }
+
+  // Flow 2 — run one agent config against a task in isolation.
+  dynamic view runFlow {
+    title 'Walkthrough — replaying an agent against a task'
+    description 'Each task runs in its own worktree pinned to the task commit; hide/scaffold isolation can stash local source so the agent must use MCP. Every adapter extracts token/cost telemetry — that is a contract, not best-effort.'
+
+    developer -> codeprobe.cli.runCmd 'codeprobe run . --agent claude'
+    codeprobe.cli.runCmd -> codeprobe.execution.executor 'dispatch per config × task'
+    codeprobe.execution.executor -> codeprobe.execution.isolation 'isolated worktree at task commit'
+    codeprobe.execution.executor -> codeprobe.execution.registry 'resolve AgentAdapter'
+    codeprobe.execution.registry -> codeprobe.adapters.claudeAdapter 'run() headless'
+    codeprobe.adapters.claudeAdapter -> agentUnderTest 'claude -p (+ MCP config)'
+    codeprobe.adapters.claudeAdapter -> codeprobe.snapshot.recorder 'tool-call events'
+    codeprobe.execution.executor -> codeprobe.scoring 'score completed task'
+  }
+
+  // Flow 3 — score agent output against the oracle.
+  dynamic view scoreFlow {
+    title 'Walkthrough — scoring output against the oracle'
+    description 'Reward families are honesty-linted: an F1-family branch must never silently fall back to recall, and ScoreResult must declare scorer_family=. Failures score as "incorrect" — they are never dropped.'
+
+    codeprobe.scoring.families -> codeprobe.scoring.scorers 'pick family for the task'
+    codeprobe.scoring.scorers -> codeprobe.scoring.scoreSandbox 'run test.sh / oracle (filtered env)'
+    codeprobe.scoring.scorers -> codeprobe.scoring.ir 'overlap reward vs oracle list'
+    codeprobe.scoring.scorers -> llmBackend 'LLM-judge rubric (where used)'
+    codeprobe.scoring.ir -> codeprobe.analysis.report 'reward + sub_scores'
+  }
+
+  // Flow 4 — interpret + guard against measurement artifacts.
+  dynamic view interpretFlow {
+    title 'Walkthrough — interpret with bias guards'
+    description 'Before ranking, three bias detectors fire (backend_overlap / overshipping / no_independent_baseline). When no independent baseline exists the aggregate winner is suppressed by design — the table prints, the ranking does not.'
+
+    developer -> codeprobe.cli.runCmd 'codeprobe interpret .'
+    codeprobe.cli.runCmd -> codeprobe.analysis.stats 'paired tests + effect size'
+    codeprobe.analysis.stats -> codeprobe.analysis.ranking 'deterministic rank'
+    codeprobe.scoring.biasDetect -> codeprobe.analysis.report 'bias warnings above the table'
+    codeprobe.analysis.ranking -> codeprobe.analysis.report 'ranked configs + pairwise deltas'
+    codeprobe.analysis.report -> developer 'text / json / csv / html'
+  }
+
+  // Research / opt-in lens: the contrib library + evolving edges in context.
+  view research {
+    title 'Research & opt-in work'
+    include
+      codeprobe,
+      codeprobe.contrib,
+      codeprobe.sandbox,
+      codeprobe.analysis,
+      codeprobe.scoring
+
+    style * {
+      opacity 30%
+    }
+    style element.tag == #research {
+      opacity 100%
+      color indigo
+      border dashed
+    }
+    style element.tag == #evolving {
+      opacity 100%
+      color amber
+    }
+  }
+}
