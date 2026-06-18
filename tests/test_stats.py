@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from codeprobe.analysis.stats import (
+    partition_reward_population,
     summarize_completed_tasks,
     summarize_config,
     task_passed,
@@ -427,6 +428,25 @@ class TestQuotaExclusion:
         assert s.mean_score == 0.5
         assert s.pass_rate == 0.5
         assert s.quota_error_count == 0
+
+    def test_partition_reward_population_splits_and_counts(self) -> None:
+        # The shared SSOT helper that the published-mean paths route through
+        # (codeprobe-9jxx): real trials in order, quota count returned.
+        reward, quota_count = partition_reward_population(self._mixed())
+        assert [t.task_id for t in reward] == ["r1", "r2", "r3"]
+        assert quota_count == 2
+
+    def test_partition_reward_population_no_quota(self) -> None:
+        tasks = [_real_task("r1", 1.0), _real_task("r2", 0.0)]
+        reward, quota_count = partition_reward_population(tasks)
+        assert reward == tasks
+        assert quota_count == 0
+
+    def test_partition_reward_population_all_quota(self) -> None:
+        tasks = [_quota_task("q1"), _quota_task("q2")]
+        reward, quota_count = partition_reward_population(tasks)
+        assert reward == []
+        assert quota_count == 2
 
     def test_compare_configs_paired_scores_exclude_quota(self) -> None:
         # Step 2: the paired score lists feeding compare_configs's hypothesis

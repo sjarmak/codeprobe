@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, fields
 from pathlib import Path
 
+from codeprobe.analysis.stats import is_quota_casualty
 from codeprobe.config.redact import redact_mcp_headers
 from codeprobe.models.experiment import (
     CompletedTask as CompletedTask,
@@ -151,6 +152,14 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         return {}
 
     n = 0
+    # Score mean, duration total, and oracle metrics are over the reward
+    # population (quota casualties excluded — see partition_reward_population);
+    # cost/token totals stay over all completed trials since the quota attempts
+    # still cost real money. The count is surfaced via quota_error_count. This
+    # loop interleaves both accumulations in a single pass, so it keeps the
+    # inline quota check rather than calling the partition helper (codeprobe-9jxx).
+    reward_n = 0
+    quota_count = 0
     score_sum = 0.0
     cost_sum = 0.0
     has_cost = False
@@ -172,8 +181,6 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
 
     for t in completed:
         n += 1
-        score_sum += t.automated_score
-        dur_sum += t.duration_seconds
         if t.cost_usd is not None:
             cost_sum += t.cost_usd
             has_cost = True
@@ -189,6 +196,12 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         if t.cache_creation_tokens is not None:
             cache_creation_sum += t.cache_creation_tokens
             has_cache_creation = True
+        if is_quota_casualty(t):
+            quota_count += 1
+            continue
+        reward_n += 1
+        score_sum += t.automated_score
+        dur_sum += t.duration_seconds
         details = t.scoring_details or {}
         for key in metric_sums:
             value = details.get(key)
@@ -196,11 +209,12 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
                 metric_sums[key] += float(value)
                 metric_counts[key] += 1
 
-    mean_score = score_sum / n
+    mean_score = score_sum / reward_n if reward_n else 0.0
     total_cost = cost_sum if has_cost else None
 
     summary: dict = {
         "tasks_completed": n,
+        "quota_error_count": quota_count,
         "mean_automated_score": round(mean_score, 4),
         "total_duration_seconds": round(dur_sum, 1),
         "total_tokens": {
@@ -216,8 +230,8 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         if metric_counts[key]:
             summary[f"mean_{key}"] = round(metric_sums[key] / metric_counts[key], 4)
 
-    if total_cost and total_cost > 0:
-        summary["score_per_dollar"] = round(mean_score / (total_cost / n), 2)
+    if total_cost and total_cost > 0 and reward_n:
+        summary["score_per_dollar"] = round(mean_score / (total_cost / reward_n), 2)
 
     return summary
 

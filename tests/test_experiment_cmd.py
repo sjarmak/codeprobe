@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 from pathlib import Path
 
 import pytest
@@ -431,6 +432,59 @@ def test_aggregate_emits_token_count_rollups(
     assert var["total_output_tokens"] == 100
     assert var["mean_input_tokens_per_task"] == pytest.approx(500.0)
     assert var["mean_output_tokens_per_task"] == pytest.approx(100.0)
+
+
+def test_aggregate_excludes_quota_from_headline_mean(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """codeprobe-9jxx: the headline mean_automated_score / stdev in
+    config_summaries must exclude quota casualties (executor-stamped
+    automated_score=0.0), and surface a quota_error_count so the exclusion
+    is auditable. Cost/token totals stay over all attempts."""
+    save_config_results(
+        exp_dir,
+        "baseline",
+        [
+            CompletedTask(
+                task_id="task-001",
+                automated_score=1.0,
+                duration_seconds=2.0,
+                cost_usd=0.10,
+            ),
+            CompletedTask(
+                task_id="task-002",
+                automated_score=0.5,
+                duration_seconds=3.0,
+                cost_usd=0.10,
+            ),
+            CompletedTask(
+                task_id="task-003",
+                automated_score=0.0,
+                duration_seconds=1.0,
+                cost_usd=0.05,
+                error_category="quota",
+            ),
+        ],
+    )
+
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads((exp_dir / "reports" / "aggregate.json").read_text())
+    base = report["config_summaries"]["baseline"]
+
+    # Mean over the two real trials only — the 0.0 quota stub is excluded.
+    assert base["mean_automated_score"] == pytest.approx((1.0 + 0.5) / 2)
+    assert base["mean_reward"] == pytest.approx((1.0 + 0.5) / 2)
+    # stdev is over the reward population too (two real scores).
+    assert base["stdev_automated_score"] == pytest.approx(
+        statistics.stdev([1.0, 0.5])
+    )
+    # Quota count surfaced; structural task total unchanged.
+    assert base["quota_error_count"] == 1
+    assert base["tasks_completed"] == 3
+    # Cost stays over all attempts.
+    assert base["total_cost_usd"] == pytest.approx(0.25)
 
 
 def test_aggregate_token_rollups_none_when_unavailable(

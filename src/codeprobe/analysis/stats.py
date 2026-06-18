@@ -76,6 +76,23 @@ def is_quota_casualty(task: CompletedTask) -> bool:
     return task.error_category == "quota"
 
 
+def partition_reward_population(
+    tasks: Sequence[CompletedTask],
+) -> tuple[list[CompletedTask], int]:
+    """Split tasks into the reward population and the quota-casualty count.
+
+    Returns ``(reward_tasks, quota_error_count)``. Quota casualties are stamped
+    ``automated_score=0.0`` by the executor, but that 0.0 is an unrecoverable
+    infrastructure failure, not a task-quality measurement, so the reward
+    population (the set whose scores/durations/pass-rate feed the published
+    mean) excludes them while the count is surfaced separately for audit
+    (codeprobe-a8r; executor/CLI published-mean paths codeprobe-9jxx). Single
+    source of truth so every summarizer agrees on which trials count.
+    """
+    reward_tasks = [t for t in tasks if not is_quota_casualty(t)]
+    return reward_tasks, len(tasks) - len(reward_tasks)
+
+
 # ---------------------------------------------------------------------------
 # Statistical helper functions
 # ---------------------------------------------------------------------------
@@ -364,13 +381,11 @@ def summarize_config(
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
     errored_tasks = [t for t in tasks if t.status != "completed"]
-    # Reward population: real trials only. Quota casualties are kept in the
-    # structural counts (total_tasks/completed/errored) and surfaced via
-    # quota_error_count, but excluded from scores/durations/pass-rate so
-    # their 0.0 stub never rolls into mean_score (codeprobe-a8r).
-    reward_tasks = [t for t in tasks if not is_quota_casualty(t)]
+    # Reward population: real trials only (quota casualties stay in the
+    # structural counts but are excluded from scores/durations/pass-rate —
+    # see partition_reward_population).
+    reward_tasks, quota_count = partition_reward_population(tasks)
     scored_total = len(reward_tasks)
-    quota_count = total - scored_total
     # Deferred import: tool_surface_audit lives under codeprobe.core, whose
     # package __init__ pulls in the executor → scoring → stats chain. A
     # module-level import here would close that cycle (see the dual import

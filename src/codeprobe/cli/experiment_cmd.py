@@ -12,6 +12,7 @@ from typing import Any
 
 import click
 
+from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.core.experiment import (
     create_experiment_dir,
     load_config_results,
@@ -469,8 +470,18 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
     # Per-config summaries
     config_summaries: dict[str, dict] = {}
     for cfg_label, cfg_rows in config_results.items():
+        # Headline mean/stdev exclude quota casualties (see
+        # partition_reward_population); cost/time/token totals below stay over
+        # all tasks — structural. The parallel CompletedTask list carries
+        # error_category, so the partition runs there rather than on the row
+        # dicts (codeprobe-9jxx).
+        reward_tasks, quota_error_count = partition_reward_population(
+            completed_by_config.get(cfg_label, [])
+        )
         scores = [
-            r["automated_score"] for r in cfg_rows if r["automated_score"] is not None
+            t.automated_score
+            for t in reward_tasks
+            if t.automated_score is not None
         ]
         costs = [r["cost_usd"] for r in cfg_rows if r.get("cost_usd") is not None]
         times = [
@@ -551,6 +562,7 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
         mean_f = statistics.mean(f1s) if f1s else None
         config_summaries[cfg_label] = {
             "tasks_completed": len(cfg_rows),
+            "quota_error_count": quota_error_count,
             "mean_automated_score": mean_score,
             "mean_reward": mean_score,
             "stdev_automated_score": (

@@ -14,6 +14,7 @@ import click
 
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.analysis.dual import format_dual_suffix
+from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.cli._output_helpers import (
     emit_envelope,
     emit_event,
@@ -83,6 +84,41 @@ def _format_task_status(score: float) -> str:
     if score <= 0.0:
         return "FAIL"
     return f"{score:.2f}"
+
+
+def build_run_envelope_summary(
+    results_by_config: dict[str, list[CompletedTask]],
+) -> tuple[list[dict], int, float]:
+    """Shape per-config rows for the run envelope / NDJSON terminal summary.
+
+    The headline ``mean_score`` and ``perfect`` count are over the reward
+    population only (quota casualties excluded — see
+    partition_reward_population); ``tasks`` and ``cost_usd`` stay over all
+    attempts since the quota trials are real, billed work, and
+    ``quota_error_count`` surfaces how many were excluded (codeprobe-9jxx).
+
+    Returns ``(summary_configs, total_tasks, total_cost)``.
+    """
+    summary_configs: list[dict] = []
+    total_tasks = 0
+    total_cost = 0.0
+    for label, results in results_by_config.items():
+        reward_results, quota_errors = partition_reward_population(results)
+        scores = [r.automated_score for r in reward_results]
+        cfg_cost = sum((getattr(r, "cost_usd", 0.0) or 0.0) for r in results)
+        total_cost += cfg_cost
+        total_tasks += len(results)
+        summary_configs.append(
+            {
+                "label": label,
+                "tasks": len(results),
+                "quota_error_count": quota_errors,
+                "mean_score": (sum(scores) / len(scores)) if scores else 0.0,
+                "perfect": sum(1 for s in scores if s >= 1.0),
+                "cost_usd": cfg_cost,
+            }
+        )
+    return summary_configs, total_tasks, total_cost
 
 
 def _on_task_complete(result: CompletedTask) -> None:
@@ -914,19 +950,28 @@ def run_eval(
 
             save_config_results(exp_dir, exp_config.label, results)
 
-            scores = [r.automated_score for r in results]
+            # Mean and pass-rate exclude quota casualties (see
+            # partition_reward_population); the count is surfaced separately so
+            # the exclusion stays visible (codeprobe-9jxx).
+            reward_results, quota_errors = partition_reward_population(results)
+            scores = [r.automated_score for r in reward_results]
             mean = sum(scores) / len(scores) if scores else 0.0
             perfect = sum(1 for s in scores if s >= 1.0)
             scoring = sum(1 for s in scores if s > 0.0)
             if out_mode.mode == "pretty":
+                quota_note = f" ({quota_errors} quota-excluded)" if quota_errors else ""
                 if perfect == scoring:
                     # Binary results — show pass count
-                    click.echo(f"  {exp_config.label}: {perfect}/{len(results)} passed")
+                    click.echo(
+                        f"  {exp_config.label}: "
+                        f"{perfect}/{len(reward_results)} passed{quota_note}"
+                    )
                 else:
                     # Partial scoring — show mean and breakdown
                     click.echo(
                         f"  {exp_config.label}: mean={mean:.2f}, "
-                        f"{perfect} perfect + {scoring - perfect} partial / {len(results)}"
+                        f"{perfect} perfect + {scoring - perfect} partial "
+                        f"/ {len(reward_results)}{quota_note}"
                     )
             _results_by_config[exp_config.label] = list(results)
             return exp_config.label, results
@@ -987,25 +1032,9 @@ def run_eval(
             return
 
         # Envelope / NDJSON terminal summary — PRD §5.3.
-        summary_configs = []
-        total_tasks = 0
-        total_cost = 0.0
-        for label, results in _results_by_config.items():
-            scores = [r.automated_score for r in results]
-            cfg_cost = sum(
-                (getattr(r, "cost_usd", 0.0) or 0.0) for r in results
-            )
-            total_cost += cfg_cost
-            total_tasks += len(results)
-            summary_configs.append(
-                {
-                    "label": label,
-                    "tasks": len(results),
-                    "mean_score": (sum(scores) / len(scores)) if scores else 0.0,
-                    "perfect": sum(1 for s in scores if s >= 1.0),
-                    "cost_usd": cfg_cost,
-                }
-            )
+        summary_configs, total_tasks, total_cost = build_run_envelope_summary(
+            _results_by_config
+        )
         emit_envelope(
             command="run",
             data={

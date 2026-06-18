@@ -197,6 +197,77 @@ def test_save_config_results_aggregates_oracle_metrics(tmp_path: Path):
     assert summary["mean_f1"] == pytest.approx((0.4092 + 0.6) / 2, abs=1e-3)
 
 
+def test_compute_summary_excludes_quota_casualties_from_mean(tmp_path: Path):
+    """mean_automated_score is computed over real trials only (codeprobe-9jxx).
+
+    Quota-errored trials are stamped automated_score=0.0 by the executor; that
+    0.0 is an infrastructure failure, not a quality measurement, so it must not
+    drag the published mean toward zero. The quota count is surfaced separately,
+    and cost/token totals stay over all attempts (real billed work).
+    """
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    completed = [
+        CompletedTask(
+            task_id="t-001", automated_score=1.0, duration_seconds=2.0, cost_usd=0.5
+        ),
+        CompletedTask(
+            task_id="t-002", automated_score=0.5, duration_seconds=4.0, cost_usd=0.5
+        ),
+        CompletedTask(
+            task_id="t-003",
+            automated_score=0.0,
+            duration_seconds=1.0,
+            cost_usd=0.2,
+            error_category="quota",
+        ),
+    ]
+
+    path = save_config_results(exp_dir, "baseline", completed)
+    summary = json.loads(path.read_text())["summary"]
+
+    # Mean over the two real trials only — the 0.0 quota stub is excluded.
+    assert summary["mean_automated_score"] == pytest.approx((1.0 + 0.5) / 2)
+    # Structural total still counts every completed trial.
+    assert summary["tasks_completed"] == 3
+    # The quota count is surfaced so the exclusion is auditable.
+    assert summary["quota_error_count"] == 1
+    # Duration is summed over the reward population only.
+    assert summary["total_duration_seconds"] == pytest.approx(6.0)
+    # Cost stays over all attempts — quota trials still cost real money.
+    assert summary["total_cost_usd"] == pytest.approx(0.5 + 0.5 + 0.2)
+
+
+def test_compute_summary_all_quota_yields_zero_mean(tmp_path: Path):
+    """A config where every trial is a quota casualty reports mean 0.0, no crash."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    completed = [
+        CompletedTask(
+            task_id="t-001",
+            automated_score=0.0,
+            duration_seconds=1.0,
+            error_category="quota",
+        ),
+        CompletedTask(
+            task_id="t-002",
+            automated_score=0.0,
+            duration_seconds=1.0,
+            error_category="quota",
+        ),
+    ]
+
+    path = save_config_results(exp_dir, "baseline", completed)
+    summary = json.loads(path.read_text())["summary"]
+
+    assert summary["mean_automated_score"] == 0.0
+    assert summary["quota_error_count"] == 2
+    assert summary["tasks_completed"] == 2
+    assert "score_per_dollar" not in summary
+
+
 def test_save_config_results_omits_metrics_when_no_oracle_data(tmp_path: Path):
     """Backward compat: tasks without scoring_details produce no P/R fields."""
     exp = _sample_experiment()
