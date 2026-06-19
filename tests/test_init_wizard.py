@@ -603,3 +603,19 @@ class TestWizardModelValidation:
         )
         assert result.exit_code == 0, result.output
         assert (tmp_path / ".codeprobe").is_dir()
+
+
+class TestWizardTasksLocationGuidance:
+    """The wizard explains where mined tasks land so the empty per-experiment
+    tasks/ dir is not confusing (codeprobe-j551 / codeprobe-fvfo Gap 10)."""
+
+    def test_next_steps_explain_shared_tasks_dir(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["init", str(tmp_path), "--no-json"],
+            input="2\n\nclaude\nsonnet\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert ".codeprobe/tasks/" in result.output
+        assert "automatically" in result.output
