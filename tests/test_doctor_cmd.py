@@ -7,7 +7,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from codeprobe.cli import main
-from codeprobe.cli.doctor_cmd import run_checks
+from codeprobe.cli.doctor_cmd import _any_failed, run_checks
 
 
 class TestDoctorChecks:
@@ -132,3 +132,57 @@ class TestDoctorCLI:
         runner = CliRunner()
         result = runner.invoke(main, ["doctor"])
         assert "sk-secret-value-12345" not in result.output
+
+
+class TestApiKeyWarnDemotion:
+    """A missing API key is advisory (WARN, exit 0) when its agent CLI is
+    present, but a hard FAIL (exit 2) when no agent CLI exists
+    (codeprobe-bgq4 / codeprobe-fvfo Gap 11)."""
+
+    def test_key_warn_only_when_cli_present(self, monkeypatch: object) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        by_name = {r.name: r for r in run_checks()}
+        assert by_name["ANTHROPIC_API_KEY"].passed is False
+        assert by_name["ANTHROPIC_API_KEY"].warn_only is True
+        assert by_name["OPENAI_API_KEY"].warn_only is True
+        # The advisory key does not flip doctor to a failure.
+        assert _any_failed(list(by_name.values())) is False
+
+    def test_key_hard_fail_when_no_cli(self, monkeypatch: object) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        by_name = {r.name: r for r in run_checks()}
+        # No CLI present → the key is the only path → real FAIL.
+        assert by_name["ANTHROPIC_API_KEY"].warn_only is False
+        assert _any_failed(list(by_name.values())) is True
+
+    def test_present_key_is_never_warn_only(self, monkeypatch: object) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        by_name = {r.name: r for r in run_checks()}
+        assert by_name["ANTHROPIC_API_KEY"].passed is True
+        assert by_name["ANTHROPIC_API_KEY"].warn_only is False
+
+    def test_doctor_pretty_shows_warn_and_exits_zero(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--no-json"])
+        assert result.exit_code == 0, result.output
+        assert "WARN  ANTHROPIC_API_KEY" in result.output
