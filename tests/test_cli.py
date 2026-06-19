@@ -209,8 +209,6 @@ def test_log_format_option_appears_in_help():
 _ADVANCED_MINE_FLAGS = (
     "--source",
     "--min-files",
-    "--subsystem",
-    "--discover-subsystems",
     "--enrich",
     "--no-llm",
     "--org-scale",
@@ -226,7 +224,17 @@ _ADVANCED_MINE_FLAGS = (
 )
 
 # Flags that should always appear in the short help.
-_SIMPLE_MINE_FLAGS = ("--goal", "--count", "--interactive", "--advanced")
+# --subsystem / --discover-subsystems are the large-monorepo scoping flags;
+# surfaced in standard help so a cold dev finds them without --advanced
+# (codeprobe-8huy / codeprobe-fvfo Gap 5).
+_SIMPLE_MINE_FLAGS = (
+    "--goal",
+    "--count",
+    "--interactive",
+    "--advanced",
+    "--subsystem",
+    "--discover-subsystems",
+)
 
 
 def test_mine_help_hides_advanced_flags_by_default():
