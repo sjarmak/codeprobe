@@ -14,6 +14,7 @@ from codeprobe.cli._output_helpers import (
     resolve_mode,
 )
 from codeprobe.cli._tenant import resolve_tenant, tenant_option
+from codeprobe.core.registry import available as _available_agents
 from codeprobe.mining.task_types import (
     TASK_TYPE_REGISTRY as _TASK_TYPE_REGISTRY,
 )
@@ -25,6 +26,9 @@ from codeprobe.mining.task_types import (
 )
 
 _TASK_TYPE_CHOICES = _task_type_names()
+# Sourced from the agent registry so the --agent help can never drift from the
+# set of agents `run` actually accepts (codeprobe-n6ij / codeprobe-fvfo Gap 12).
+_AGENT_NAMES = ", ".join(_available_agents())
 
 
 class MineCommand(click.Command):
@@ -831,7 +835,7 @@ def mine(
 
 @main.command()
 @click.argument("path", default=".", type=click.Path(exists=True))
-@click.option("--agent", default="claude", help="Agent to evaluate: claude, copilot.")
+@click.option("--agent", default="claude", help=f"Agent to evaluate: {_AGENT_NAMES}.")
 @click.option("--model", default=None, help="Model override (e.g., claude-sonnet-4-6).")
 @click.option(
     "--config", default=None, help="Path to .evalrc.yaml or experiment directory."
@@ -1150,7 +1154,7 @@ def init_experiment(
 @experiment.command("add-config")
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--label", required=True, help="Human-readable config label.")
-@click.option("--agent", default="claude", help="Agent backend (claude, copilot).")
+@click.option("--agent", default="claude", help=f"Agent backend ({_AGENT_NAMES}).")
 @click.option("--model", default=None, help="Model ID (e.g., claude-sonnet-4-6).")
 @click.option("--permission-mode", default="default", help="Permission mode for agent.")
 @click.option(
