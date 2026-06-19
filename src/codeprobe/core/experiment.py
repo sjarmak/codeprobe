@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, fields
 from pathlib import Path
 
-from codeprobe.analysis.stats import is_quota_casualty
+from codeprobe.analysis.stats import is_quota_casualty, is_scorable_run
 from codeprobe.config.redact import redact_mcp_headers
 from codeprobe.models.experiment import (
     CompletedTask as CompletedTask,
@@ -152,12 +152,15 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
         return {}
 
     n = 0
-    # Score mean, duration total, and oracle metrics are over the reward
-    # population (quota casualties excluded — see partition_reward_population);
-    # cost/token totals stay over all completed trials since the quota attempts
-    # still cost real money. The count is surfaced via quota_error_count. This
-    # loop interleaves both accumulations in a single pass, so it keeps the
-    # inline quota check rather than calling the partition helper (codeprobe-9jxx).
+    # Score mean, duration total, and oracle metrics are over the scorable
+    # reward population (non-executed status=="error" runs — quota casualties,
+    # invalid-model/crash errors — excluded, matching is_scorable_run /
+    # partition_reward_population, codeprobe-h3j4); cost/token totals stay over
+    # all completed trials since errored attempts still cost real money. The
+    # quota subset is surfaced via quota_error_count and the full excluded
+    # count via errored_count. This loop interleaves both accumulations in a
+    # single pass, so it keeps the inline predicate checks rather than calling
+    # the partition helper (codeprobe-9jxx).
     reward_n = 0
     quota_count = 0
     score_sum = 0.0
@@ -198,6 +201,7 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
             has_cache_creation = True
         if is_quota_casualty(t):
             quota_count += 1
+        if not is_scorable_run(t):
             continue
         reward_n += 1
         score_sum += t.automated_score
@@ -215,6 +219,7 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
     summary: dict = {
         "tasks_completed": n,
         "quota_error_count": quota_count,
+        "errored_count": n - reward_n,
         "mean_automated_score": round(mean_score, 4),
         "total_duration_seconds": round(dur_sum, 1),
         "total_tokens": {

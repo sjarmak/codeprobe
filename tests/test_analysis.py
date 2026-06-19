@@ -156,6 +156,28 @@ class TestSummarizeConfig:
         assert s.completed == 1
         assert s.errored == 1
 
+    def test_errored_runs_excluded_from_mean_and_pass_rate(self) -> None:
+        """codeprobe-h3j4: a non-executed status=="error" run is excluded from
+        mean_score / pass_rate (not counted as a real 0.0 failure) and is
+        surfaced via errored_count / scored_count."""
+        results = ConfigResults(
+            config="mixed",
+            completed=[
+                _task("t1", 1.0),
+                _task("t2", 0.0, status="error"),
+                _task("t3", 1.0),
+            ],
+        )
+        s = summarize_config(results)
+
+        # Mean and pass-rate over the 2 executed runs only — NOT 2/3.
+        assert s.mean_score == pytest.approx(1.0)
+        assert s.pass_rate == pytest.approx(1.0)
+        assert s.errored_count == 1
+        assert s.scored_count == 2
+        # Structural counts keep all 3 rows.
+        assert s.total_tasks == 3
+
 
 # ---------------------------------------------------------------------------
 # compare_configs
@@ -377,6 +399,81 @@ class TestRankConfigs:
         assert ranked[1].label == "cheap"
         assert "cost-efficiency" in ranked[1].recommendation.lower()
 
+    def test_all_errored_config_trails_and_is_never_best(self) -> None:
+        """codeprobe-h3j4: a config whose every run was non-executed
+        (scored_count == 0) must NOT win the ranking on a vacuous 0.0 mean —
+        it trails the scorable config with an ERRORED recommendation."""
+        scorable = ConfigSummary(
+            label="real",
+            total_tasks=2,
+            completed=2,
+            errored=0,
+            pass_rate=0.5,
+            mean_score=0.5,
+            median_score=0.5,
+            total_duration_sec=20.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=0.20,
+            total_tokens=1000,
+        )
+        all_errored = ConfigSummary(
+            label="broken",
+            total_tasks=2,
+            completed=0,
+            errored=2,
+            pass_rate=0.0,
+            mean_score=0.0,
+            median_score=0.0,
+            total_duration_sec=0.0,
+            mean_duration_sec=0.0,
+            total_cost_usd=None,
+            total_tokens=None,
+            errored_count=2,
+        )
+        ranked = rank_configs([all_errored, scorable])
+
+        assert ranked[0].label == "real"
+        assert "Best" in ranked[0].recommendation
+        assert ranked[1].label == "broken"
+        assert "ERRORED" in ranked[1].recommendation
+
+    def test_all_configs_errored_have_no_best(self) -> None:
+        """codeprobe-h3j4: when no config produced a scorable run, every entry
+        is ERRORED — there is no 'best' to pick."""
+        a = ConfigSummary(
+            label="a",
+            total_tasks=1,
+            completed=0,
+            errored=1,
+            pass_rate=0.0,
+            mean_score=0.0,
+            median_score=0.0,
+            total_duration_sec=0.0,
+            mean_duration_sec=0.0,
+            total_cost_usd=None,
+            total_tokens=None,
+            errored_count=1,
+        )
+        b = ConfigSummary(
+            label="b",
+            total_tasks=1,
+            completed=0,
+            errored=1,
+            pass_rate=0.0,
+            mean_score=0.0,
+            median_score=0.0,
+            total_duration_sec=0.0,
+            mean_duration_sec=0.0,
+            total_cost_usd=None,
+            total_tokens=None,
+            errored_count=1,
+        )
+        ranked = rank_configs([a, b])
+
+        assert len(ranked) == 2
+        assert all("ERRORED" in rc.recommendation for rc in ranked)
+        assert all(rc.summary.scored_count == 0 for rc in ranked)
+
 
 # ---------------------------------------------------------------------------
 # generate_report
@@ -436,6 +533,53 @@ class TestFormatTextReport:
         assert "### Recommendation" in text
         assert "alpha" in text
         assert "pass rate" in text
+
+
+class TestErroredConfigReporting:
+    """codeprobe-h3j4: non-executed runs (status=="error") must not be
+    rendered as 0.00 failures, and an all-errored experiment must refuse a
+    'Use X' recommendation in favour of a prescriptive re-run message."""
+
+    def test_all_errored_refuses_recommendation(self) -> None:
+        results_a = ConfigResults(
+            config="config-a",
+            completed=[
+                _task("t1", 0.0, status="error"),
+                _task("t2", 0.0, status="error"),
+            ],
+        )
+        results_b = ConfigResults(
+            config="config-b",
+            completed=[_task("t1", 0.0, status="error")],
+        )
+        report = generate_report("all-errored", [results_a, results_b])
+        text = format_text_report(report)
+
+        # No confident pick — the recommendation refuses and prescribes a re-run.
+        assert "for best results" not in text
+        assert "No comparison available" in text
+        # Errored configs surface as ERRORED, not as 0% pass-rate rows.
+        assert "ERRORED" in text
+
+    def test_mixed_still_recommends_scorable_config(self) -> None:
+        # config-a has real scorable runs; config-b is all-errored. The
+        # recommendation must pick config-a and never config-b.
+        results_a = ConfigResults(
+            config="config-a",
+            completed=[
+                _task("t1", 1.0, cost=0.10),
+                _task("t2", 0.8, cost=0.10),
+            ],
+        )
+        results_b = ConfigResults(
+            config="config-b",
+            completed=[_task("t1", 0.0, status="error")],
+        )
+        report = generate_report("mixed", [results_a, results_b])
+        text = format_text_report(report)
+
+        assert "Use config-a for best results." in text
+        assert "Use config-b" not in text
 
 
 # ---------------------------------------------------------------------------

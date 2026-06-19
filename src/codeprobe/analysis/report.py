@@ -14,7 +14,7 @@ from codeprobe.analysis.stats import (
     ConfigSummary,
     PairwiseComparison,
     compare_configs,
-    is_quota_casualty,
+    is_scorable_run,
     summarize_completed_tasks,
     summarize_config,
     task_passed,
@@ -92,13 +92,14 @@ def generate_report(
     # Cohen's d for continuous).
     config_scores: dict[str, dict[str, float]] = {}
     for cr in all_results:
-        # Exclude quota casualties so the paired hypothesis tests and
-        # effect sizes in compare_configs match the reward population the
-        # summaries report (codeprobe-a8r).
+        # Restrict to scorable runs so the paired hypothesis tests and effect
+        # sizes in compare_configs match the reward population the summaries
+        # report — non-executed runs (quota, invalid-model, crash) are excluded
+        # (codeprobe-a8r; broadened to all status=="error" in codeprobe-h3j4).
         config_scores[cr.config] = {
             t.task_id: float(t.automated_score)
             for t in cr.completed
-            if not is_quota_casualty(t)
+            if is_scorable_run(t)
         }
 
     comparisons: list[PairwiseComparison] = []
@@ -134,16 +135,16 @@ def _tee_task_scores(
     Stores ``automated_score`` (continuous) rather than a binarized pass/fail
     indicator so pairwise statistical tests can operate on the true score
     distribution and choose Wilcoxon + Cohen's d for continuous scorers
-    vs McNemar + Cliff's delta for binary ones. Quota casualties are yielded
+    vs McNemar + Cliff's delta for binary ones. Non-executed runs are yielded
     but omitted from *sink* so the paired tests match the reward population
-    (codeprobe-a8r).
+    (codeprobe-a8r; codeprobe-h3j4).
     """
     for t in tasks:
-        # Quota casualties are still yielded (so the summarizer counts them
-        # in quota_error_count) but kept out of the paired-score sink so
-        # compare_configs's statistical tests match the reward population
-        # (codeprobe-a8r).
-        if not is_quota_casualty(t):
+        # Non-executed runs are still yielded (so the summarizer counts them in
+        # quota_error_count / errored_count) but kept out of the paired-score
+        # sink so compare_configs's statistical tests match the reward
+        # population (codeprobe-a8r; codeprobe-h3j4).
+        if is_scorable_run(t):
             sink[t.task_id] = float(t.automated_score)
         yield t
 
@@ -260,7 +261,11 @@ def format_text_report(report: Report) -> str:
                 f" (code {s.direct_pass_rate:.0%} / "
                 f"artifact {s.artifact_pass_rate:.0%})"
             )
-        if s.score_type == "continuous":
+        # codeprobe-h3j4: a config with no scorable run never executed; show
+        # ERRORED (n) instead of a vacuous 0.00 mean / 0% pass row.
+        if s.scored_count == 0:
+            headline = f"ERRORED ({s.errored_count}) — no runs executed"
+        elif s.score_type == "continuous":
             headline = (
                 f"mean={s.mean_score:.2f} "
                 f"[CI {s.ci_lower:.2f}–{s.ci_upper:.2f}]"
@@ -273,6 +278,13 @@ def format_text_report(report: Report) -> str:
         quota_suffix = ""
         if s.quota_error_count > 0:
             quota_suffix = f" ⚠ {s.quota_error_count} quota error(s)"
+        # codeprobe-h3j4: non-quota non-executed runs (invalid model token,
+        # crash) excluded from a config that still has scorable runs — flag the
+        # remainder so the headline mean isn't read as the whole story.
+        errored_suffix = ""
+        non_quota_errored = s.errored_count - s.quota_error_count
+        if s.scored_count > 0 and non_quota_errored > 0:
+            errored_suffix = f" ⚠ {non_quota_errored} errored (excluded)"
         # codeprobe-1gg: flag arms where the agent abandoned an enabled tool
         # surface (zero calls on a trial that ran). A nonzero count means
         # this arm's effect is partly "the agent ignored the tooling" — the
@@ -284,7 +296,8 @@ def format_text_report(report: Report) -> str:
             )
         lines.append(
             f"{rc.rank}. {rc.label} — {headline}{dual_suffix}, "
-            f"{cost_str}{quota_suffix}{abandoned_suffix} — {rc.recommendation}"
+            f"{cost_str}{quota_suffix}{errored_suffix}{abandoned_suffix} "
+            f"— {rc.recommendation}"
         )
     if any(rc.summary.quota_error_count > 0 for rc in report.rankings):
         lines.append("")
@@ -371,15 +384,28 @@ def format_text_report(report: Report) -> str:
 
     # Recommendation
     lines.append("### Recommendation")
-    if report.rankings:
-        best = report.rankings[0]
+    scorable_rankings = [rc for rc in report.rankings if rc.summary.scored_count > 0]
+    if scorable_rankings:
+        best = scorable_rankings[0]
         lines.append(f"Use {best.label} for best results.")
 
         cost_efficient = [
-            r for r in report.rankings if "cost-efficiency" in r.recommendation.lower()
+            r for r in scorable_rankings if "cost-efficiency" in r.recommendation.lower()
         ]
         if cost_efficient:
             lines.append(f"Consider {cost_efficient[0].label} if cost is a concern.")
+    elif report.rankings:
+        # codeprobe-h3j4: every config's every run was non-executed. Refuse a
+        # "Use X" recommendation — there is no comparison to make — and emit a
+        # prescriptive next step instead of a confident pick from vacuous 0.0s.
+        total_errored = sum(rc.summary.errored_count for rc in report.rankings)
+        n_configs = len(report.rankings)
+        lines.append(
+            f"No comparison available — all {total_errored} run(s) across "
+            f"{n_configs} config(s) errored (the agent never executed; e.g. an "
+            "invalid model token or an OAuth/API quota limit). Fix the run "
+            "configuration and re-execute before comparing."
+        )
     else:
         lines.append("No configurations to recommend.")
 
@@ -627,8 +653,11 @@ def format_html_report(report: Report) -> str:
     """Format report as a self-contained HTML file with inline CSS/JS."""
     parts: list[str] = []
 
-    best_label = report.rankings[0].label if report.rankings else "N/A"
-    best_rec = report.rankings[0].recommendation if report.rankings else ""
+    # codeprobe-h3j4: the "best" config must come from the scorable set —
+    # never an all-errored (non-executed) config. None scorable → no pick.
+    scorable_rankings = [rc for rc in report.rankings if rc.summary.scored_count > 0]
+    best_label = scorable_rankings[0].label if scorable_rankings else "N/A"
+    best_rec = scorable_rankings[0].recommendation if scorable_rankings else ""
     has_single_run = any(s.sample_size_warning for s in report.summaries)
 
     # --- Helpers ---
@@ -736,8 +765,8 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     # --- Executive Summary ---
     parts.append('<h2 id="executive-summary">Executive Summary</h2>\n')
     parts.append('<div class="card executive">\n')
-    if report.rankings:
-        best_s = report.rankings[0].summary
+    if scorable_rankings:
+        best_s = scorable_rankings[0].summary
         cost_str = _fmt_cost(best_s.total_cost_usd)
         parts.append(
             f"<p><strong>Recommendation:</strong> {_esc(best_label)} — "
@@ -747,6 +776,17 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
             f"<p>Pass rate: {_fmt_pct(best_s.pass_rate)} | "
             f"Mean score: {_fmt_score(best_s.mean_score)} | "
             f"Cost: {cost_str}</p>\n"
+        )
+    elif report.rankings:
+        # codeprobe-h3j4: every config errored — refuse a recommendation.
+        total_errored = sum(rc.summary.errored_count for rc in report.rankings)
+        n_configs = len(report.rankings)
+        parts.append(
+            "<p><strong>No comparison available</strong> — all "
+            f"{total_errored} run(s) across {n_configs} config(s) errored "
+            "(the agent never executed; e.g. an invalid model token or an "
+            "OAuth/API quota limit). Fix the run configuration and re-execute "
+            "before comparing.</p>\n"
         )
     else:
         parts.append("<p>No configurations to recommend.</p>\n")

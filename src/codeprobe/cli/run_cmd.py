@@ -92,11 +92,13 @@ def build_run_envelope_summary(
 ) -> tuple[list[dict], int, float]:
     """Shape per-config rows for the run envelope / NDJSON terminal summary.
 
-    The headline ``mean_score`` and ``perfect`` count are over the reward
-    population only (quota casualties excluded — see
+    The headline ``mean_score`` and ``perfect`` count are over the scorable
+    reward population only (non-executed status=="error" runs — quota
+    casualties, invalid-model/crash errors — excluded, see
     partition_reward_population); ``tasks`` and ``cost_usd`` stay over all
-    attempts since the quota trials are real, billed work, and
-    ``quota_error_count`` surfaces how many were excluded (codeprobe-9jxx).
+    attempts since errored trials are real, billed work, and
+    ``quota_error_count`` / ``errored_count`` surface how many were excluded
+    (codeprobe-9jxx; codeprobe-h3j4).
 
     Returns ``(summary_configs, total_tasks, total_cost)``.
     """
@@ -104,7 +106,7 @@ def build_run_envelope_summary(
     total_tasks = 0
     total_cost = 0.0
     for label, results in results_by_config.items():
-        reward_results, quota_errors = partition_reward_population(results)
+        reward_results, quota_errors, errored = partition_reward_population(results)
         scores = [r.automated_score for r in reward_results]
         cfg_cost = sum((getattr(r, "cost_usd", 0.0) or 0.0) for r in results)
         total_cost += cfg_cost
@@ -114,6 +116,8 @@ def build_run_envelope_summary(
                 "label": label,
                 "tasks": len(results),
                 "quota_error_count": quota_errors,
+                "errored_count": errored,
+                "scored_count": len(reward_results),
                 "mean_score": (sum(scores) / len(scores)) if scores else 0.0,
                 "perfect": sum(1 for s in scores if s >= 1.0),
                 "cost_usd": cfg_cost,
@@ -967,28 +971,40 @@ def run_eval(
 
             save_config_results(exp_dir, exp_config.label, results)
 
-            # Mean and pass-rate exclude quota casualties (see
-            # partition_reward_population); the count is surfaced separately so
-            # the exclusion stays visible (codeprobe-9jxx).
-            reward_results, quota_errors = partition_reward_population(results)
+            # Mean and pass-rate exclude non-executed runs (status=="error":
+            # quota casualties, invalid-model/crash errors — see
+            # partition_reward_population); the excluded count is surfaced so a
+            # run where nothing actually executed never reads as "0.00 passed"
+            # (codeprobe-h3j4 / codeprobe-9jxx).
+            reward_results, quota_errors, errored = partition_reward_population(
+                results
+            )
             scores = [r.automated_score for r in reward_results]
             mean = sum(scores) / len(scores) if scores else 0.0
             perfect = sum(1 for s in scores if s >= 1.0)
             scoring = sum(1 for s in scores if s > 0.0)
             if out_mode.mode == "pretty":
-                quota_note = f" ({quota_errors} quota-excluded)" if quota_errors else ""
-                if perfect == scoring:
+                err_note = f" ({errored} errored, excluded)" if errored else ""
+                if not reward_results:
+                    # No run actually executed — do NOT print a 0/0 "passed"
+                    # line that looks like a real (failing) measurement.
+                    click.echo(
+                        f"  {exp_config.label}: ERRORED — "
+                        f"{errored}/{len(results)} runs did not execute "
+                        f"(no score)"
+                    )
+                elif perfect == scoring:
                     # Binary results — show pass count
                     click.echo(
                         f"  {exp_config.label}: "
-                        f"{perfect}/{len(reward_results)} passed{quota_note}"
+                        f"{perfect}/{len(reward_results)} passed{err_note}"
                     )
                 else:
                     # Partial scoring — show mean and breakdown
                     click.echo(
                         f"  {exp_config.label}: mean={mean:.2f}, "
                         f"{perfect} perfect + {scoring - perfect} partial "
-                        f"/ {len(reward_results)}{quota_note}"
+                        f"/ {len(reward_results)}{err_note}"
                     )
             _results_by_config[exp_config.label] = list(results)
             return exp_config.label, results

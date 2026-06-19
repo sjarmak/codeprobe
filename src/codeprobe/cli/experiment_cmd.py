@@ -475,7 +475,7 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
         # all tasks — structural. The parallel CompletedTask list carries
         # error_category, so the partition runs there rather than on the row
         # dicts (codeprobe-9jxx).
-        reward_tasks, quota_error_count = partition_reward_population(
+        reward_tasks, quota_error_count, errored_count = partition_reward_population(
             completed_by_config.get(cfg_label, [])
         )
         scores = [
@@ -563,6 +563,7 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
         config_summaries[cfg_label] = {
             "tasks_completed": len(cfg_rows),
             "quota_error_count": quota_error_count,
+            "errored_count": errored_count,
             "mean_automated_score": mean_score,
             "mean_reward": mean_score,
             "stdev_automated_score": (

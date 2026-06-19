@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from codeprobe.analysis.stats import (
+    is_scorable_run,
     partition_reward_population,
     summarize_completed_tasks,
     summarize_config,
@@ -343,6 +344,61 @@ def _real_task(
     )
 
 
+def _error_task(task_id: str, *, duration: float = 1.0) -> CompletedTask:
+    """A non-executed run (status=="error", non-quota): the agent never ran
+    (e.g. invalid model token / crash). Stamped automated_score=0.0 by the
+    executor; excluded from scoring but not a quota casualty (codeprobe-h3j4)."""
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=0.0,
+        status="error",
+        duration_seconds=duration,
+        error_category="agent",
+    )
+
+
+def _failed_task(task_id: str, *, duration: float = 5.0) -> CompletedTask:
+    """A terminal agent failure (status=="failed"): the agent ran to a
+    protocol stop condition and the 0.0 is a REAL measurement, so it stays in
+    the reward population (codeprobe-8up / codeprobe-h3j4)."""
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=0.0,
+        status="failed",
+        duration_seconds=duration,
+    )
+
+
+class TestIsScorableRun:
+    """is_scorable_run keeps real measurements, drops non-executed runs."""
+
+    def test_completed_is_scorable(self) -> None:
+        assert is_scorable_run(_real_task("c1", 1.0)) is True
+
+    def test_failed_stays_in_population(self) -> None:
+        # The opposite-bug guard: a terminal "failed" run is a real 0.0
+        # measurement and must NOT be excluded (that would hide real failures).
+        assert is_scorable_run(_failed_task("f1")) is True
+
+    def test_error_is_not_scorable(self) -> None:
+        assert is_scorable_run(_error_task("e1")) is False
+
+    def test_quota_casualty_is_not_scorable(self) -> None:
+        assert is_scorable_run(_quota_task("q1")) is False
+
+    def test_failed_run_counts_toward_mean(self) -> None:
+        # A completed 1.0 and a failed 0.0 average to 0.5 over 2 scored runs;
+        # an errored run is excluded entirely.
+        results = ConfigResults(
+            config="c",
+            completed=[_real_task("c1", 1.0), _failed_task("f1"), _error_task("e1")],
+        )
+        summary = summarize_config(results)
+        assert summary.scored_count == 2
+        assert summary.errored_count == 1
+        assert summary.mean_score == 0.5
+
+
 class TestQuotaExclusion:
     """Quota-errored trials must NOT contaminate the reward population.
 
@@ -431,22 +487,40 @@ class TestQuotaExclusion:
 
     def test_partition_reward_population_splits_and_counts(self) -> None:
         # The shared SSOT helper that the published-mean paths route through
-        # (codeprobe-9jxx): real trials in order, quota count returned.
-        reward, quota_count = partition_reward_population(self._mixed())
+        # (codeprobe-9jxx): real trials in order, quota + errored counts returned.
+        reward, quota_count, errored_count = partition_reward_population(self._mixed())
         assert [t.task_id for t in reward] == ["r1", "r2", "r3"]
         assert quota_count == 2
+        # The 2 quota casualties are status=="error", so errored_count == 2.
+        assert errored_count == 2
 
     def test_partition_reward_population_no_quota(self) -> None:
         tasks = [_real_task("r1", 1.0), _real_task("r2", 0.0)]
-        reward, quota_count = partition_reward_population(tasks)
+        reward, quota_count, errored_count = partition_reward_population(tasks)
         assert reward == tasks
         assert quota_count == 0
+        assert errored_count == 0
 
     def test_partition_reward_population_all_quota(self) -> None:
         tasks = [_quota_task("q1"), _quota_task("q2")]
-        reward, quota_count = partition_reward_population(tasks)
+        reward, quota_count, errored_count = partition_reward_population(tasks)
         assert reward == []
         assert quota_count == 2
+        assert errored_count == 2
+
+    def test_partition_reward_population_excludes_nonquota_errors(self) -> None:
+        # codeprobe-h3j4: a non-executed run (status=="error", NOT quota) is
+        # excluded from the reward population and counted as errored, but is
+        # NOT a quota casualty.
+        tasks = [
+            _real_task("r1", 1.0),
+            _error_task("e1"),
+            _real_task("r2", 0.0),
+        ]
+        reward, quota_count, errored_count = partition_reward_population(tasks)
+        assert [t.task_id for t in reward] == ["r1", "r2"]
+        assert quota_count == 0
+        assert errored_count == 1
 
     def test_compare_configs_paired_scores_exclude_quota(self) -> None:
         # Step 2: the paired score lists feeding compare_configs's hypothesis

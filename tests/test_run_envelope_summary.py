@@ -80,3 +80,54 @@ def test_envelope_summary_no_quota_is_unchanged() -> None:
     assert cfg["mean_score"] == pytest.approx(0.5)
     assert cfg["quota_error_count"] == 0
     assert cfg["tasks"] == 2
+    assert cfg["errored_count"] == 0
+    assert cfg["scored_count"] == 2
+
+
+def test_envelope_summary_excludes_nonquota_errors_from_mean() -> None:
+    """codeprobe-h3j4: a non-executed status=="error" run (not quota) is
+    excluded from the headline mean and surfaced via errored_count."""
+    results_by_config = {
+        "baseline": [
+            CompletedTask(task_id="t-001", automated_score=1.0, cost_usd=0.10),
+            CompletedTask(
+                task_id="t-002",
+                automated_score=0.0,
+                status="error",
+                error_category="agent",
+            ),
+        ]
+    }
+
+    (cfg,), _, _ = build_run_envelope_summary(results_by_config)
+
+    # Mean over the one executed run only — the 0.0 error stub is excluded.
+    assert cfg["mean_score"] == pytest.approx(1.0)
+    assert cfg["perfect"] == 1
+    assert cfg["scored_count"] == 1
+    assert cfg["errored_count"] == 1
+    # Not a quota casualty.
+    assert cfg["quota_error_count"] == 0
+    assert cfg["tasks"] == 2
+
+
+def test_envelope_summary_all_errored_yields_zero_scored() -> None:
+    """codeprobe-h3j4: when every run errored there is no scorable population;
+    mean is 0.0 by convention but scored_count is 0 so callers can refuse a
+    confident summary."""
+    results_by_config = {
+        "baseline": [
+            CompletedTask(
+                task_id="t-001",
+                automated_score=0.0,
+                status="error",
+                error_category="agent",
+            ),
+        ]
+    }
+
+    (cfg,), _, _ = build_run_envelope_summary(results_by_config)
+
+    assert cfg["scored_count"] == 0
+    assert cfg["errored_count"] == 1
+    assert cfg["perfect"] == 0

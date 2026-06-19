@@ -76,21 +76,53 @@ def is_quota_casualty(task: CompletedTask) -> bool:
     return task.error_category == "quota"
 
 
+def is_scorable_run(task: CompletedTask) -> bool:
+    """Return whether a run counts toward scoring, ranking, and recommendations.
+
+    A run is *scorable* only when the agent actually executed and produced a
+    genuine measurement: ``status == "completed"`` (scored) or
+    ``status == "failed"`` (an adapter-declared terminal failure — a real
+    0.0-reward measurement, codeprobe-8up). A run is NOT scorable when
+    ``status == "error"``: the agent never executed (invalid model token,
+    OAuth quota casualty, crash, system fault). The executor stamps those
+    non-executed runs with a hard-coded ``automated_score=0.0`` that is an
+    infrastructure artifact, not a task-quality measurement, so folding it into
+    ``mean_score`` / ``pass_rate`` / rankings manufactures a confident A/B
+    comparison out of runs that never ran (codeprobe-h3j4). Quota casualties
+    are a subset of the non-executed set and are excluded here too, preserving
+    the earlier quota-exclusion contract (codeprobe-9jxx / codeprobe-a8r).
+
+    This is the ONE structural predicate (status filter, no semantic judgment —
+    ZFC) that the executor-fed summaries, the rankings, the pairwise tests, and
+    the CLI terminal summary all route through so they agree on which runs count.
+    """
+    return task.status != "error" and not is_quota_casualty(task)
+
+
 def partition_reward_population(
     tasks: Sequence[CompletedTask],
-) -> tuple[list[CompletedTask], int]:
-    """Split tasks into the reward population and the quota-casualty count.
+) -> tuple[list[CompletedTask], int, int]:
+    """Split tasks into the scorable reward population and exclusion counts.
 
-    Returns ``(reward_tasks, quota_error_count)``. Quota casualties are stamped
-    ``automated_score=0.0`` by the executor, but that 0.0 is an unrecoverable
-    infrastructure failure, not a task-quality measurement, so the reward
-    population (the set whose scores/durations/pass-rate feed the published
-    mean) excludes them while the count is surfaced separately for audit
-    (codeprobe-a8r; executor/CLI published-mean paths codeprobe-9jxx). Single
+    Returns ``(reward_tasks, quota_error_count, errored_count)``:
+
+    * ``reward_tasks`` — runs that count toward scores/durations/pass-rate and
+      the published mean (``is_scorable_run``).
+    * ``quota_error_count`` — runs lost to an OAuth/API quota limit
+      (``is_quota_casualty``); a subset of the excluded set, surfaced
+      separately so the quota note stays accurate (codeprobe-9xrl).
+    * ``errored_count`` — ALL non-executed runs excluded from scoring
+      (``status == "error"`` plus any quota casualty), i.e.
+      ``len(tasks) - len(reward_tasks)`` (codeprobe-h3j4).
+
+    Excluded runs are stamped ``automated_score=0.0`` by the executor, but that
+    0.0 is an infrastructure artifact, not a task-quality measurement. Single
     source of truth so every summarizer agrees on which trials count.
     """
-    reward_tasks = [t for t in tasks if not is_quota_casualty(t)]
-    return reward_tasks, len(tasks) - len(reward_tasks)
+    reward_tasks = [t for t in tasks if is_scorable_run(t)]
+    quota_error_count = sum(1 for t in tasks if is_quota_casualty(t))
+    errored_count = len(tasks) - len(reward_tasks)
+    return reward_tasks, quota_error_count, errored_count
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +349,13 @@ class ConfigSummary:
     # ``mean_score`` (codeprobe-9xrl). Renderers surface this as a
     # warning so users see how much of the data is contaminated.
     quota_error_count: int = 0
+    # Count of non-executed runs excluded from scoring (status == "error":
+    # invalid model token, quota casualty, crash, system fault). These carry a
+    # hard-coded automated_score=0.0 that is an infrastructure artifact, not a
+    # task-quality measurement, so they are kept out of mean_score / pass_rate
+    # / rankings and surfaced as ERRORED (n) instead of as 0.00 failure rows
+    # (codeprobe-h3j4). Superset of quota_error_count.
+    errored_count: int = 0
     # Count of trials that abandoned at least one ENABLED tool surface —
     # the agent made zero calls into a surface its config declared, on a
     # trial that actually ran (codeprobe-1gg). A nonzero count means this
@@ -324,6 +363,18 @@ class ConfigSummary:
     # comparison is INVALID, not a null result. Zero when no config was
     # supplied to the summarizer (the audit needs the declared surface).
     abandoned_surface_count: int = 0
+
+    @property
+    def scored_count(self) -> int:
+        """Number of runs that counted toward scoring (executed runs).
+
+        Equals ``total_tasks - errored_count``. Zero means no run produced a
+        genuine measurement, so this config cannot be ranked or recommended —
+        rankings and the report use this to mark it ERRORED instead of letting
+        an all-non-executed config win a comparison on a vacuous 0.0 mean
+        (codeprobe-h3j4).
+        """
+        return self.total_tasks - self.errored_count
 
 
 @dataclass(frozen=True)
@@ -381,10 +432,12 @@ def summarize_config(
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
     errored_tasks = [t for t in tasks if t.status != "completed"]
-    # Reward population: real trials only (quota casualties stay in the
-    # structural counts but are excluded from scores/durations/pass-rate —
-    # see partition_reward_population).
-    reward_tasks, quota_count = partition_reward_population(tasks)
+    # Reward population: executed trials only (non-executed status=="error"
+    # runs — quota casualties, invalid-model/crash errors — stay in the
+    # structural counts but are excluded from scores/durations/pass-rate, see
+    # partition_reward_population). ``errored_count`` is the excluded total;
+    # ``quota_count`` is the quota subset surfaced for the quota note.
+    reward_tasks, quota_count, errored_count = partition_reward_population(tasks)
     scored_total = len(reward_tasks)
     # Deferred import: tool_surface_audit lives under codeprobe.core, whose
     # package __init__ pulls in the executor → scoring → stats chain. A
@@ -452,6 +505,7 @@ def summarize_config(
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
         quota_error_count=quota_count,
+        errored_count=errored_count,
         abandoned_surface_count=abandoned_count,
     )
 
@@ -475,7 +529,7 @@ def summarize_completed_tasks(
     """
     total = 0
     completed_count = 0
-    errored_count = 0
+    non_completed_count = 0
     passed = 0
     token_sum = 0
     has_tokens = False
@@ -499,18 +553,20 @@ def summarize_completed_tasks(
         if task.status == "completed":
             completed_count += 1
         else:
-            errored_count += 1
+            non_completed_count += 1
         if config is not None and task_abandoned_any_surface(task, config):
             abandoned_count += 1
 
-        # Reward population: real trials only. Quota casualties are counted
-        # (quota_count) and kept in the cost/token/structural totals, but
-        # their 0.0 stub is excluded from scores/durations/pass-rate so it
-        # never rolls into mean_score (codeprobe-a8r). Mirrors the exclusion
-        # in summarize_config() so the two summarizers stay identical.
+        # Reward population: executed trials only. Non-executed runs
+        # (status=="error" — quota casualties, invalid-model/crash errors) are
+        # kept in the cost/token/structural totals but their 0.0 stub is
+        # excluded from scores/durations/pass-rate so it never rolls into
+        # mean_score (codeprobe-h3j4). ``quota_count`` is the quota subset,
+        # surfaced for the quota note. Mirrors the exclusion in
+        # summarize_config() so the two summarizers stay identical.
         if is_quota_casualty(task):
             quota_count += 1
-        else:
+        if is_scorable_run(task):
             scores.append(task.automated_score)
             if task_passed(task):
                 passed += 1
@@ -579,7 +635,7 @@ def summarize_completed_tasks(
         label=label,
         total_tasks=total,
         completed=completed_count,
-        errored=errored_count,
+        errored=non_completed_count,
         pass_rate=passed / scored_total if scored_total else 0.0,
         mean_score=statistics.mean(scores) if scores else 0.0,
         median_score=statistics.median(scores) if scores else 0.0,
@@ -598,6 +654,7 @@ def summarize_completed_tasks(
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
         quota_error_count=quota_count,
+        errored_count=total - scored_total,
         abandoned_surface_count=abandoned_count,
     )
 
