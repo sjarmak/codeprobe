@@ -47,6 +47,8 @@ codeprobe run .         # Run agents against tasks
 codeprobe interpret .   # Get recommendations
 ```
 
+**Want to compare models, prompts, or tools** (A/B test which setup works best on your repo)? Start with `codeprobe init` — the guided "what do you want to learn?" wizard that builds the comparison experiment for you. See [MCP Comparison Experiments](#mcp-comparison-experiments) for the full configuration surface.
+
 Prefer driving codeprobe through a coding agent instead? See [docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the skills-based workflow (`/experiment`, `/assess-codebase`, `/interpret`).
 
 ## Commands
