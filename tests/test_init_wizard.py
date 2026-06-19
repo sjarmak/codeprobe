@@ -577,3 +577,29 @@ class TestInitCliIntegration:
         data = json.loads(exp_json.read_text())
         assert data["name"] == "my-test"
         assert len(data["configs"]) == 2
+
+
+class TestWizardModelValidation:
+    """Goal-2 model tokens are validated at prompt time (codeprobe-8yjf)."""
+
+    def test_rejects_invalid_model_token(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        # goal=2, name=default, agent=claude, models="opus-4" (invalid)
+        input_text = "2\n\nclaude\nopus-4\n"
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
+        assert result.exit_code != 0
+        assert "opus-4" in result.output
+        # No experiment should be written when the token is rejected.
+        assert not (tmp_path / ".codeprobe" / "model-comparison").exists()
+
+    def test_accepts_alias_tokens(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        # goal=2, name=default, agent=claude, models="sonnet, opus" (aliases)
+        input_text = "2\n\nclaude\nsonnet, opus\n"
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / ".codeprobe").is_dir()

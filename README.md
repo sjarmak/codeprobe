@@ -260,7 +260,7 @@ codeprobe run . --config-parallel 2   # Run 2 configs concurrently (default 1 = 
                                       # need cost containment.
 codeprobe run . --max-cost-usd 2.00   # Stop when cost budget is reached
 codeprobe run . --dry-run             # Estimate resource usage without running
-codeprobe run . --model opus-4        # Override experiment.json model
+codeprobe run . --model claude-opus-4-7  # Override experiment.json model (see `codeprobe models list`)
 codeprobe run . --timeout 600         # Override default 300s timeout
 codeprobe run . --repeats 3           # Run each task 3 times
 codeprobe run . --show-prompt         # Print resolved prompt without running agent

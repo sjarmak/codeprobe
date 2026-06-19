@@ -12,6 +12,7 @@ from pathlib import Path
 
 import click
 
+from codeprobe.adapters.models import validate_model
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.analysis.dual import format_dual_suffix
 from codeprobe.analysis.stats import partition_reward_population
@@ -573,6 +574,22 @@ def run_eval(
                 next_try_value="claude",
                 detail={"requested": agent},
             ) from exc
+
+        # Validate every config's model token up front — before task discovery
+        # and before any agent is spawned. An unknown token must fail loudly
+        # here with a prescriptive error; otherwise it flows through to the
+        # agent CLI, errors deep in the run, and is scored 0.0, silently
+        # corrupting the comparison (codeprobe-fvfo Gap 1/2). Layered
+        # resolution mirrors _run_config: a CLI --model override wins, else
+        # the config's own model.
+        _configs_to_validate = experiment.configs or [
+            ExperimentConfig(label="default", agent=agent, model=model)
+        ]
+        for cfg in _configs_to_validate:
+            validate_model(
+                cfg.agent or agent,
+                model if model is not None else cfg.model,
+            )
 
         # Resolve to the git repo root — `path` may be an experiment subdir.
         try:

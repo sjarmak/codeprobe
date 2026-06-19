@@ -6,6 +6,7 @@ from pathlib import Path
 
 import click
 
+from codeprobe.adapters.models import model_set, validate_model
 from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
 from codeprobe.cli.wizard import (
     ask_custom,
@@ -319,10 +320,22 @@ def _goal_mcp(agents: list[str], name: str) -> _Result:
 def _goal_models(agents: list[str], name: str) -> _Result:
     """Goal 2: Model comparison prompts."""
     agent = _prompt_agent(agents)
-    models_raw = click.prompt("Models to compare (comma-separated)")
+    ms = model_set(agent)
+    if ms is not None and ms.known_tokens():
+        examples = ", ".join(ms.known_tokens()[:4])
+        prompt_text = f"Models to compare (comma-separated; e.g. {examples})"
+        default = ms.default or None
+    else:
+        prompt_text = "Models to compare (comma-separated)"
+        default = None
+    models_raw = click.prompt(prompt_text, default=default, show_default=bool(default))
     models = [m.strip() for m in models_raw.split(",") if m.strip()]
     if not models:
         raise click.BadParameter("At least one model is required.")
+    # Reject unknown tokens here (prescriptive error) so the wizard never
+    # writes a config that will only fail much later at run time.
+    for m in models:
+        validate_model(agent, m)
 
     return ask_model_comparison(
         experiment_name=name,

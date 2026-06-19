@@ -1635,3 +1635,8 @@ main.add_command(cache)
 from codeprobe.cli.skills_cmd import skills  # noqa: E402
 
 main.add_command(skills)
+
+# Register the known-model registry group (``codeprobe models list``).
+from codeprobe.cli.models_cmd import models  # noqa: E402
+
+main.add_command(models)
