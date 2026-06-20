@@ -9,7 +9,9 @@ import click
 from codeprobe.adapters.models import model_set, validate_model
 from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
 from codeprobe.cli.wizard import (
+    _load_json,
     ask_custom,
+    ask_factorial_comparison,
     ask_mcp_comparison,
     ask_model_comparison,
     ask_prompt_comparison,
@@ -26,6 +28,7 @@ _GOAL_DEFAULTS = {
     2: "model-comparison",
     3: "prompt-comparison",
     4: "custom",
+    5: "factorial-comparison",
 }
 
 
@@ -74,9 +77,10 @@ def run_init(
     click.echo("  2. Compare different models (e.g., Sonnet vs Opus)")
     click.echo("  3. Compare different prompts or instruction styles")
     click.echo("  4. Custom comparison")
+    click.echo("  5. Factorial — vary models × prompts × tools together")
     click.echo()
 
-    goal = click.prompt("Choose a goal", type=click.IntRange(1, 4), default=1)
+    goal = click.prompt("Choose a goal", type=click.IntRange(1, 5), default=1)
 
     default_name = _GOAL_DEFAULTS[goal]
     experiment_name = click.prompt("Experiment name", default=default_name)
@@ -88,8 +92,10 @@ def run_init(
         evalrc, configs = _goal_models(agents, experiment_name)
     elif goal == 3:
         evalrc, configs = _goal_prompts(agents, experiment_name)
-    else:
+    elif goal == 4:
         evalrc, configs = _goal_custom(agents, experiment_name)
+    else:
+        evalrc, configs = _goal_factorial(agents, experiment_name)
 
     # Create experiment directory
     experiment = Experiment(
@@ -341,6 +347,62 @@ def _goal_models(agents: list[str], name: str) -> _Result:
         experiment_name=name,
         agent=agent,
         models=models,
+    )
+
+
+def _goal_factorial(agents: list[str], name: str) -> _Result:
+    """Goal 5: factorial — cross-product of models × prompt-variants × tools.
+
+    Collects the model axis (required), an optional prompt-variant axis, and an
+    optional tools axis (baseline vs one MCP config). The product is built by
+    :func:`ask_factorial_comparison` (codeprobe-r2bg).
+    """
+    agent = _prompt_agent(agents)
+
+    ms = model_set(agent)
+    if ms is not None and ms.known_tokens():
+        examples = ", ".join(ms.known_tokens()[:4])
+        prompt_text = f"Models to compare (comma-separated; e.g. {examples})"
+        default = ms.default or None
+    else:
+        prompt_text = "Models to compare (comma-separated)"
+        default = None
+    models_raw = click.prompt(prompt_text, default=default, show_default=bool(default))
+    models = [m.strip() for m in models_raw.split(",") if m.strip()]
+    if not models:
+        raise click.BadParameter("At least one model is required.")
+    for m in models:
+        validate_model(agent, m)
+
+    variants_raw = click.prompt(
+        "Prompt/instruction variant paths (comma-separated, Enter to skip)",
+        default="",
+        show_default=False,
+    )
+    variants = [v.strip() for v in variants_raw.split(",") if v.strip()] or None
+
+    mcp_path = click.prompt(
+        "MCP config JSON for a tools arm (adds baseline vs MCP, Enter to skip)",
+        default="",
+        show_default=False,
+    )
+    tool_configs = None
+    if mcp_path.strip():
+        tool_configs = [
+            {"label": "baseline", "mcp_config": None, "preambles": ()},
+            {
+                "label": "with-mcp",
+                "mcp_config": _load_json(mcp_path.strip()),
+                "preambles": (),
+            },
+        ]
+
+    return ask_factorial_comparison(
+        experiment_name=name,
+        agent=agent,
+        models=models,
+        variants=variants,
+        tool_configs=tool_configs,
     )
 
 

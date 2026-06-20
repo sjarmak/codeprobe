@@ -13,6 +13,7 @@ from click.testing import CliRunner
 from codeprobe.cli import main
 from codeprobe.cli.wizard import (
     ask_custom,
+    ask_factorial_comparison,
     ask_mcp_comparison,
     ask_model_comparison,
     ask_prompt_comparison,
@@ -577,6 +578,70 @@ class TestInitCliIntegration:
         data = json.loads(exp_json.read_text())
         assert data["name"] == "my-test"
         assert len(data["configs"]) == 2
+
+
+class TestFactorialComparison:
+    """Goal 5 builds the cross-product of models × prompts × tools
+    (codeprobe-r2bg / codeprobe-fvfo Gap 4)."""
+
+    def test_cardinality_is_product_of_axes(self) -> None:
+        _, configs = ask_factorial_comparison(
+            experiment_name="f",
+            agent="claude",
+            models=["claude-sonnet-4-6", "claude-opus-4-7"],
+            variants=["a.md", "b.md"],
+            tool_configs=[
+                {"label": "baseline", "mcp_config": None, "preambles": ()},
+                {"label": "with-mcp", "mcp_config": {"mcpServers": {}}, "preambles": ()},
+            ],
+        )
+        assert len(configs) == 2 * 2 * 2  # product of axis cardinalities
+        labels = [c.label for c in configs]
+        assert len(set(labels)) == len(labels)  # unique
+        # Each config carries one value from each axis.
+        c0 = configs[0]
+        assert c0.model in ("claude-sonnet-4-6", "claude-opus-4-7")
+        assert c0.instruction_variant in ("a.md", "b.md")
+
+    def test_two_axes_cardinality(self) -> None:
+        _, configs = ask_factorial_comparison(
+            experiment_name="f",
+            agent="claude",
+            models=["claude-sonnet-4-6", "claude-opus-4-7"],
+            variants=["a.md", "b.md", "c.md"],
+        )
+        assert len(configs) == 2 * 3
+
+    def test_model_only_labels_match_model_names(self) -> None:
+        _, configs = ask_factorial_comparison(
+            experiment_name="f",
+            agent="claude",
+            models=["claude-sonnet-4-6", "claude-opus-4-7"],
+        )
+        assert [c.label for c in configs] == [
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+        ]
+
+    def test_empty_models_rejected(self) -> None:
+        import click
+
+        with pytest.raises(click.BadParameter):
+            ask_factorial_comparison(experiment_name="f", agent="claude", models=[])
+
+    def test_wizard_goal5_writes_crossproduct(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        # goal=5, name, agent=claude, models (2), variants (2), mcp=skip
+        input_text = (
+            "5\nfac\nclaude\nclaude-sonnet-4-6,claude-opus-4-7\na.md,b.md\n\n"
+        )
+        result = runner.invoke(
+            main, ["init", str(tmp_path), "--no-json"], input=input_text
+        )
+        assert result.exit_code == 0, result.output
+        exp_json = tmp_path / ".codeprobe" / "fac" / "experiment.json"
+        data = json.loads(exp_json.read_text())
+        assert len(data["configs"]) == 4  # 2 models × 2 variants
 
 
 class TestWizardModelValidation:

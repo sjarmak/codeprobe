@@ -127,6 +127,77 @@ def ask_prompt_comparison(
     return evalrc, configs
 
 
+def _safe_label(parts: list[str]) -> str:
+    """Join axis values into a single path-safe config label."""
+    raw = "__".join(p for p in parts if p)
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("-._")
+    return cleaned or "config"
+
+
+def ask_factorial_comparison(
+    *,
+    experiment_name: str,
+    agent: str,
+    models: list[str],
+    variants: list[str] | None = None,
+    tool_configs: list[dict] | None = None,
+) -> tuple[EvalrcConfig, list[ExperimentConfig]]:
+    """Goal 5: factorial comparison — the cross-product of models ×
+    prompt-variants × tool-surfaces, in one experiment.
+
+    Each axis collapses to a single neutral level when not supplied, so the
+    result is always the full Cartesian product: ``len(models) ×
+    max(1, len(variants)) × max(1, len(tool_configs))`` configs. An axis with
+    only one level is omitted from the config label, so a one-axis factorial
+    reads the same as the dedicated single-axis goals. Labels are made
+    path-safe and unique (codeprobe-r2bg).
+
+    ``tool_configs`` entries are dicts: ``{"label": str, "mcp_config": dict |
+    None, "preambles": tuple[str, ...]}``.
+    """
+    if not models:
+        raise click.BadParameter("At least one model is required.")
+
+    variant_levels: list[str | None] = list(variants) if variants else [None]
+    tool_levels: list[dict] = list(tool_configs) if tool_configs else [
+        {"label": "", "mcp_config": None, "preambles": ()}
+    ]
+
+    label_model = len(models) > 1
+    label_variant = len(variant_levels) > 1
+    label_tool = len(tool_levels) > 1
+
+    seen: dict[str, int] = {}
+    configs: list[ExperimentConfig] = []
+    for model in models:
+        for variant in variant_levels:
+            for tool in tool_levels:
+                parts: list[str] = []
+                if label_model:
+                    parts.append(model)
+                if label_variant and variant:
+                    parts.append(Path(variant).stem)
+                if label_tool:
+                    parts.append(str(tool.get("label") or "tool"))
+                base = _safe_label(parts) if parts else _safe_label([model])
+                n = seen.get(base, 0) + 1
+                seen[base] = n
+                label = base if n == 1 else f"{base}-{n}"
+                configs.append(
+                    ExperimentConfig(
+                        label=label,
+                        agent=agent,
+                        model=model,
+                        instruction_variant=variant,
+                        mcp_config=tool.get("mcp_config"),
+                        preambles=tuple(tool.get("preambles") or ()),
+                    )
+                )
+
+    evalrc = EvalrcConfig(name=experiment_name, agents=[agent], models=models)
+    return evalrc, configs
+
+
 def ask_custom(
     *,
     experiment_name: str,
