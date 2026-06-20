@@ -283,14 +283,12 @@ def init(
     "--subsystem",
     multiple=True,
     default=(),
-    hidden=True,
     help="Filter to subsystem prefixes. Repeatable: --subsystem pkg/ --subsystem cmd/",
 )
 @click.option(
     "--discover-subsystems",
     is_flag=True,
     default=False,
-    hidden=True,
     help="List subsystems from merge history and pick interactively.",
 )
 @click.option(

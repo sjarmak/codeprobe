@@ -78,6 +78,23 @@ codeprobe mine . --count 5 --min-files 4    # Harder tasks (more files changed)
 codeprobe mine . --enrich                    # LLM-enriched instructions
 ```
 
+#### Mining a large monorepo
+
+Pointing codeprobe at a big enterprise repo (e.g. `kubernetes`, `grafana`)?
+Scope the mine to the subsystems you care about instead of scanning the whole
+history — otherwise mining traverses every merged PR across the entire tree.
+
+```bash
+codeprobe mine . --subsystem pkg/ --subsystem cmd/   # only these prefixes
+codeprobe mine . --discover-subsystems               # list subsystems, pick interactively
+```
+
+Mining reads **full merge history**, so the repo must be a complete local
+clone — a `git clone --depth 1` (shallow) clone cannot be mined. There is no
+URL-based mode for the primary path; clone the repo first and run `mine`
+against the local checkout. (`--cross-repo` accepts a git URL, but only for
+additional repos in cross-repo task mining.)
+
 ### 2. Micro-Benchmark Probes
 
 Fast exact-match tasks (30s each) that test code navigation and comprehension — no agent sandbox needed.
