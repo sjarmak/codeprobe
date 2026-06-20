@@ -884,17 +884,49 @@ def _format_elapsed(seconds: float) -> str:
     return f"{mins}m {secs}s"
 
 
+def _enrichment_status(tasks: list, *, llm_attempted: bool) -> str:
+    """Honest per-task LLM-enrichment status for the summary block.
+
+    The summary previously read ``LLM-enriched`` whenever an LLM backend was
+    *available*, masking per-task fallbacks (e.g. a 60s Claude CLI timeout that
+    silently returns the un-enriched task). Here we count tasks whose
+    ``enrichment_source`` actually gained the ``llm`` token and report the
+    K/M split, never claiming full enrichment when any task fell back.
+    """
+    if not llm_attempted:
+        return "regex fallback"
+    total = len(tasks)
+    enriched = sum(
+        1
+        for t in tasks
+        if is_dataclass(t)
+        and is_dataclass(t.metadata)
+        and "llm" in (t.metadata.enrichment_source or "").split("+")
+    )
+    fell_back = total - enriched
+    if fell_back == 0:
+        return f"LLM-enriched ({enriched}/{total})"
+    if enriched == 0:
+        return f"template fallback ({total}/{total}; LLM failed after timeout/error)"
+    return (
+        f"LLM-enriched ({enriched}/{total}; "
+        f"{fell_back} fell back to template after timeout/error)"
+    )
+
+
 def _print_summary_block(
     *,
     task_count: int,
     quality_warning_count: int,
     tasks_dir: Path,
     suite_path: Path | None,
-    llm_enriched: bool | None = None,
+    enrichment_status: str | None = None,
 ) -> None:
     """Print the structured end-of-run summary block (AC4).
 
     Called from both single-repo and org-scale completion paths.
+    *enrichment_status* is the pre-computed instruction-source line (see
+    :func:`_enrichment_status`); ``None`` omits the line entirely.
     """
     click.echo()
     click.echo("=" * 52)
@@ -908,10 +940,8 @@ def _print_summary_block(
     if _MINE_START_TIME is not None:
         elapsed = time.monotonic() - _MINE_START_TIME
         click.echo(f"  Time elapsed:    {_format_elapsed(elapsed)}")
-    if llm_enriched is not None:
-        click.echo(
-            f"  Instructions:    {'LLM-enriched' if llm_enriched else 'regex fallback'}"
-        )
+    if enrichment_status is not None:
+        click.echo(f"  Instructions:    {enrichment_status}")
     click.echo(f"  Output:          {tasks_dir}")
     if suite_path is not None:
         click.echo(f"  Suite manifest:  {suite_path}")
@@ -2162,12 +2192,17 @@ def _dispatch_mixed(
 
     llm_used = _was_llm_used(no_llm)
     total_count = len(sdlc_tasks) + len(probe_dirs)
+    # Enrichment status reflects the SDLC tasks only — probes are not LLM-enriched.
     _print_summary_block(
         task_count=total_count,
         quality_warning_count=0,
         tasks_dir=tasks_dir,
         suite_path=suite_path,
-        llm_enriched=llm_used,
+        enrichment_status=(
+            _enrichment_status(sdlc_tasks, llm_attempted=llm_used)
+            if sdlc_tasks
+            else None
+        ),
     )
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
@@ -2213,7 +2248,7 @@ def _finish_mine_output(
         quality_warning_count=len(warnings),
         tasks_dir=tasks_dir,
         suite_path=suite_path,
-        llm_enriched=llm_enriched,
+        enrichment_status=_enrichment_status(tasks, llm_attempted=llm_enriched),
     )
     if subsystems:
         click.echo(f"Subsystems: {', '.join(subsystems)}")
