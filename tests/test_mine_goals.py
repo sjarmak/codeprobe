@@ -537,6 +537,94 @@ class TestDispatchPipelineIntegration:
 
 
 # ---------------------------------------------------------------------------
+# Per-task LLM enrichment status (codeprobe-z3r4)
+# ---------------------------------------------------------------------------
+
+
+def _task_with_source(task_id: str, source: str):
+    from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+
+    return Task(
+        id=task_id,
+        repo="r",
+        metadata=TaskMetadata(name=task_id, enrichment_source=source),
+        verification=TaskVerification(command="bash tests/test.sh"),
+    )
+
+
+class TestEnrichmentStatus:
+    """Summary must reflect per-task enrichment OUTCOME, never global LLM
+    availability — partial timeouts/errors are surfaced, not masked."""
+
+    def test_regex_fallback_when_llm_not_attempted(self) -> None:
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [_task_with_source("t1", "pr")]
+        assert _enrichment_status(tasks, llm_attempted=False) == "regex fallback"
+
+    def test_full_enrichment(self) -> None:
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [
+            _task_with_source("t1", "pr+llm"),
+            _task_with_source("t2", "pr+llm"),
+        ]
+        assert _enrichment_status(tasks, llm_attempted=True) == "LLM-enriched (2/2)"
+
+    def test_partial_fallback_reports_split(self) -> None:
+        """One task fell back → summary shows K/M and the fallback count and
+        never claims bare 'LLM-enriched'."""
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [
+            _task_with_source("t1", "pr+llm"),
+            _task_with_source("t2", "pr+llm"),
+            _task_with_source("t3", "pr"),  # fell back after timeout/error
+        ]
+        status = _enrichment_status(tasks, llm_attempted=True)
+        assert status == (
+            "LLM-enriched (2/3; 1 fell back to template after timeout/error)"
+        )
+        # Honesty: never the bare claim when any task fell back.
+        assert status != "LLM-enriched"
+
+    def test_all_fell_back(self) -> None:
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [_task_with_source("t1", "pr"), _task_with_source("t2", "pr")]
+        status = _enrichment_status(tasks, llm_attempted=True)
+        assert status == "template fallback (2/2; LLM failed after timeout/error)"
+        assert "LLM-enriched" not in status
+
+    def test_finish_mine_output_renders_partial_fallback(
+        self, tmp_path, capsys
+    ) -> None:
+        """End-to-end wiring: _finish_mine_output prints the honest K/M split
+        in the summary's Instructions line when a task fell back."""
+        from codeprobe.cli.mine_cmd import _finish_mine_output
+
+        tasks = [
+            _task_with_source("task-001", "pr+llm"),
+            _task_with_source("task-002", "pr"),  # LLM timed out → template
+        ]
+        _finish_mine_output(
+            tasks,
+            tmp_path / "tasks",
+            goal_name="Quality",
+            bias="balanced",
+            subsystems=(),
+            repo_path=tmp_path,
+            task_types=(),  # skip suite manifest write
+            llm_enriched=True,  # LLM was attempted
+        )
+        out = capsys.readouterr().out
+        assert (
+            "Instructions:    LLM-enriched (1/2; 1 fell back to template "
+            "after timeout/error)" in out
+        )
+
+
+# ---------------------------------------------------------------------------
 # Requested-vs-mined shortfall notice (codeprobe-yqft)
 # ---------------------------------------------------------------------------
 

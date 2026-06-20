@@ -48,7 +48,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-emez: line shifted +15 by the --config-parallel option block.
         # codeprobe-gg9f: line shifted +3 by the expanded --max-turns help text.
         # 2026-06-20 batch merge (8huy+n6ij+r2bg): net line shift to 1139.
-        ("src/codeprobe/cli/__init__.py", 1139),
+        # 2026-06-20 adoption tail (z3r4): +8 lines in __init__.py → 1147.
+        ("src/codeprobe/cli/__init__.py", 1147),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),

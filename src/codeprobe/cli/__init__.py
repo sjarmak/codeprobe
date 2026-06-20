@@ -575,6 +575,14 @@ def mine(
     When run interactively (default in a terminal), walks you through
     choosing an eval goal and task count before mining. Use --no-interactive
     to skip the prompts and use defaults/flags directly.
+
+    \b
+    LLM enrichment:
+      By default, mine calls an LLM to rewrite each task's instructions
+      (problem statement + acceptance criteria), with a 60s per-task timeout.
+      On timeout or error a task falls back to its template instructions; the
+      mining summary reports the K/M enriched split honestly. Pass --no-llm to
+      skip enrichment entirely (offline/CI) and use template instructions.
     """
     from pathlib import Path as _Path
 

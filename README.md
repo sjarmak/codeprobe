@@ -77,8 +77,15 @@ Mine real code-change tasks from your git history. Agents must reproduce known f
 ```bash
 codeprobe mine . --count 10 --source github
 codeprobe mine . --count 5 --min-files 4    # Harder tasks (more files changed)
-codeprobe mine . --enrich                    # LLM-enriched instructions
+codeprobe mine . --no-llm                    # Skip LLM enrichment (offline/CI)
 ```
+
+> **LLM enrichment is on by default.** `mine` calls an LLM to rewrite each
+> task's instructions (problem statement + acceptance criteria) with a **60s
+> per-task timeout**. On timeout or error, that task falls back to its template
+> instructions and the mining summary reports the honest `K/M` enriched split
+> (e.g. `Instructions: LLM-enriched (2/3; 1 fell back to template after
+> timeout/error)`). Use `--no-llm` to skip enrichment entirely.
 
 #### Mining a large monorepo
 
