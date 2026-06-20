@@ -27,6 +27,11 @@ class CheckResult:
     passed: bool
     detail: str
     fix: str
+    # When True, a non-passing result is advisory (rendered WARN) and does NOT
+    # count toward `any_failed` / the exit-2 DOCTOR_CHECKS_FAILED. Used for an
+    # API key whose agent CLI is present and can run on its own auth
+    # (codeprobe-bgq4 / codeprobe-fvfo Gap 11).
+    warn_only: bool = False
 
 
 def _check_tool(name: str, fix: str) -> CheckResult:
@@ -39,13 +44,14 @@ def _check_tool(name: str, fix: str) -> CheckResult:
     )
 
 
-def _check_env_key(key: str, fix: str) -> CheckResult:
+def _check_env_key(key: str, fix: str, *, warn_only: bool = False) -> CheckResult:
     present = key in os.environ and len(os.environ[key]) > 0
     return CheckResult(
         name=key,
         passed=present,
         detail="set" if present else "not set",
         fix=fix,
+        warn_only=warn_only and not present,
     )
 
 
@@ -107,22 +113,35 @@ def _check_user_home_skills() -> CheckResult:
 
 def run_checks() -> list[CheckResult]:
     """Run all environment checks and return results."""
+    claude = _check_tool(
+        "claude",
+        "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
+    )
+    copilot = _check_tool(
+        "copilot",
+        "Install GitHub Copilot CLI: https://github.com/github/gh-copilot",
+    )
+    codex = _check_tool(
+        "codex", "Install OpenAI Codex CLI: https://github.com/openai/codex"
+    )
     return [
-        _check_tool(
-            "claude",
-            "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
-        ),
-        _check_tool(
-            "copilot",
-            "Install GitHub Copilot CLI: https://github.com/github/gh-copilot",
-        ),
-        _check_tool(
-            "codex", "Install OpenAI Codex CLI: https://github.com/openai/codex"
+        claude,
+        copilot,
+        codex,
+        # When the agent CLI is present it can run on its own auth (OAuth /
+        # subscription / `claude login`), so a missing API key is advisory,
+        # not a hard FAIL that exits 2 (codeprobe-bgq4 / fvfo Gap 11). With no
+        # CLI present, the key is the only path and stays a real FAIL.
+        _check_env_key(
+            "ANTHROPIC_API_KEY",
+            "Set ANTHROPIC_API_KEY, or sign in to Claude Code with `claude login`.",
+            warn_only=claude.passed,
         ),
         _check_env_key(
-            "ANTHROPIC_API_KEY", "Set ANTHROPIC_API_KEY in your environment."
+            "OPENAI_API_KEY",
+            "Set OPENAI_API_KEY, or sign in with the Codex CLI.",
+            warn_only=codex.passed,
         ),
-        _check_env_key("OPENAI_API_KEY", "Set OPENAI_API_KEY in your environment."),
         _check_env_key(
             "GITHUB_TOKEN",
             "Set GITHUB_TOKEN in your environment. See https://github.com/settings/tokens",
@@ -131,6 +150,16 @@ def run_checks() -> list[CheckResult]:
         _check_python_version(),
         _check_user_home_skills(),
     ]
+
+
+def _any_failed(results: list[CheckResult]) -> bool:
+    """True when any NON-advisory check did not pass.
+
+    A ``warn_only`` check that did not pass is advisory (e.g. a missing API
+    key whose agent CLI is present) and does not flip doctor to exit-2
+    (codeprobe-bgq4).
+    """
+    return any(not r.passed and not r.warn_only for r in results)
 
 
 def _llm_available(results: list[CheckResult]) -> bool:
@@ -158,7 +187,7 @@ def _build_compact_envelope(results: list[CheckResult]) -> dict[str, object]:
             "SOURCEGRAPH_TOKEN", "SRC_ACCESS_TOKEN", "SOURCEGRAPH_ACCESS_TOKEN",
         )
     )
-    any_failed = any(not r.passed for r in results)
+    any_failed = _any_failed(results)
 
     envelope: dict[str, object] = {
         "record_type": "doctor",
@@ -183,7 +212,7 @@ def _build_compact_envelope(results: list[CheckResult]) -> dict[str, object]:
 
 def _build_full_envelope(results: list[CheckResult]) -> dict[str, object]:
     """Full envelope for ``--json`` without ``--compact``."""
-    any_failed = any(not r.passed for r in results)
+    any_failed = _any_failed(results)
     subsystem_status = [
         {
             "name": r.name,
@@ -226,7 +255,7 @@ def doctor(
     )
 
     results = run_checks()
-    any_failed = any(not r.passed for r in results)
+    any_failed = _any_failed(results)
 
     checks_data = {
         "subsystem_status": [asdict(r) for r in results],
@@ -264,6 +293,9 @@ def doctor(
         for r in results:
             if r.passed:
                 click.echo(f"  PASS  {r.name} ({r.detail})")
+            elif r.warn_only:
+                click.echo(f"  WARN  {r.name} ({r.detail})")
+                click.echo(f"        -> {r.fix}")
             else:
                 click.echo(f"  FAIL  {r.name} ({r.detail})")
                 click.echo(f"        -> {r.fix}")
