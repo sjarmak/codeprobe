@@ -388,7 +388,9 @@ def _quality_review(
             only = list(difficulties.keys())[0]
             warnings.append(
                 f"No difficulty variance: all tasks are '{only}'. "
-                "Need a mix to differentiate models/prompts."
+                "Need a mix to differentiate models/prompts. Try re-mining "
+                "with a higher --count, vary --min-files, or lower "
+                "--min-quality to admit easier PRs."
             )
 
     # Instruction quality — check for generic/thin instructions
