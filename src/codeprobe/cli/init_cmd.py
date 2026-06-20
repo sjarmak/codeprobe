@@ -121,6 +121,14 @@ def run_init(
     click.echo(f"  codeprobe mine {path}      # Mine tasks from your repo")
     click.echo(f"  codeprobe run {path}       # Run agents against tasks")
     click.echo(f"  codeprobe interpret {path}  # Analyze results")
+    click.echo()
+    # The experiment's own tasks/ dir starts empty: `mine` writes to the
+    # shared .codeprobe/tasks/, and run/interpret pick them up automatically
+    # via experiment discovery — no manual copy needed (codeprobe-j551).
+    click.echo(
+        f"Mined tasks are written to {path}/.codeprobe/tasks/ (shared); "
+        f"run and interpret discover this experiment and use them automatically."
+    )
 
 
 def _prompt_agent(agents: list[str]) -> str:
