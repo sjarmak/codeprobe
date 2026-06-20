@@ -308,3 +308,16 @@ def test_mine_hidden_flag_still_functional(tmp_path):
         )
     assert result.exit_code == 0, result.output
     mock_org.assert_called_once()
+
+
+def test_run_help_agent_lists_codex_from_registry():
+    """`run --help` --agent must list every registered agent, incl. codex
+    (codeprobe-n6ij / codeprobe-fvfo Gap 12)."""
+    from codeprobe.core.registry import available
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    for name in available():
+        assert name in result.output, f"--agent help missing registered agent {name}"
+    assert "codex" in result.output
