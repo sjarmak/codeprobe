@@ -2115,7 +2115,12 @@ class TestMineInteractive:
             for i in range(3)
         ]
         warnings = _quality_review(tasks, "Model comparison", "mixed")
-        assert any("No difficulty variance" in w for w in warnings)
+        variance_warnings = [w for w in warnings if "No difficulty variance" in w]
+        assert variance_warnings
+        # The warning must carry an actionable remedy (codeprobe-pv3e): at least
+        # one concrete flag the user can change to get a difficulty mix.
+        remedy = variance_warnings[0]
+        assert any(flag in remedy for flag in ("--count", "--min-files", "--min-quality"))
 
     def test_quality_review_no_warnings_for_good_tasks(self) -> None:
         """Quality review returns no warnings for well-formed tasks."""
