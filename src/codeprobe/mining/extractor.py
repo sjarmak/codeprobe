@@ -1117,6 +1117,24 @@ _MIN_QUALITY_SCORE = 2 / 4  # At least two quality signals required
 
 
 @dataclass(frozen=True)
+class RejectionBreakdown:
+    """Per-filter counts of PRs rejected during candidate collection.
+
+    Surfaced through :class:`MineResult` so callers can explain a
+    requested-vs-mined shortfall instead of silently under-delivering.
+    """
+
+    min_files: int = 0
+    subsystem: int = 0
+    extraction: int = 0
+    quality: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.min_files + self.subsystem + self.extraction + self.quality
+
+
+@dataclass(frozen=True)
 class MineResult:
     """Result of mine_tasks() including raw context for LLM generation."""
 
@@ -1127,6 +1145,7 @@ class MineResult:
     ground_truth_map: dict[str, dict] = field(
         default_factory=dict
     )  # task.id → ground truth
+    rejections: RejectionBreakdown | None = None  # per-filter rejection counts
 
 
 def _collect_candidates(
@@ -1143,10 +1162,11 @@ def _collect_candidates(
     dict[str, str],
     dict[str, list[str]],
     dict[str, str],
+    RejectionBreakdown,
 ]:
     """Score and filter PRs into ranked candidates.
 
-    Returns (candidates, pr_bodies, changed_files_map, merge_sha_map).
+    Returns (candidates, pr_bodies, changed_files_map, merge_sha_map, rejections).
 
     *progress* is an optional callback invoked once per PR with the number
     of PRs processed since the previous call (always ``1``). Callers pass
@@ -1246,10 +1266,13 @@ def _collect_candidates(
                 if state.status(pr.merge_commit) != "interrupted":
                     state.record_completed(pr.merge_commit)
 
-    total_rejected = (
-        rejected_min_files + rejected_subsystem + rejected_extraction + rejected_quality
+    rejections = RejectionBreakdown(
+        min_files=rejected_min_files,
+        subsystem=rejected_subsystem,
+        extraction=rejected_extraction,
+        quality=rejected_quality,
     )
-    if total_rejected and not candidates:
+    if rejections.total and not candidates:
         logger.info(
             "Rejection breakdown (%d PRs): min_files=%d, subsystem=%d, "
             "extraction=%d (no tests/bare metadata/stub cmd), quality=%d",
@@ -1260,7 +1283,7 @@ def _collect_candidates(
             rejected_quality,
         )
 
-    return candidates, pr_bodies, changed_files_map, merge_sha_map
+    return candidates, pr_bodies, changed_files_map, merge_sha_map, rejections
 
 
 # Thresholds to try when min_files filters out all candidates.
@@ -1302,15 +1325,17 @@ def mine_tasks(
         logger.info("No merge commits found in %s", path)
         return MineResult(tasks=[], pr_bodies={}, changed_files_map={})
 
-    candidates, pr_bodies, changed_files_map, merge_sha_map = _collect_candidates(
-        prs,
-        path,
-        source,
-        min_files,
-        min_quality,
-        subsystems,
-        progress=progress,
-        state=state,
+    candidates, pr_bodies, changed_files_map, merge_sha_map, rejections = (
+        _collect_candidates(
+            prs,
+            path,
+            source,
+            min_files,
+            min_quality,
+            subsystems,
+            progress=progress,
+            state=state,
+        )
     )
 
     # Relax min_files if the threshold filtered out everything
@@ -1323,7 +1348,7 @@ def mine_tasks(
                 min_files,
                 relaxed,
             )
-            candidates, pr_bodies, changed_files_map, merge_sha_map = (
+            candidates, pr_bodies, changed_files_map, merge_sha_map, rejections = (
                 _collect_candidates(
                     prs,
                     path,
@@ -1370,6 +1395,7 @@ def mine_tasks(
         changed_files_map=changed_files_map,
         min_files_used=min_files,
         ground_truth_map=ground_truth_map,
+        rejections=rejections,
     )
 
 

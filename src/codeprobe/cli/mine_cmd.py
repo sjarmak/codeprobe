@@ -20,7 +20,7 @@ from pathlib import Path
 import click
 
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
-from codeprobe.mining.extractor import MineResult
+from codeprobe.mining.extractor import MineResult, RejectionBreakdown
 from codeprobe.mining.org_scale import OrgScaleMineResult
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.models.task import Task
@@ -454,6 +454,52 @@ def _show_results_table(tasks: list[Task]) -> None:
             f"{t.metadata.language or 'unknown':<12} "
             f"{t.metadata.quality_score:>6.0%}"
         )
+    click.echo()
+
+
+# Dominant rejection filter → the flag a user tunes to recover the shortfall.
+# Tuple order is the deterministic tiebreaker when two filters reject equally.
+_REJECTION_HINTS: tuple[tuple[str, str, str], ...] = (
+    ("quality", "below --min-quality", "lower --min-quality (e.g. --min-quality 0.3)"),
+    ("min_files", "below --min-files", "lower --min-files"),
+    ("subsystem", "outside --subsystem", "broaden or drop --subsystem"),
+    (
+        "extraction",
+        "missing tests/usable metadata",
+        "try a repo whose merged PRs include tests",
+    ),
+)
+
+
+def _show_shortfall_notice(
+    requested: int,
+    mined: int,
+    rejections: RejectionBreakdown | None,
+) -> None:
+    """Explain a requested-vs-mined shortfall instead of under-delivering silently.
+
+    When fewer tasks were mined than requested, print the requested count, the
+    number of filtered candidates, the dominant filter reason, and the flag that
+    relaxes it. No-op when the request was met or no filter rejected anything.
+    """
+    if mined >= requested or rejections is None or rejections.total == 0:
+        return
+
+    counts = {
+        "quality": rejections.quality,
+        "min_files": rejections.min_files,
+        "subsystem": rejections.subsystem,
+        "extraction": rejections.extraction,
+    }
+    # Dominant reason: highest count; ties resolved by _REJECTION_HINTS order
+    # (max returns the first entry it sees among equal-count winners).
+    reason, label, hint = max(_REJECTION_HINTS, key=lambda rh: counts[rh[0]])
+    click.echo(
+        f"  ⚠ requested {requested}, mined {mined} "
+        f"({rejections.total} candidate(s) filtered; "
+        f"most common: {counts[reason]} {label}). "
+        f"To recover: {hint}."
+    )
     click.echo()
 
 
@@ -1899,6 +1945,7 @@ def _dispatch_sdlc(
 
     _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
     _show_results_table(tasks)
+    _show_shortfall_notice(count, len(tasks), mine_result.rejections)
     _finish_mine_output(
         tasks,
         tasks_dir,
@@ -2089,6 +2136,7 @@ def _dispatch_mixed(
     # Show combined results
     if sdlc_tasks:
         _show_results_table(sdlc_tasks)
+        _show_shortfall_notice(sdlc_count, len(sdlc_tasks), mine_result.rejections)
     if probe_dirs:
         click.echo(f"Generated {len(probe_dirs)} probe tasks:")
         for i, p in enumerate(probe_dirs, 1):
