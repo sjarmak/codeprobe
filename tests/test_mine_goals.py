@@ -441,6 +441,7 @@ class TestDispatchPipelineIntegration:
             pr_bodies={},
             changed_files_map={},
             min_files_used=0,
+            rejections=None,
         )
         mock_enrich.return_value = [mock_task]
         mock_clear.return_value = tmp_path / "tasks"
@@ -533,6 +534,105 @@ class TestDispatchPipelineIntegration:
                 bias="mixed",
             )
             instance.generate.assert_called_once_with(count=5)
+
+
+# ---------------------------------------------------------------------------
+# Requested-vs-mined shortfall notice (codeprobe-yqft)
+# ---------------------------------------------------------------------------
+
+
+class TestShortfallNotice:
+    """When fewer tasks are mined than requested, surface the dominant filter
+    reason and a corrective flag instead of silently under-delivering."""
+
+    def test_silent_when_request_met(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+        from codeprobe.mining import RejectionBreakdown
+
+        _show_shortfall_notice(3, 3, RejectionBreakdown(quality=2))
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_no_rejections(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+
+        _show_shortfall_notice(3, 1, None)
+        assert capsys.readouterr().out == ""
+
+    def test_reports_requested_mined_and_dominant_reason(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+        from codeprobe.mining import RejectionBreakdown
+
+        _show_shortfall_notice(3, 1, RejectionBreakdown(quality=4, min_files=1))
+        out = capsys.readouterr().out
+        assert "requested 3, mined 1" in out
+        assert "5 candidate(s) filtered" in out
+        assert "4 below --min-quality" in out
+        assert "--min-quality" in out  # corrective flag
+
+    def test_dominant_reason_is_highest_count(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+        from codeprobe.mining import RejectionBreakdown
+
+        _show_shortfall_notice(
+            5, 0, RejectionBreakdown(quality=1, min_files=7, subsystem=2)
+        )
+        out = capsys.readouterr().out
+        assert "7 below --min-files" in out
+        assert "lower --min-files" in out
+
+    @patch("codeprobe.cli.mine_cmd._finish_mine_output")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.cli.mine_cmd._enrich_sdlc_tasks")
+    @patch("codeprobe.mining.write_task_dir")
+    @patch("codeprobe.mining.mine_tasks")
+    def test_dispatch_sdlc_surfaces_shortfall(
+        self,
+        mock_mine,
+        mock_write,
+        mock_enrich,
+        mock_clear,
+        mock_record,
+        mock_finish,
+        tmp_path,
+        capsys,
+    ) -> None:
+        """A pipeline returning fewer tasks than requested surfaces the message."""
+        from codeprobe.cli.mine_cmd import _dispatch_sdlc
+        from codeprobe.mining import RejectionBreakdown
+
+        mock_task = MagicMock()
+        mock_task.id = "task-001"
+        mock_task.metadata.difficulty = "medium"
+        mock_task.metadata.language = "python"
+        mock_task.metadata.quality_score = 0.8
+        mock_task.metadata.description = "A test task with enough description"
+        mock_task.verification.command = "bash tests/test.sh"
+        mock_mine.return_value = MagicMock(
+            tasks=[mock_task],
+            pr_bodies={},
+            changed_files_map={},
+            min_files_used=0,
+            rejections=RejectionBreakdown(quality=4),
+        )
+        mock_enrich.return_value = [mock_task]
+        mock_clear.return_value = tmp_path / "tasks"
+
+        _dispatch_sdlc(
+            repo_path=tmp_path,
+            count=3,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=True,
+            enrich=False,
+            goal_name="Quality",
+            bias="balanced",
+            narrative_source=("pr",),
+        )
+        out = capsys.readouterr().out
+        assert "requested 3, mined 1" in out
+        assert "below --min-quality" in out
 
 
 # ---------------------------------------------------------------------------

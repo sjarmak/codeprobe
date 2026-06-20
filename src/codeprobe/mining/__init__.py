@@ -2,6 +2,7 @@
 
 from codeprobe.mining.extractor import (
     MineResult,
+    RejectionBreakdown,
     enrich_tasks,
     extract_subsystems,
     generate_instructions,
@@ -15,6 +16,7 @@ from codeprobe.mining.writer import write_task_dir
 __all__ = [
     "MineResult",
     "OrgScaleMineResult",
+    "RejectionBreakdown",
     "RepoSource",
     "detect_source",
     "enrich_tasks",
