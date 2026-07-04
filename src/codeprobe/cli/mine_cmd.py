@@ -875,6 +875,12 @@ _log = _logging.getLogger(__name__)
 # acceptable here because ``run_mine`` is invoked at most once per process.
 _MINE_START_TIME: float | None = None
 
+# Consensus split of the current comprehension mine, set by
+# ``_dispatch_comprehension`` and surfaced in the terminal JSON envelope so
+# drivers see the shipped/quarantined split honestly. Same module-state
+# justification as ``_MINE_START_TIME``.
+_COMPREHENSION_CONSENSUS: dict | None = None
+
 
 def _format_elapsed(seconds: float) -> str:
     """Format *seconds* as ``Xm Ys`` for the summary block."""
@@ -2047,7 +2053,7 @@ def _dispatch_comprehension(
     bias: str,
     dual_verify: bool = False,
 ) -> None:
-    """Generate architecture comprehension tasks.
+    """Generate architecture comprehension tasks under two-backend consensus.
 
     Uses the comprehension-specific writer (``write_comprehension_tasks``)
     — the generic ``write_task_dir`` does not emit the
@@ -2055,8 +2061,22 @@ def _dispatch_comprehension(
     every comprehension task unscoreable (verifier_error). With
     ``dual_verify=True`` the generator emits ``verification_mode="dual"``
     tasks and the writer adds the direct-leg ``tests/test.sh``.
+
+    Every generated answer is re-derived by the independent AST backend
+    (:mod:`codeprobe.mining.comprehension_consensus`). Agreement ships the
+    task with a ``divergence_report.json`` (NativeComposed provenance
+    downstream) and the mine-time HEAD in ``ground_truth.json``;
+    disagreement quarantines the task under ``tasks_quarantined/`` — the
+    split is reported, never forced to agree.
     """
-    from codeprobe.mining.comprehension import ComprehensionGenerator
+    from codeprobe.mining.comprehension import (
+        _TASK_SPECS,
+        ComprehensionGenerator,
+    )
+    from codeprobe.mining.comprehension_consensus import (
+        mine_time_commit,
+        verify_comprehension_tasks,
+    )
     from codeprobe.mining.comprehension_writer import write_comprehension_tasks
 
     generator = ComprehensionGenerator(repo_path)
@@ -2069,15 +2089,60 @@ def _dispatch_comprehension(
         )
         return
 
-    tasks_dir = _clear_tasks_dir(repo_path)
-    written = write_comprehension_tasks(tasks, tasks_dir, repo_path=repo_path)
-    written_ids = {p.name for p in written}
-    tasks = [t for t in tasks if t.id in written_ids]
+    specs = {t.id: _TASK_SPECS[t.id] for t in tasks if t.id in _TASK_SPECS}
+    consensus = verify_comprehension_tasks(repo_path, tasks, specs)
+    shipped = [t for t in tasks if consensus[t.id].agreed]
+    quarantined = [t for t in tasks if not consensus[t.id].agreed]
+    commit = mine_time_commit(repo_path)
 
-    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
-    _show_results_table(tasks)
+    tasks_dir = _clear_tasks_dir(repo_path)
+    quarantine_dir = tasks_dir.parent / "tasks_quarantined"
+    _quarantine_comprehension_tasks(
+        quarantined, specs, consensus, quarantine_dir
+    )
+
+    global _COMPREHENSION_CONSENSUS
+    _COMPREHENSION_CONSENSUS = {
+        "backends": _consensus_backend_names(),
+        "shipped": len(shipped),
+        "quarantined": len(quarantined),
+        "commit": commit,
+        "quarantined_tasks": [
+            {
+                "task_id": t.id,
+                "template": specs[t.id].template if t.id in specs else "",
+                "target": specs[t.id].target if t.id in specs else "",
+                "reason": consensus[t.id].reason,
+            }
+            for t in quarantined
+        ],
+    }
+    _echo_consensus_split(
+        _COMPREHENSION_CONSENSUS, total=len(tasks), quarantine_dir=quarantine_dir
+    )
+
+    if not shipped:
+        click.echo(
+            "All comprehension tasks were quarantined (backends disagreed). "
+            "Nothing shipped."
+        )
+        return
+
+    reports = {t.id: consensus[t.id].report for t in shipped}
+    written = write_comprehension_tasks(
+        shipped,
+        tasks_dir,
+        repo_path=repo_path,
+        commit=commit,
+        divergence_reports=reports,
+    )
+    written_ids = {p.name for p in written}
+    shipped = [t for t in shipped if t.id in written_ids]
+
+    _record_task_ids_in_experiment(repo_path, [t.id for t in shipped])
+    _show_results_table(shipped)
     _finish_mine_output(
-        tasks,
+        shipped,
         tasks_dir,
         goal_name,
         bias,
@@ -2085,6 +2150,69 @@ def _dispatch_comprehension(
         repo_path,
         task_types=("architecture_comprehension",),
     )
+
+
+def _consensus_backend_names() -> list[str]:
+    from codeprobe.mining.comprehension_consensus import (
+        AST_BACKEND,
+        GENERATOR_BACKEND,
+    )
+
+    return [GENERATOR_BACKEND, AST_BACKEND]
+
+
+def _quarantine_comprehension_tasks(
+    quarantined: list,
+    specs: dict,
+    consensus: dict,
+    quarantine_dir: Path,
+) -> None:
+    """Preserve consensus-rejected tasks under *quarantine_dir* for triage."""
+    from codeprobe.mining.writer import write_quarantined_task
+
+    if quarantine_dir.exists():
+        shutil.rmtree(quarantine_dir)
+    for task in quarantined:
+        spec = specs.get(task.id)
+        write_quarantined_task(
+            task_id=task.id,
+            family=spec.template if spec else "unknown",
+            repo=task.repo,
+            symbol=spec.target if spec else "",
+            defining_file=(
+                str(
+                    spec.metadata.get("defined_in")
+                    or spec.metadata.get("target_file")
+                    or ""
+                )
+                if spec
+                else ""
+            ),
+            instruction_title=task.metadata.name,
+            instruction_body=spec.question if spec else "",
+            divergence_report=consensus[task.id].report,
+            base_dir=quarantine_dir,
+        )
+
+
+def _echo_consensus_split(
+    summary: dict, *, total: int, quarantine_dir: Path
+) -> None:
+    """Print the shipped/quarantined consensus split with per-task reasons."""
+    click.echo(
+        f"Consensus: {summary['shipped']}/{total} shipped "
+        f"({' + '.join(summary['backends'])} agreed exactly); "
+        f"{summary['quarantined']} quarantined"
+    )
+    for entry in summary["quarantined_tasks"]:
+        click.echo(f"  quarantined {entry['task_id']}: {entry['reason']}")
+    if summary["quarantined"]:
+        click.echo(f"  quarantine dir: {quarantine_dir}")
+    if summary["commit"] is None:
+        click.echo(
+            "  warning: repo is not a git checkout — ground truth carries "
+            "no mine-time commit"
+        )
 
 
 def _dispatch_mixed(
@@ -2691,6 +2819,7 @@ def run_mine(
                     "goal": goal,
                     "tenant": tenant,
                     "tenant_source": tenant_source,
+                    "comprehension_consensus": _COMPREHENSION_CONSENSUS,
                 },
                 warnings=_defaults_warnings or None,
             )
@@ -3095,15 +3224,12 @@ def _show_org_scale_results(
     click.echo()
     if consensus_config is not None:
         backends_str = ", ".join(getattr(consensus_config, "backends", ()))
+        threshold = getattr(consensus_config, "threshold", 0.0)
+        mode = getattr(consensus_config, "mode", "")
         click.echo(
-            "Consensus mining: backends=[{0}] threshold={1:.2f} mode={2} "
-            "shipped={3} quarantined={4}".format(
-                backends_str,
-                getattr(consensus_config, "threshold", 0.0),
-                getattr(consensus_config, "mode", ""),
-                len(tasks),
-                quarantined_count,
-            )
+            f"Consensus mining: backends=[{backends_str}] "
+            f"threshold={threshold:.2f} mode={mode} "
+            f"shipped={len(tasks)} quarantined={quarantined_count}"
         )
         if quarantined_count and quarantine_dir is not None:
             click.echo(

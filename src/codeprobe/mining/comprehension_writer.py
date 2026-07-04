@@ -44,6 +44,8 @@ def write_comprehension_tasks(
     specs: dict[str, ComprehensionTaskSpec] | None = None,
     *,
     repo_path: Path | None = None,
+    commit: str | None = None,
+    divergence_reports: dict[str, dict] | None = None,
 ) -> list[Path]:
     """Write comprehension tasks to disk with the new ground_truth format.
 
@@ -52,6 +54,7 @@ def write_comprehension_tasks(
         output_dir/<task.id>/
             instruction.md
             metadata.json
+            divergence_report.json (consensus-verified tasks only)
             tests/ground_truth.json
             tests/test.sh          (dual tasks only — the direct leg)
 
@@ -61,7 +64,8 @@ def write_comprehension_tasks(
           "answer": ...,
           "answer_type": "file_list" | "count" | "boolean" | "text",
           "confidence": 0.95,
-          "provenance": "deterministic"
+          "provenance": "deterministic",
+          "commit": "<mine-time HEAD>"   (only when *commit* is given)
         }
 
     Tasks with ``verification_mode="dual"`` (produced by
@@ -69,6 +73,16 @@ def write_comprehension_tasks(
     --dual-verify`` path) additionally get a direct-leg ``tests/test.sh``;
     ``repo_path`` supplies the ``TASK_REPO_ROOT`` fallback default baked
     into that script and is required for dual tasks.
+
+    *commit* is the mine-time HEAD recorded in ``ground_truth.json``. It
+    deliberately does NOT touch ``metadata.ground_truth_commit`` — that
+    field pins executor workspaces (and gets rewritten by the R0 driver's
+    expB anchoring); this one is provenance-only, read by aoa-bench.
+
+    *divergence_reports* maps task id -> the consensus.v1 report from
+    :func:`codeprobe.mining.comprehension_consensus.verify_comprehension_tasks`;
+    each is written to ``<task_dir>/divergence_report.json``, the record
+    that makes the task's held-out provenance NativeComposed downstream.
 
     Tasks must have been produced by ``ComprehensionGenerator.generate`` --
     the spec is looked up from a process-wide registry keyed on ``task.id``.
@@ -114,10 +128,19 @@ def write_comprehension_tasks(
             "confidence": spec.confidence,
             "provenance": spec.provenance,
         }
+        if commit:
+            ground_truth["commit"] = commit
         (tests_dir / "ground_truth.json").write_text(
             json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+
+        report = (divergence_reports or {}).get(task.id)
+        if report is not None:
+            (task_dir / "divergence_report.json").write_text(
+                json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
 
         if is_dual:
             test_sh = tests_dir / "test.sh"

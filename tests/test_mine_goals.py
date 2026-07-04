@@ -507,10 +507,14 @@ class TestDispatchPipelineIntegration:
     @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
     @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
     @patch("codeprobe.cli.mine_cmd._show_results_table")
+    @patch("codeprobe.mining.comprehension_consensus.mine_time_commit")
+    @patch("codeprobe.mining.comprehension_consensus.verify_comprehension_tasks")
     @patch("codeprobe.mining.comprehension_writer.write_comprehension_tasks")
     def test_dispatch_comprehension_calls_generator(
         self,
         mock_write,
+        mock_verify,
+        mock_commit,
         mock_table,
         mock_clear,
         mock_record,
@@ -518,6 +522,7 @@ class TestDispatchPipelineIntegration:
         tmp_path,
     ) -> None:
         from codeprobe.cli.mine_cmd import _dispatch_comprehension
+        from codeprobe.mining.comprehension_consensus import TaskConsensus
 
         mock_task = MagicMock()
         mock_task.id = "comp-001"
@@ -529,6 +534,15 @@ class TestDispatchPipelineIntegration:
 
         mock_clear.return_value = tmp_path / "tasks"
         mock_write.return_value = [tmp_path / "tasks" / "comp-001"]
+        mock_verify.return_value = {
+            "comp-001": TaskConsensus(
+                task_id="comp-001",
+                agreed=True,
+                report={"decision": "shipped", "backend_results": []},
+                reason=None,
+            )
+        }
+        mock_commit.return_value = "a" * 40
 
         with patch(
             "codeprobe.mining.comprehension.ComprehensionGenerator"
@@ -543,17 +557,26 @@ class TestDispatchPipelineIntegration:
                 bias="mixed",
             )
             instance.generate.assert_called_once_with(count=5, dual=False)
+            mock_verify.assert_called_once()
             mock_write.assert_called_once()
             assert mock_write.call_args.kwargs["repo_path"] == tmp_path
+            # Consensus artifacts flow into the writer.
+            assert mock_write.call_args.kwargs["commit"] == "a" * 40
+            reports = mock_write.call_args.kwargs["divergence_reports"]
+            assert reports["comp-001"]["decision"] == "shipped"
 
     @patch("codeprobe.cli.mine_cmd._show_next_steps")
     @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
     @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
     @patch("codeprobe.cli.mine_cmd._show_results_table")
+    @patch("codeprobe.mining.comprehension_consensus.mine_time_commit")
+    @patch("codeprobe.mining.comprehension_consensus.verify_comprehension_tasks")
     @patch("codeprobe.mining.comprehension_writer.write_comprehension_tasks")
     def test_dispatch_comprehension_passes_dual_verify(
         self,
         mock_write,
+        mock_verify,
+        mock_commit,
         mock_table,
         mock_clear,
         mock_record,
@@ -561,6 +584,7 @@ class TestDispatchPipelineIntegration:
         tmp_path,
     ) -> None:
         from codeprobe.cli.mine_cmd import _dispatch_comprehension
+        from codeprobe.mining.comprehension_consensus import TaskConsensus
 
         mock_task = MagicMock()
         mock_task.id = "comp-001"
@@ -572,6 +596,15 @@ class TestDispatchPipelineIntegration:
 
         mock_clear.return_value = tmp_path / "tasks"
         mock_write.return_value = [tmp_path / "tasks" / "comp-001"]
+        mock_verify.return_value = {
+            "comp-001": TaskConsensus(
+                task_id="comp-001",
+                agreed=True,
+                report={"decision": "shipped", "backend_results": []},
+                reason=None,
+            )
+        }
+        mock_commit.return_value = None
 
         with patch(
             "codeprobe.mining.comprehension.ComprehensionGenerator"
