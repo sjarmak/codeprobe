@@ -967,10 +967,10 @@ def _cold_start_check(repo_path: Path, source_hint: str) -> bool:
 def _comprehension_generator_available() -> bool:
     """Return True when the comprehension generator module is importable."""
     try:
-        from codeprobe.mining import comprehension_generator  # type: ignore[attr-defined]  # noqa: F401
+        from codeprobe.mining import comprehension  # noqa: F401
 
         return True
-    except (ImportError, AttributeError):
+    except ImportError:
         return False
 
 

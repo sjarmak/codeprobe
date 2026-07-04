@@ -193,6 +193,14 @@ class TestResolveTaskTypeComprehensionFallback:
         result = _resolve_task_type("mixed", tmp_path, "auto")
         assert result == "mixed"
 
+    def test_availability_gate_sees_the_shipped_generator(self) -> None:
+        # Unmocked: the gate must import the module that actually ships
+        # (codeprobe.mining.comprehension). A stale module name here silently
+        # turns every architecture_comprehension mine into micro_probe.
+        from codeprobe.cli.mine_cmd import _comprehension_generator_available
+
+        assert _comprehension_generator_available()
+
 
 # ---------------------------------------------------------------------------
 # --goal CLI flag integration (via run_mine)
