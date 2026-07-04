@@ -507,7 +507,7 @@ class TestDispatchPipelineIntegration:
     @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
     @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
     @patch("codeprobe.cli.mine_cmd._show_results_table")
-    @patch("codeprobe.mining.writer.write_task_dir")
+    @patch("codeprobe.mining.comprehension_writer.write_comprehension_tasks")
     def test_dispatch_comprehension_calls_generator(
         self,
         mock_write,
@@ -528,6 +528,7 @@ class TestDispatchPipelineIntegration:
         mock_task.verification.command = "bash tests/test.sh"
 
         mock_clear.return_value = tmp_path / "tasks"
+        mock_write.return_value = [tmp_path / "tasks" / "comp-001"]
 
         with patch(
             "codeprobe.mining.comprehension.ComprehensionGenerator"
@@ -541,7 +542,51 @@ class TestDispatchPipelineIntegration:
                 goal_name="Navigation",
                 bias="mixed",
             )
-            instance.generate.assert_called_once_with(count=5)
+            instance.generate.assert_called_once_with(count=5, dual=False)
+            mock_write.assert_called_once()
+            assert mock_write.call_args.kwargs["repo_path"] == tmp_path
+
+    @patch("codeprobe.cli.mine_cmd._show_next_steps")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.cli.mine_cmd._show_results_table")
+    @patch("codeprobe.mining.comprehension_writer.write_comprehension_tasks")
+    def test_dispatch_comprehension_passes_dual_verify(
+        self,
+        mock_write,
+        mock_table,
+        mock_clear,
+        mock_record,
+        mock_next,
+        tmp_path,
+    ) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_comprehension
+
+        mock_task = MagicMock()
+        mock_task.id = "comp-001"
+        mock_task.metadata.difficulty = "hard"
+        mock_task.metadata.language = "python"
+        mock_task.metadata.quality_score = 0.9
+        mock_task.metadata.description = "Comprehension task"
+        mock_task.verification.command = "bash tests/test.sh"
+
+        mock_clear.return_value = tmp_path / "tasks"
+        mock_write.return_value = [tmp_path / "tasks" / "comp-001"]
+
+        with patch(
+            "codeprobe.mining.comprehension.ComprehensionGenerator"
+        ) as MockGen:  # noqa: N806
+            instance = MockGen.return_value
+            instance.generate.return_value = [mock_task]
+
+            _dispatch_comprehension(
+                repo_path=tmp_path,
+                count=5,
+                goal_name="Navigation",
+                bias="mixed",
+                dual_verify=True,
+            )
+            instance.generate.assert_called_once_with(count=5, dual=True)
 
 
 # ---------------------------------------------------------------------------

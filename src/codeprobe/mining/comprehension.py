@@ -160,8 +160,20 @@ class ComprehensionGenerator:
     # Public API
     # ------------------------------------------------------------------
 
-    def generate(self, count: int = 10) -> list[Task]:
-        """Produce up to ``count`` tasks across all four templates."""
+    def generate(self, count: int = 10, *, dual: bool = False) -> list[Task]:
+        """Produce up to ``count`` tasks across all four templates.
+
+        With ``dual=True`` (the ``mine --dual-verify`` path) each task is
+        emitted with ``verification_mode="dual"``: the direct (visible) leg
+        is an answer-provided check via ``tests/test.sh`` and the artifact
+        (held-out) leg compares ``answer.json`` against the mined
+        ``tests/ground_truth.json``. ``scoring_policy="min"`` makes the
+        composite track the held-out leg whenever an answer was produced.
+        Comprehension is a dual-eligible category; the PR-diff oracle
+        constructor in ``_apply_dual_verification`` cannot apply to these
+        statically-generated tasks, so the dual shape is set at generation
+        time instead.
+        """
         if count <= 0:
             return []
 
@@ -184,7 +196,7 @@ class ComprehensionGenerator:
         self._specs = specs
         tasks: list[Task] = []
         for idx, spec in enumerate(specs):
-            task = self._spec_to_task(spec, idx)
+            task = self._spec_to_task(spec, idx, dual=dual)
             tasks.append(task)
             _TASK_SPECS[task.id] = spec
         logger.info(
@@ -479,7 +491,9 @@ class ComprehensionGenerator:
     # Task construction
     # ------------------------------------------------------------------
 
-    def _spec_to_task(self, spec: ComprehensionTaskSpec, idx: int) -> Task:
+    def _spec_to_task(
+        self, spec: ComprehensionTaskSpec, idx: int, *, dual: bool = False
+    ) -> Task:
         digest = hashlib.sha1(
             f"{spec.template}|{spec.target}|{idx}".encode()
         ).hexdigest()[:8]
@@ -500,11 +514,12 @@ class ComprehensionGenerator:
         verification = TaskVerification(
             type="artifact_eval",
             command="python3 -m codeprobe.core.scoring --artifact .",
-            verification_mode="artifact_eval",
+            verification_mode="dual" if dual else "artifact_eval",
             eval_command="",
             ground_truth_path="tests/ground_truth.json",
             answer_schema=spec.answer_type,
             reward_type="artifact",
+            scoring_policy="min" if dual else "",
             ground_truth_schema_version="comprehension-v1",
             checkpoints=checkpoints,
         )
@@ -515,7 +530,7 @@ class ComprehensionGenerator:
             verification=verification,
             instruction_path="instruction.md",
             time_limit_sec=600,
-            verification_modes=("artifact_eval",),
+            verification_modes=("dual",) if dual else ("artifact_eval",),
         )
 
 

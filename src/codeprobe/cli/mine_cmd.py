@@ -1447,6 +1447,7 @@ def _dispatch_by_task_type(
             count=count,
             goal_name=goal_name,
             bias=bias,
+            dual_verify=dual_verify,
         )
 
     def _mixed() -> None:
@@ -2044,13 +2045,22 @@ def _dispatch_comprehension(
     count: int,
     goal_name: str,
     bias: str,
+    dual_verify: bool = False,
 ) -> None:
-    """Generate architecture comprehension tasks."""
+    """Generate architecture comprehension tasks.
+
+    Uses the comprehension-specific writer (``write_comprehension_tasks``)
+    — the generic ``write_task_dir`` does not emit the
+    ``tests/ground_truth.json`` the ArtifactScorer requires, which left
+    every comprehension task unscoreable (verifier_error). With
+    ``dual_verify=True`` the generator emits ``verification_mode="dual"``
+    tasks and the writer adds the direct-leg ``tests/test.sh``.
+    """
     from codeprobe.mining.comprehension import ComprehensionGenerator
-    from codeprobe.mining.writer import write_task_dir
+    from codeprobe.mining.comprehension_writer import write_comprehension_tasks
 
     generator = ComprehensionGenerator(repo_path)
-    tasks = generator.generate(count=count)
+    tasks = generator.generate(count=count, dual=dual_verify)
 
     if not tasks:
         click.echo(
@@ -2060,8 +2070,9 @@ def _dispatch_comprehension(
         return
 
     tasks_dir = _clear_tasks_dir(repo_path)
-    for task in tasks:
-        write_task_dir(task, tasks_dir, repo_path)
+    written = write_comprehension_tasks(tasks, tasks_dir, repo_path=repo_path)
+    written_ids = {p.name for p in written}
+    tasks = [t for t in tasks if t.id in written_ids]
 
     _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
     _show_results_table(tasks)

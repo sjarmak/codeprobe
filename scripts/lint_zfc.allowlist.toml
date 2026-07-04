@@ -51,8 +51,8 @@ reason = "Known violation: hardcoded min_hits thresholds (3-5). CLAUDE.md ZFC se
 
 [[entry]]
 file = "src/codeprobe/mining/comprehension.py"
-line_start = 485
-line_end = 495
+line_start = 498
+line_end = 508
 reason = "Pre-existing: _spec_to_task hardcodes difficulty='hard'. Out of scope for INV3."
 
 [[entry]]

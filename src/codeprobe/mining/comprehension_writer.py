@@ -17,10 +17,33 @@ from codeprobe.models.task import Task
 logger = logging.getLogger(__name__)
 
 
+# Direct (visible) leg for a dual comprehension task: pass iff the agent
+# wrote a parseable, non-empty ``answer.json`` at the repository root. The
+# held-out artifact leg (answer.json vs tests/ground_truth.json) is scored
+# independently by the ArtifactScorer. Failures are SILENT on stderr — the
+# executor's BinaryScorer surfaces non-empty stderr as an errored leg, and
+# an errored leg gets the whole trial excluded downstream (AOA R0 gate)
+# instead of counted as a clean failure.
+_DUAL_DIRECT_LEG_TEMPLATE = """\
+#!/usr/bin/env bash
+# Direct (visible) leg for dual comprehension task {task_id}.
+# Passes iff the agent wrote a parseable, non-empty answer.json at the
+# repository root. Gameable by design — the held-out artifact leg does
+# the real oracle comparison. Failures stay silent on stderr so a
+# legitimate miss is a clean passed_direct=false, not an errored leg.
+cd "${{TASK_REPO_ROOT:-{repo_default}}}" 2>/dev/null || exit 1
+[ -s answer.json ] || exit 1
+python3 -c 'import json; json.load(open("answer.json"))' 2>/dev/null || exit 1
+exit 0
+"""
+
+
 def write_comprehension_tasks(
     tasks: list[Task],
     output_dir: Path,
     specs: dict[str, ComprehensionTaskSpec] | None = None,
+    *,
+    repo_path: Path | None = None,
 ) -> list[Path]:
     """Write comprehension tasks to disk with the new ground_truth format.
 
@@ -30,6 +53,7 @@ def write_comprehension_tasks(
             instruction.md
             metadata.json
             tests/ground_truth.json
+            tests/test.sh          (dual tasks only — the direct leg)
 
     Ground truth JSON::
 
@@ -39,6 +63,12 @@ def write_comprehension_tasks(
           "confidence": 0.95,
           "provenance": "deterministic"
         }
+
+    Tasks with ``verification_mode="dual"`` (produced by
+    ``ComprehensionGenerator.generate(dual=True)`` on the ``mine
+    --dual-verify`` path) additionally get a direct-leg ``tests/test.sh``;
+    ``repo_path`` supplies the ``TASK_REPO_ROOT`` fallback default baked
+    into that script and is required for dual tasks.
 
     Tasks must have been produced by ``ComprehensionGenerator.generate`` --
     the spec is looked up from a process-wide registry keyed on ``task.id``.
@@ -57,6 +87,13 @@ def write_comprehension_tasks(
         safe_id = Path(task.id).name
         if not safe_id or safe_id != task.id:
             raise ValueError(f"Invalid task id for filesystem use: {task.id!r}")
+
+        is_dual = task.verification.verification_mode == "dual"
+        if is_dual and repo_path is None:
+            raise ValueError(
+                f"task {task.id}: dual comprehension tasks require repo_path "
+                "for the direct-leg TASK_REPO_ROOT fallback"
+            )
 
         task_dir = output_dir / safe_id
         tests_dir = task_dir / "tests"
@@ -81,6 +118,16 @@ def write_comprehension_tasks(
             json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+
+        if is_dual:
+            test_sh = tests_dir / "test.sh"
+            test_sh.write_text(
+                _DUAL_DIRECT_LEG_TEMPLATE.format(
+                    task_id=safe_id, repo_default=repo_path
+                ),
+                encoding="utf-8",
+            )
+            test_sh.chmod(0o755)
 
         # R17: multi-step templates (import_chain, dependency_analysis)
         # attach checkpoints; the writer resolves the script bodies from
