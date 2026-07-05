@@ -581,8 +581,9 @@ def mine(
       By default, mine calls an LLM to rewrite each task's instructions
       (problem statement + acceptance criteria), with a 60s per-task timeout.
       On timeout or error a task falls back to its template instructions; the
-      mining summary reports the K/M enriched split honestly. Pass --no-llm to
-      skip enrichment entirely (offline/CI) and use template instructions.
+      mining summary reports the K/M enriched split honestly. Enrichment can
+      be disabled entirely for offline/CI runs via the no-LLM flag (an
+      advanced option — run `mine --help --advanced` to see it).
     """
     from pathlib import Path as _Path
 
