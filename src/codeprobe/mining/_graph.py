@@ -248,6 +248,35 @@ def _reachable_modules(graph: dict[str, set[str]], start: str) -> set[str]:
     return seen
 
 
+def _shortest_path(
+    graph: dict[str, set[str]], start: str, goal: str
+) -> list[str] | None:
+    """BFS shortest path from ``start`` to ``goal`` as an inclusive node list.
+
+    Returns ``None`` if unreachable. Children are visited in sorted order so
+    the returned witness is deterministic for a given graph.
+    """
+    if start == goal:
+        return [start]
+    prev: dict[str, str | None] = {start: None}
+    queue: deque[str] = deque([start])
+    while queue:
+        node = queue.popleft()
+        for child in sorted(graph.get(node, set())):
+            if child in prev:
+                continue
+            prev[child] = node
+            if child == goal:
+                path = [child]
+                parent = prev[child]
+                while parent is not None:
+                    path.append(parent)
+                    parent = prev[parent]
+                return path[::-1]
+            queue.append(child)
+    return None
+
+
 def _shortest_path_length(
     graph: dict[str, set[str]], start: str, goal: str
 ) -> int | None:

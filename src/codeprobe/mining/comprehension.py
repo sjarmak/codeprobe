@@ -42,6 +42,7 @@ from codeprobe.mining._graph import (
     _call_regex,
     _reachable_modules,
     _RepoIndex,
+    _shortest_path,
     _shortest_path_length,
     _single_grep_importers,
     _transitive_importers,
@@ -399,7 +400,12 @@ class ComprehensionGenerator:
                                 target=f"{rel}::{class_name}.{sym.name}",
                                 metadata={
                                     "called_function": target_name,
-                                    "called_from_file": target_rel,
+                                    # Where the resolved symbol (the called
+                                    # function whose annotation is the answer)
+                                    # is DEFINED — becomes the oracle chain's
+                                    # defining_file, held out of the
+                                    # agent-visible instruction.
+                                    "defined_in": target_rel,
                                 },
                             )
                         )
@@ -438,9 +444,10 @@ class ComprehensionGenerator:
             ):
                 break
             reachable = _reachable_modules(self._index.graph, a)
-            # True cases: chain length >= 2 (requires traversal)
+            # True cases: chain length >= 2 (requires traversal). Sorted so
+            # candidate selection (and task digests) are deterministic.
             if len(true_candidates) < enough_true:
-                for b in reachable:
+                for b in sorted(reachable):
                     path_len = _shortest_path_length(self._index.graph, a, b)
                     if path_len is not None and path_len >= 2:
                         true_candidates.append((a, b))
@@ -454,6 +461,17 @@ class ComprehensionGenerator:
                         break
 
         for a, b in true_candidates[:want_true]:
+            # This backend's witness: one shortest module chain a..b over the
+            # regex-derived graph, endpoints included. It seeds the report's
+            # backend_results and is re-validated by the consensus layer (the
+            # shipped oracle chain is the both-backend intersection witness).
+            witness = _shortest_path(self._index.graph, a, b)
+            if witness is None:  # unreachable despite reachability check
+                raise RuntimeError(
+                    f"transitive_dependency {a}->{b}: reachable but no "
+                    "shortest path — import graph is inconsistent"
+                )
+            witness_files = [self._index.module_to_file[m] for m in witness]
             out.append(
                 ComprehensionTaskSpec(
                     template="transitive_dependency",
@@ -467,6 +485,10 @@ class ComprehensionGenerator:
                     answer=True,
                     answer_type="boolean",
                     target=f"{a}->{b}",
+                    metadata={
+                        "witness_modules": witness,
+                        "witness_files": witness_files,
+                    },
                 )
             )
         for a, b in false_candidates[:want_false]:

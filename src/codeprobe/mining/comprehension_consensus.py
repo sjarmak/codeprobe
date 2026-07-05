@@ -24,6 +24,33 @@ uses the exact field names the aoa-bench loader deserializes
 (``decision``, ``backend_results[].{backend, available, files, error}``) so
 a shipped comprehension task classifies ``NativeComposed``.
 
+Two templates carry template-specific validity on top of answer equality,
+because their oracle CHAIN (the files aoa's trace-locality metric compares
+agent navigation against) must itself be backend-agreed:
+
+* ``transitive_dependency`` (true answers): each backend derives its own
+  shortest witness chain a..b over its own graph; the SHIPPED witness is one
+  shortest path over the edge-INTERSECTION of the two graphs, so both
+  backends certify every hop. Witnesses need not be identical paths — only
+  the intersection witness must exist. If both backends agree on
+  reachability but only via backend-exclusive edges (docstring imports the
+  regex sees, parenthesized multiline imports only the AST sees), there is
+  no both-backend witness and the task is quarantined: the boolean answer
+  key would be fine, but the oracle chain would not be well-defined. False
+  answers have no chain; the endpoints reach the oracle via ``symbol``.
+  The full witness (endpoints included, in chain order) lands in
+  ``consensus_files``.
+* ``return_type_resolution``: ``defining_file`` is the file where the
+  resolved symbol (the called function whose annotation is the answer) is
+  actually defined. The generator's choice must be among the AST backend's
+  defining-file candidates for the same annotation, else the task is
+  quarantined — matching annotation text from a different file means the
+  backends disagree about where the answer lives.
+
+Neither the witness chain nor ``defining_file`` is ever printed into the
+agent-visible ``instruction.md``; they live only in the held-out
+``divergence_report.json``.
+
 ZFC compliance: pure mechanism — parser walks, graph traversals, and exact
 equality checks. No semantic judgment, no calibration knobs.
 """
@@ -239,6 +266,37 @@ def _reachable(graph: dict[str, set[str]], start: str, goal: str) -> bool:
     return False
 
 
+def _witness_path(
+    graph: dict[str, set[str]], start: str, goal: str
+) -> list[str] | None:
+    """One shortest ``start``..``goal`` node chain (inclusive), or ``None``.
+
+    Children are visited in sorted order so the witness is deterministic.
+    Deliberately local (not imported from ``_graph``) per this module's
+    independence design; it also runs over the edge-intersection graph the
+    consensus arbiter builds from both backends.
+    """
+    if start == goal:
+        return [start]
+    prev: dict[str, str | None] = {start: None}
+    queue: deque[str] = deque([start])
+    while queue:
+        node = queue.popleft()
+        for child in sorted(graph.get(node, set())):
+            if child in prev:
+                continue
+            prev[child] = node
+            if child == goal:
+                path = [child]
+                parent = prev[child]
+                while parent is not None:
+                    path.append(parent)
+                    parent = prev[parent]
+                return path[::-1]
+            queue.append(child)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Per-template rederivation
 # ---------------------------------------------------------------------------
@@ -252,11 +310,18 @@ class RederivedAnswer:
     answer (target missing from its index, ambiguous question); ``detail``
     carries the reason for the divergence report. A ``None`` answer never
     agrees with anything, so the task is quarantined.
+
+    ``files`` is template-shaped: the answer files for ``file_list`` tasks,
+    the AST backend's own witness chain (in chain order) for true
+    ``transitive_dependency`` tasks, and the defining-file candidates for
+    ``return_type_resolution``.
     """
 
     answer: _ANSWER
     files: tuple[str, ...] = ()
     detail: str | None = None
+    # AST-graph witness modules for true transitive_dependency answers.
+    witness_modules: tuple[str, ...] = ()
 
 
 def rederive_answer(
@@ -362,12 +427,13 @@ def _rederive_return_type(
         )
 
     typed = _top_level_typed_functions(index)
-    annotations = {
-        text
+    candidates = {
+        (other_rel, text)
         for name in called
         for other_rel, text in typed.get(name, ())
         if other_rel != rel
     }
+    annotations = {text for _, text in candidates}
     if not annotations:
         return RederivedAnswer(
             answer=None,
@@ -381,7 +447,11 @@ def _rederive_return_type(
                 f"differing annotations {sorted(annotations)}"
             ),
         )
-    return RederivedAnswer(answer=next(iter(annotations)))
+    answer = next(iter(annotations))
+    # The files where this backend saw the winning annotation defined —
+    # the defining_file consensus check compares against these.
+    defining = tuple(sorted(f for f, _ in candidates))
+    return RederivedAnswer(answer=answer, files=defining)
 
 
 def _top_level_typed_functions(
@@ -413,7 +483,13 @@ def _rederive_transitive_dependency(
             answer=None,
             detail=f"target modules {spec.target!r} not in ast index",
         )
-    return RederivedAnswer(answer=_reachable(index.graph, a, b))
+    witness = _witness_path(index.graph, a, b)
+    if witness is None:
+        return RederivedAnswer(answer=False)
+    files = tuple(index.module_to_file[m] for m in witness)
+    return RederivedAnswer(
+        answer=True, files=files, witness_modules=tuple(witness)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +508,16 @@ class TaskConsensus:
     reason: str | None
 
 
+@dataclass(frozen=True)
+class _ConsensusWitness:
+    """Both-backend witness chain for a true transitive_dependency answer."""
+
+    ok: bool
+    files: list[str]
+    modules: list[str]
+    reason: str | None = None
+
+
 def verify_comprehension_tasks(
     repo_path: Path,
     tasks: list,
@@ -441,9 +527,18 @@ def verify_comprehension_tasks(
 
     Returns one :class:`TaskConsensus` per task id. Agreement is exact
     answer equality; anything else — including a task the AST backend
-    cannot answer — is quarantined.
+    cannot answer — is quarantined. On top of answer equality,
+    ``transitive_dependency`` true answers must yield an edge-intersection
+    witness chain and ``return_type_resolution`` a backend-agreed
+    ``defining_file`` (module docstring § template-specific validity).
     """
-    index = build_ast_index(Path(repo_path))
+    repo_path = Path(repo_path)
+    index = build_ast_index(repo_path)
+    # The intersection witness needs the generator's edges too. Rebuilding
+    # the regex index here is deterministic (same walk, same repo state) and
+    # keeps the public signature unchanged; built lazily because only
+    # transitive_dependency tasks consume it.
+    regex_graph: dict[str, set[str]] | None = None
     out: dict[str, TaskConsensus] = {}
     for task in tasks:
         spec = specs.get(task.id)
@@ -458,13 +553,72 @@ def verify_comprehension_tasks(
         rederived = rederive_answer(spec, index)
         agreed = _answers_agree(spec.answer, rederived.answer, spec.answer_type)
         reason = None if agreed else _divergence_reason(spec, rederived)
+        witness: _ConsensusWitness | None = None
+        if agreed and spec.template == "transitive_dependency":
+            if regex_graph is None:
+                from codeprobe.mining._graph import _build_index
+
+                regex_graph = _build_index(repo_path).graph
+            witness = _transitive_witness(spec, rederived, index, regex_graph)
+            if not witness.ok:
+                agreed = False
+                reason = witness.reason
+        elif agreed and spec.template == "return_type_resolution":
+            defined = str(spec.metadata.get("defined_in") or "")
+            if not defined or defined not in rederived.files:
+                agreed = False
+                reason = (
+                    "backends disagree on the defining file: "
+                    f"{GENERATOR_BACKEND}={defined!r}, {AST_BACKEND} "
+                    f"candidates={sorted(rederived.files)}"
+                )
         out[task.id] = TaskConsensus(
             task_id=task.id,
             agreed=agreed,
-            report=_report(task.id, spec, rederived, agreed=agreed),
+            report=_report(
+                task.id, spec, rederived, agreed=agreed, witness=witness
+            ),
             reason=reason,
         )
     return out
+
+
+def _transitive_witness(
+    spec: ComprehensionTaskSpec,
+    rederived: RederivedAnswer,
+    index: AstIndex,
+    regex_graph: dict[str, set[str]],
+) -> _ConsensusWitness:
+    """Both-backend witness for an agreed transitive_dependency answer.
+
+    False answers carry no chain (``ok`` with empty witness). True answers
+    get one shortest path over the edge-intersection of the two graphs —
+    every hop certified by both backends. No intersection path despite
+    agreed reachability means the routes are backend-exclusive and the
+    oracle chain is not well-defined: not ok, quarantine.
+    """
+    if rederived.answer is False:
+        return _ConsensusWitness(ok=True, files=[], modules=[])
+    a, _, b = spec.target.partition("->")
+    intersection = {
+        mod: regex_graph.get(mod, set()) & edges
+        for mod, edges in index.graph.items()
+    }
+    path = _witness_path(intersection, a, b)
+    if path is None:
+        return _ConsensusWitness(
+            ok=False,
+            files=[],
+            modules=[],
+            reason=(
+                "reachability agreed but no witness path is valid in both "
+                f"backends' graphs: {GENERATOR_BACKEND} route "
+                f"{spec.metadata.get('witness_modules')}, {AST_BACKEND} "
+                f"route {list(rederived.witness_modules)}"
+            ),
+        )
+    files = [index.module_to_file[m] for m in path]
+    return _ConsensusWitness(ok=True, files=files, modules=path)
 
 
 def _answers_agree(
@@ -509,12 +663,15 @@ def _report(
     rederived: RederivedAnswer | None,
     *,
     agreed: bool,
+    witness: _ConsensusWitness | None = None,
 ) -> dict[str, Any]:
     """Build the consensus.v1-shaped divergence report for one task.
 
     ``decision`` and ``backend_results[].{backend, available, files, error}``
-    are the exact fields the aoa-bench loader deserializes; the rest is
-    additive triage context (per-backend answers, template, target).
+    are the exact fields the aoa-bench loader deserializes;
+    ``consensus_files``/``defining_file``/``symbol`` feed the answer-task
+    oracle chain; the rest is additive triage context (per-backend answers,
+    template, target, ``witness_modules``).
     """
     decision = "shipped" if agreed else "quarantined"
     if spec is None or rederived is None:
@@ -527,12 +684,24 @@ def _report(
             "consensus_files": [],
         }
 
-    gen_files = (
-        sorted(spec.answer) if spec.answer_type == "file_list" else []
+    is_transitive = spec.template == "transitive_dependency"
+    if spec.answer_type == "file_list":
+        gen_files = sorted(spec.answer)
+    elif is_transitive:
+        # The regex backend's own witness chain, in chain order.
+        gen_files = list(spec.metadata.get("witness_files") or [])
+    else:
+        gen_files = []
+    ast_files = (
+        list(rederived.files) if is_transitive else sorted(rederived.files)
     )
-    ast_files = sorted(rederived.files)
-    consensus_files = gen_files if (agreed and gen_files) else []
-    return {
+    if is_transitive:
+        # Only the both-backend intersection witness ships as the oracle
+        # chain — full chain, endpoints included (empty for false answers).
+        consensus_files = witness.files if (agreed and witness) else []
+    else:
+        consensus_files = gen_files if (agreed and gen_files) else []
+    report: dict[str, Any] = {
         "schema_version": "consensus.v1",
         "task_id": task_id,
         "template": spec.template,
@@ -575,6 +744,11 @@ def _report(
         "consensus_files": consensus_files,
         "consensus_answer": spec.answer if agreed else None,
     }
+    if is_transitive:
+        report["witness_modules"] = (
+            witness.modules if (agreed and witness) else []
+        )
+    return report
 
 
 # ---------------------------------------------------------------------------

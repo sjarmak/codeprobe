@@ -548,6 +548,198 @@ def test_dispatch_quarantines_divergent_tasks(
 
 
 # ---------------------------------------------------------------------------
+# Witness paths (transitive_dependency) + defining_file (return_type)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def split_witness_repo(tmp_path: Path) -> Path:
+    """Both backends agree ``pkg.a`` reaches ``pkg.target`` — but only via
+    edges the OTHER backend cannot see (a docstring import for the regex
+    backend, a parenthesized multiline import for the AST backend). The
+    boolean answers agree; no witness path is valid in both graphs.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "target.py").write_text("VALUE = 1\n")
+    (pkg / "mid1.py").write_text("from pkg import target\n\nA = target.VALUE\n")
+    (pkg / "mid2.py").write_text("from pkg import target\n\nB = target.VALUE\n")
+    (pkg / "a.py").write_text(
+        '"""Docs.\n'
+        "\n"
+        "import pkg.mid1\n"
+        '"""\n'
+        "from pkg import (\n"
+        "    mid2,\n"
+        ")\n"
+        "\n"
+        "X = mid2.B\n"
+    )
+    return tmp_path
+
+
+def test_generator_records_witness_metadata(chain_repo: Path) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=8)
+    specs = _specs_by_id(gen, tasks)
+    true_specs = [
+        s
+        for s in specs.values()
+        if s.template == "transitive_dependency" and s.answer is True
+    ]
+    assert true_specs, "fixture must yield a true transitive task"
+    spec = true_specs[0]
+    a, _, b = spec.target.partition("->")
+    modules = spec.metadata["witness_modules"]
+    assert modules[0] == a and modules[-1] == b
+    # True candidates require path length >= 2 -> at least one intermediate.
+    assert len(modules) >= 3
+    assert len(spec.metadata["witness_files"]) == len(modules)
+
+
+def test_transitive_true_ships_with_witness_chain(chain_repo: Path) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=8)
+    specs = _specs_by_id(gen, tasks)
+    consensus = verify_comprehension_tasks(chain_repo, tasks, specs)
+    true_ids = [
+        t.id
+        for t in tasks
+        if specs[t.id].template == "transitive_dependency"
+        and specs[t.id].answer is True
+    ]
+    assert true_ids, "fixture must yield a true transitive task"
+    tc = consensus[true_ids[0]]
+    assert tc.agreed is True
+    report = tc.report
+    # The full chain, endpoints INCLUDED: the trace-locality metric's job is
+    # to see the intermediates, and O is a set union downstream.
+    assert report["consensus_files"] == ["pkg/a.py", "pkg/b.py", "pkg/c.py"]
+    assert report["witness_modules"] == ["pkg.a", "pkg.b", "pkg.c"]
+    by_name = {b["backend"]: b for b in report["backend_results"]}
+    assert by_name[GENERATOR_BACKEND]["files"] == [
+        "pkg/a.py", "pkg/b.py", "pkg/c.py",
+    ]
+    assert by_name[AST_BACKEND]["files"] == [
+        "pkg/a.py", "pkg/b.py", "pkg/c.py",
+    ]
+
+
+def test_transitive_false_ships_without_witness(chain_repo: Path) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=8)
+    specs = _specs_by_id(gen, tasks)
+    consensus = verify_comprehension_tasks(chain_repo, tasks, specs)
+    false_ids = [
+        t.id
+        for t in tasks
+        if specs[t.id].template == "transitive_dependency"
+        and specs[t.id].answer is False
+    ]
+    assert false_ids, "fixture must yield a false transitive task"
+    tc = consensus[false_ids[0]]
+    assert tc.agreed is True
+    # No chain exists for a false answer; endpoints reach the oracle via the
+    # report's `symbol` (module pair) field.
+    assert tc.report["consensus_files"] == []
+    assert tc.report["witness_modules"] == []
+
+
+def test_transitive_witness_disagreement_quarantines(
+    split_witness_repo: Path,
+) -> None:
+    gen = ComprehensionGenerator(split_witness_repo)
+    tasks = gen.generate(count=8)
+    specs = _specs_by_id(gen, tasks)
+    tids = [
+        t.id
+        for t in tasks
+        if specs[t.id].template == "transitive_dependency"
+        and specs[t.id].target == "pkg.a->pkg.target"
+    ]
+    assert tids, "fixture must yield the pkg.a->pkg.target true task"
+    consensus = verify_comprehension_tasks(split_witness_repo, tasks, specs)
+    tc = consensus[tids[0]]
+    # Reachability agreed (both True) but the routes are backend-exclusive:
+    # the oracle chain would not be backend-agreed, so the task quarantines.
+    assert tc.agreed is False
+    assert tc.report["decision"] == "quarantined"
+    assert "witness" in (tc.reason or "").lower()
+
+
+def test_return_type_report_fills_defining_file(cross_file_repo: Path) -> None:
+    gen = ComprehensionGenerator(cross_file_repo)
+    tasks = gen.generate(count=8)
+    specs = _specs_by_id(gen, tasks)
+    consensus = verify_comprehension_tasks(cross_file_repo, tasks, specs)
+    rt_ids = [
+        t.id
+        for t in tasks
+        if specs[t.id].template == "return_type_resolution"
+    ]
+    assert rt_ids, "fixture must yield a return_type_resolution task"
+    tc = consensus[rt_ids[0]]
+    assert tc.agreed is True
+    # The file where the resolved symbol's annotation actually lives.
+    assert tc.report["defining_file"] == "proj/helpers.py"
+    by_name = {b["backend"]: b for b in tc.report["backend_results"]}
+    assert by_name[AST_BACKEND]["files"] == ["proj/helpers.py"]
+
+
+def test_return_type_defining_file_divergence_quarantines(
+    cross_file_repo: Path,
+) -> None:
+    from types import SimpleNamespace
+
+    spec = ComprehensionTaskSpec(
+        template="return_type_resolution",
+        question="q",
+        answer="dict",
+        answer_type="text",
+        target="proj/service.py::Service.run",
+        metadata={"called_function": "compute", "defined_in": "proj/other.py"},
+    )
+    task = SimpleNamespace(id="t-defining-file")
+    consensus = verify_comprehension_tasks(
+        cross_file_repo, [task], {"t-defining-file": spec}
+    )
+    tc = consensus["t-defining-file"]
+    assert tc.agreed is False
+    assert "defining file" in (tc.reason or "")
+
+
+def test_instruction_never_leaks_witness_or_defining_file(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=8, dual=True)
+    specs = _specs_by_id(gen, tasks)
+    consensus = verify_comprehension_tasks(chain_repo, tasks, specs)
+    shipped = [t for t in tasks if consensus[t.id].agreed]
+    assert shipped
+    reports = {t.id: consensus[t.id].report for t in shipped}
+    out = tmp_path / "out"
+    written = write_comprehension_tasks(
+        shipped,
+        out,
+        repo_path=chain_repo,
+        commit="c" * 40,
+        divergence_reports=reports,
+    )
+    for td in written:
+        text = (td / "instruction.md").read_text()
+        assert "witness" not in text.lower()
+        spec = specs[td.name]
+        if spec.template == "transitive_dependency" and spec.answer is True:
+            # The intermediate hop must never appear in agent-visible text.
+            for mid in spec.metadata["witness_modules"][1:-1]:
+                assert mid not in text
+        if spec.template == "return_type_resolution":
+            assert str(spec.metadata["defined_in"]) not in text
+
+
+# ---------------------------------------------------------------------------
 # Unknown template safety
 # ---------------------------------------------------------------------------
 
