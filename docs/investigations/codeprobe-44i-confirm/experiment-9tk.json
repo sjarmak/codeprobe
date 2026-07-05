@@ -1,0 +1,89 @@
+{
+  "name": "gascity-mcp-comparison",
+  "description": "codeprobe-9tk [44i-confirm]: with-sg-narrow SDLC confirm run at the 4cl6-recommended cap (UNCAPPED). Three arms (local-only / with-sg-narrow / with-sg-full) x 5 SDLC tasks x N=6, all uncapped (max_turns=null) with the STEP-0 raised wall-clock guard (extra.timeout_seconds=10800, commit d559f5e). Confirms the evjr.4 relative ordering (narrow >= local > full on reward; narrow cheapest of the SG arms) at the proper cap, removing evjr.4's two caveats (small N=3, contaminated cap=50). with-sg-narrow = with-sg-full + a disallowed_tools block on the sourcegraph read/browse MCP tools (read_file/list_files/list_repos/commit_search/diff_search/compare_revisions; unprefixed MCP ids verified from trace.db, commit 462b3a6). Budget revised to $500 (bead's $120 predates the uncapped-cost discovery; Stephanie approved N=6 at the revised ceiling).",
+  "tasks_dir": "tasks",
+  "configs": [
+    {
+      "label": "local-only",
+      "agent": "claude",
+      "model": "claude-sonnet-4-6",
+      "permission_mode": "default",
+      "mcp_config": null,
+      "allowed_tools": null,
+      "disallowed_tools": null,
+      "mcp_mode": "strict",
+      "instruction_variant": null,
+      "preambles": [],
+      "reward_type": "binary",
+      "max_turns": null,
+      "extra": {
+        "timeout_seconds": 10800
+      }
+    },
+    {
+      "label": "with-sg-narrow",
+      "agent": "claude",
+      "model": "claude-sonnet-4-6",
+      "permission_mode": "default",
+      "mcp_config": {
+        "mcpServers": {
+          "sourcegraph": {
+            "type": "http",
+            "url": "$SOURCEGRAPH_MCP_URL",
+            "headers": {
+              "Authorization": "token $SOURCEGRAPH_ACCESS_TOKEN"
+            }
+          }
+        }
+      },
+      "allowed_tools": null,
+      "disallowed_tools": [
+        "mcp__sourcegraph__read_file",
+        "mcp__sourcegraph__list_files",
+        "mcp__sourcegraph__list_repos",
+        "mcp__sourcegraph__commit_search",
+        "mcp__sourcegraph__diff_search",
+        "mcp__sourcegraph__compare_revisions"
+      ],
+      "mcp_mode": "strict",
+      "instruction_variant": null,
+      "preambles": [
+        "sourcegraph"
+      ],
+      "reward_type": "binary",
+      "max_turns": null,
+      "extra": {
+        "timeout_seconds": 10800
+      }
+    },
+    {
+      "label": "with-sg-full",
+      "agent": "claude",
+      "model": "claude-sonnet-4-6",
+      "permission_mode": "default",
+      "mcp_config": {
+        "mcpServers": {
+          "sourcegraph": {
+            "type": "http",
+            "url": "$SOURCEGRAPH_MCP_URL",
+            "headers": {
+              "Authorization": "token $SOURCEGRAPH_ACCESS_TOKEN"
+            }
+          }
+        }
+      },
+      "allowed_tools": null,
+      "disallowed_tools": null,
+      "mcp_mode": "strict",
+      "instruction_variant": null,
+      "preambles": [
+        "sourcegraph"
+      ],
+      "reward_type": "binary",
+      "max_turns": null,
+      "extra": {
+        "timeout_seconds": 10800
+      }
+    }
+  ]
+}

@@ -849,7 +849,7 @@ class TestWorktreeIsolation:
             assert "slot-0" in str(wt)
 
     def test_reset_calls_git_restore_and_clean(self, tmp_path: Path) -> None:
-        """reset() runs git restore . and git clean -fd."""
+        """reset() runs git restore --staged --worktree . and git clean -fd."""
         iso = WorktreeIsolation(tmp_path, pool_size=1)
         wt = tmp_path / "worktree"
         wt.mkdir()
@@ -857,7 +857,10 @@ class TestWorktreeIsolation:
             iso.reset(wt)
             assert mock_run.call_count == 2
             calls = [c[0][0] for c in mock_run.call_args_list]
-            assert calls[0] == ["git", "restore", "."]
+            # --staged --worktree also unstages an agent's `git add`
+            # (codeprobe-9tk); plain `git restore .` left staged changes that
+            # broke the next task's pin in a reused pooled worktree.
+            assert calls[0] == ["git", "restore", "--staged", "--worktree", "."]
             assert calls[1] == [
                 "git",
                 "clean",
@@ -908,11 +911,14 @@ class TestWorktreeIsolation:
 
 class TestGitPinCommit:
     def test_calls_git_checkout_detach(self, tmp_path: Path) -> None:
-        """git_pin_commit runs git checkout --detach <commit>."""
+        """git_pin_commit runs git checkout --detach --force <commit>."""
         with patch("subprocess.run") as mock_run:
             git_pin_commit(tmp_path, "abc123^")
+            # --force discards leftover state in a reused pooled worktree so
+            # the pin can't abort on "local changes would be overwritten"
+            # (codeprobe-9tk).
             mock_run.assert_called_once_with(
-                ["git", "checkout", "--detach", "abc123^"],
+                ["git", "checkout", "--detach", "--force", "abc123^"],
                 cwd=tmp_path,
                 check=True,
                 capture_output=True,

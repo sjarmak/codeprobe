@@ -48,8 +48,8 @@ from codeprobe.core.preamble import (
 from codeprobe.core.scoring import (
     COPYTREE_IGNORE,
     AgentState,
-    ScoreResult,
     Scorer,
+    ScoreResult,
     get_scorer,
     read_task_metadata,
     sanitize_secrets,

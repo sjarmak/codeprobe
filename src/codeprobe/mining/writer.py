@@ -682,6 +682,10 @@ _ALLOWED_COMMAND_PREFIXES = (
     "go test ",
     "npm test ",
     "codeprobe oracle-check ",
+    # The comprehension generator's dual-verify scorer entry point
+    # (mining/comprehension.py) — module-specific on purpose; a bare
+    # "python3 " prefix would allowlist arbitrary code.
+    "python3 -m codeprobe.core.scoring ",
 )
 
 # Characters that change shell control flow — any appearance blocks a

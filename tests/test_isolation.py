@@ -562,3 +562,60 @@ class TestQuarantineLocalSource:
         # Source restored to original content (sanity).
         assert (ws / "src" / "a.py").read_text() == "ORIG"
         assert (ws / "src" / "b.go").read_text() == "ORIG"
+
+
+def _stage_edit(path: Path, filename: str, content: str) -> None:
+    """Modify a tracked file and stage it (mimics an agent's git add)."""
+    (path / filename).write_text(content)
+    subprocess.run(["git", "add", filename], cwd=path, check=True, capture_output=True)
+
+
+class TestPinRobustToLeftoverState:
+    """git_pin_commit + git_restore_clean must survive a pooled worktree that
+    a prior uncapped agent left dirty / staged (codeprobe-9tk regression)."""
+
+    def test_pin_forces_past_staged_changes(self, tmp_path: Path) -> None:
+        from codeprobe.core.isolation import git_pin_commit
+
+        repo = tmp_path / "repo"
+        shas = _init_repo(repo, "c1", "c2", "c3")
+        # Pin to c1, then mimic an agent staging a tracked-file edit.
+        git_pin_commit(repo, shas[0])
+        _stage_edit(repo, "file-0.txt", "agent edit, staged but not committed")
+        # Re-pinning to a different commit must NOT abort on the staged change.
+        git_pin_commit(repo, shas[2])
+        assert _current_sha(repo) == shas[2]
+        # The staged edit is gone — workspace matches the pinned commit.
+        assert (repo / "file-0.txt").read_text() == "c1"
+
+    def test_pin_forces_past_unstaged_changes(self, tmp_path: Path) -> None:
+        from codeprobe.core.isolation import git_pin_commit
+
+        repo = tmp_path / "repo"
+        shas = _init_repo(repo, "c1", "c2")
+        git_pin_commit(repo, shas[0])
+        (repo / "file-0.txt").write_text("dirty unstaged")
+        git_pin_commit(repo, shas[1])
+        assert _current_sha(repo) == shas[1]
+
+    def test_restore_clean_unstages_tracked_changes(self, tmp_path: Path) -> None:
+        from codeprobe.core.isolation import git_restore_clean
+
+        repo = tmp_path / "repo"
+        _init_repo(repo, "c1", "c2")
+        _stage_edit(repo, "file-0.txt", "staged edit")
+        (repo / "untracked.txt").write_text("untracked")
+        git_restore_clean(repo)
+        # Both the staged tracked edit and the untracked file are gone.
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert status == ""
+        # file-0.txt was committed as "c1" and never changed since; restoring
+        # reverts the staged edit back to that committed content.
+        assert (repo / "file-0.txt").read_text() == "c1"
+        assert not (repo / "untracked.txt").exists()

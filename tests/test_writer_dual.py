@@ -212,3 +212,25 @@ class TestWriteTaskDirDualLayout:
 
         with pytest.raises(ValueError, match="not in allowlist"):
             write_task_dir(task, base_dir, repo_path)
+
+    def test_allows_comprehension_scoring_command(self, tmp_path: Path) -> None:
+        """The comprehension generator's own verify command must pass the
+        allowlist — it is what every architecture_comprehension task ships
+        (mining/comprehension.py), and rejecting it makes the whole dual-
+        eligible category unwritable."""
+        task = Task(
+            id="dualok01",
+            repo="myrepo",
+            metadata=TaskMetadata(name="merge-dualok01", language="python"),
+            verification=TaskVerification(
+                type="test_script",
+                command="python3 -m codeprobe.core.scoring --artifact .",
+                verification_mode="dual",
+            ),
+        )
+        base_dir = tmp_path / "tasks"
+        repo_path = tmp_path / "myrepo"
+        repo_path.mkdir()
+
+        write_task_dir(task, base_dir, repo_path)
+        assert (base_dir / "dualok01" / "tests" / "test.sh").exists()

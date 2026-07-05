@@ -327,3 +327,120 @@ def test_instruction_md_contains_question(chain_repo: Path, tmp_path: Path) -> N
     assert "## Question" in instruction_text
     assert "## Answer Format" in instruction_text
     assert "architecture_comprehension" in instruction_text
+
+
+# ---------------------------------------------------------------------------
+# Dual-verify support (comprehension is a dual-eligible category; the AOA R0
+# gate consumes only scorer_family == "dual_composite" results)
+# ---------------------------------------------------------------------------
+
+
+def test_generate_dual_sets_dual_verification(chain_repo: Path) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=4, dual=True)
+    assert tasks
+    for task in tasks:
+        assert task.verification.verification_mode == "dual"
+        assert task.verification.scoring_policy == "min"
+        assert task.verification_modes == ("dual",)
+
+
+def test_generate_default_stays_artifact_eval(chain_repo: Path) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=4)
+    assert tasks
+    for task in tasks:
+        assert task.verification.verification_mode == "artifact_eval"
+
+
+def test_write_dual_comprehension_writes_direct_leg(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=4, dual=True)
+    out = tmp_path / "out"
+    written = write_comprehension_tasks(tasks, out, repo_path=chain_repo)
+    assert written
+    for task_dir in written:
+        test_sh = task_dir / "tests" / "test.sh"
+        assert test_sh.is_file(), "dual tasks need a direct-leg test.sh"
+        assert test_sh.stat().st_mode & 0o111, "test.sh must be executable"
+        body = test_sh.read_text()
+        assert str(chain_repo) in body, "test.sh carries the repo default path"
+        meta = json.loads((task_dir / "metadata.json").read_text())
+        assert meta["verification"]["verification_mode"] == "dual"
+        # ground truth still written — the held-out artifact leg needs it
+        assert (task_dir / "tests" / "ground_truth.json").is_file()
+
+
+def test_write_artifact_eval_comprehension_has_no_test_sh(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=4)
+    out = tmp_path / "out"
+    written = write_comprehension_tasks(tasks, out, repo_path=chain_repo)
+    assert written
+    for task_dir in written:
+        assert not (task_dir / "tests" / "test.sh").exists()
+
+
+def test_dual_comprehension_scores_dual_composite(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    """End-to-end scoring property the AOA falsification gate requires:
+    a dual comprehension trial must produce scorer_family=dual_composite
+    with both legs run cleanly (no error_direct / error_artifact)."""
+    from codeprobe.core.scoring import DualScorer
+    from codeprobe.core.scoring.sandbox import scorer_env_override
+
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=4, dual=True)
+    out = tmp_path / "out"
+    written = write_comprehension_tasks(tasks, out, repo_path=chain_repo)
+    assert written
+    task_dir = written[0]
+
+    gt = json.loads((task_dir / "tests" / "ground_truth.json").read_text())
+    answer_payload = json.dumps({"answer": gt["answer"]})
+    # The executor stages the agent's answer.json into the scoring snapshot
+    # of the task dir; the agent also leaves it at the workspace root.
+    (task_dir / "answer.json").write_text(answer_payload)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "answer.json").write_text(answer_payload)
+
+    with scorer_env_override({"TASK_REPO_ROOT": str(workspace)}):
+        result = DualScorer().score("", task_dir)
+
+    assert result.scorer_family == "dual_composite"
+    assert result.details.get("error_direct") is None
+    assert result.details.get("error_artifact") is None
+    assert result.details["passed_direct"] is True
+    assert result.details["passed_artifact"] is True
+    assert result.score == 1.0  # policy=min over two correct legs
+
+
+def test_dual_comprehension_missing_answer_fails_direct_leg_cleanly(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    """No answer.json: the direct leg must FAIL (passed_direct=false) but not
+    ERROR — an errored leg gets the trial excluded at the AOA gate instead of
+    counted as a failure."""
+    from codeprobe.core.scoring import DualScorer
+    from codeprobe.core.scoring.sandbox import scorer_env_override
+
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=4, dual=True)
+    written = write_comprehension_tasks(tasks, tmp_path / "out", repo_path=chain_repo)
+    task_dir = written[0]
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    with scorer_env_override({"TASK_REPO_ROOT": str(workspace)}):
+        result = DualScorer().score("", task_dir)
+
+    assert result.scorer_family == "dual_composite"
+    assert result.details["passed_direct"] is False
+    assert result.details.get("error_direct") is None
+    assert result.score == 0.0

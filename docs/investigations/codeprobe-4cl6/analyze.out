@@ -1,0 +1,181 @@
+# cap75 analysis tables
+
+## Family rollup
+
+{
+ "with-sg-cap75": {
+  "n_trials": 15,
+  "mean_reward": 0.5070733333333333,
+  "total_time_s": 30535.99514948856,
+  "mean_time_s_per_trial": 2035.733009965904,
+  "total_cost_usd": 84.36812429999999,
+  "total_input_tokens": 37439,
+  "total_output_tokens": 1662179,
+  "total_cache_read_tokens": 80977140,
+  "cap_hits": 4
+ },
+ "aupz-with-sg-fixed-cap50": {
+  "n_trials": 15,
+  "mean_reward": 0.15484666666666666,
+  "total_time_s": 20448.241027879063,
+  "mean_time_s_per_trial": 1363.2160685252709,
+  "total_cost_usd": 54.358551150000004,
+  "total_input_tokens": 15998,
+  "total_output_tokens": 1251436,
+  "total_cache_read_tokens": 80080353,
+  "cap_hits": 0
+ },
+ "mcn7-baseline": {
+  "n_trials": 15,
+  "mean_reward": 0.6831,
+  "total_time_s": 16769.190375061706,
+  "mean_time_s_per_trial": 1117.9460250041136,
+  "total_cost_usd": 69.1132478,
+  "total_input_tokens": 1247,
+  "total_output_tokens": 600745,
+  "total_cache_read_tokens": 152102759,
+  "cap_hits": 0
+ },
+ "mcn7-with-sourcegraph": {
+  "n_trials": 15,
+  "mean_reward": 0.6865533333333333,
+  "total_time_s": 28342.46612497978,
+  "mean_time_s_per_trial": 1889.4977416653187,
+  "total_cost_usd": 85.1691963,
+  "total_input_tokens": 45047,
+  "total_output_tokens": 1739453,
+  "total_cache_read_tokens": 148388201,
+  "cap_hits": 0
+ }
+}
+
+## Paired contrast: cap75_vs_aupz-cap50
+
+{
+ "n": 5,
+ "deltas": [
+  0.7873,
+  0.0005333333333332746,
+  0.0,
+  0.48669999999999997,
+  0.48660000000000003
+ ],
+ "mean": 0.35222666666666663,
+ "std": 0.3439403657935809,
+ "se": 0.15381480762411806,
+ "df": 4,
+ "t_crit_95": 2.776,
+ "ci_95": [
+  -0.07476323929788509,
+  0.7792165726312184
+ ],
+ "t_stat": 2.2899399096048914
+}
+
+## Paired contrast: cap75_vs_mcn7-baseline
+
+{
+ "n": 5,
+ "deltas": [
+  0.25329999999999997,
+  -0.03823333333333334,
+  -0.8,
+  -0.3133000000000001,
+  0.018100000000000005
+ ],
+ "mean": -0.1760266666666667,
+ "std": 0.40285861070879725,
+ "se": 0.18016384777319908,
+ "df": 4,
+ "t_crit_95": 2.776,
+ "ci_95": [
+  -0.6761615080850673,
+  0.3241081747517339
+ ],
+ "t_stat": -0.9770365633412731
+}
+
+## Paired contrast: cap75_vs_mcn7-with-sg
+
+{
+ "n": 5,
+ "deltas": [
+  0.24703333333333333,
+  -0.04303333333333337,
+  -0.8,
+  -0.3133000000000001,
+  0.011900000000000022
+ ],
+ "mean": -0.17948000000000003,
+ "std": 0.4000345246211743,
+ "se": 0.17890087807995178,
+ "df": 4,
+ "t_crit_95": 2.776,
+ "ci_95": [
+  -0.6761088375499462,
+  0.3171488375499461
+ ],
+ "t_stat": -1.0032371105511815
+}
+
+## Per-task: cap75 vs aupz cap50
+
+| task | metric | cap75 | cap50(aupz) | delta |
+|------|--------|-------|-------------|-------|
+| ba1f3675 | reward (mean) | 0.7873 | 0.0000 | 0.7873 |
+| ba1f3675 | wall-clock (mean/trial) | 1660s | 1173s | 487s |
+| ba1f3675 | cost (total over 3) | $16.90 | $11.37 | $5.53 |
+| ba1f3675 | output tokens (total) | 287318 | 204463 | 82855 |
+| d906ac3d | reward (mean) | 0.5649 | 0.5643 | 0.0005 |
+| d906ac3d | wall-clock (mean/trial) | 2087s | 968s | 1119s |
+| d906ac3d | cost (total over 3) | $15.09 | $7.53 | $7.56 |
+| d906ac3d | output tokens (total) | 339765 | 181671 | 158094 |
+| 0d4ec3ad | reward (mean) | 0.0000 | 0.0000 | 0.0000 |
+| 0d4ec3ad | wall-clock (mean/trial) | 1765s | 855s | 911s |
+| 0d4ec3ad | cost (total over 3) | $18.37 | $8.88 | $9.50 |
+| 0d4ec3ad | output tokens (total) | 242838 | 136958 | 105880 |
+| 45b581b5 | reward (mean) | 0.4867 | 0.0000 | 0.4867 |
+| 45b581b5 | wall-clock (mean/trial) | 2537s | 1778s | 759s |
+| 45b581b5 | cost (total over 3) | $18.42 | $13.52 | $4.90 |
+| 45b581b5 | output tokens (total) | 404726 | 328091 | 76635 |
+| fde8e6e0 | reward (mean) | 0.6965 | 0.2099 | 0.4866 |
+| fde8e6e0 | wall-clock (mean/trial) | 2129s | 2042s | 87s |
+| fde8e6e0 | cost (total over 3) | $15.59 | $13.06 | $2.52 |
+| fde8e6e0 | output tokens (total) | 387532 | 400253 | -12721 |
+
+## Per-task: cap75 vs mcn7 baseline
+
+| task | metric | cap75 | baseline(mcn7) | delta |
+|------|--------|-------|----------------|-------|
+| ba1f3675 | reward (mean) | 0.7873 | 0.5340 | 0.2533 |
+| ba1f3675 | wall-clock (mean/trial) | 1660s | 1285s | 376s |
+| ba1f3675 | cost (total over 3) | $16.90 | $18.48 | $-1.59 |
+| ba1f3675 | output tokens (total) | 287318 | 121595 | 165723 |
+| d906ac3d | reward (mean) | 0.5649 | 0.6031 | -0.0382 |
+| d906ac3d | wall-clock (mean/trial) | 2087s | 626s | 1461s |
+| d906ac3d | cost (total over 3) | $15.09 | $4.57 | $10.52 |
+| d906ac3d | output tokens (total) | 339765 | 39697 | 300068 |
+| 0d4ec3ad | reward (mean) | 0.0000 | 0.8000 | -0.8000 |
+| 0d4ec3ad | wall-clock (mean/trial) | 1765s | 1842s | -77s |
+| 0d4ec3ad | cost (total over 3) | $18.37 | $26.17 | $-7.79 |
+| 0d4ec3ad | output tokens (total) | 242838 | 224283 | 18555 |
+| 45b581b5 | reward (mean) | 0.4867 | 0.8000 | -0.3133 |
+| 45b581b5 | wall-clock (mean/trial) | 2537s | 444s | 2093s |
+| 45b581b5 | cost (total over 3) | $18.42 | $4.52 | $13.90 |
+| 45b581b5 | output tokens (total) | 404726 | 49627 | 355099 |
+| fde8e6e0 | reward (mean) | 0.6965 | 0.6784 | 0.0181 |
+| fde8e6e0 | wall-clock (mean/trial) | 2129s | 1393s | 736s |
+| fde8e6e0 | cost (total over 3) | $15.59 | $15.37 | $0.22 |
+| fde8e6e0 | output tokens (total) | 387532 | 165543 | 221989 |
+
+## Cap-hit map
+
+| task | repeat 0 | repeat 1 | repeat 2 |
+|------|----------|----------|----------|
+| ba1f3675 | finished (tools=74, r=0.788) | finished (tools=109, r=0.787) | finished (tools=72, r=0.787) |
+| d906ac3d | finished (tools=80, r=0.566) | finished (tools=50, r=0.564) | finished (tools=18, r=0.565) |
+| 0d4ec3ad | hit (turns=76, r=0.000) | hit (turns=76, r=0.000) | hit (turns=76, r=0.000) |
+| 45b581b5 | finished (tools=103, r=0.830) | finished (tools=59, r=0.630) | hit (turns=76, r=0.000) |
+| fde8e6e0 | finished (tools=63, r=0.630) | finished (tools=62, r=0.630) | finished (tools=66, r=0.830) |
+
+max-turns hit rate: 4/15 = 26.7%

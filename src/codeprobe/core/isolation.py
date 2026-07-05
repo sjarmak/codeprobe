@@ -769,8 +769,14 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
     ``.codeprobe-worktrees``, and any directories containing
     ``experiment.json`` (codeprobe experiment dirs).
     """
+    # ``--staged --worktree`` reverts BOTH the index and the working tree to
+    # HEAD. A plain ``git restore .`` only touches the working tree, so an
+    # agent that ran ``git add`` (common in an uncapped SDLC workflow) would
+    # leave staged tracked changes behind — and the next task's pin
+    # (``git checkout``) then fails with "your local changes would be
+    # overwritten" because a pooled worktree is reused dirty (codeprobe-9tk).
     result = subprocess.run(
-        ["git", "restore", "."],
+        ["git", "restore", "--staged", "--worktree", "."],
         cwd=workdir,
         capture_output=True,
     )
@@ -803,10 +809,19 @@ def git_pin_commit(workdir: Path, commit: str) -> None:
     Used to pin a worktree or repo to the parent of a merge commit so
     the agent starts from the pre-merge state.
 
+    ``--force`` discards any leftover working-tree/index state so the pin
+    always succeeds — a pooled worktree reused across tasks can carry a
+    prior agent's staged or modified tracked files, and a non-forced
+    checkout would abort with "your local changes would be overwritten"
+    (codeprobe-9tk). Pinning is by definition "set the workspace to this
+    commit", so discarding the leftover state is the correct semantics.
+    ``git_restore_clean`` is still called between tasks; ``--force`` is the
+    belt-and-suspenders guarantee at the pin itself.
+
     Raises ``subprocess.CalledProcessError`` if the commit is unreachable.
     """
     subprocess.run(
-        ["git", "checkout", "--detach", commit],
+        ["git", "checkout", "--detach", "--force", commit],
         cwd=workdir,
         check=True,
         capture_output=True,

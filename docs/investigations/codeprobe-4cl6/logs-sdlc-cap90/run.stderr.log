@@ -1,0 +1,7 @@
+INFO: [with-sg-cap90] Dispatching 15 work items with 2 workers
+INFO: [with-sg-cap90] Running 0d4ec3ad (repeat 0)
+INFO: [with-sg-cap90] Running 0d4ec3ad (repeat 1)
+INFO: [0d4ec3ad] Pinned workspace to 0d4ec3ad^ (pre-merge state)
+INFO: [0d4ec3ad] Pinned workspace to 0d4ec3ad^ (pre-merge state)
+INFO: [with-sg-cap90] Running 0d4ec3ad (repeat 2)
+INFO: [0d4ec3ad] Pinned workspace to 0d4ec3ad^ (pre-merge state)

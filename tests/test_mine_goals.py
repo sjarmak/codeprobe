@@ -193,6 +193,14 @@ class TestResolveTaskTypeComprehensionFallback:
         result = _resolve_task_type("mixed", tmp_path, "auto")
         assert result == "mixed"
 
+    def test_availability_gate_sees_the_shipped_generator(self) -> None:
+        # Unmocked: the gate must import the module that actually ships
+        # (codeprobe.mining.comprehension). A stale module name here silently
+        # turns every architecture_comprehension mine into micro_probe.
+        from codeprobe.cli.mine_cmd import _comprehension_generator_available
+
+        assert _comprehension_generator_available()
+
 
 # ---------------------------------------------------------------------------
 # --goal CLI flag integration (via run_mine)
@@ -499,10 +507,14 @@ class TestDispatchPipelineIntegration:
     @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
     @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
     @patch("codeprobe.cli.mine_cmd._show_results_table")
-    @patch("codeprobe.mining.writer.write_task_dir")
+    @patch("codeprobe.mining.comprehension_consensus.mine_time_commit")
+    @patch("codeprobe.mining.comprehension_consensus.verify_comprehension_tasks")
+    @patch("codeprobe.mining.comprehension_writer.write_comprehension_tasks")
     def test_dispatch_comprehension_calls_generator(
         self,
         mock_write,
+        mock_verify,
+        mock_commit,
         mock_table,
         mock_clear,
         mock_record,
@@ -510,6 +522,7 @@ class TestDispatchPipelineIntegration:
         tmp_path,
     ) -> None:
         from codeprobe.cli.mine_cmd import _dispatch_comprehension
+        from codeprobe.mining.comprehension_consensus import TaskConsensus
 
         mock_task = MagicMock()
         mock_task.id = "comp-001"
@@ -520,6 +533,16 @@ class TestDispatchPipelineIntegration:
         mock_task.verification.command = "bash tests/test.sh"
 
         mock_clear.return_value = tmp_path / "tasks"
+        mock_write.return_value = [tmp_path / "tasks" / "comp-001"]
+        mock_verify.return_value = {
+            "comp-001": TaskConsensus(
+                task_id="comp-001",
+                agreed=True,
+                report={"decision": "shipped", "backend_results": []},
+                reason=None,
+            )
+        }
+        mock_commit.return_value = "a" * 40
 
         with patch(
             "codeprobe.mining.comprehension.ComprehensionGenerator"
@@ -533,7 +556,257 @@ class TestDispatchPipelineIntegration:
                 goal_name="Navigation",
                 bias="mixed",
             )
-            instance.generate.assert_called_once_with(count=5)
+            instance.generate.assert_called_once_with(count=5, dual=False)
+            mock_verify.assert_called_once()
+            mock_write.assert_called_once()
+            assert mock_write.call_args.kwargs["repo_path"] == tmp_path
+            # Consensus artifacts flow into the writer.
+            assert mock_write.call_args.kwargs["commit"] == "a" * 40
+            reports = mock_write.call_args.kwargs["divergence_reports"]
+            assert reports["comp-001"]["decision"] == "shipped"
+
+    @patch("codeprobe.cli.mine_cmd._show_next_steps")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.cli.mine_cmd._show_results_table")
+    @patch("codeprobe.mining.comprehension_consensus.mine_time_commit")
+    @patch("codeprobe.mining.comprehension_consensus.verify_comprehension_tasks")
+    @patch("codeprobe.mining.comprehension_writer.write_comprehension_tasks")
+    def test_dispatch_comprehension_passes_dual_verify(
+        self,
+        mock_write,
+        mock_verify,
+        mock_commit,
+        mock_table,
+        mock_clear,
+        mock_record,
+        mock_next,
+        tmp_path,
+    ) -> None:
+        from codeprobe.cli.mine_cmd import _dispatch_comprehension
+        from codeprobe.mining.comprehension_consensus import TaskConsensus
+
+        mock_task = MagicMock()
+        mock_task.id = "comp-001"
+        mock_task.metadata.difficulty = "hard"
+        mock_task.metadata.language = "python"
+        mock_task.metadata.quality_score = 0.9
+        mock_task.metadata.description = "Comprehension task"
+        mock_task.verification.command = "bash tests/test.sh"
+
+        mock_clear.return_value = tmp_path / "tasks"
+        mock_write.return_value = [tmp_path / "tasks" / "comp-001"]
+        mock_verify.return_value = {
+            "comp-001": TaskConsensus(
+                task_id="comp-001",
+                agreed=True,
+                report={"decision": "shipped", "backend_results": []},
+                reason=None,
+            )
+        }
+        mock_commit.return_value = None
+
+        with patch(
+            "codeprobe.mining.comprehension.ComprehensionGenerator"
+        ) as MockGen:  # noqa: N806
+            instance = MockGen.return_value
+            instance.generate.return_value = [mock_task]
+
+            _dispatch_comprehension(
+                repo_path=tmp_path,
+                count=5,
+                goal_name="Navigation",
+                bias="mixed",
+                dual_verify=True,
+            )
+            instance.generate.assert_called_once_with(count=5, dual=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-task LLM enrichment status (codeprobe-z3r4)
+# ---------------------------------------------------------------------------
+
+
+def _task_with_source(task_id: str, source: str):
+    from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+
+    return Task(
+        id=task_id,
+        repo="r",
+        metadata=TaskMetadata(name=task_id, enrichment_source=source),
+        verification=TaskVerification(command="bash tests/test.sh"),
+    )
+
+
+class TestEnrichmentStatus:
+    """Summary must reflect per-task enrichment OUTCOME, never global LLM
+    availability — partial timeouts/errors are surfaced, not masked."""
+
+    def test_regex_fallback_when_llm_not_attempted(self) -> None:
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [_task_with_source("t1", "pr")]
+        assert _enrichment_status(tasks, llm_attempted=False) == "regex fallback"
+
+    def test_full_enrichment(self) -> None:
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [
+            _task_with_source("t1", "pr+llm"),
+            _task_with_source("t2", "pr+llm"),
+        ]
+        assert _enrichment_status(tasks, llm_attempted=True) == "LLM-enriched (2/2)"
+
+    def test_partial_fallback_reports_split(self) -> None:
+        """One task fell back → summary shows K/M and the fallback count and
+        never claims bare 'LLM-enriched'."""
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [
+            _task_with_source("t1", "pr+llm"),
+            _task_with_source("t2", "pr+llm"),
+            _task_with_source("t3", "pr"),  # fell back after timeout/error
+        ]
+        status = _enrichment_status(tasks, llm_attempted=True)
+        assert status == (
+            "LLM-enriched (2/3; 1 fell back to template after timeout/error)"
+        )
+        # Honesty: never the bare claim when any task fell back.
+        assert status != "LLM-enriched"
+
+    def test_all_fell_back(self) -> None:
+        from codeprobe.cli.mine_cmd import _enrichment_status
+
+        tasks = [_task_with_source("t1", "pr"), _task_with_source("t2", "pr")]
+        status = _enrichment_status(tasks, llm_attempted=True)
+        assert status == "template fallback (2/2; LLM failed after timeout/error)"
+        assert "LLM-enriched" not in status
+
+    def test_finish_mine_output_renders_partial_fallback(
+        self, tmp_path, capsys
+    ) -> None:
+        """End-to-end wiring: _finish_mine_output prints the honest K/M split
+        in the summary's Instructions line when a task fell back."""
+        from codeprobe.cli.mine_cmd import _finish_mine_output
+
+        tasks = [
+            _task_with_source("task-001", "pr+llm"),
+            _task_with_source("task-002", "pr"),  # LLM timed out → template
+        ]
+        _finish_mine_output(
+            tasks,
+            tmp_path / "tasks",
+            goal_name="Quality",
+            bias="balanced",
+            subsystems=(),
+            repo_path=tmp_path,
+            task_types=(),  # skip suite manifest write
+            llm_enriched=True,  # LLM was attempted
+        )
+        out = capsys.readouterr().out
+        assert (
+            "Instructions:    LLM-enriched (1/2; 1 fell back to template "
+            "after timeout/error)" in out
+        )
+
+
+# ---------------------------------------------------------------------------
+# Requested-vs-mined shortfall notice (codeprobe-yqft)
+# ---------------------------------------------------------------------------
+
+
+class TestShortfallNotice:
+    """When fewer tasks are mined than requested, surface the dominant filter
+    reason and a corrective flag instead of silently under-delivering."""
+
+    def test_silent_when_request_met(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+        from codeprobe.mining import RejectionBreakdown
+
+        _show_shortfall_notice(3, 3, RejectionBreakdown(quality=2))
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_no_rejections(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+
+        _show_shortfall_notice(3, 1, None)
+        assert capsys.readouterr().out == ""
+
+    def test_reports_requested_mined_and_dominant_reason(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+        from codeprobe.mining import RejectionBreakdown
+
+        _show_shortfall_notice(3, 1, RejectionBreakdown(quality=4, min_files=1))
+        out = capsys.readouterr().out
+        assert "requested 3, mined 1" in out
+        assert "5 candidate(s) filtered" in out
+        assert "4 below --min-quality" in out
+        assert "--min-quality" in out  # corrective flag
+
+    def test_dominant_reason_is_highest_count(self, capsys) -> None:
+        from codeprobe.cli.mine_cmd import _show_shortfall_notice
+        from codeprobe.mining import RejectionBreakdown
+
+        _show_shortfall_notice(
+            5, 0, RejectionBreakdown(quality=1, min_files=7, subsystem=2)
+        )
+        out = capsys.readouterr().out
+        assert "7 below --min-files" in out
+        assert "lower --min-files" in out
+
+    @patch("codeprobe.cli.mine_cmd._finish_mine_output")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._clear_tasks_dir")
+    @patch("codeprobe.cli.mine_cmd._enrich_sdlc_tasks")
+    @patch("codeprobe.mining.write_task_dir")
+    @patch("codeprobe.mining.mine_tasks")
+    def test_dispatch_sdlc_surfaces_shortfall(
+        self,
+        mock_mine,
+        mock_write,
+        mock_enrich,
+        mock_clear,
+        mock_record,
+        mock_finish,
+        tmp_path,
+        capsys,
+    ) -> None:
+        """A pipeline returning fewer tasks than requested surfaces the message."""
+        from codeprobe.cli.mine_cmd import _dispatch_sdlc
+        from codeprobe.mining import RejectionBreakdown
+
+        mock_task = MagicMock()
+        mock_task.id = "task-001"
+        mock_task.metadata.difficulty = "medium"
+        mock_task.metadata.language = "python"
+        mock_task.metadata.quality_score = 0.8
+        mock_task.metadata.description = "A test task with enough description"
+        mock_task.verification.command = "bash tests/test.sh"
+        mock_mine.return_value = MagicMock(
+            tasks=[mock_task],
+            pr_bodies={},
+            changed_files_map={},
+            min_files_used=0,
+            rejections=RejectionBreakdown(quality=4),
+        )
+        mock_enrich.return_value = [mock_task]
+        mock_clear.return_value = tmp_path / "tasks"
+
+        _dispatch_sdlc(
+            repo_path=tmp_path,
+            count=3,
+            source="auto",
+            min_files=0,
+            subsystems=(),
+            no_llm=True,
+            enrich=False,
+            goal_name="Quality",
+            bias="balanced",
+            narrative_source=("pr",),
+        )
+        out = capsys.readouterr().out
+        assert "requested 3, mined 1" in out
+        assert "below --min-quality" in out
 
 
 # ---------------------------------------------------------------------------
