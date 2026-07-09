@@ -45,11 +45,9 @@ experiments/
 .beads-credential-key
 .beads/
 
-# Claude Code local config (ignore everything except the shipped skills)
-.claude/*
-!.claude/skills/
-# gc-* skills are unrelated to codeprobe; keep them local-only
-.claude/skills/gc-*/
+# Claude Code local config and CodeGraph (development-only)
+.claude/
+.codegraph/
 
 # Internal working documents (PRDs, premortems, agent docs)
 prd_*.md
@@ -75,3 +73,5 @@ prompts/
 
 # prd-build orchestration artifacts
 .prd-build/
+
+.gc-reports/

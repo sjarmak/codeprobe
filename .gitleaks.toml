@@ -1,0 +1,10 @@
+title = "Gitleaks config for codeprobe"
+description = "Gitleaks configuration for secret detection pre-push"
+
+[source]
+# Use the default gitleaks rules
+include-default = true
+
+# Reference the gitleaksignore file for known false positives
+[allowlist]
+paths = [".gitleaksignore"]
