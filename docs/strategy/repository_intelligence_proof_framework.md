@@ -265,10 +265,13 @@ The following choices are unresolved and tracked as decision beads under the roa
 | Evidence graph storage and schema | `codeprobe-tsi9.9` | scale model, migration plan, local/offline behavior, query examples | proof-ledger implementation |
 | OTel and in-toto compatibility boundary | `codeprobe-tsi9.10` | loss analysis, predicate design, round-trip fixtures | external ingestion and passports |
 | Private evidence retention and deletion | `codeprobe-tsi9.11` | partner security review, tenant lifecycle, redaction and export behavior | partner production data |
-| Production outcome identity and cohort rules | `codeprobe-tsi9.12` | patch identity, observation windows, censoring, confounder plan | survival claims |
 | Capability ontology and routing calibration | `codeprobe-tsi9.13` | partner taxonomy, minimum sample rules, held-out validation design | fitness routing |
 | Executive recommendation refusal policy | `codeprobe-tsi9.14` | audience requirements, calibration gates, counterevidence behavior | evidence compiler |
 
-Resolved decisions are recorded in this table with a date, bead identifier, selected option, rejected alternatives, and evidence link. Beads preserve the deliberation; this PRD preserves the resulting architecture.
+Resolved decisions are recorded below with a date, bead identifier, selected option, rejected alternatives, and evidence link. Beads preserve the deliberation; this PRD preserves the resulting architecture.
+
+| Decision | Bead | Date | Selected | Rejected | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| Production outcome identity and cohort rules | `codeprobe-tsi9.12` | 2026-07-10 | Repo-scoped identity precedence `run_marker` > `patch_digest`/`commit_sha` > `pr_number` > `heuristic` with confidence tiers and joint same-tier ambiguity-refusal; six outcomes (survival, revert, corrective churn, review burden, incident, takeover) each with its window, censoring, competing risks, identity floor, and claim class; stratified-exact cohorts on structural keys with a standardised-mean-difference balance check; observational claim language only (`descriptive`/`association`, never causal). | Patch digest as primary identity (confident digest-collision false links a confidence floor cannot remove); uniform fixed 30/60/90 windows (discards timing and merge-boundary structure); propensity-only matching (hides structural strata, harder to reproduce); pooled single survival metric (ignores competing risks). | [design.md](../investigations/codeprobe-tsi9.12/design.md); `src/codeprobe/outcomes/`; `tests/outcomes/`. Partner-corpus linkage calibration pending under `codeprobe-tsi9.1`. |
 
 The next implementation artifact is the proof-ledger schema, but the next program action is partner discovery. Building the schema without the customer evidence that will stress it would repeat the repository's own documented failure mode: the right mechanism for the wrong enterprise reality.
