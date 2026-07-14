@@ -10,6 +10,7 @@ from codeprobe.mining.extractor import (
     _build_oracle_ground_truth,
     _oracle_discrimination_passed,
 )
+from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 # ---------------------------------------------------------------------------
 # _build_oracle_ground_truth
@@ -303,3 +304,91 @@ class TestDualVerifyIntegration:
         gt = json.loads(gt_path.read_text())
         assert gt["answer_type"] == "file_list"
         assert sorted(gt["answer"]) == ["src/config.py", "src/settings.py"]
+
+
+# ---------------------------------------------------------------------------
+# _apply_dual_verification: comprehension is NOT a PR-diff-oracle category
+# ---------------------------------------------------------------------------
+
+
+class TestComprehensionNotDualEligible:
+    """codeprobe-lqct: comprehension tasks must never reach the PR-diff oracle.
+
+    ``_apply_dual_verification`` builds oracles from a merge commit's changed
+    files. Comprehension tasks are statically generated (no PR, no diff) and
+    already carry their dual shape from ``ComprehensionGenerator.generate(
+    dual=True)`` — ``verification_mode="dual"``, ``scoring_policy="min"``, and
+    a static-analysis ``oracle_answer``. Routing them through the PR-diff
+    constructor would overwrite that answer with a changed-file list.
+
+    This locks the contract behaviourally: repointing the stale
+    ``"comprehension"`` entry to the category the generator actually emits
+    (``"architecture_comprehension"``) breaks these tests.
+    """
+
+    @staticmethod
+    def _comprehension_task() -> Task:
+        return Task(
+            id="comprehension-import_chain-000-deadbeef",
+            repo="myrepo",
+            metadata=TaskMetadata(
+                name="import_chain: pkg.a",
+                difficulty="hard",
+                description="Which modules does `pkg.a` import?",
+                language="python",
+                category="architecture_comprehension",
+                task_type="architecture_comprehension",
+                # Deliberately populated even though the real generator leaves
+                # it empty: this is the maximal-trigger case, so the lock holds
+                # even if comprehension tasks later gain a commit pin.
+                ground_truth_commit="abc1234567890",
+            ),
+            verification=TaskVerification(
+                type="artifact_eval",
+                command="python3 -m codeprobe.core.scoring --artifact .",
+                verification_mode="dual",
+                ground_truth_path="tests/ground_truth.json",
+                answer_schema="module_list",
+                reward_type="artifact",
+                scoring_policy="min",
+                oracle_type="module_list",
+                oracle_answer=("pkg.b", "pkg.c"),
+            ),
+        )
+
+    def test_comprehension_task_passes_through_unchanged(self) -> None:
+        """Generation-time dual shape survives _apply_dual_verification intact."""
+        from codeprobe.cli.mine_cmd import _apply_dual_verification
+        from codeprobe.mining.extractor import MineResult
+
+        task = self._comprehension_task()
+        mine_result = MineResult(
+            tasks=[task],
+            pr_bodies={},
+            changed_files_map={task.id: ["src/pkg/a.py", "src/pkg/b.py"]},
+        )
+
+        result = _apply_dual_verification([task], mine_result, Path("/nonexistent"))
+
+        assert result == [task]
+        # The static-analysis answer must not be replaced by the PR file list.
+        assert result[0].verification.oracle_answer == ("pkg.b", "pkg.c")
+
+    def test_pr_diff_oracle_constructor_never_runs_for_comprehension(self) -> None:
+        """The oracle builder is not even called — the category guard rejects first."""
+        from codeprobe.cli.mine_cmd import _apply_dual_verification
+        from codeprobe.mining.extractor import MineResult
+
+        task = self._comprehension_task()
+        mine_result = MineResult(
+            tasks=[task],
+            pr_bodies={},
+            changed_files_map={task.id: ["src/pkg/a.py"]},
+        )
+
+        with patch(
+            "codeprobe.mining.extractor._build_oracle_ground_truth"
+        ) as build_oracle:
+            _apply_dual_verification([task], mine_result, Path("/nonexistent"))
+
+        build_oracle.assert_not_called()
