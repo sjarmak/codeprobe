@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import logging
+import random
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -395,7 +396,11 @@ def _enable_wal(conn: sqlite3.Connection) -> None:
                 f"could not enable WAL journal mode within "
                 f"{_BUSY_TIMEOUT_MS}ms: {reason}"
             )
-        time.sleep(delay)
+        # Decorrelated jitter. Workers are spawned together and collide on the
+        # same conversion, so an undithered doubling would march the whole pool
+        # through the same retry ticks and re-collide at each one. Sleeping a
+        # random point in [0, delay) spreads them instead.
+        time.sleep(random.uniform(0.0, delay))
         delay = min(delay * 2, _WAL_RETRY_MAX_DELAY_S)
 
 

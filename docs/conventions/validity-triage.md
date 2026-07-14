@@ -49,8 +49,8 @@ fault-signature table, like a quota-pattern matcher.
 |---|--------|-------|--------------------|------|
 | 1 | `error_category` in `{quota, timeout, system}` | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
 | 2 | `status == "completed"` or non-empty `scoring_details` | `VALID` | **in** | pass |
-| 3 | infra marker in the error text (token-ceiling, API Error, rate limit, OAuth, usage/session limit, budget exceeded, halting, connection refused/reset/failed, network unreachable, failed to connect, timed out) | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
-| 4 | terminal `result_subtype` (`error_max_turns`), or `status == "failed"` | `GENUINE_FAILURE` | **in** | pass |
+| 3 | terminal `result_subtype` (`error_max_turns`), or `status == "failed"` | `GENUINE_FAILURE` | **in** | pass |
+| 4 | infra marker in the error text (token-ceiling, API Error, rate limit, OAuth, usage/session limit, budget exceeded, halting, connection refused/reset/failed, network unreachable, failed to connect, timed out) | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
 | 5 | remaining `status == "error"` | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
 
 Two ordering decisions carry the weight:
@@ -60,12 +60,25 @@ Two ordering decisions carry the weight:
   path builds its `CompletedTask` without one at all. Ranking it first is what
   keeps `is_infra_failure` a strict superset of `is_quota_casualty`, including
   the executor-stamped quota rows whose `status` still reads `completed`.
-- **Text markers rank BELOW the VALID check (3 after 2) and ABOVE the terminal
-  subtype (3 before 4).** Below VALID, so stray fault vocabulary in the metadata
-  of a trial that *did* score cannot throw a real measurement away. Above the
-  subtype, mirroring the adapter's own precedence — an infra stub is a casualty
-  even when the CLI also reported `error_max_turns` (see `adapters/claude.py`,
-  "Quota wins over subtype").
+- **Every structural signal outranks the error text (4 is last).** `metadata['error']`
+  is the adapter's verbatim `envelope['result']` (`adapters/telemetry.py:_extract_envelope_error`) —
+  free text the *evaluated agent* can influence. If it outranked the terminal
+  subtype, an agent could get its own genuine `0.0` dropped from the reward mean
+  by narrating "connection refused" on the way to a turn-cap. Ranking it last
+  closes that: an agent cannot talk its way out of the reward population.
+
+  This does not weaken quota handling. A real quota stub is stamped
+  `error_category='quota'` by `adapters/claude.py`, whose `_detect_quota_error`
+  matches only the CLI's own literal stub lines (`_cli_origin_text` strips the
+  agent's stream-json first, precisely so an agent *editing code about* quotas
+  can't trigger it). "Quota wins over subtype" is therefore enforced
+  structurally at rule 1, not by the text scan.
+
+  The text scan survives as defense-in-depth for rows carrying no structural
+  signal at all. On the three statuses the executor can actually emit
+  (`completed` / `failed` / `error`) some structural rule always decides first,
+  so its false-positive anchoring is unit-tested directly against
+  `_matches_infra_text` rather than through `classify_trial`.
 
 `error_max_turns` is deliberately kept distinct from infra so cap-contamination
 (codeprobe-8up) is never conflated with a crash: the agent DID get its turns, so

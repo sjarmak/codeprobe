@@ -104,7 +104,10 @@ def _error_text(task: CompletedTask) -> str:
     matched separately against :data:`_INFRA_ERROR_CATEGORIES`, so it is not
     folded in here.
     """
-    err = (task.metadata or {}).get("error")
+    metadata = task.metadata
+    if not isinstance(metadata, dict):
+        return ""
+    err = metadata.get("error")
     return err if isinstance(err, str) else ""
 
 
@@ -128,16 +131,21 @@ def classify_trial(task: CompletedTask) -> TrialClass:
        quota rows whose ``status`` still reads ``completed`` (codeprobe-9jxx).
     2. Scoring ran end-to-end (``status == 'completed'`` or non-empty
        ``scoring_details``) → VALID, regardless of how low the score is.
-    3. An infra marker in the recorded error text → INFRA_FAILURE. Deliberately
-       ranked BELOW the VALID check so stray fault vocabulary in the metadata of
-       a trial that *did* score cannot throw a real measurement away, and ABOVE
-       the terminal subtype, mirroring the adapter's own precedence (an infra
-       stub is a casualty even when the CLI also reported ``error_max_turns``;
-       see ``adapters/claude.py`` "Quota wins over subtype").
-    4. An adapter-declared terminal ``result_subtype``, or the executor's
+    3. An adapter-declared terminal ``result_subtype``, or the executor's
        ``status == 'failed'`` projection of ``error_terminal`` → GENUINE_FAILURE.
        The agent got its turns; the 0.0 is a real measurement and re-running it
        would only hit the same cap.
+    4. An infra marker in the recorded error text → INFRA_FAILURE. The weakest
+       signal, so it ranks last among the positive checks: ``metadata['error']``
+       is the adapter's verbatim ``envelope['result']`` (see
+       ``adapters/telemetry.py:_extract_envelope_error``), a free-text field the
+       evaluated agent can influence. Ranking it BELOW the structural terminal
+       subtype is what stops an agent from getting its own genuine 0.0 excluded
+       from the reward mean by emitting infra vocabulary. Quota is unaffected by
+       this ordering: a real quota stub is stamped ``error_category='quota'`` by
+       ``adapters/claude.py`` (whose ``_cli_origin_text`` already strips agent
+       stream-json before matching), so it is caught structurally at step 1 —
+       "quota wins over subtype" is enforced there, not here.
     5. A remaining ``status == 'error'`` row → INFRA_FAILURE: the executor's own
        infra-casualty label (crash, no result record, invalid model token).
     """
@@ -145,10 +153,10 @@ def classify_trial(task: CompletedTask) -> TrialClass:
         return TrialClass.INFRA_FAILURE
     if task.status == "completed" or task.scoring_details:
         return TrialClass.VALID
-    if _matches_infra_text(task):
-        return TrialClass.INFRA_FAILURE
     if task.result_subtype in _TERMINAL_RESULT_SUBTYPES or task.status == "failed":
         return TrialClass.GENUINE_FAILURE
+    if _matches_infra_text(task):
+        return TrialClass.INFRA_FAILURE
     if task.status == "error":
         return TrialClass.INFRA_FAILURE
     return TrialClass.GENUINE_FAILURE

@@ -27,6 +27,7 @@ from codeprobe.analysis.stats import (
 from codeprobe.analysis.validity import (
     TrialClass,
     ValidityReport,
+    _matches_infra_text,
     classify_trial,
     is_infra_failure,
     triage_run,
@@ -90,12 +91,24 @@ def _quota_casualty(task_id: str = "quota") -> CompletedTask:
     )
 
 
-def _failed_with_error(task_id: str, error: str) -> CompletedTask:
-    """A terminal ``failed`` row carrying *error* as its recorded fault text."""
+def _crash_with_error(task_id: str, error: str) -> CompletedTask:
+    """A crashed row carrying *error* as its recorded fault text.
+
+    ``status='error'`` — the shape the executor actually emits for a crash.
+    ``executor.py:828`` projects ``status='failed'`` **only** when the adapter
+    set ``error_terminal``, and ``claude.py:567`` sets that flag only for
+    ``result_subtype == 'error_max_turns'`` (and never under quota). So a
+    crashed trial always lands on ``'error'``; a ``'failed'`` row is always a
+    genuine turn-cap. An earlier revision of these tests used a synthetic
+    ``status='failed'`` + no-subtype row, a shape no adapter can produce, which
+    had the effect of pinning "a cap-out whose narration mentions infra is an
+    infra casualty" as the contract — the exact misclassification that lets an
+    evaluated agent drop its own genuine 0.0 out of the reward mean.
+    """
     return CompletedTask(
         task_id=task_id,
         automated_score=0.0,
-        status="failed",
+        status="error",
         error_category="agent",
         metadata={"error": error},
     )
@@ -184,7 +197,7 @@ class TestClassifyTrial:
     def test_terminal_failed_with_infra_text_is_infra(self) -> None:
         """A token-ceiling crash recorded as terminal ``failed`` is still
         caught by the error-text signature, not just the ``error`` status."""
-        t = _failed_with_error("t", "exceeded the 16000 output token maximum")
+        t = _crash_with_error("t", "exceeded the 16000 output token maximum")
         assert classify_trial(t) is TrialClass.INFRA_FAILURE
 
     def test_completed_with_scoring_is_valid_even_with_noisy_metadata(self) -> None:
@@ -234,14 +247,22 @@ class TestClassifyTrial:
             "exceeded the 32000 output token maximum",
         ]
         for msg in markers:
-            assert classify_trial(_failed_with_error("t", msg)) is (
+            assert classify_trial(_crash_with_error("t", msg)) is (
                 TrialClass.INFRA_FAILURE
             ), msg
 
     def test_infra_markers_do_not_fire_on_unrelated_text(self) -> None:
-        """Review blocker: the markers are word-anchored, so vocabulary that
-        merely *contains* a marker substring must NOT drag a genuine terminal
-        failure out of the reward population."""
+        """The markers are word-anchored: vocabulary that merely *contains* a
+        marker substring must not read as an infra signature.
+
+        Asserted against ``_matches_infra_text`` directly rather than through
+        ``classify_trial``. The text scan is the classifier's last-resort
+        signal, below every structural one, so on any row the executor can
+        actually emit some structural rule decides first and the marker regex
+        never gets to speak — routing this through ``classify_trial`` would
+        assert the structural rule, not the anchoring, and would pass even if
+        the regex were hopelessly greedy.
+        """
         benign = [
             "agent stopped after reaching the max turn limit",
             "the rate limiter tests failed",  # 'rate limiter' != 'rate limit'
@@ -252,10 +273,18 @@ class TestClassifyTrial:
             "the agent produced no answer.txt",
         ]
         for msg in benign:
-            assert classify_trial(_failed_with_error("t", msg)) is (
-                TrialClass.GENUINE_FAILURE
-            ), msg
-            assert is_infra_failure(_failed_with_error("t", msg)) is False, msg
+            assert not _matches_infra_text(_crash_with_error("t", msg)), msg
+
+    def test_infra_markers_fire_on_marker_text(self) -> None:
+        """The positive half of the anchoring contract, asserted at the same
+        level as its negative twin above."""
+        for msg in (
+            "API Error 529 overloaded",
+            "rate limit exceeded",
+            "connection refused by host",
+            "exceeded the 32000 output token maximum",
+        ):
+            assert _matches_infra_text(_crash_with_error("t", msg)), msg
 
     def test_infra_error_categories(self) -> None:
         """timeout / system / quota error categories are infra regardless of
@@ -296,7 +325,7 @@ class TestScorableRunHonoursInfraGate:
     def test_infra_text_on_failed_row_leaves_reward_population(self) -> None:
         """The remaining contamination hole h3j4 left open: a crash recorded as
         terminal ``failed`` (not ``error``) used to keep its 0.0 in the mean."""
-        t = _failed_with_error("t", "API Error: exceeded the 32000 output token maximum")
+        t = _crash_with_error("t", "API Error: exceeded the 32000 output token maximum")
         assert is_scorable_run(t) is False
 
     def test_genuine_terminal_failure_stays_in_reward_population(self) -> None:
@@ -391,7 +420,7 @@ class TestInfraExclusionFromAggregation:
         """The h3j4 hole: a crash stamped terminal ``failed`` must leave the
         mean under BOTH summarizers."""
         tasks = [
-            _failed_with_error("c1", "API Error: exceeded the 32000 output token maximum"),
+            _crash_with_error("c1", "API Error: exceeded the 32000 output token maximum"),
             _scored_trial("r1", score=1.0),
         ]
         for s in (
@@ -505,3 +534,103 @@ class TestReportSurfacesValidity:
         text = format_text_report(report)
         assert "VALIDITY PASS" in text
         assert "NOT quotable" not in text
+
+
+# ---------------------------------------------------------------------------
+# Precedence: structural signals outrank the agent-influenceable error text
+#
+# ``metadata['error']`` is the adapter's verbatim ``envelope['result']`` (see
+# ``adapters/telemetry.py:_extract_envelope_error``) — free text the evaluated
+# agent can influence. If the text scan outranked the structural terminal
+# subtype, an agent could get its own genuine 0.0 dropped from the reward mean
+# just by emitting infra vocabulary. These tests pin the ordering that stops it.
+# ---------------------------------------------------------------------------
+
+
+def _max_turns_with_infra_text(error: str) -> CompletedTask:
+    """A genuine max-turns failure whose free-text error carries infra words."""
+    return CompletedTask(
+        task_id="max-turns",
+        automated_score=0.0,
+        repeat_index=0,
+        status="failed",
+        result_subtype="error_max_turns",
+        metadata={"error": error},
+    )
+
+
+def test_terminal_subtype_outranks_agent_influenceable_error_text() -> None:
+    """A real cap-out stays GENUINE even if its error text screams 'infra'.
+
+    Regression guard: reward-mean exclusion must not be reachable by writing
+    infra vocabulary into a field the agent under evaluation can influence.
+    """
+    for text in (
+        "connection refused",
+        "API Error: exceeded the 32000 output token maximum",
+        "rate limit exceeded",
+        "network timeout",
+    ):
+        task = _max_turns_with_infra_text(text)
+        assert classify_trial(task) is TrialClass.GENUINE_FAILURE, text
+        assert not is_infra_failure(task), text
+
+
+def test_quota_still_wins_over_terminal_subtype() -> None:
+    """Reordering must not regress the quota contract (codeprobe-9jxx/a8r).
+
+    A real quota stub is stamped structurally by the adapter
+    (``error_category='quota'``, whose detection already strips agent
+    stream-json via ``_cli_origin_text``), so it is caught at step 1 — ahead of
+    the terminal subtype — without relying on the free-text scan.
+    """
+    task = CompletedTask(
+        task_id="quota-and-cap",
+        automated_score=0.0,
+        repeat_index=0,
+        status="failed",
+        result_subtype="error_max_turns",
+        error_category="quota",
+        metadata={"error": "Claude usage limit reached"},
+    )
+    assert classify_trial(task) is TrialClass.INFRA_FAILURE
+    assert is_infra_failure(task)
+
+
+def test_infra_text_still_classifies_untyped_error_rows() -> None:
+    """The text scan is still load-bearing where no structural signal exists."""
+    task = CompletedTask(
+        task_id="bare-crash",
+        automated_score=0.0,
+        repeat_index=0,
+        status="error",
+        metadata={"error": "API Error: exceeded the 32000 output token maximum"},
+    )
+    assert classify_trial(task) is TrialClass.INFRA_FAILURE
+
+
+# ---------------------------------------------------------------------------
+# Boundary hardening: a corrupt row must not abort the whole run's report
+# ---------------------------------------------------------------------------
+
+
+def test_malformed_metadata_does_not_crash_classification() -> None:
+    """Non-dict ``metadata`` is tolerated, not fatal.
+
+    ``triage_run`` walks every trial to build one report, so an uncaught
+    ``AttributeError`` on a single torn/hand-edited checkpoint row would take
+    down report generation for the entire run (CLAUDE.md: validate-or-die on
+    data boundaries; never crash silently).
+    """
+    for bad in (["not", "a", "dict"], "a string", 42):
+        task = CompletedTask(
+            task_id="corrupt",
+            automated_score=0.0,
+            repeat_index=0,
+            status="error",
+            metadata=bad,  # type: ignore[arg-type]
+        )
+        assert classify_trial(task) is TrialClass.INFRA_FAILURE
+        report = triage_run([task])
+        assert isinstance(report, ValidityReport)
+        assert report.infra_failure_count == 1
