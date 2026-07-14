@@ -9,6 +9,7 @@ from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
+from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.models.experiment import (
     CompletedTask,
     ConfigResults,
@@ -88,15 +89,23 @@ def is_scorable_run(task: CompletedTask) -> bool:
     non-executed runs with a hard-coded ``automated_score=0.0`` that is an
     infrastructure artifact, not a task-quality measurement, so folding it into
     ``mean_score`` / ``pass_rate`` / rankings manufactures a confident A/B
-    comparison out of runs that never ran (codeprobe-h3j4). Quota casualties
-    are a subset of the non-executed set and are excluded here too, preserving
-    the earlier quota-exclusion contract (codeprobe-9jxx / codeprobe-a8r).
+    comparison out of runs that never ran (codeprobe-h3j4).
 
-    This is the ONE structural predicate (status filter, no semantic judgment —
-    ZFC) that the executor-fed summaries, the rankings, the pairwise tests, and
-    the CLI terminal summary all route through so they agree on which runs count.
+    A run is also NOT scorable when it is an infrastructure casualty
+    (:func:`codeprobe.analysis.validity.is_infra_failure`) — an output-token
+    ceiling overrun, quota/OAuth exhaustion, rate limit, network/timeout, or MCP
+    connect failure. That closes the hole the status filter alone leaves open: a
+    crash recorded as terminal ``failed`` rather than ``error`` used to keep its
+    0.0 in the mean (codeprobe-77z). ``is_infra_failure`` is a strict superset of
+    ``is_quota_casualty``, so the earlier quota-exclusion contract
+    (codeprobe-9jxx / codeprobe-a8r) is preserved.
+
+    This is the ONE structural predicate (status + fault-signature filter, no
+    semantic judgment — ZFC) that the executor-fed summaries, the rankings, the
+    pairwise tests, and the CLI terminal summary all route through so they agree
+    on which runs count.
     """
-    return task.status != "error" and not is_quota_casualty(task)
+    return task.status != "error" and not is_infra_failure(task)
 
 
 def partition_reward_population(
@@ -111,8 +120,9 @@ def partition_reward_population(
     * ``quota_error_count`` — runs lost to an OAuth/API quota limit
       (``is_quota_casualty``); a subset of the excluded set, surfaced
       separately so the quota note stays accurate (codeprobe-9xrl).
-    * ``errored_count`` — ALL non-executed runs excluded from scoring
-      (``status == "error"`` plus any quota casualty), i.e.
+    * ``errored_count`` — ALL runs excluded from scoring: non-executed
+      (``status == "error"``) plus any infrastructure casualty
+      (``is_infra_failure``, codeprobe-77z), i.e.
       ``len(tasks) - len(reward_tasks)`` (codeprobe-h3j4).
 
     Excluded runs are stamped ``automated_score=0.0`` by the executor, but that
@@ -349,12 +359,23 @@ class ConfigSummary:
     # ``mean_score`` (codeprobe-9xrl). Renderers surface this as a
     # warning so users see how much of the data is contaminated.
     quota_error_count: int = 0
-    # Count of non-executed runs excluded from scoring (status == "error":
-    # invalid model token, quota casualty, crash, system fault). These carry a
-    # hard-coded automated_score=0.0 that is an infrastructure artifact, not a
-    # task-quality measurement, so they are kept out of mean_score / pass_rate
-    # / rankings and surfaced as ERRORED (n) instead of as 0.00 failure rows
-    # (codeprobe-h3j4). Superset of quota_error_count.
+    # Count of trials classified as infrastructure casualties (output-token
+    # ceiling, quota/OAuth, rate limit, network/timeout, MCP connect failure,
+    # crashes) by ``analysis.validity.is_infra_failure`` — a superset of
+    # quota_error_count. These are excluded from the reward population
+    # (scores/durations/pass-rate/CIs) so their 0.0 stub never rolls into
+    # mean_score, and surfaced here so the exclusion is visible rather than
+    # silent (codeprobe-77z; adapter-contract honesty). A nonzero count means
+    # the run is NOT quotable until the trials are re-run — see
+    # ``codeprobe.analysis.validity.triage_run``.
+    infra_failure_count: int = 0
+    # Count of runs excluded from scoring: non-executed (status == "error":
+    # invalid model token, crash, system fault) plus any infra casualty. These
+    # carry a hard-coded automated_score=0.0 that is an infrastructure artifact,
+    # not a task-quality measurement, so they are kept out of mean_score /
+    # pass_rate / rankings and surfaced as ERRORED (n) instead of as 0.00 failure
+    # rows (codeprobe-h3j4). Superset of quota_error_count and of
+    # infra_failure_count.
     errored_count: int = 0
     # Count of trials that abandoned at least one ENABLED tool surface —
     # the agent made zero calls into a surface its config declared, on a
@@ -432,12 +453,15 @@ def summarize_config(
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
     errored_tasks = [t for t in tasks if t.status != "completed"]
-    # Reward population: executed trials only (non-executed status=="error"
-    # runs — quota casualties, invalid-model/crash errors — stay in the
-    # structural counts but are excluded from scores/durations/pass-rate, see
+    # Reward population: executed, non-casualty trials only (non-executed
+    # status=="error" runs and infra casualties — quota, token-ceiling
+    # overruns, rate limits, network faults, crashes — stay in the structural
+    # counts but are excluded from scores/durations/pass-rate, see
     # partition_reward_population). ``errored_count`` is the excluded total;
-    # ``quota_count`` is the quota subset surfaced for the quota note.
+    # ``infra_count`` is the infra-casualty subset (codeprobe-77z) and
+    # ``quota_count`` the quota sub-subset surfaced for the quota note.
     reward_tasks, quota_count, errored_count = partition_reward_population(tasks)
+    infra_count = sum(1 for t in tasks if is_infra_failure(t))
     scored_total = len(reward_tasks)
     # Deferred import: tool_surface_audit lives under codeprobe.core, whose
     # package __init__ pulls in the executor → scoring → stats chain. A
@@ -505,6 +529,7 @@ def summarize_config(
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
         quota_error_count=quota_count,
+        infra_failure_count=infra_count,
         errored_count=errored_count,
         abandoned_surface_count=abandoned_count,
     )
@@ -543,6 +568,7 @@ def summarize_completed_tasks(
     direct_passes = 0
     artifact_passes = 0
     quota_count = 0
+    infra_count = 0
     abandoned_count = 0
     # Deferred import — see summarize_config() for the cycle rationale.
     if config is not None:
@@ -557,15 +583,19 @@ def summarize_completed_tasks(
         if config is not None and task_abandoned_any_surface(task, config):
             abandoned_count += 1
 
-        # Reward population: executed trials only. Non-executed runs
-        # (status=="error" — quota casualties, invalid-model/crash errors) are
-        # kept in the cost/token/structural totals but their 0.0 stub is
-        # excluded from scores/durations/pass-rate so it never rolls into
-        # mean_score (codeprobe-h3j4). ``quota_count`` is the quota subset,
-        # surfaced for the quota note. Mirrors the exclusion in
-        # summarize_config() so the two summarizers stay identical.
+        # Reward population: executed, non-casualty trials only. Non-executed
+        # runs (status=="error") and infra casualties (quota, token-ceiling
+        # overruns, rate limits, network faults, crashes) are kept in the
+        # cost/token/structural totals but their 0.0 stub is excluded from
+        # scores/durations/pass-rate so it never rolls into mean_score
+        # (codeprobe-h3j4 + codeprobe-77z). ``infra_count`` is the infra subset
+        # and ``quota_count`` the quota sub-subset, surfaced for the notes.
+        # Mirrors the exclusion in summarize_config() so the two summarizers
+        # stay identical.
         if is_quota_casualty(task):
             quota_count += 1
+        if is_infra_failure(task):
+            infra_count += 1
         if is_scorable_run(task):
             scores.append(task.automated_score)
             if task_passed(task):
@@ -609,7 +639,7 @@ def summarize_completed_tasks(
             tasks_expected=total_tasks,
         )
 
-    # Number of real (non-quota) trials — the reward population size.
+    # Number of real (executed, non-casualty) trials — the reward population size.
     scored_total = len(scores)
     total_duration = sum(durations)
     total_cost: float | None = sum(costs) if costs else None
@@ -654,6 +684,7 @@ def summarize_completed_tasks(
         direct_pass_rate=direct_rate,
         artifact_pass_rate=artifact_rate,
         quota_error_count=quota_count,
+        infra_failure_count=infra_count,
         errored_count=total - scored_total,
         abandoned_surface_count=abandoned_count,
     )

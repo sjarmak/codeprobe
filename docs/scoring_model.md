@@ -416,6 +416,34 @@ flat `mean_recall` is still computed across every IR-family task, you
 can compare it against the headline reward to see how much room
 recall-tilted tasks could buy.
 
+## Reward population — infra-failure exclusion (codeprobe-77z)
+
+The headline reward (`mean_score` / `median` / `pass_rate` / CIs) is computed
+over the **valid** trials only. An infra casualty — a trial that crashed on
+infrastructure rather than producing a measurement (output-token-ceiling
+overrun, quota/OAuth exhaustion, rate limit, network/timeout, MCP connect
+failure, crash) — is stamped `automated_score=0.0` by the executor, but that
+`0.0` is not a solution-quality signal and is **excluded** from the reward
+population by `stats.is_scorable_run`. The count is surfaced, never silent:
+
+- `ConfigSummary.infra_failure_count` — per-arm infra casualties (a superset of
+  `quota_error_count`, which stays the quota-specific sub-count for the
+  codeprobe-9xrl contract; both are a subset of `errored_count`). Excluded
+  trials stay in the structural totals (`total_tasks` / `errored` / cost /
+  tokens).
+- `Report.validity` — a run-level `ValidityReport`. It **FAILs** while any
+  unresolved infra casualty remains and lists the offending trial ids; the
+  run-closer must block "quotable/complete" status until those trials are
+  re-run to `completed` (or reclassified genuine with a reason). `codeprobe
+  interpret` renders the verdict in text/JSON and lifts `validity` to the
+  envelope top level.
+
+Classification is structural/string-only (ZFC-clean) — a genuinely low score is
+a real data point and is never reclassified as infra, and a terminal
+`error_max_turns` failure stays a real `0.0` rather than being re-run into the
+same cap. Full playbook:
+[`docs/conventions/validity-triage.md`](conventions/validity-triage.md).
+
 ## Routing — how the family is chosen
 
 `ContinuousScorer` and `ArtifactScorer` resolve the family at score

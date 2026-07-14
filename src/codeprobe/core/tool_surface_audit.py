@@ -133,6 +133,16 @@ def _is_infra_failure(task: CompletedTask) -> bool:
     Infra casualties (status ``error``, or a quota stub) mean the agent
     never got a fair shot at the surface, so a zero-call surface must NOT
     be charged as abandonment (bead A2).
+
+    Deliberately narrower than ``analysis.validity.is_infra_failure``
+    (codeprobe-77z): this predicate answers "did the agent get a fair shot at
+    the surface" — a terminal ``error_max_turns`` trial DID get its turns, so a
+    zero-call surface there is a real abandonment signal — whereas the validity
+    gate answers "should this 0.0 leave the reward population and force a
+    re-run". The two questions overlap but are not the same, so this stays
+    local rather than importing the gate predicate (which would also close a
+    core→analysis import cycle; see the deferred-import note in
+    ``analysis/stats.py``).
     """
     return task.status == "error" or task.error_category == "quota"
 
