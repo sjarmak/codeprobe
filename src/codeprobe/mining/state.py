@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "mine.db"
 _BUSY_TIMEOUT_MS = 30_000
+# Backoff bounds for the WAL conversion retry in :func:`_enable_wal`.
+_WAL_RETRY_INITIAL_DELAY_S = 0.005
+_WAL_RETRY_MAX_DELAY_S = 0.1
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS commits (
     sha          TEXT PRIMARY KEY,
@@ -332,15 +335,68 @@ class MineState:
 
 
 def _apply_pragmas(conn: sqlite3.Connection) -> None:
-    """Apply WAL + synchronous=FULL + busy_timeout to *conn*.
+    """Apply busy_timeout + WAL + synchronous=FULL to *conn*.
 
     These settings are required by INV2. They are executed outside any
     transaction — ``journal_mode`` can only change when the database
     has no open write transactions.
+
+    ``busy_timeout`` goes first so the busy handler is installed before
+    anything can contend, and the WAL conversion runs through
+    :func:`_enable_wal` rather than a bare ``PRAGMA`` — see that function
+    for why.
     """
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=FULL")
     conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+    _enable_wal(conn)
+    conn.execute("PRAGMA synchronous=FULL")
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Put *conn*'s database into WAL mode, waiting out concurrent writers.
+
+    Converting a database off its default rollback journal rewrites the file
+    header, which needs a brief exclusive lock. SQLite does not route that
+    contention through the busy handler: while another connection holds the
+    database, the pragma fails with ``SQLITE_BUSY`` *immediately*, ignoring
+    ``busy_timeout`` entirely. Parallel mine workers raced on it — the first
+    worker to reach its ``BEGIN IMMEDIATE`` would knock over any sibling still
+    doing the one-time conversion, surfacing as an intermittent ``database is
+    locked`` out of ``MineState.open`` (codeprobe-uhr4).
+
+    The wait is therefore ours to do: retry until the pragma reports ``wal``,
+    bounded by the same ``busy_timeout`` budget that governs every other lock
+    wait in this module, and raise on exhaustion. Once the database is in WAL
+    the pragma is a no-op, so every open after the first returns on the first
+    attempt without sleeping.
+
+    Raises:
+        sqlite3.OperationalError: the database could not be moved into WAL
+            mode within the busy-timeout budget.
+    """
+    deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000.0
+    delay = _WAL_RETRY_INITIAL_DELAY_S
+    while True:
+        try:
+            row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+        except sqlite3.OperationalError as exc:
+            reason = str(exc)
+        else:
+            # A blocked conversion can also come back as a quiet no-op that
+            # reports the *old* mode instead of raising. Treat that as a
+            # failure too: running on a rollback journal silently would break
+            # the durability pair INV2 asks for.
+            mode = str(row[0]).lower() if row else "unknown"
+            if mode == "wal":
+                return
+            reason = f"journal_mode is {mode!r}, expected 'wal'"
+
+        if time.monotonic() >= deadline:
+            raise sqlite3.OperationalError(
+                f"could not enable WAL journal mode within "
+                f"{_BUSY_TIMEOUT_MS}ms: {reason}"
+            )
+        time.sleep(delay)
+        delay = min(delay * 2, _WAL_RETRY_MAX_DELAY_S)
 
 
 def _check_sha(sha: str) -> None:
