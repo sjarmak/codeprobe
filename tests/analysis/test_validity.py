@@ -634,3 +634,58 @@ def test_malformed_metadata_does_not_crash_classification() -> None:
         report = triage_run([task])
         assert isinstance(report, ValidityReport)
         assert report.infra_failure_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Exclusions are never silent on ANY summary surface (codeprobe-77z scope)
+#
+# The widened exclusion reached every summarizer, but the *count* only reached
+# `codeprobe interpret`. `run`'s envelope and experiment.json folded infra
+# casualties into the generic `errored_count`, so a crash-inflated mean read
+# identically to a clean one on the surfaces users actually look at.
+# ---------------------------------------------------------------------------
+
+
+def test_every_summary_surface_reports_the_infra_count() -> None:
+    """run envelope, experiment.json, and ConfigSummary all name the subset."""
+    from codeprobe.cli.run_cmd import build_run_envelope_summary
+    from codeprobe.core.experiment import _compute_summary
+
+    tasks = [
+        _token_ceiling_crash("c1"),
+        _quota_casualty("q1"),
+        _genuine_terminal_failure("m1"),
+        _scored_trial("s1", score=1.0),
+    ]
+    # 2 infra (crash + quota); the cap-out and the scored trial are real data.
+    expected_infra = 2
+
+    envelope, _, _ = build_run_envelope_summary({"cfg": tasks})
+    assert envelope[0]["infra_failure_count"] == expected_infra
+
+    assert _compute_summary(tasks)["infra_failure_count"] == expected_infra
+
+    summary = summarize_config(ConfigResults(config="cfg", completed=tasks))
+    assert summary.infra_failure_count == expected_infra
+
+
+def test_exclusion_counts_nest_on_the_run_envelope() -> None:
+    """quota ⊆ infra ⊆ errored — the containment the reports imply."""
+    from codeprobe.cli.run_cmd import build_run_envelope_summary
+
+    tasks = [
+        _quota_casualty("q1"),
+        _token_ceiling_crash("c1"),
+        _genuine_terminal_failure("m1"),
+        _scored_trial("s1", score=1.0),
+    ]
+    row, _, _ = build_run_envelope_summary({"cfg": tasks})
+    quota, infra, errored = (
+        row[0]["quota_error_count"],
+        row[0]["infra_failure_count"],
+        row[0]["errored_count"],
+    )
+    assert quota <= infra <= errored
+    assert (quota, infra, errored) == (1, 2, 2)
+    # The cap-out is NOT excluded: a genuine 0.0 stays in the reward population.
+    assert row[0]["scored_count"] == 2

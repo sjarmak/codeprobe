@@ -58,26 +58,28 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-9jxx: all entries shifted +1 by the new
         # `from codeprobe.analysis.stats import is_quota_casualty` import at
         # the top of the module (quota-exclusion in the headline mean).
-        ("src/codeprobe/cli/experiment_cmd.py", 55),
-        ("src/codeprobe/cli/experiment_cmd.py", 67),
-        ("src/codeprobe/cli/experiment_cmd.py", 74),
-        ("src/codeprobe/cli/experiment_cmd.py", 89),
-        ("src/codeprobe/cli/experiment_cmd.py", 100),
+        # codeprobe-77z: lines shifted +1 by the is_infra_failure import
+        # (infra-failure count surfaced on the experiment.json summary).
+        ("src/codeprobe/cli/experiment_cmd.py", 56),
+        ("src/codeprobe/cli/experiment_cmd.py", 68),
+        ("src/codeprobe/cli/experiment_cmd.py", 75),
+        ("src/codeprobe/cli/experiment_cmd.py", 90),
+        ("src/codeprobe/cli/experiment_cmd.py", 101),
         # jf28: lines shifted +1 (signature gained `hide_local_source`)
         # for entries above the ExperimentConfig() call; +2 for entries
         # below (the ExperimentConfig() call also grew one line).
         # codeprobe-2nw2.4: experiment_add_config docstring grew by 6
         # lines when `hide_local_source` was widened from bool to a
         # typed Literal["off","hide","scaffold"]; all entries shifted +6.
-        ("src/codeprobe/cli/experiment_cmd.py", 166),
-        ("src/codeprobe/cli/experiment_cmd.py", 175),
-        ("src/codeprobe/cli/experiment_cmd.py", 191),
-        ("src/codeprobe/cli/experiment_cmd.py", 220),
-        ("src/codeprobe/cli/experiment_cmd.py", 264),
-        ("src/codeprobe/cli/experiment_cmd.py", 334),
-        ("src/codeprobe/cli/experiment_cmd.py", 351),
-        ("src/codeprobe/cli/experiment_cmd.py", 433),
-        ("src/codeprobe/cli/experiment_cmd.py", 440),
+        ("src/codeprobe/cli/experiment_cmd.py", 167),
+        ("src/codeprobe/cli/experiment_cmd.py", 176),
+        ("src/codeprobe/cli/experiment_cmd.py", 192),
+        ("src/codeprobe/cli/experiment_cmd.py", 221),
+        ("src/codeprobe/cli/experiment_cmd.py", 265),
+        ("src/codeprobe/cli/experiment_cmd.py", 335),
+        ("src/codeprobe/cli/experiment_cmd.py", 352),
+        ("src/codeprobe/cli/experiment_cmd.py", 434),
+        ("src/codeprobe/cli/experiment_cmd.py", 441),
         ("src/codeprobe/cli/init_cmd.py", 50),
         ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),

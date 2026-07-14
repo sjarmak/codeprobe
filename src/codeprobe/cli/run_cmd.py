@@ -16,6 +16,7 @@ from codeprobe.adapters.models import validate_model
 from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
 from codeprobe.analysis.dual import format_dual_suffix
 from codeprobe.analysis.stats import partition_reward_population
+from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.cli._output_helpers import (
     emit_envelope,
     emit_event,
@@ -97,8 +98,15 @@ def build_run_envelope_summary(
     casualties, invalid-model/crash errors — excluded, see
     partition_reward_population); ``tasks`` and ``cost_usd`` stay over all
     attempts since errored trials are real, billed work, and
-    ``quota_error_count`` / ``errored_count`` surface how many were excluded
-    (codeprobe-9jxx; codeprobe-h3j4).
+    ``quota_error_count`` / ``infra_failure_count`` / ``errored_count`` surface
+    how many were excluded (codeprobe-9jxx; codeprobe-h3j4; codeprobe-77z).
+
+    The three exclusion counts nest: ``quota_error_count`` (OAuth/API limit)
+    ⊆ ``infra_failure_count`` (every infrastructure casualty) ⊆
+    ``errored_count`` (everything dropped from the reward population). Reporting
+    the infra subset here — not only in ``codeprobe interpret`` — is what keeps
+    the widened exclusion honest on the surface users actually read: without it,
+    a crash-inflated mean would look identical to a clean one.
 
     Returns ``(summary_configs, total_tasks, total_cost)``.
     """
@@ -107,6 +115,7 @@ def build_run_envelope_summary(
     total_cost = 0.0
     for label, results in results_by_config.items():
         reward_results, quota_errors, errored = partition_reward_population(results)
+        infra_failures = sum(1 for r in results if is_infra_failure(r))
         scores = [r.automated_score for r in reward_results]
         cfg_cost = sum((getattr(r, "cost_usd", 0.0) or 0.0) for r in results)
         total_cost += cfg_cost
@@ -116,6 +125,7 @@ def build_run_envelope_summary(
                 "label": label,
                 "tasks": len(results),
                 "quota_error_count": quota_errors,
+                "infra_failure_count": infra_failures,
                 "errored_count": errored,
                 "scored_count": len(reward_results),
                 "mean_score": (sum(scores) / len(scores)) if scores else 0.0,
@@ -979,12 +989,20 @@ def run_eval(
             reward_results, quota_errors, errored = partition_reward_population(
                 results
             )
+            infra_failures = sum(1 for r in results if is_infra_failure(r))
             scores = [r.automated_score for r in reward_results]
             mean = sum(scores) / len(scores) if scores else 0.0
             perfect = sum(1 for s in scores if s >= 1.0)
             scoring = sum(1 for s in scores if s > 0.0)
             if out_mode.mode == "pretty":
-                err_note = f" ({errored} errored, excluded)" if errored else ""
+                # Name the infra subset in the note. "3 errored, excluded" reads
+                # as three bad solutions; "3 errored, excluded (2 infra)" says
+                # the run is provisional and those two need a re-run before the
+                # mean is quotable (codeprobe-77z).
+                infra_note = f", {infra_failures} infra" if infra_failures else ""
+                err_note = (
+                    f" ({errored} errored, excluded{infra_note})" if errored else ""
+                )
                 if not reward_results:
                     # No run actually executed — do NOT print a 0/0 "passed"
                     # line that looks like a real (failing) measurement.
