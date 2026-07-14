@@ -10,6 +10,7 @@ from dataclasses import asdict, fields
 from pathlib import Path
 
 from codeprobe.analysis.stats import is_quota_casualty, is_scorable_run
+from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.config.redact import redact_mcp_headers
 from codeprobe.models.experiment import (
     CompletedTask as CompletedTask,
@@ -163,6 +164,7 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
     # the partition helper (codeprobe-9jxx).
     reward_n = 0
     quota_count = 0
+    infra_count = 0
     score_sum = 0.0
     cost_sum = 0.0
     has_cost = False
@@ -201,6 +203,8 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
             has_cache_creation = True
         if is_quota_casualty(t):
             quota_count += 1
+        if is_infra_failure(t):
+            infra_count += 1
         if not is_scorable_run(t):
             continue
         reward_n += 1
@@ -219,6 +223,7 @@ def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
     summary: dict = {
         "tasks_completed": n,
         "quota_error_count": quota_count,
+        "infra_failure_count": infra_count,
         "errored_count": n - reward_n,
         "mean_automated_score": round(mean_score, 4),
         "total_duration_seconds": round(dur_sum, 1),

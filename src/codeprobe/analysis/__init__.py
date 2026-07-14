@@ -29,6 +29,13 @@ from codeprobe.analysis.trace_quality import (
     TraceQualityReporter,
     TraceQualitySummary,
 )
+from codeprobe.analysis.validity import (
+    TrialClass,
+    ValidityReport,
+    classify_trial,
+    is_infra_failure,
+    triage_run,
+)
 
 __all__ = [
     "ConfigSummary",
@@ -40,6 +47,9 @@ __all__ = [
     "TraceQualityMetrics",
     "TraceQualityReporter",
     "TraceQualitySummary",
+    "TrialClass",
+    "ValidityReport",
+    "classify_trial",
     "format_csv_report",
     "format_html_report",
     "cliffs_delta",
@@ -49,10 +59,12 @@ __all__ = [
     "format_text_report",
     "generate_report",
     "generate_report_streaming",
+    "is_infra_failure",
     "mcnemars_exact_test",
     "rank_configs",
     "summarize_completed_tasks",
     "summarize_config",
+    "triage_run",
     "wilcoxon_test",
     "wilson_ci",
 ]

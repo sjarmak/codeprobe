@@ -185,6 +185,12 @@ def run_interpret(
             "has_results": True,
             "is_partial": report.is_partial,
             "completion_ratio": report.completion_ratio,
+            # codeprobe-77z: lift the infra-failure validity gate to a
+            # top-level envelope field so a run-closer can gate on
+            # ``validity.passed`` without walking into the report payload. The
+            # full verdict (counts + offending trial ids) lives under
+            # ``report.validity`` too.
+            "validity": report_payload.get("validity"),
             "report": report_payload,
         },
     )

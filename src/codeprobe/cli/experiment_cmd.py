@@ -13,6 +13,7 @@ from typing import Any
 import click
 
 from codeprobe.analysis.stats import partition_reward_population
+from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.core.experiment import (
     create_experiment_dir,
     load_config_results,
@@ -475,9 +476,11 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
         # all tasks — structural. The parallel CompletedTask list carries
         # error_category, so the partition runs there rather than on the row
         # dicts (codeprobe-9jxx).
+        _cfg_tasks = completed_by_config.get(cfg_label, [])
         reward_tasks, quota_error_count, errored_count = partition_reward_population(
-            completed_by_config.get(cfg_label, [])
+            _cfg_tasks
         )
+        infra_failure_count = sum(1 for t in _cfg_tasks if is_infra_failure(t))
         scores = [
             t.automated_score
             for t in reward_tasks
@@ -563,6 +566,7 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
         config_summaries[cfg_label] = {
             "tasks_completed": len(cfg_rows),
             "quota_error_count": quota_error_count,
+            "infra_failure_count": infra_failure_count,
             "errored_count": errored_count,
             "mean_automated_score": mean_score,
             "mean_reward": mean_score,

@@ -1627,8 +1627,17 @@ def _apply_dual_verification(
     oracle data populated. Tasks with empty oracles (all test files)
     fall back to ``verification_mode="test_script"`` only.
 
-    Only applies to eligible task types (comprehension, org-scale, cross-repo).
-    SDLC tasks are passed through unchanged per R16 constraint.
+    Only applies to eligible task types (org-scale, cross-repo). SDLC tasks
+    are passed through unchanged per R16 constraint.
+
+    Comprehension is deliberately NOT eligible. Comprehension tasks are
+    statically generated — there is no PR diff to build an oracle from — so
+    ``ComprehensionGenerator.generate(dual=True)`` sets their dual shape
+    (``verification_mode="dual"``, ``scoring_policy="min"``, a static-analysis
+    ``oracle_answer``) at generation time; see
+    :meth:`codeprobe.mining.comprehension.ComprehensionGenerator.generate`.
+    Routing them here would overwrite that answer with a changed-file list.
+    ``tests/test_mining_dual.py::TestComprehensionNotDualEligible`` locks this.
     """
     from codeprobe.mining.extractor import (
         _build_oracle_ground_truth,
@@ -1637,7 +1646,6 @@ def _apply_dual_verification(
 
     _DUAL_ELIGIBLE_CATEGORIES = frozenset(  # noqa: N806
         {
-            "comprehension",
             "org_scale",
             "cross_repo",
         }

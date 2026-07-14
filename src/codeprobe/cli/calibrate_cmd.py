@@ -13,7 +13,10 @@ Usage::
 Exit codes:
 
 * ``0`` — profile emitted (gate passed).
-* ``1`` — gate rejected the profile (reason printed to stderr).
+* ``2`` — gate rejected the profile, raised as a
+  :class:`~codeprobe.cli.errors.DiagnosticError` with error code
+  ``CALIBRATION_REJECTED``. The reason reaches agent callers in the JSON
+  envelope's ``error`` block and humans on stderr.
 
 The JSON output always includes a ``calibration_confidence`` field so that
 downstream surfaces (``codeprobe assess``) can display it without needing
@@ -95,8 +98,8 @@ def calibrate(
     2. The holdout spans >= --min-repos distinct repositories.
     3. Pearson correlation between the two curators is >= --threshold.
 
-    Any failure prints the reason to stderr and exits 1 without writing a
-    profile. This is the R11 validity gate.
+    Any failure raises ``CALIBRATION_REJECTED`` and exits 2 without writing
+    a profile. This is the R11 validity gate.
     """
     mode = resolve_mode(
         "calibrate", json_flag, no_json_flag, json_lines_flag,
