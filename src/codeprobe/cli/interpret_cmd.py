@@ -3,15 +3,58 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
-from codeprobe.cli.errors import PrescriptiveError
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.config.defaults import (
     resolve_experiment_config,
     use_v07_defaults,
 )
+
+if TYPE_CHECKING:
+    from codeprobe.analysis.validity import ValidityReport
+
+
+def _validity_error(
+    validity: ValidityReport,
+    exp_dir: Path,
+    envelope_data: dict | None = None,
+) -> DiagnosticError:
+    """Build the terminal error that FAILs the run-closer (codeprobe-c4al).
+
+    The infra-failure gate is only a gate if it stops the pipeline. An
+    agent-driven caller branches on the exit code, so a run holding
+    unresolved infra casualties must exit non-zero — the report itself has
+    already been written to stdout / into ``envelope_data`` by the time this
+    is raised, so nothing the caller needs is lost.
+
+    ``_envelope_data`` is the reserved key
+    :func:`codeprobe.cli._error_handler.render_codeprobe_error` splices into
+    the envelope's ``data`` block, so the JSON caller still receives the full
+    report alongside ``ok: false``.
+    """
+    detail: dict = {
+        "total_trials": validity.total_trials,
+        "infra_failure_count": validity.infra_failure_count,
+        "infra_failure_trial_ids": list(validity.infra_failure_trial_ids),
+    }
+    if envelope_data is not None:
+        detail["_envelope_data"] = envelope_data
+
+    return DiagnosticError(
+        code="VALIDITY_FAILED",
+        message=validity.summary(),
+        message_for_agent=(
+            "Do not quote this run. Re-run the listed infra-failure trials to "
+            "'completed' (or reclassify them genuine with a reason), then "
+            "re-run interpret."
+        ),
+        diagnose_cmd=f"codeprobe interpret {exp_dir} --json",
+        detail=detail,
+    )
 
 
 def _count_expected_tasks(tasks_dir: Path) -> int | None:
@@ -150,6 +193,12 @@ def run_interpret(
         configs=list(experiment.configs),
     )
 
+    # codeprobe-c4al: the gate FAILs the command, it does not merely narrate.
+    # Rendering comes first in every mode — the caller keeps the full report —
+    # and the raise is the last thing that happens. ``None`` means the report
+    # path produced no verdict at all, which is not a FAIL.
+    validity = report.validity
+
     if mode.mode == "pretty":
         if report.is_partial:
             click.echo(
@@ -169,6 +218,9 @@ def run_interpret(
             click.echo(f"HTML report written to {out_path}")
         else:
             click.echo(format_text_report(report))
+
+        if validity is not None and not validity.passed:
+            raise _validity_error(validity, exp_dir)
         return
 
     # Envelope / NDJSON mode — serialize the report payload into data.
@@ -178,19 +230,23 @@ def run_interpret(
     except ValueError:
         report_payload = {"raw": report_json}
 
-    emit_envelope(
-        command="interpret",
-        data={
-            "experiment": experiment.name,
-            "has_results": True,
-            "is_partial": report.is_partial,
-            "completion_ratio": report.completion_ratio,
-            # codeprobe-77z: lift the infra-failure validity gate to a
-            # top-level envelope field so a run-closer can gate on
-            # ``validity.passed`` without walking into the report payload. The
-            # full verdict (counts + offending trial ids) lives under
-            # ``report.validity`` too.
-            "validity": report_payload.get("validity"),
-            "report": report_payload,
-        },
-    )
+    data = {
+        "experiment": experiment.name,
+        "has_results": True,
+        "is_partial": report.is_partial,
+        "completion_ratio": report.completion_ratio,
+        # codeprobe-77z: lift the infra-failure validity gate to a top-level
+        # envelope field so a run-closer can gate on ``validity.passed``
+        # without walking into the report payload. The full verdict (counts +
+        # offending trial ids) lives under ``report.validity`` too.
+        "validity": report_payload.get("validity"),
+        "report": report_payload,
+    }
+
+    if validity is not None and not validity.passed:
+        # The error renderer emits the envelope (ok=false, exit_code=2) with
+        # this same ``data`` block spliced in — emitting here as well would
+        # put two envelopes on stdout.
+        raise _validity_error(validity, exp_dir, envelope_data=data)
+
+    emit_envelope(command="interpret", data=data)

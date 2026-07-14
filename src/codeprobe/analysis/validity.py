@@ -183,10 +183,17 @@ def _trial_id(task: CompletedTask) -> str:
 class ValidityReport:
     """Result of the infra-failure validity triage over a run's trials.
 
-    ``passed`` is True only when zero infra failures remain unresolved. The
-    run-closer / writeup step must block "quotable/complete" status while
-    ``passed`` is False — the offending trials must be re-run to ``completed``
-    (or explicitly reclassified genuine with a reason) first (codeprobe-77z).
+    ``passed`` is True only when zero infra failures remain unresolved. While
+    it is False the run is not quotable: the offending trials must be re-run to
+    ``completed`` (or explicitly reclassified genuine with a reason) first
+    (codeprobe-77z).
+
+    This is enforced, not advisory. ``codeprobe interpret`` raises a terminal
+    ``VALIDITY_FAILED`` :class:`~codeprobe.cli.errors.DiagnosticError` and exits
+    2 when ``passed`` is False, so a pipeline branching on the exit code cannot
+    read an invalid run as a success (codeprobe-c4al). In-process callers that
+    build a report themselves get no such gate for free and must check
+    ``passed`` — see ``docs/conventions/validity-triage.md``.
     """
 
     passed: bool
