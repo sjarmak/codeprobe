@@ -9,13 +9,16 @@ default pytest timeout for little extra coverage. The invariant checked
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from codeprobe.mining import state as state_module
 from codeprobe.mining.state import MineState
 from codeprobe.paths import compute_repo_hash, tenant_state_dir
 
@@ -162,6 +165,94 @@ def test_open_converts_to_wal_while_another_writer_holds_the_db(
         assert not hold_errors, f"writer errors: {hold_errors!r}"
     finally:
         seed.close()
+
+
+def test_open_raises_when_wal_conversion_budget_is_exhausted(
+    tenant_state_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A writer that never lets go makes ``open`` give up loudly, not silently.
+
+    The companion test above proves the retry loop waits a *transient* writer
+    out. This one proves the other end of the contract: when the busy-timeout
+    budget runs out with the database still held, ``_enable_wal`` raises rather
+    than handing back a connection on a rollback journal, and it says so in the
+    log.
+
+    Nothing here races. The write lock is taken before ``open`` is called and
+    released only in the ``finally``, so the conversion cannot succeed at any
+    point during the call — the shrunken deadline is the only thing that can
+    expire.
+    """
+    budget_ms = 200
+    monkeypatch.setattr(state_module, "_BUSY_TIMEOUT_MS", budget_ms)
+    caplog.set_level(logging.DEBUG, logger="codeprobe.mining.state")
+
+    state_dir = tenant_state_dir(tenant_id="exhausted", repo_hash=REPO_HASH)
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    seed = sqlite3.connect(
+        str(state_dir / "mine.db"), isolation_level=None, check_same_thread=False
+    )
+    # open() is the only owner of the connection it makes, so a failed open
+    # has to close it — nothing downstream ever will.
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def _spy_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn: sqlite3.Connection = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    try:
+        seed.execute("PRAGMA journal_mode=DELETE")
+        seed.execute("CREATE TABLE seeded (k TEXT PRIMARY KEY)")
+        # Hold the RESERVED lock for the whole of open(). A blocked WAL
+        # conversion reports SQLITE_BUSY immediately instead of consulting the
+        # busy handler, so every retry fails on contact until the deadline.
+        seed.execute("BEGIN IMMEDIATE")
+        seed.execute("INSERT INTO seeded (k) VALUES ('x')")
+
+        monkeypatch.setattr(sqlite3, "connect", _spy_connect)
+        with pytest.raises(sqlite3.OperationalError) as excinfo:
+            MineState.open(tenant_id="exhausted", repo_hash=REPO_HASH, sweep=False)
+    finally:
+        seed.execute("ROLLBACK")
+        seed.close()
+
+    assert f"could not enable WAL journal mode within {budget_ms}ms" in str(
+        excinfo.value
+    )
+
+    # The SQLITE_BUSY that actually blocked the conversion is chained, so the
+    # traceback names the real cause instead of only our summary.
+    cause = excinfo.value.__cause__
+    assert isinstance(cause, sqlite3.OperationalError), f"no chained cause: {cause!r}"
+    assert "locked" in str(cause), f"unexpected cause: {cause!r}"
+
+    # The failed open owns the only reference to its connection, so it has to
+    # close it on the way out or the handle leaks.
+    assert len(opened) == 1, f"expected open() to make one connection, got {opened!r}"
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")
+
+    records = [r for r in caplog.records if r.name == "codeprobe.mining.state"]
+    warnings = [r for r in records if r.levelno == logging.WARNING]
+    debugs = [r for r in records if r.levelno == logging.DEBUG]
+    assert len(warnings) == 1, f"expected one give-up warning, got {warnings!r}"
+    assert "locked" in warnings[0].getMessage()
+    assert debugs, "expected at least one debug record for a backoff retry"
+
+    # Attempt count and elapsed time are what make the warning actionable; they
+    # ride on the record as ``extra`` fields so a structured handler can read
+    # them without parsing the message.
+    attempts = getattr(warnings[0], "wal_attempts")
+    elapsed_s = getattr(warnings[0], "wal_elapsed_s")
+    assert attempts == len(debugs) + 1, (
+        f"warning reports {attempts} attempts but {len(debugs)} were logged as retries"
+    )
+    assert elapsed_s >= budget_ms / 1000.0
 
 
 def test_worktree_lock_is_exclusive(
