@@ -120,10 +120,13 @@ class MineState:
         try:
             _apply_pragmas(conn)
             conn.execute(_SCHEMA)
-        except sqlite3.Error:
+        except BaseException:
             # No MineState will own this connection, so nothing will ever
             # close it. Notably reachable: _enable_wal raising on a database
             # a sibling worker is holding, which a caller may well retry.
+            # BaseException, not sqlite3.Error: _enable_wal can back off for
+            # up to _BUSY_TIMEOUT_MS, and a KeyboardInterrupt landing in that
+            # window would otherwise leak the connection it just guarded.
             conn.close()
             raise
 

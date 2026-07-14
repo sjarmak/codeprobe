@@ -50,15 +50,27 @@ experiments/
 # by tests/skills/test_skill_cli_alignment.py. Git cannot re-include a path
 # under an excluded parent directory, hence `.claude/*` rather than `.claude/`.
 # Machine-local agent skills share the .claude/skills/ namespace and stay
-# ignored.
+# ignored. Negations are per-file, not per-directory: un-ignoring the skill
+# directory itself would silently make any stray file dropped in there (scratch
+# scripts, debug output) trackable.
 .claude/*
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/codeprobe-calibrate/
+.claude/skills/codeprobe-calibrate/*
+!.claude/skills/codeprobe-calibrate/SKILL.md
 !.claude/skills/codeprobe-check-infra/
+.claude/skills/codeprobe-check-infra/*
+!.claude/skills/codeprobe-check-infra/SKILL.md
 !.claude/skills/codeprobe-interpret/
+.claude/skills/codeprobe-interpret/*
+!.claude/skills/codeprobe-interpret/SKILL.md
 !.claude/skills/codeprobe-mine/
+.claude/skills/codeprobe-mine/*
+!.claude/skills/codeprobe-mine/SKILL.md
 !.claude/skills/codeprobe-run/
+.claude/skills/codeprobe-run/*
+!.claude/skills/codeprobe-run/SKILL.md
 .codegraph/
 
 # Internal working documents (PRDs, premortems, agent docs)
