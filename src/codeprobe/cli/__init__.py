@@ -445,8 +445,11 @@ def init(
     is_flag=True,
     default=False,
     hidden=True,
-    help="Produce dual-verification tasks with oracle ground truth from PR diffs. "
-    "Only for comprehension, org-scale, and cross-repo task types.",
+    help="Produce dual-verification tasks: pair the mined test script with an "
+    "artifact oracle. SDLC tasks get the oracle built from the PR diff; "
+    "comprehension tasks get it from static analysis at generation time. "
+    "Rejected for org-scale, cross-repo, and probe task types — those already "
+    "ship an artifact oracle and have no test-script leg to pair it with.",
 )
 @click.option(
     "--backend",

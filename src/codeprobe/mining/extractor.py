@@ -1088,6 +1088,11 @@ def extract_task_from_merge(
         expected_tool_benefit=expected_tool_benefit,
         tool_benefit_rationale=tool_benefit_rationale,
         mcp_capabilities_at_mine_time=capability_snapshot,
+        # Declares this task can take a PR-diff artifact oracle under
+        # --dual-verify: it has a real mined test command (direct leg) and a
+        # merge diff to derive the oracle from (artifact leg). See
+        # TaskMetadata.dual_eligible.
+        dual_eligible=True,
     )
 
     verification = TaskVerification(
