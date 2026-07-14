@@ -129,6 +129,20 @@ class TaskMetadata:
     # through the consensus path. Downstream bias-warning code compares
     # this against the agent's MCP surface to detect oracle/tool tautology.
     oracle_backends_consensus: tuple[str, ...] = ()
+    # Producer-declared: True when this task can accept a PR-diff artifact
+    # oracle bolted on at mine time (``codeprobe mine --dual-verify`` →
+    # ``cli/mine_cmd._apply_dual_verification``). Only the SDLC PR extractor
+    # sets it: those tasks carry a real mined test command (the direct leg) and
+    # a PR diff the oracle can be derived from (the artifact leg).
+    #
+    # Producers that build their own oracle at generation time — comprehension,
+    # org-scale families, cross-repo symbol resolution — MUST leave this False:
+    # the PR-diff constructor would overwrite their real ground truth with a
+    # changed-file list. Eligibility is declared here, by the producer, rather
+    # than pattern-matched from ``category`` by the consumer, because category
+    # strings carry family suffixes and are renamed freely (codeprobe-b31f: a
+    # consumer-side name set silently matched nothing for three months).
+    dual_eligible: bool = False
 
 
 @dataclass(frozen=True)

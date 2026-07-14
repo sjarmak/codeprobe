@@ -1476,6 +1476,25 @@ def _dispatch_by_task_type(
         )
         _sdlc()
         return
+
+    # Probes are statically generated: no PR diff for an artifact oracle, no
+    # mined test command for a direct leg. Refuse --dual-verify rather than
+    # accept it and drop it (codeprobe-b31f).
+    if dual_verify and info.dispatch_key == "probe":
+        raise PrescriptiveError(
+            code="MUTEX_FLAGS",
+            message=(
+                f"Cannot use --dual-verify with --task-type {task_type}: probe "
+                "tasks are statically generated and carry neither a PR diff to "
+                "build an artifact oracle from nor a mined test command to pair "
+                "it with. --dual-verify applies to SDLC and comprehension "
+                "task types."
+            ),
+            next_try_flag="--dual-verify",
+            next_try_value="",
+            detail={"conflicting_flags": ["--dual-verify", f"--task-type {task_type}"]},
+        )
+
     _DISPATCH_HANDLERS[info.dispatch_key]()
 
 
@@ -1486,7 +1505,6 @@ def _dispatch_cross_repo(
     count: int,
     goal_name: str,
     bias: str,
-    dual_verify: bool = False,
     backend: str = "auto",
 ) -> None:
     """Dispatch cross-repo task mining.
@@ -1494,6 +1512,11 @@ def _dispatch_cross_repo(
     Resolves each ``--cross-repo`` entry to a local path (cloning if
     needed), selects a symbol resolver per *backend*, and invokes
     :func:`mine_tasks_multi`.
+
+    ``--dual-verify`` is rejected upstream in :func:`run_mine` for this path:
+    cross-repo tasks are ``artifact_eval`` tasks whose ``oracle_answer`` (the
+    dependent call sites in the secondary repos) already *is* the ground truth,
+    and they carry no direct test-script leg to pair it with.
 
     Backend selection:
 
@@ -1595,9 +1618,6 @@ def _dispatch_cross_repo(
         return
 
     tasks = list(result.tasks)
-    if dual_verify:
-        tasks = _apply_dual_verification(tasks, result, primary)  # type: ignore[arg-type]
-
     tasks_dir = _clear_tasks_dir(primary)
     for task in tasks:
         write_task_dir(task, tasks_dir, primary)
@@ -1627,36 +1647,36 @@ def _apply_dual_verification(
     oracle data populated. Tasks with empty oracles (all test files)
     fall back to ``verification_mode="test_script"`` only.
 
-    Only applies to eligible task types (org-scale, cross-repo). SDLC tasks
-    are passed through unchanged per R16 constraint.
+    Eligibility is **producer-declared** via ``TaskMetadata.dual_eligible``,
+    not inferred from ``metadata.category``. Only the SDLC PR extractor sets
+    it: those tasks pair a real mined test command (the direct leg) with a
+    merge diff the artifact oracle is derived from.
 
-    Comprehension is deliberately NOT eligible. Comprehension tasks are
-    statically generated — there is no PR diff to build an oracle from — so
-    ``ComprehensionGenerator.generate(dual=True)`` sets their dual shape
-    (``verification_mode="dual"``, ``scoring_policy="min"``, a static-analysis
-    ``oracle_answer``) at generation time; see
-    :meth:`codeprobe.mining.comprehension.ComprehensionGenerator.generate`.
-    Routing them here would overwrite that answer with a changed-file list.
-    ``tests/test_mining_dual.py::TestComprehensionNotDualEligible`` locks this.
+    Producers that construct their own oracle at generation time leave the flag
+    False and pass through untouched:
+
+    - comprehension — ``ComprehensionGenerator.generate(dual=True)`` sets the
+      dual shape (``verification_mode="dual"``, ``scoring_policy="min"``, a
+      static-analysis ``oracle_answer``) at generation time.
+    - org-scale families and cross-repo symbol resolution — ``artifact_eval``
+      tasks whose ``oracle_answer`` *is* the ground truth.
+
+    Routing any of them here would overwrite that answer with a changed-file
+    list. ``tests/test_mining_dual.py`` locks both halves of the contract:
+    ``TestComprehensionNotDualEligible`` and
+    ``TestSdlcDualVerifyProducerConsumer``.
     """
     from codeprobe.mining.extractor import (
         _build_oracle_ground_truth,
         _oracle_discrimination_passed,
     )
 
-    _DUAL_ELIGIBLE_CATEGORIES = frozenset(  # noqa: N806
-        {
-            "org_scale",
-            "cross_repo",
-        }
-    )
-
     result: list[Task] = []
     dual_count = 0
 
     for task in tasks:
-        # R16: only apply to task types with orthogonal artifact signal
-        if task.metadata.category not in _DUAL_ELIGIBLE_CATEGORIES:
+        # Only tasks whose producer declared a PR-diff oracle is derivable.
+        if not task.metadata.dual_eligible:
             result.append(task)
             continue
 
@@ -2639,6 +2659,28 @@ def run_mine(
                 detail={"conflicting_flags": ["--backends agent", "--no-llm"]},
             )
 
+        # CLI validation: --dual-verify bolts a PR-diff artifact oracle onto
+        # tasks that already have a direct test-script leg. Org-scale and
+        # cross-repo producers emit artifact_eval tasks whose oracle_answer
+        # already IS the ground truth (family scans / symbol resolution), with
+        # no test-script leg to pair it with — the flag has nothing to do there.
+        # Refuse loudly instead of accepting it and dropping it (codeprobe-b31f).
+        # Must run after resolve_effective_config: --goal mcp sets org_scale.
+        if dual_verify and (org_scale or cross_repo):
+            conflicting = "--org-scale" if org_scale else "--cross-repo"
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    f"Cannot use --dual-verify with {conflicting}: those tasks "
+                    "already ship an artifact oracle built at mine time and have "
+                    "no test-script leg to pair it with. --dual-verify applies to "
+                    "SDLC and comprehension task types."
+                ),
+                next_try_flag="--dual-verify",
+                next_try_value="",
+                detail={"conflicting_flags": ["--dual-verify", conflicting]},
+            )
+
         # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
         # for a usable path rather than bailing out with a hard error. This is the
         # "guided flow for missing inputs" case — the user ran `codeprobe mine`
@@ -2678,7 +2720,6 @@ def run_mine(
                     count=count,
                     goal_name=goal_name,
                     bias=bias,
-                    dual_verify=dual_verify,
                     backend=backend,
                 )
                 return
@@ -2720,7 +2761,6 @@ def run_mine(
                     mcp_families=mcp_families,
                     sg_repo=sg_repo,
                     sg_discovery=sg_discovery,
-                    dual_verify=dual_verify,
                     consensus_backends=consensus_backends,
                     consensus_threshold=consensus_threshold,
                     consensus_mode=consensus_mode,
@@ -2856,7 +2896,6 @@ def _run_org_scale_mine(
     mcp_families: bool = False,
     sg_repo: str = "",
     sg_discovery: bool = False,
-    dual_verify: bool = False,
     consensus_backends: str = "",
     consensus_threshold: float = 0.8,
     consensus_mode: str = "intersection",
@@ -2864,10 +2903,11 @@ def _run_org_scale_mine(
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification.
 
-    Note: ``dual_verify`` is accepted but not yet wired — org-scale tasks
-    build oracles via a different pipeline (family-based pattern matching)
-    that doesn't use the SDLC-style ``changed_files_map``. Phase 3 will
-    add native dual oracle support for org-scale families.
+    ``--dual-verify`` is rejected upstream in :func:`run_mine` for this path
+    rather than accepted and ignored: org-scale families build their oracle at
+    generation time (``verification_mode="artifact_eval"`` with a populated
+    ``oracle_answer``), so there is no PR-diff oracle to add and no direct
+    test-script leg to pair one with.
     """
     from codeprobe.mining.consensus import parse_backend_list
     from codeprobe.mining.org_scale import (

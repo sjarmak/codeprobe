@@ -333,6 +333,11 @@ def generate_tasks(
             issue_title=pr.title or f"Dependency upgrade {task_id}",
             issue_body=pr.body or pr.title or "",
             ground_truth_commit=pr.sha,
+            # Same SDLC shape extract_task_from_merge declares eligible: a
+            # primary-repo diff with a ground-truth commit. Declared here so
+            # wiring this producer into a mining path can't silently reproduce
+            # the codeprobe-b31f no-op.
+            dual_eligible=True,
             enrichment_source="llm" if not no_llm else "",
             tool_benefit_rationale=rationale,
         )
