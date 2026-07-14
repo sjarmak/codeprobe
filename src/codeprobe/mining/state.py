@@ -117,8 +117,15 @@ class MineState:
             timeout=_BUSY_TIMEOUT_MS / 1000.0,
             check_same_thread=False,
         )
-        _apply_pragmas(conn)
-        conn.execute(_SCHEMA)
+        try:
+            _apply_pragmas(conn)
+            conn.execute(_SCHEMA)
+        except sqlite3.Error:
+            # No MineState will own this connection, so nothing will ever
+            # close it. Notably reachable: _enable_wal raising on a database
+            # a sibling worker is holding, which a caller may well retry.
+            conn.close()
+            raise
 
         state = cls(conn, db_path)
         if sweep:
@@ -374,12 +381,20 @@ def _enable_wal(conn: sqlite3.Connection) -> None:
         sqlite3.OperationalError: the database could not be moved into WAL
             mode within the busy-timeout budget.
     """
-    deadline = time.monotonic() + _BUSY_TIMEOUT_MS / 1000.0
+    budget_s = _BUSY_TIMEOUT_MS / 1000.0
+    started = time.monotonic()
     delay = _WAL_RETRY_INITIAL_DELAY_S
+    attempts = 0
+    # The SQLITE_BUSY behind the last failed attempt, carried out of the
+    # ``except`` block so the give-up raise can chain it. The quiet-no-op
+    # branch below clears it: that failure has no exception to name.
+    last_exc: sqlite3.OperationalError | None = None
     while True:
+        attempts += 1
         try:
             row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         except sqlite3.OperationalError as exc:
+            last_exc = exc
             reason = str(exc)
         else:
             # A blocked conversion can also come back as a quiet no-op that
@@ -389,13 +404,30 @@ def _enable_wal(conn: sqlite3.Connection) -> None:
             mode = str(row[0]).lower() if row else "unknown"
             if mode == "wal":
                 return
+            last_exc = None
             reason = f"journal_mode is {mode!r}, expected 'wal'"
 
-        if time.monotonic() >= deadline:
+        elapsed = time.monotonic() - started
+        extra = {"wal_attempts": attempts, "wal_elapsed_s": elapsed}
+        if elapsed >= budget_s:
+            logger.warning(
+                "gave up enabling WAL after %d attempt(s) in %.3fs: %s",
+                attempts,
+                elapsed,
+                reason,
+                extra=extra,
+            )
             raise sqlite3.OperationalError(
                 f"could not enable WAL journal mode within "
                 f"{_BUSY_TIMEOUT_MS}ms: {reason}"
-            )
+            ) from last_exc
+        logger.debug(
+            "WAL conversion blocked (attempt %d, %.3fs elapsed), retrying: %s",
+            attempts,
+            elapsed,
+            reason,
+            extra=extra,
+        )
         # Decorrelated jitter. Workers are spawned together and collide on the
         # same conversion, so an undithered doubling would march the whole pool
         # through the same retry ticks and re-collide at each one. Sleeping a
