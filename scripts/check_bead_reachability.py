@@ -15,11 +15,34 @@ For one or more bead IDs, verify that:
      "superseded-by", "abandoned") — future-tense language signals
      deferred work being smuggled through as if it were complete.
 
+  3. Any commit SHA *cited in prose* (``close_reason`` or ``notes``,
+     via ``git:<sha>`` or ``@<sha>`` citation forms) is independently
+     verified reachable too. ``codeprobe-3cs``/``codeprobe-1gg`` were
+     closed 2026-06-21 with ``close_reason`` claiming "Merged to main
+     @94d357c ... Published/reachable" — a claim only checked in the
+     narrative, never in a field this script reads. ``94d357c`` was
+     never an ancestor of ``main``. Free text is not evidence; this
+     rule catches a bogus claim even when it never made it into
+     ``metadata.evidence.artifact_path``.
+
+  4. When ``metadata.evidence.artifact_path`` is set but contains no
+     ``git:<sha>`` entry (a docs/test-only path), the bead must
+     explicitly declare ``metadata.evidence.doc_only=true``. Without
+     it, a doc path silently satisfied this checker with zero
+     verification of whatever code change the bead actually claimed —
+     the previous behavior treated that as automatically "acceptable."
+     Genuinely doc-only beads (research, writeups) opt in explicitly;
+     everything else must cite a real commit.
+
 This script is a STRUCTURAL check — it does not judge whether the
-work was actually done. It only catches the two failure modes the
+work was actually done. It only catches the failure modes the
 premortem identified for the evjr.* pattern (commits on feature
-branches closed as shipped) and the predicted "gate_bypass-as-
-release-valve" pattern.
+branches closed as shipped), the predicted "gate_bypass-as-
+release-valve" pattern, and the prose-citation / doc-only-evidence
+gaps found during the 2026-07-13 branch cleanup pass (3cs/1gg cited
+an unreachable SHA only in prose; u7l/b9c disclosed "NOT merged" in
+notes yet still closed on doc-only evidence with no mechanism forcing
+the actual integration).
 
 Usage:
     python scripts/check_bead_reachability.py <bead-id> [<bead-id> ...]
@@ -90,13 +113,24 @@ _BANNED_BYPASS_RE = re.compile("|".join(BANNED_BYPASS_MARKERS), re.IGNORECASE)
 #: individually and tolerate ``-`` / surrounding whitespace.
 _GIT_SHA_RE = re.compile(r"git:([0-9a-f]{7,40})", re.IGNORECASE)
 
+#: The other SHA-citation style observed in the wild (e.g. close_reason text
+#: "Merged to codeprobe main @94d357c ..."). Deliberately narrow — only the
+#: two forms actually seen in this bead store are matched, to avoid
+#: false-positiving on ordinary hex-looking words in prose.
+_AT_SHA_RE = re.compile(r"@([0-9a-f]{7,40})\b", re.IGNORECASE)
+
+#: Truthy string forms accepted for boolean-ish metadata values (bd metadata
+#: values are always strings).
+_TRUTHY_STRINGS = frozenset({"true", "yes", "1"})
+
 
 @dataclass(frozen=True)
 class Violation:
     """A single failed check on a single bead."""
 
     bead_id: str
-    rule: str  # "unreachable_sha" | "banned_bypass" | "missing_evidence"
+    rule: str  # unreachable_sha | unreachable_prose_sha | banned_bypass |
+    # missing_evidence | doc_only_evidence
     detail: str
 
     def to_dict(self) -> dict[str, str]:
@@ -171,6 +205,27 @@ def is_ancestor(sha: str, branch: str, repo_root: Path) -> bool:
     return proc.returncode == 0
 
 
+def _is_truthy(value: object) -> bool:
+    """True iff a bd metadata value (always a string) reads as boolean-true."""
+    return str(value).strip().lower() in _TRUTHY_STRINGS
+
+
+def extract_prose_shas(text: str) -> list[str]:
+    """Return SHA-shaped tokens cited via ``git:<sha>`` or ``@<sha>`` in *text*.
+
+    Order-preserving, de-duplicated. Used against free-text fields
+    (``close_reason``, ``notes``) where a closer can claim a merge that
+    nothing else checks — the exact gap that let ``codeprobe-3cs``/
+    ``codeprobe-1gg`` cite an unreachable SHA and still close clean.
+    """
+    seen: list[str] = []
+    for pattern in (_GIT_SHA_RE, _AT_SHA_RE):
+        for sha in pattern.findall(text):
+            if sha not in seen:
+                seen.append(sha)
+    return seen
+
+
 # ---------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------
@@ -235,26 +290,70 @@ def check_bead(bead_id: str, branch: str, repo_root: Path) -> BeadCheck:
                     ),
                 )
             )
-        return result
+    else:
+        shas = _GIT_SHA_RE.findall(artifact_path)
+        if artifact_path and not shas and not _is_truthy(
+            metadata.get("evidence.doc_only")
+        ):
+            # evidence.artifact_path is set but contains no git:<sha> entry,
+            # and nobody declared this is intentionally non-code evidence.
+            # Previously this was silently "acceptable" — but a doc/test path
+            # with no explicit doc_only flag means the bead's underlying code
+            # claim (if any) was never checked. Force an explicit opt-in.
+            result.violations.append(
+                Violation(
+                    bead_id=bead_id,
+                    rule="doc_only_evidence",
+                    detail=(
+                        f"evidence.artifact_path={artifact_path!r} has no "
+                        "git:<sha> entry, and metadata.evidence.doc_only is "
+                        "not set. If this bead's evidence is intentionally "
+                        "non-code (a writeup/research artifact with no "
+                        "shipped code), set metadata.evidence.doc_only=true. "
+                        "Otherwise add a git:<sha> entry for the commit that "
+                        "actually ships the change."
+                    ),
+                )
+            )
 
-    shas = _GIT_SHA_RE.findall(artifact_path)
-    if artifact_path and not shas:
-        # evidence.artifact_path is set but contains no git:<sha> entries.
-        # Acceptable — could be a docs/ path or a test fixture. Nothing to
-        # check on reachability; not a violation.
-        return result
+        for sha in shas:
+            result.shas_checked.append(sha)
+            if not is_ancestor(sha, branch, repo_root):
+                result.violations.append(
+                    Violation(
+                        bead_id=bead_id,
+                        rule="unreachable_sha",
+                        detail=(
+                            f"git:{sha} is not an ancestor of {branch} — the "
+                            "commit lives only on a feature branch. Merge to "
+                            f"{branch} before closing, or this bead will "
+                            "reopen within an hour."
+                        ),
+                    )
+                )
 
-    for sha in shas:
+    # 4. Prose-cited SHAs (close_reason / notes) must independently be
+    #    reachable. Only metadata.evidence.artifact_path is checked above —
+    #    a closer can assert anything in free text, and until now nothing
+    #    ever verified it. This is what let codeprobe-3cs/codeprobe-1gg close
+    #    with "Merged to main @94d357c ... Published/reachable" in
+    #    close_reason while 94d357c was never an ancestor of main.
+    prose = " ".join(t for t in (bead.get("close_reason"), bead.get("notes")) if t)
+    for sha in extract_prose_shas(prose):
+        if sha in result.shas_checked:
+            continue  # already verified above via evidence.artifact_path
         result.shas_checked.append(sha)
         if not is_ancestor(sha, branch, repo_root):
             result.violations.append(
                 Violation(
                     bead_id=bead_id,
-                    rule="unreachable_sha",
+                    rule="unreachable_prose_sha",
                     detail=(
-                        f"git:{sha} is not an ancestor of {branch} — the commit "
-                        f"lives only on a feature branch. Merge to {branch} "
-                        f"before closing, or this bead will reopen within an hour."
+                        f"close_reason/notes cites {sha!r} as merged/"
+                        f"reachable, but it is not an ancestor of {branch}. "
+                        "Free-text SHA claims are not evidence — mirror the "
+                        "real landing commit into "
+                        "metadata.evidence.artifact_path=git:<sha> instead."
                     ),
                 )
             )

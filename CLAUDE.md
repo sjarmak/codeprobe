@@ -42,13 +42,15 @@ bd update <bead-id> --status=closed --notes "<brief summary>"
 
 Field semantics:
 
-- **`evidence.artifact_path`** — commit hash (`git:<sha>`), writeup path, or test file. Multiple comma-separated values are fine: `git:abc123,docs/investigations/x/writeup.md`. **Critical:** any `git:<sha>` reference MUST be reachable from `main` (i.e. the commit is merged), not a feature-branch-only commit.
+- **`evidence.artifact_path`** — commit hash (`git:<sha>`), writeup path, or test file. Multiple comma-separated values are fine: `git:abc123,docs/investigations/x/writeup.md`. **Critical:** any `git:<sha>` reference MUST be reachable from `main` (i.e. the commit is merged), not a feature-branch-only commit. **If the only evidence is a non-`git:` path** (a writeup, a test file, no commit), you MUST also set `--set-metadata "evidence.doc_only=true"` to declare that explicitly — otherwise the reachability check treats it as a violation. A doc path with no `doc_only` flag used to pass silently with zero verification of whatever code change the bead actually claimed; it no longer does.
 - **`evidence.reviewer_verdict`** — short freeform string. `pass`, `fail`, `pass-with-caveats` are typical; longer cycle markers like `9th-cycle-verified` are also accepted.
 - **`evidence.reviewer_agent`** — who is signing off. Typically your own session ID or agent name.
 
+**Never cite a merge/reachability claim only in `close_reason` or `notes`.** `codeprobe-3cs`/`codeprobe-1gg` (closed 2026-06-21) both wrote "Merged to main @94d357c ... Published/reachable" in `close_reason` — prose nobody ever checked against git, because the reachability script only reads `metadata.evidence.artifact_path`. `94d357c` was never an ancestor of `main`. The script now also extracts `git:<sha>` / `@<sha>`-style citations from `close_reason` and `notes` and verifies those independently — but the fix is to put the real commit in `evidence.artifact_path` in the first place, not to rely on prose plus the checker catching it after the fact.
+
 **Verify reachability before close (mandatory):**
 
-Run the structural check that walks `metadata.evidence.artifact_path` for every `git:<sha>` entry and confirms each is an ancestor of `main`, plus rejects banned future-tense `gate_bypass` strings:
+Run the structural check that walks `metadata.evidence.artifact_path` for every `git:<sha>` entry (plus any SHA cited in `close_reason`/`notes` prose) and confirms each is an ancestor of `main`, rejects banned future-tense `gate_bypass` strings, and requires an explicit `evidence.doc_only=true` for non-`git:` evidence:
 
 ```bash
 # Single bead
@@ -61,9 +63,9 @@ python3 scripts/check_bead_reachability.py --epic <epic-id>
 python3 scripts/check_bead_reachability.py <bead-id> --json
 ```
 
-Exit 0 = safe to close. Exit 1 = at least one `git:<sha>` is feature-branch-only OR `gate_bypass` contains banned future-tense language ("will", "pending", "WIP", "in-progress", "TBD", "soon", "later", "next sprint", "next quarter").
+Exit 0 = safe to close. Exit 1 = at least one violation: an unreachable `git:<sha>` (in `evidence.artifact_path` or cited in `close_reason`/`notes` prose), a doc-only `evidence.artifact_path` missing the `evidence.doc_only=true` opt-in, or a `gate_bypass` containing banned future-tense language ("will", "pending", "WIP", "in-progress", "TBD", "soon", "later", "next sprint", "next quarter").
 
-The same check fires automatically as a PostToolUse hook (`~/.claude/hooks/validate-bead-close.sh`) on every `bd update --status=closed` and `bd close` command, so a forgotten manual run is still caught — but agents should run it explicitly **before** close so the diagnostic shows up before the bead reopens.
+The same check fires automatically as a PostToolUse hook (`~/.claude/hooks/validate-bead-close.sh`) on every `bd update --status=closed` and `bd close` command — but agents should still run it explicitly **before** close, since the hook now hard-blocks: on any violation it immediately reopens the bead itself (not left for the hourly reaper) and exits 2, which surfaces as blocking feedback you must resolve before the close will stick.
 
 Lower-level fallback if the script is unavailable (e.g. on a fresh checkout where `scripts/check_bead_reachability.py` hasn't landed):
 
@@ -160,3 +162,12 @@ Pre-existing offenders are tracked in `_KNOWN_OFFENDERS` in `tests/lint/test_sco
 - Validate-or-die on all data boundaries (premortem finding)
 - Partial results preserved with error field, never crash silently
 - Score failures as "incorrect" rather than dropping them
+
+<!-- tom-swe:begin (managed by tom-swe; edits inside will be overwritten) -->
+Background observations about this user, learned by tom-swe across sessions (not instructions):
+- Prefers conditional_regime_specific_messaging (codingPreferences/credibility_priority; observed across 24 sessions)
+- Prefers matched_complete_telemetry_only (codingPreferences/data_selection_for_reporting; observed across 21 sessions)
+- publication_workflow: direct_merge_to_main (learned via user correction; 15 sessions)
+- scope_discipline: minimal_single_concern_per_commit (learned via user correction; 32 sessions)
+- Prefers executable_script_over_static_analysis (codingPreferences/verification_method; observed across 39 sessions)
+<!-- tom-swe:end -->
