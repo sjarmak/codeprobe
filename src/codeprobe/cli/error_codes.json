@@ -304,6 +304,14 @@
       "since": "0.11.0",
       "description": "`codeprobe explore` was run with no RUN_DIR and no run directory (a per_trial.json file or per-arm <arm>/results.json dirs) was found under ./runs.",
       "remediation_pattern": "Pass a run directory explicitly: codeprobe explore runs/<id> (optionally with --serve --port 8766)."
+    },
+    {
+      "code": "VALIDITY_FAILED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "The infra-failure validity gate FAILED: the run still holds unresolved infrastructure casualties (quota/OAuth exhaustion, rate limit, output-token-ceiling overrun, network timeout, crash), whose 0.0 scores are not solution-quality measurements. The run is NOT quotable — its mean, ranking, and comparisons are biased toward zero. The report is still rendered; only the exit code says so. Offending trial ids are listed in `error.detail.infra_failure_trial_ids`.",
+      "remediation_pattern": "Re-run the listed infra-failure trials to 'completed' (or reclassify them genuine with a reason), then re-run `codeprobe interpret <experiment>`."
     }
   ]
 }

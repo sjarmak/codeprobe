@@ -1,19 +1,29 @@
 """Alignment tests between repo-committed SKILL.md files and the CLI surface.
 
-These tests are the CI guardrail for the paired-skills contract: every skill
-under ``.claude/skills/codeprobe-*/SKILL.md`` must
+These tests are the CI guardrail for the paired-skills contract: every
+repo-committed product skill must
 
-1. carry valid YAML frontmatter with required fields and length caps,
-2. reference only CLI flags that actually exist in ``<cmd> --help``, and
-3. reference only error codes present in ``src/codeprobe/cli/error_codes.json``.
+1. be tracked by git (it ships in the sdist via MANIFEST.in),
+2. carry valid YAML frontmatter with required fields and length caps,
+3. reference only CLI flags that actually exist in ``<cmd> --help``, and
+4. reference only error codes present in ``src/codeprobe/cli/error_codes.json``.
 
 No skips, no xfails — this is the CI enforcement layer.
+
+Discovery is driven by ``SKILL_TO_PRIMARY_CMD`` rather than by globbing
+``.claude/skills/``. That directory is a *shared namespace*: a developer's
+machine-local agent skills (``codeprobe-orientation``, ``gc-city``, ...) live
+alongside the repo-committed product skills and would otherwise be swept into
+the alignment contract, turning the suite red on any machine that has them.
+``test_skills_are_tracked_by_git`` keeps the registry honest in both
+directions, so the two sets cannot silently drift apart.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,8 +35,6 @@ from codeprobe.cli import main as codeprobe_main
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
 ERROR_CODES_PATH = REPO_ROOT / "src" / "codeprobe" / "cli" / "error_codes.json"
-
-SKILL_PATTERN = "codeprobe-*/SKILL.md"
 
 DESCRIPTION_MAX_CHARS = 1536
 BODY_MAX_LINES = 500
@@ -44,7 +52,16 @@ SKILL_TO_PRIMARY_CMD: dict[str, tuple[str, ...]] = {
 
 
 def _iter_skills() -> list[Path]:
-    return sorted(SKILLS_DIR.glob(SKILL_PATTERN))
+    """Return the repo-committed product skills that exist on disk.
+
+    A missing skill yields an empty parametrization rather than an error;
+    ``test_discovers_five_skills`` is the hard gate on the full set.
+    """
+    return sorted(
+        path
+        for name in SKILL_TO_PRIMARY_CMD
+        if (path := SKILLS_DIR / name / "SKILL.md").is_file()
+    )
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
@@ -324,7 +341,12 @@ def test_terminal_errors_are_called_out() -> None:
 
 
 def test_discovers_five_skills() -> None:
-    """Sanity check: we expect exactly the five PRD-specified skills."""
+    """Sanity check: we expect exactly the five PRD-specified skills.
+
+    Discovery is registry-filtered, so this fails both when a SKILL.md is
+    missing from disk and when its name was dropped from
+    ``SKILL_TO_PRIMARY_CMD``.
+    """
     discovered = {p.parent.name for p in SKILL_PATHS}
     expected = {
         "codeprobe-mine",
@@ -335,3 +357,43 @@ def test_discovers_five_skills() -> None:
     }
     missing = expected - discovered
     assert not missing, f"Missing PRD-specified skills: {sorted(missing)}"
+
+
+def test_skills_are_tracked_by_git() -> None:
+    """The product skills must be tracked by git, in both directions.
+
+    Regression guard for codeprobe-zg6a: ``.claude/`` was gitignored and the
+    five SKILL.md files dropped from the index, so this suite passed only on
+    checkouts holding untracked leftovers and failed on every fresh clone,
+    worktree, and CI run. Untracked skills also never reach the sdist that
+    MANIFEST.in declares they must ship in.
+
+    The reverse direction keeps ``SKILL_TO_PRIMARY_CMD`` from going stale: a
+    newly tracked skill nobody registered would skip every other check here.
+    """
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout (e.g. running from an unpacked sdist)")
+
+    result = subprocess.run(
+        ["git", "ls-files", "--", ".claude/skills/*/SKILL.md"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tracked = {Path(line).parent.name for line in result.stdout.split()}
+    registered = set(SKILL_TO_PRIMARY_CMD)
+
+    untracked = registered - tracked
+    assert not untracked, (
+        f"registered skills not tracked by git: {sorted(untracked)} — "
+        f"`git add` them, and check .gitignore is not excluding "
+        f".claude/skills/"
+    )
+
+    unregistered = tracked - registered
+    assert not unregistered, (
+        f"skills tracked by git but absent from SKILL_TO_PRIMARY_CMD: "
+        f"{sorted(unregistered)} — register the CLI command each one wraps so "
+        f"it is covered by the alignment checks"
+    )
