@@ -9,13 +9,15 @@ default pytest timeout for little extra coverage. The invariant checked
 
 from __future__ import annotations
 
+import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from codeprobe.mining.state import MineState
-from codeprobe.paths import compute_repo_hash
+from codeprobe.paths import compute_repo_hash, tenant_state_dir
 
 REPO_HASH = compute_repo_hash("git@example.com:p/r.git", "main", "/tmp/p")
 NUM_WORKERS = 20
@@ -97,6 +99,69 @@ def test_parallel_workers_preserve_integrity(
         # Integrity check — acceptance criterion #5.
         integrity = state._conn.execute("PRAGMA integrity_check").fetchone()[0]
         assert integrity == "ok", f"integrity_check returned {integrity!r}"
+
+
+def test_open_converts_to_wal_while_another_writer_holds_the_db(
+    tenant_state_root: Path,
+) -> None:
+    """A not-yet-WAL mine.db still converts when a writer holds the database.
+
+    Regression test for codeprobe-uhr4, the defect behind the intermittent
+    ``test_parallel_workers_preserve_integrity`` failures. Moving a database
+    onto WAL rewrites its header under a brief exclusive lock, and SQLite
+    reports that contention as ``SQLITE_BUSY`` *without* consulting the busy
+    handler — so ``MineState.open`` used to die on the spot with ``database is
+    locked`` whenever a sibling worker was mid-write during the conversion.
+    ``MineState`` now waits the writer out itself.
+    """
+    state_dir = tenant_state_dir(tenant_id="convert", repo_hash=REPO_HASH)
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    # Seed a database in the default rollback-journal mode, so open() faces a
+    # real conversion rather than the no-op it gets on an already-WAL file.
+    seed = sqlite3.connect(
+        str(state_dir / "mine.db"), isolation_level=None, check_same_thread=False
+    )
+    holding = threading.Event()
+    hold_errors: list[BaseException] = []
+
+    def _hold_write_lock() -> None:
+        """Hold an exclusive write transaction, then release it."""
+        try:
+            seed.execute("BEGIN IMMEDIATE")
+            seed.execute("INSERT OR IGNORE INTO seeded (k) VALUES ('x')")
+            holding.set()
+            time.sleep(0.3)
+            seed.execute("COMMIT")
+        except BaseException as exc:  # noqa: BLE001 - surface anything
+            hold_errors.append(exc)
+            holding.set()
+
+    try:
+        seed.execute("PRAGMA journal_mode=DELETE")
+        seed.execute("CREATE TABLE seeded (k TEXT PRIMARY KEY)")
+        assert (
+            seed.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
+        ), "seed db must start outside WAL for the conversion to be exercised"
+
+        writer = threading.Thread(target=_hold_write_lock, name="holder")
+        writer.start()
+        assert holding.wait(timeout=5), "writer never took the lock"
+
+        with MineState.open(
+            tenant_id="convert", repo_hash=REPO_HASH, sweep=False
+        ) as state:
+            mode = state._conn.execute("PRAGMA journal_mode").fetchone()[0]
+            assert mode.lower() == "wal", f"expected wal, got {mode!r}"
+            # And the connection is usable — the conversion left no debris.
+            state.record_completed("f" * 40)
+            assert state.completed_shas() == {"f" * 40}
+
+        writer.join(timeout=5)
+        assert not writer.is_alive(), "writer did not finish"
+        assert not hold_errors, f"writer errors: {hold_errors!r}"
+    finally:
+        seed.close()
 
 
 def test_worktree_lock_is_exclusive(
