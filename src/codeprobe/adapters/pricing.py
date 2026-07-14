@@ -29,26 +29,22 @@ class PricingTable:
     ``rates`` maps model name → per-1M-token rate tuple. The tuple shape
     is vendor-specific — ``(input, output)`` for most vendors,
     ``(input, output, cache_read, cache_creation)`` for Claude — and
-    consumers know their vendor's shape. Dict-style access (``get``,
-    ``[]``, ``in``) is provided so the table is a drop-in for the plain
-    dicts it replaced.
+    consumers know their vendor's shape. Look rates up directly on
+    ``table.rates`` (a plain dict).
     """
 
     vendor: str
     rates: dict[str, tuple[float, ...]]
     last_verified: date
 
-    def get(self, model: str) -> tuple[float, ...] | None:
-        return self.rates.get(model)
 
-    def __getitem__(self, model: str) -> tuple[float, ...]:
-        return self.rates[model]
+def staleness_warn(table: PricingTable) -> None:
+    """Warn if *table* was last verified over ``PRICING_STALENESS_DAYS`` ago.
 
-    def __contains__(self, model: object) -> bool:
-        return model in self.rates
-
-
-def _warn_if_stale(table: PricingTable) -> None:
+    No-op when the table is still fresh. Called once per table at import so a
+    rate that has gone unchecked past the threshold surfaces a ``UserWarning``
+    pointing at the file and date to re-verify.
+    """
     age_days = (date.today() - table.last_verified).days
     if age_days > PRICING_STALENESS_DAYS:
         warnings.warn(
@@ -101,4 +97,4 @@ ALL_PRICING_TABLES: tuple[PricingTable, ...] = (
 )
 
 for _table in ALL_PRICING_TABLES:
-    _warn_if_stale(_table)
+    staleness_warn(_table)

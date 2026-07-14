@@ -70,6 +70,34 @@ _RICH_REPO = _make_heuristics(
 # ---------------------------------------------------------------------------
 
 
+class TestScoringMethodLabelGuarantee:
+    """codeprobe-b9c #2: a heuristic score can never be presented without an
+    honest, known scoring_method label."""
+
+    def test_heuristic_score_is_always_labeled(self) -> None:
+        score = score_repo_heuristic(_make_heuristics())
+        assert score.scoring_method == "heuristic"
+        assert score.model_used is None
+
+    def test_assessmentscore_rejects_empty_method(self) -> None:
+        with pytest.raises(ValueError, match="Unknown scoring_method"):
+            AssessmentScore(
+                overall=0.9,
+                recommendation="looks great",
+                dimensions=(),
+                scoring_method="",  # an unlabeled score must not be constructible
+            )
+
+    def test_assessmentscore_rejects_unknown_method(self) -> None:
+        with pytest.raises(ValueError, match="Unknown scoring_method"):
+            AssessmentScore(
+                overall=0.9,
+                recommendation="looks great",
+                dimensions=(),
+                scoring_method="vibes",
+            )
+
+
 class TestScoreRepoExcellent:
     """Excellent repos should score >= 0.7."""
 

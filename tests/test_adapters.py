@@ -755,6 +755,50 @@ class TestCopilotInputTokens:
         assert output.cost_usd == pytest.approx(expected_cost, abs=1e-8)
         assert output.error is None
 
+    def test_input_token_estimate_is_chars_over_four(self) -> None:
+        """codeprobe-b9c #7: the char-count estimate equals max(1, chars//4).
+
+        Pins the arithmetic the inlined ``max(1, input_chars // 4)`` relies
+        on (it replaced a ``len("x" * input_chars) // 4`` string allocation).
+        tiktoken is forced unavailable so the heuristic branch runs.
+        """
+        from codeprobe.adapters.telemetry import NdjsonStreamCollector
+
+        content = "word " * 20  # 100 chars → 100 // 4 == 25 tokens
+        stream = "\n".join(
+            [
+                json.dumps({"type": "user.message", "data": {"content": content}}),
+                json.dumps(
+                    {"type": "assistant.message", "data": {"outputTokens": 5}}
+                ),
+            ]
+        )
+        with patch(
+            "codeprobe.adapters.telemetry._count_tokens_tiktoken",
+            return_value=None,
+        ):
+            usage = NdjsonStreamCollector().collect(stream)
+        assert usage.input_tokens == max(1, len(content) // 4) == 25
+
+    def test_input_token_estimate_floor_is_one(self) -> None:
+        """A tiny non-empty input still estimates at least 1 token."""
+        from codeprobe.adapters.telemetry import NdjsonStreamCollector
+
+        stream = "\n".join(
+            [
+                json.dumps({"type": "user.message", "data": {"content": "hi"}}),
+                json.dumps(
+                    {"type": "assistant.message", "data": {"outputTokens": 5}}
+                ),
+            ]
+        )
+        with patch(
+            "codeprobe.adapters.telemetry._count_tokens_tiktoken",
+            return_value=None,
+        ):
+            usage = NdjsonStreamCollector().collect(stream)
+        assert usage.input_tokens == 1
+
     def test_input_tokens_from_result_event(self) -> None:
         """When NDJSON has no usage event but result event has token counts, extract them."""
         adapter = CopilotAdapter()
