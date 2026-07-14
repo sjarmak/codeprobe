@@ -19,6 +19,7 @@ from codeprobe.analysis.stats import (
     summarize_config,
     task_passed,
 )
+from codeprobe.analysis.validity import ValidityReport, ValidityTriage, triage_run
 from codeprobe.models.experiment import (
     CompletedTask,
     ConfigResults,
@@ -38,6 +39,11 @@ class Report:
     tasks_expected: int | None = None
     completion_ratio: float | None = None
     config_results: tuple[ConfigResults, ...] = ()
+    # Infra-failure validity triage over every trial in the report. ``passed``
+    # is False whenever an unresolved infra casualty remains — the run is NOT
+    # quotable until those trials are re-run (codeprobe-77z). None only for
+    # reports built without trial-level data.
+    validity: ValidityReport | None = None
 
 
 def _compute_partial_metadata(
@@ -114,6 +120,10 @@ def generate_report(
         summaries, total_tasks
     )
 
+    # Infra-failure validity gate over every trial across every config: a run
+    # with an unresolved infra casualty is not quotable (codeprobe-77z).
+    validity = triage_run(t for cr in all_results for t in cr.completed)
+
     return Report(
         experiment_name=experiment_name,
         summaries=tuple(summaries),
@@ -123,27 +133,33 @@ def generate_report(
         tasks_expected=tasks_expected,
         completion_ratio=completion_ratio,
         config_results=tuple(all_results),
+        validity=validity,
     )
 
 
 def _tee_task_scores(
     tasks: Iterator[CompletedTask],
     sink: dict[str, float],
+    triage: ValidityTriage | None = None,
 ) -> Iterator[CompletedTask]:
     """Yield tasks unchanged while recording real trials' raw scores into *sink*.
 
     Stores ``automated_score`` (continuous) rather than a binarized pass/fail
     indicator so pairwise statistical tests can operate on the true score
     distribution and choose Wilcoxon + Cohen's d for continuous scorers
-    vs McNemar + Cliff's delta for binary ones. Non-executed runs are yielded
-    but omitted from *sink* so the paired tests match the reward population
-    (codeprobe-a8r; codeprobe-h3j4).
+    vs McNemar + Cliff's delta for binary ones. Non-executed runs and infra
+    casualties are yielded but omitted from *sink* so the paired tests match the
+    reward population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z). When
+    *triage* is supplied every trial is also fed to it, so the streaming path
+    gets the same validity gate as the batch one without buffering the trials.
     """
     for t in tasks:
-        # Non-executed runs are still yielded (so the summarizer counts them in
-        # quota_error_count / errored_count) but kept out of the paired-score
-        # sink so compare_configs's statistical tests match the reward
-        # population (codeprobe-a8r; codeprobe-h3j4).
+        if triage is not None:
+            triage.observe(t)
+        # Excluded runs are still yielded (so the summarizer counts them in
+        # quota_error_count / infra_failure_count / errored_count) but kept out
+        # of the paired-score sink so compare_configs's statistical tests match
+        # the reward population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z).
         if is_scorable_run(t):
             sink[t.task_id] = float(t.automated_score)
         yield t
@@ -190,12 +206,15 @@ def generate_report_streaming(
     """
     config_scores: dict[str, dict[str, float]] = {}
     summaries: list[ConfigSummary] = []
+    # The gate runs over the streamed trials of every config (codeprobe-77z) —
+    # accumulated in the tee so no trial has to be buffered.
+    triage = ValidityTriage()
     for label, tasks in config_task_pairs:
         sink: dict[str, float] = {}
         config_scores[label] = sink
         summaries.append(
             summarize_completed_tasks(
-                label, _tee_task_scores(tasks, sink), total_tasks=total_tasks
+                label, _tee_task_scores(tasks, sink, triage), total_tasks=total_tasks
             )
         )
 
@@ -221,6 +240,7 @@ def generate_report_streaming(
         is_partial=is_partial,
         tasks_expected=tasks_expected,
         completion_ratio=completion_ratio,
+        validity=triage.report(),
     )
 
 
@@ -278,13 +298,22 @@ def format_text_report(report: Report) -> str:
         quota_suffix = ""
         if s.quota_error_count > 0:
             quota_suffix = f" ⚠ {s.quota_error_count} quota error(s)"
-        # codeprobe-h3j4: non-quota non-executed runs (invalid model token,
-        # crash) excluded from a config that still has scorable runs — flag the
-        # remainder so the headline mean isn't read as the whole story.
+        # codeprobe-77z: infra casualties beyond quota (output-token ceiling,
+        # rate limit, network/timeout, MCP connect, crashes) beside this arm's
+        # mean, so the smaller reward-population N is visible. Quota has its own
+        # suffix above (the codeprobe-9xrl contract), so only the non-quota
+        # remainder is shown here — the three suffixes partition errored_count.
+        infra_suffix = ""
+        non_quota_infra = s.infra_failure_count - s.quota_error_count
+        if non_quota_infra > 0:
+            infra_suffix = f" ⚠ {non_quota_infra} infra failure(s)"
+        # codeprobe-h3j4: runs excluded from scoring that are NOT infra
+        # casualties (a non-executed row the gate does not ask to re-run) —
+        # flag the remainder so the headline mean isn't read as the whole story.
         errored_suffix = ""
-        non_quota_errored = s.errored_count - s.quota_error_count
-        if s.scored_count > 0 and non_quota_errored > 0:
-            errored_suffix = f" ⚠ {non_quota_errored} errored (excluded)"
+        other_errored = s.errored_count - s.infra_failure_count
+        if s.scored_count > 0 and other_errored > 0:
+            errored_suffix = f" ⚠ {other_errored} errored (excluded)"
         # codeprobe-1gg: flag arms where the agent abandoned an enabled tool
         # surface (zero calls on a trial that ran). A nonzero count means
         # this arm's effect is partly "the agent ignored the tooling" — the
@@ -296,17 +325,17 @@ def format_text_report(report: Report) -> str:
             )
         lines.append(
             f"{rc.rank}. {rc.label} — {headline}{dual_suffix}, "
-            f"{cost_str}{quota_suffix}{errored_suffix}{abandoned_suffix} "
-            f"— {rc.recommendation}"
+            f"{cost_str}{quota_suffix}{infra_suffix}{errored_suffix}"
+            f"{abandoned_suffix} — {rc.recommendation}"
         )
     if any(rc.summary.quota_error_count > 0 for rc in report.rankings):
         lines.append("")
         lines.append(
             "> **Quota note:** trials marked with ⚠ hit an OAuth/API "
-            "quota limit and were scored 0.0 by default. The mean and "
-            "rankings shown include those zeros. To get a clean "
-            "comparison, rerun the affected trials after quota resets "
-            "or with API-key billing."
+            "quota limit. They are infrastructure casualties, so they are "
+            "EXCLUDED from the mean, pass rate and CIs rather than scored "
+            "0.0 (codeprobe-77z). Rerun the affected trials after quota "
+            "resets or with API-key billing to restore the full sample."
         )
     if any(rc.summary.abandoned_surface_count > 0 for rc in report.rankings):
         lines.append("")
@@ -318,6 +347,23 @@ def format_text_report(report: Report) -> str:
             "result, until the surface is exercised (codeprobe-1gg)."
         )
     lines.append("")
+
+    # codeprobe-77z: infra-failure validity gate. A run holding an unresolved
+    # infra casualty is NOT quotable — the verdict and the offending trial ids
+    # are surfaced here so the run-closer / writeup step blocks "complete"
+    # status until those trials are re-run (or reclassified genuine).
+    if report.validity is not None:
+        lines.append("### Validity")
+        lines.append(report.validity.summary())
+        if not report.validity.passed:
+            lines.append("")
+            lines.append(
+                "> **Validity gate FAILED:** the run is NOT quotable. Re-run "
+                "the infra-failure trial(s) listed above to 'completed' (or "
+                "reclassify them genuine with a reason) before publishing any "
+                "mean, ranking, or comparison from this run (codeprobe-77z)."
+            )
+        lines.append("")
 
     # Dual Verification Matrix
     if any_dual_tasks and report.config_results:
@@ -577,6 +623,11 @@ def format_json_report(report: Report) -> str:
             for r in report.rankings
         ],
         "comparisons": [asdict(c) for c in report.comparisons],
+        # codeprobe-77z: infra-failure validity gate over every trial in the
+        # run. ``passed`` is False while any unresolved infra casualty remains;
+        # a run-closer consumes this to block "quotable/complete" status. None
+        # only for reports built without trial-level data.
+        "validity": asdict(report.validity) if report.validity is not None else None,
         # Drop the CSV-helper mirror from the JSON view; the native
         # ``checkpoint_scores`` dict is already present and more useful.
         "tasks": [
