@@ -105,16 +105,42 @@ those genuine terminal failures out of the reward population.
    `generate_report_streaming` attach it as `Report.validity` (the streaming
    path accumulates it through `ValidityTriage` so no trial is buffered).
 
-3. **Render** — `format_text_report` prints a `### Validity` verdict (and a
-   per-arm `⚠ N infra failure(s)` suffix beside the mean); `format_json_report`
-   emits a `validity` object; `codeprobe interpret` lifts `validity` to a
-   top-level envelope field. Exclusions are **never silent** (adapter-contract
-   honesty).
+3. **Render + enforce** — `format_text_report` prints a `### Validity` verdict
+   (and a per-arm `⚠ N infra failure(s)` suffix beside the mean);
+   `format_json_report` emits a `validity` object; `codeprobe interpret` lifts
+   `validity` to a top-level envelope field **and exits 2 when it FAILs**
+   (codeprobe-c4al — see the run-closer contract below). Exclusions are
+   **never silent** (adapter-contract honesty).
 
 ## Run-closer contract
 
-The run-closer / writeup step **must** check the gate and block
-"quotable/complete" status while it FAILs:
+The gate is enforced, not advisory (codeprobe-c4al). `codeprobe interpret`
+**exits 2** on a FAIL — a run holding unresolved infra casualties is not a
+successful command:
+
+| `validity.passed` | exit code | envelope |
+|---|---|---|
+| `True` | `0` | `ok: true` |
+| `False` | `2` | `ok: false`, `error.code = VALIDITY_FAILED`, `error.terminal = true` |
+
+The report is not withheld. It is rendered to stdout first (text/CSV/JSON/HTML
+all still print, and the HTML file is still written), and the JSON caller gets
+the full `data.report` + `data.validity` block spliced into the *error*
+envelope. Only the exit code changes — the offending trial ids ride along in
+`error.detail.infra_failure_trial_ids`.
+
+So a shell run-closer needs no gate of its own; `set -e` is the gate:
+
+```bash
+codeprobe interpret "$exp" --json > report.json   # exits 2 → not quotable
+```
+
+An agent branches on `ok` / `error.code == "VALIDITY_FAILED"`, or equivalently
+on the top-level `data.validity.passed`.
+
+**In-process callers get no gate for free.** Code that calls `generate_report`
+directly (a custom writeup step, a notebook) bypasses the CLI and must check
+the verdict itself before publishing any mean, ranking, or comparison:
 
 ```python
 from codeprobe.analysis import generate_report
@@ -122,11 +148,9 @@ from codeprobe.analysis import generate_report
 report = generate_report(name, all_results, configs=configs)
 if report.validity is not None and not report.validity.passed:
     # NOT quotable — re-run the infra trials to 'completed' (or reclassify
-    # them genuine with a reason) before publishing any mean/ranking/comparison.
+    # them genuine with a reason) first.
     raise SystemExit(report.validity.summary())
 ```
-
-Equivalently, gate on the `interpret` envelope's top-level `validity.passed`.
 
 ## Adding an infra signature
 

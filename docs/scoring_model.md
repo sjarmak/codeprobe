@@ -432,11 +432,12 @@ population by `stats.is_scorable_run`. The count is surfaced, never silent:
   trials stay in the structural totals (`total_tasks` / `errored` / cost /
   tokens).
 - `Report.validity` — a run-level `ValidityReport`. It **FAILs** while any
-  unresolved infra casualty remains and lists the offending trial ids; the
-  run-closer must block "quotable/complete" status until those trials are
-  re-run to `completed` (or reclassified genuine with a reason). `codeprobe
-  interpret` renders the verdict in text/JSON and lifts `validity` to the
-  envelope top level.
+  unresolved infra casualty remains and lists the offending trial ids; the run
+  is not "quotable/complete" until those trials are re-run to `completed` (or
+  reclassified genuine with a reason). `codeprobe interpret` renders the verdict
+  in text/JSON, lifts `validity` to the envelope top level, and **exits 2** on a
+  FAIL (`error.code = VALIDITY_FAILED`) so a pipeline branching on the exit code
+  cannot read an invalid run as a success.
 
 Classification is structural/string-only (ZFC-clean) — a genuinely low score is
 a real data point and is never reclassified as infra, and a terminal
