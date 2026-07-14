@@ -45,8 +45,20 @@ experiments/
 .beads-credential-key
 .beads/
 
-# Claude Code local config and CodeGraph (development-only)
-.claude/
+# Claude Code local config and CodeGraph (development-only), except the five
+# product skills below: they ship in the sdist (MANIFEST.in) and are enforced
+# by tests/skills/test_skill_cli_alignment.py. Git cannot re-include a path
+# under an excluded parent directory, hence `.claude/*` rather than `.claude/`.
+# Machine-local agent skills share the .claude/skills/ namespace and stay
+# ignored.
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/codeprobe-calibrate/
+!.claude/skills/codeprobe-check-infra/
+!.claude/skills/codeprobe-interpret/
+!.claude/skills/codeprobe-mine/
+!.claude/skills/codeprobe-run/
 .codegraph/
 
 # Internal working documents (PRDs, premortems, agent docs)
