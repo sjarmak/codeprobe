@@ -593,3 +593,72 @@ class TestDualVerifyFlagIsHonest:
 
         assert result.exit_code != 0
         assert "--dual-verify" in result.output
+
+
+# ---------------------------------------------------------------------------
+# dual_eligible survives the disk round-trip (b31f review, MEDIUM)
+# ---------------------------------------------------------------------------
+class TestDualEligibleRoundTrip:
+    """``dual_eligible`` is persisted by write_task_dir; the loader must read it.
+
+    Regression guard for the b31f review finding: the flag was serialized via
+    ``dataclasses.asdict`` but ``_build_task`` rebuilt ``TaskMetadata`` from an
+    explicit key allowlist that omitted it, so every reloaded task silently came
+    back ``dual_eligible=False``. That is the same silent-divergence class the
+    bead exists to kill, just moved to the loader.
+    """
+
+    def _write_metadata(self, tmp_path: Path, *, dual_eligible: bool) -> Path:
+        task_dir = tmp_path / "task-001"
+        task_dir.mkdir()
+        (task_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "id": "task-001",
+                    "repo": "acme/widgets",
+                    "metadata": {
+                        "name": "task-001",
+                        "category": "sdlc",
+                        "dual_eligible": dual_eligible,
+                    },
+                    "verification": {
+                        "type": "test_script",
+                        "command": "bash tests/test.sh",
+                    },
+                }
+            )
+        )
+        return task_dir / "metadata.json"
+
+    def test_true_survives_reload(self, tmp_path: Path) -> None:
+        from codeprobe.loaders import load_task
+
+        task = load_task(self._write_metadata(tmp_path, dual_eligible=True))
+        assert task.metadata.dual_eligible is True
+
+    def test_false_survives_reload(self, tmp_path: Path) -> None:
+        from codeprobe.loaders import load_task
+
+        task = load_task(self._write_metadata(tmp_path, dual_eligible=False))
+        assert task.metadata.dual_eligible is False
+
+    def test_absent_key_defaults_false(self, tmp_path: Path) -> None:
+        """Task dirs mined before b31f have no such key — must not crash."""
+        from codeprobe.loaders import load_task
+
+        task_dir = tmp_path / "legacy"
+        task_dir.mkdir()
+        (task_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "id": "legacy",
+                    "repo": "acme/widgets",
+                    "metadata": {"name": "legacy", "category": "sdlc"},
+                    "verification": {
+                        "type": "test_script",
+                        "command": "bash tests/test.sh",
+                    },
+                }
+            )
+        )
+        assert load_task(task_dir / "metadata.json").metadata.dual_eligible is False

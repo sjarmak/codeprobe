@@ -111,6 +111,7 @@ def _build_task(
             estimated_duration_sec=meta.get("estimated_duration_sec", 300),
             resource_tier=resource_tier,
             max_turns_override=max_turns_override,
+            dual_eligible=bool(meta.get("dual_eligible", False)),
         ),
         verification=TaskVerification(
             type=verif.get("type", "test_script"),
