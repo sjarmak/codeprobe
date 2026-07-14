@@ -730,6 +730,31 @@ def format_html_report(report: Report) -> str:
     def _fmt_score(val: float) -> str:
         return f"{val:.2f}"
 
+    def _exclusion_badges_html(s: ConfigSummary) -> str:
+        """Render this arm's reward-population exclusions as badges.
+
+        Mirrors ``format_text_report``'s ranking suffixes verbatim so the text,
+        JSON and HTML surfaces tell the same story (codeprobe-gu9m). The counts
+        are nested supersets — ``errored_count`` ⊇ ``infra_failure_count`` ⊇
+        ``quota_error_count`` (see ``ConfigSummary``) — so each badge shows only
+        its own remainder and the badges partition the excluded set.
+        """
+        badges: list[str] = []
+        if s.scored_count == 0:
+            # codeprobe-h3j4: nothing executed — there is no mean to report.
+            badges.append(f"ERRORED ({s.errored_count}) — no runs executed")
+        if s.quota_error_count > 0:
+            badges.append(f"⚠ {s.quota_error_count} quota error(s)")
+        non_quota_infra = s.infra_failure_count - s.quota_error_count
+        if non_quota_infra > 0:
+            badges.append(f"⚠ {non_quota_infra} infra failure(s)")
+        other_errored = s.errored_count - s.infra_failure_count
+        if s.scored_count > 0 and other_errored > 0:
+            badges.append(f"⚠ {other_errored} errored (excluded)")
+        if not badges:
+            return "—"
+        return " ".join(f'<span class="warn-badge">{_esc(b)}</span>' for b in badges)
+
     def _ci_bar_html(s: ConfigSummary) -> str:
         """Render CI bar or single-run banner for a summary."""
         if s.sample_size_warning:
@@ -769,6 +794,10 @@ h3{font-size:1.1rem;margin:1.5rem 0 .5rem}
 border-radius:4px;margin-bottom:1rem;font-weight:600}
 .single-run-badge{background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600}
+.warn-badge{display:inline-block;background:var(--warning);color:#000;padding:2px 8px;
+border-radius:4px;font-size:.8rem;font-weight:600;margin:1px 0}
+.validity-fail{background:#f8d7da;border:1px solid var(--danger);color:#842029;
+padding:.5rem 1rem;border-radius:4px;margin-top:.75rem}
 table{width:100%;border-collapse:collapse;margin:.5rem 0}
 th,td{padding:.5rem .75rem;text-align:left;border-bottom:1px solid var(--border)}
 th{background:#e9ecef;font-weight:600;font-size:.85rem;text-transform:uppercase;letter-spacing:.03em}
@@ -849,19 +878,49 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     parts.append(
         "<th>Rank</th><th>Config</th><th>Pass Rate</th>"
         "<th>Mean Score</th><th>Cost</th><th>Billing</th><th>CI</th>"
+        "<th>Exclusions</th>"
     )
     parts.append("</tr></thead>\n<tbody>\n")
     for rc in report.rankings:
         s = rc.summary
+        # codeprobe-h3j4 / gu9m: an arm with no scorable run never executed, so
+        # it has no mean — show em dashes rather than a vacuous 0.00 / 0%. The
+        # Exclusions cell carries the ERRORED count, as the text report does.
+        if s.scored_count == 0:
+            pass_cell = "—"
+            mean_cell = "—"
+        else:
+            pass_cell = _fmt_pct(s.pass_rate)
+            mean_cell = _fmt_score(s.mean_score)
         parts.append(
             f"<tr><td>{rc.rank}</td><td>{_esc(rc.label)}</td>"
-            f"<td>{_fmt_pct(s.pass_rate)}</td>"
-            f"<td>{_fmt_score(s.mean_score)}</td>"
+            f"<td>{pass_cell}</td>"
+            f"<td>{mean_cell}</td>"
             f"<td>{_fmt_cost(s.total_cost_usd)}</td>"
             f"<td>{_esc(s.billing_model)}</td>"
-            f"<td>{_ci_bar_html(s)}</td></tr>\n"
+            f"<td>{_ci_bar_html(s)}</td>"
+            f"<td>{_exclusion_badges_html(s)}</td></tr>\n"
         )
     parts.append("</tbody>\n</table>\n")
+
+    # --- Validity gate (codeprobe-77z) ---
+    # Same content, position and wording as the text report's "### Validity"
+    # section: a run holding an unresolved infra casualty is NOT quotable, and
+    # the HTML view must say so instead of showing a clean headline mean.
+    if report.validity is not None:
+        parts.append('<h2 id="validity">Validity</h2>\n')
+        parts.append('<div class="card">\n')
+        parts.append(f"<p>{_esc(report.validity.summary())}</p>\n")
+        if not report.validity.passed:
+            parts.append(
+                '<div class="validity-fail">'
+                "<strong>Validity gate FAILED:</strong> the run is NOT quotable. "
+                "Re-run the infra-failure trial(s) listed above to 'completed' "
+                "(or reclassify them genuine with a reason) before publishing any "
+                "mean, ranking, or comparison from this run (codeprobe-77z)."
+                "</div>\n"
+            )
+        parts.append("</div>\n")
 
     # --- Dual Verification Matrix ---
     any_dual_tasks_flag = any((s.dual_task_count or 0) > 0 for s in report.summaries)

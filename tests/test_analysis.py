@@ -1558,6 +1558,119 @@ class TestFormatHtmlReport:
 
 
 # ---------------------------------------------------------------------------
+# format_html_report: reward-population exclusions + validity gate
+# (codeprobe-gu9m — the HTML surface must tell the same story as text/JSON)
+# ---------------------------------------------------------------------------
+
+
+def _token_ceiling_crash(task_id: str = "crash") -> CompletedTask:
+    """Infra casualty: output-token ceiling overrun, no scoring (codeprobe-77z)."""
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=0.0,
+        status="error",
+        error_category="agent",
+        metadata={"error": "API Error: exceeded the 32000 output token maximum"},
+    )
+
+
+class TestHtmlExclusionsAndValidity:
+    def _crashed_report(self) -> Report:
+        results = ConfigResults(
+            config="arm-A",
+            completed=[
+                _task("t1", 1.0),
+                _task("t2", 0.0),
+                _token_ceiling_crash("t3"),
+            ],
+        )
+        return generate_report("infra-exp", [results])
+
+    def test_infra_exclusion_count_and_fail_verdict(self) -> None:
+        """An infra casualty shows its exclusion count AND the FAIL verdict."""
+        html = format_html_report(self._crashed_report())
+
+        # Exclusion badge, worded exactly as the text report's suffix.
+        assert "1 infra failure(s)" in html
+        # Run-level validity verdict.
+        assert 'id="validity"' in html
+        assert "VALIDITY FAIL" in html
+        assert "t3#rep0" in html
+        assert "NOT quotable" in html
+
+    def test_text_and_html_agree_on_exclusions(self) -> None:
+        """Same run, same wording on both surfaces."""
+        report = self._crashed_report()
+        text = format_text_report(report)
+        html = format_html_report(report)
+        for phrase in ("1 infra failure(s)", "VALIDITY FAIL", "NOT quotable"):
+            assert phrase in text
+            assert phrase in html
+
+    def test_quota_and_errored_badges(self) -> None:
+        """Quota, non-quota infra, and other-errored counts are each shown."""
+        results = ConfigResults(
+            config="arm",
+            completed=[
+                _task("t1", 1.0),
+                CompletedTask(
+                    task_id="t2",
+                    automated_score=0.0,
+                    status="error",
+                    error_category="quota",
+                    metadata={"error": "OAuth token usage limit reached"},
+                ),
+                _token_ceiling_crash("t3"),
+                # Excluded from scoring (status == "error") but NOT an infra
+                # casualty: the adapter declared a terminal subtype, so the gate
+                # does not ask for a re-run.
+                CompletedTask(
+                    task_id="t4",
+                    automated_score=0.0,
+                    status="error",
+                    error_category="agent",
+                    result_subtype="error_max_turns",
+                    metadata={"error": "agent stopped after reaching the max turns"},
+                ),
+            ],
+        )
+        html = format_html_report(generate_report("mixed-exp", [results]))
+
+        assert "1 quota error(s)" in html
+        assert "1 infra failure(s)" in html
+        assert "1 errored (excluded)" in html
+
+    def test_unscorable_config_shows_errored_not_zero_mean(self) -> None:
+        """A config where nothing ran renders ERRORED, not a vacuous 0.00 mean."""
+        results = ConfigResults(
+            config="dead-arm",
+            completed=[_task("t1", 0.0, status="error")],
+        )
+        html = format_html_report(generate_report("dead-exp", [results]))
+
+        assert "ERRORED (1)" in html
+
+    def test_clean_run_passes_gate_with_no_fail_banner(self) -> None:
+        """A clean run says PASS and never claims the run is unquotable."""
+        results = ConfigResults(config="arm", completed=[_task("t1", 1.0)])
+        html = format_html_report(generate_report("clean-exp", [results]))
+
+        assert "VALIDITY PASS" in html
+        assert "NOT quotable" not in html
+
+    def test_validity_summary_is_html_escaped(self) -> None:
+        """Trial ids reach the page through the escaper, never raw."""
+        results = ConfigResults(
+            config="arm",
+            completed=[_task("t1", 1.0), _token_ceiling_crash("<script>x</script>")],
+        )
+        html = format_html_report(generate_report("esc-exp", [results]))
+
+        assert "<script>x</script>" not in html
+        assert "&lt;script&gt;x&lt;/script&gt;" in html
+
+
+# ---------------------------------------------------------------------------
 # format_json_report: per-task data
 # ---------------------------------------------------------------------------
 
