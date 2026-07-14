@@ -24,7 +24,6 @@ from codeprobe.mining.org_scale import (
 )
 from codeprobe.mining.writer import write_quarantined_task
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

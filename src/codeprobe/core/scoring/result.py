@@ -16,6 +16,7 @@ from typing import Protocol, runtime_checkable
 
 from codeprobe.analysis.stats import PASS_THRESHOLD  # noqa: F401  — re-exported
 
+
 def read_task_metadata(task_dir: Path) -> dict:
     """Parse ``task_dir/metadata.json`` into a dict.
 

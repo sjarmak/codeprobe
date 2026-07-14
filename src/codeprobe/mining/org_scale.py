@@ -793,8 +793,8 @@ def _mine_symbol_reference_tasks(
     sg_repo: str = "",
     strict_sg: bool = False,
     sg_discovery: bool = False,
-    consensus_config: "ConsensusConfig | None" = None,
-    quarantined_out: list["QuarantinedCandidate"] | None = None,
+    consensus_config: ConsensusConfig | None = None,
+    quarantined_out: list[QuarantinedCandidate] | None = None,
 ) -> list[Task]:
     """Generate symbol-reference-trace tasks from high-fan-out public symbols.
 
@@ -1025,8 +1025,8 @@ def _mine_change_scope_tasks(
     sg_repo: str = "",
     strict_sg: bool = False,
     sg_discovery: bool = False,
-    consensus_config: "ConsensusConfig | None" = None,
-    quarantined_out: list["QuarantinedCandidate"] | None = None,
+    consensus_config: ConsensusConfig | None = None,
+    quarantined_out: list[QuarantinedCandidate] | None = None,
 ) -> list[Task]:
     """Generate change-scope-audit tasks from high-fan-out public symbols.
 

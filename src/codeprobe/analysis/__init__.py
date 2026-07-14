@@ -24,10 +24,12 @@ from codeprobe.analysis.stats import (
 )
 from codeprobe.analysis.trace_quality import (
     LOW_RECALL_THRESHOLD,
-    SCHEMA_VERSION as TRACE_QUALITY_SCHEMA_VERSION,
     TraceQualityMetrics,
     TraceQualityReporter,
     TraceQualitySummary,
+)
+from codeprobe.analysis.trace_quality import (
+    SCHEMA_VERSION as TRACE_QUALITY_SCHEMA_VERSION,
 )
 from codeprobe.analysis.validity import (
     TrialClass,

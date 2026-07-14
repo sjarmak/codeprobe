@@ -13,7 +13,6 @@ from pathlib import Path
 
 from codeprobe.qa.verify import verify_task_qa
 
-
 CORPUS_ROOTS: tuple[Path, ...] = (
     Path("examples"),
     Path(".codeprobe/tasks"),
@@ -78,14 +77,14 @@ def main() -> int:
             warnings.append((rel, warns))
 
     ok_count = len(all_tasks) - len(failures)
-    print(f"## Summary\n")
+    print("## Summary\n")
     print(f"- tasks scanned: **{len(all_tasks)}**")
     print(f"- error-clean: **{ok_count}**")
     print(f"- with errors: **{len(failures)}**")
     print(f"- with warnings: **{len(warnings)}**")
     print()
 
-    print(f"## Finding-code histogram\n")
+    print("## Finding-code histogram\n")
     print("| code | severity | count |")
     print("|------|----------|-------|")
     for code, n in sorted(error_counter.items()):
@@ -97,7 +96,7 @@ def main() -> int:
     print()
 
     if failures:
-        print(f"## Tasks with errors\n")
+        print("## Tasks with errors\n")
         for rel, errs in failures:
             print(f"### `{rel}`")
             for e in errs:
@@ -105,7 +104,7 @@ def main() -> int:
             print()
 
     if warnings:
-        print(f"## Tasks with warnings\n")
+        print("## Tasks with warnings\n")
         for rel, warns in warnings:
             print(f"### `{rel}`")
             for w in warns:

@@ -42,7 +42,7 @@ from pathlib import Path
 import pytest
 
 from codeprobe.core import scoring
-from codeprobe.core.scoring import BinaryScorer, AgentState
+from codeprobe.core.scoring import AgentState, BinaryScorer
 
 # ---------------------------------------------------------------------------
 # Fixtures

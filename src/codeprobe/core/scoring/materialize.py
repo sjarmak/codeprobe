@@ -16,6 +16,7 @@ from pathlib import Path
 
 from codeprobe.core.scoring.sandbox import sanitize_secrets
 
+
 @dataclass(frozen=True)
 class AgentState:
     """Captured agent-workspace state for the diff-materialisation path.

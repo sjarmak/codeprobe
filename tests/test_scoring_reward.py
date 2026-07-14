@@ -19,28 +19,22 @@ fixtures so a future contract change has to face the canonical cases.
 from __future__ import annotations
 
 import json
-import os
 import stat
 from pathlib import Path
 
 import pytest
 
 from codeprobe.core.scoring import (
-    DEFAULT_IR_FAMILY,
     SCORER_FAMILIES,
     ArtifactScorer,
     BinaryScorer,
-    CheckpointScorer,
     ContinuousScorer,
-    DualScorer,
-    ScoreResult,
     score_count,
     score_dependency_chain,
     score_exact_match,
     score_file_list,
     score_symbol_list,
 )
-
 
 # ---------------------------------------------------------------------------
 # Default IR family is F1 — adversarial dump must NOT score 1.0

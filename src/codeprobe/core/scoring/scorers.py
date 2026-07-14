@@ -34,8 +34,8 @@ from codeprobe.core.scoring.materialize import AgentState
 from codeprobe.core.scoring.result import (
     DEFAULT_FBETA_BETA,
     DEFAULT_IR_FAMILY,
-    ScoreResult,
     Scorer,
+    ScoreResult,
     _read_fbeta_beta,
     _select_ir_family,
     read_task_verification,

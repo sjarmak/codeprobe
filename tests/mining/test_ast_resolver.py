@@ -21,7 +21,6 @@ import pytest
 from codeprobe.mining.ast_resolver import AstResolver
 from codeprobe.mining.multi_repo import FileRef, Symbol, SymbolResolver
 
-
 # ---------------------------------------------------------------------------
 # Protocol conformance
 # ---------------------------------------------------------------------------

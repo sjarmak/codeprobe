@@ -16,44 +16,6 @@ from __future__ import annotations
 # imported it at module scope).
 import shutil  # noqa: F401
 
-from codeprobe.core.scoring.result import (  # noqa: F401
-    ALLOWED_MATERIALIZATION,
-    ALLOWED_VERDICTS,
-    DEFAULT_FBETA_BETA,
-    DEFAULT_IR_FAMILY,
-    PASS_THRESHOLD,
-    SCORER_FAMILIES,
-    ScoreResult,
-    Scorer,
-    _read_fbeta_beta,
-    _select_ir_family,
-    read_task_metadata,
-    read_task_verification,
-    scorer_accepts_agent_state,
-)
-from codeprobe.core.scoring.sandbox import (  # noqa: F401
-    COPYTREE_IGNORE,
-    SCORE_TIMEOUT_SECONDS,
-    _SAFE_ENV_KEYS,
-    _SandboxRun,
-    _TOKEN_PATTERN,
-    _run_in_sandbox,
-    _safe_env,
-    _thread_env_overrides,
-    sanitize_secrets,
-    scorer_env_override,
-)
-from codeprobe.core.scoring.materialize import (  # noqa: F401
-    _GIT_TIMEOUT_SECONDS,
-    _MAX_DIFF_BYTES,
-    AgentState,
-    _apply_diff,
-    _capture_workspace_diff,
-    _create_fresh_checkout,
-    _is_git_repo,
-    _materialize_workspace,
-    _run_git,
-)
 from codeprobe.core.scoring.ir import (  # noqa: F401
     _ZERO_SCORE,
     _compute_f1,
@@ -69,7 +31,50 @@ from codeprobe.core.scoring.ir import (  # noqa: F401
     score_file_list,
     score_symbol_list,
 )
+from codeprobe.core.scoring.materialize import (  # noqa: F401
+    _GIT_TIMEOUT_SECONDS,
+    _MAX_DIFF_BYTES,
+    AgentState,
+    _apply_diff,
+    _capture_workspace_diff,
+    _create_fresh_checkout,
+    _is_git_repo,
+    _materialize_workspace,
+    _run_git,
+)
+from codeprobe.core.scoring.result import (  # noqa: F401
+    ALLOWED_MATERIALIZATION,
+    ALLOWED_VERDICTS,
+    DEFAULT_FBETA_BETA,
+    DEFAULT_IR_FAMILY,
+    PASS_THRESHOLD,
+    SCORER_FAMILIES,
+    Scorer,
+    ScoreResult,
+    _read_fbeta_beta,
+    _select_ir_family,
+    read_task_metadata,
+    read_task_verification,
+    scorer_accepts_agent_state,
+)
+from codeprobe.core.scoring.sandbox import (  # noqa: F401
+    _SAFE_ENV_KEYS,
+    _TOKEN_PATTERN,
+    COPYTREE_IGNORE,
+    SCORE_TIMEOUT_SECONDS,
+    _run_in_sandbox,
+    _safe_env,
+    _SandboxRun,
+    _thread_env_overrides,
+    sanitize_secrets,
+    scorer_env_override,
+)
 from codeprobe.core.scoring.scorers import (  # noqa: F401
+    _IR_LIST_ANSWER_TYPES,
+    _LOW_CONFIDENCE_THRESHOLD,
+    _MAX_GROUND_TRUTH_BYTES,
+    _ORACLE_TYPE_SCORERS,
+    _WEIGHT_TOLERANCE,
     VALID_REWARD_TYPES,
     ArtifactScorer,
     BinaryScorer,
@@ -77,11 +82,6 @@ from codeprobe.core.scoring.scorers import (  # noqa: F401
     ContinuousScorer,
     DualScorer,
     OracleChecksScorer,
-    _IR_LIST_ANSWER_TYPES,
-    _LOW_CONFIDENCE_THRESHOLD,
-    _MAX_GROUND_TRUTH_BYTES,
-    _ORACLE_TYPE_SCORERS,
-    _WEIGHT_TOLERANCE,
     _cli_main,
     _find_answer_file,
     _load_json_file,

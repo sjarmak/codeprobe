@@ -15,12 +15,11 @@ Pins the post-voxa contract additions:
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import pytest
 
-from codeprobe.core.executor import _save_task_artifacts
+from codeprobe.core.executor import TaskResult, _save_task_artifacts
 from codeprobe.core.scoring import (
     DEFAULT_FBETA_BETA,
     SCORER_FAMILIES,
@@ -32,8 +31,6 @@ from codeprobe.core.scoring import (
     score_symbol_list,
 )
 from codeprobe.models.experiment import CompletedTask
-from codeprobe.core.executor import TaskResult
-
 
 # ---------------------------------------------------------------------------
 # ScoreResult.reward mirrors score

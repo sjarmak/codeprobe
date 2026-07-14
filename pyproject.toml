@@ -38,7 +38,11 @@ Issues = "https://github.com/sjarmak/codeprobe/issues"
 dev = [
     "pytest>=8.0,<9",
     "pytest-cov>=5.0,<6",
-    "ruff>=0.4,<1",
+    # Pinned to a minor range, not >=0.4,<1: ruff adds lint rules in minor
+    # releases, so an open range turns CI red with no code change (codeprobe-pb4z
+    # — 35 errors accumulated this way). Bump deliberately and fix the new rules
+    # in the same commit.
+    "ruff>=0.15,<0.16",
     "mypy>=1.10,<2",
     "types-PyYAML>=6.0,<7",
     "types-requests>=2.31,<3",

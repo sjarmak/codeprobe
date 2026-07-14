@@ -43,6 +43,10 @@ from codeprobe.snapshot.exporters import (
     export_sheets,
     export_sigma,
 )
+from codeprobe.snapshot.fairness import (
+    check_fairness,
+    write_fairness_report,
+)
 from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
     RedactionMode,
@@ -53,11 +57,6 @@ from codeprobe.snapshot.scanners import (
     Scanner,
     ScannerUnavailableError,
     TrufflehogScanner,
-)
-from codeprobe.snapshot.fairness import (
-    FairnessResult,
-    check_fairness,
-    write_fairness_report,
 )
 from codeprobe.snapshot.verify import verify_snapshot_extended
 

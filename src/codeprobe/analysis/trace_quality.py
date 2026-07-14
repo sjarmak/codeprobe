@@ -367,7 +367,7 @@ class TraceQualityReporter:
         config_results: Mapping[str, Sequence[CompletedTask]],
         bias_warnings: Sequence[BiasWarning] = (),
         low_recall_threshold: float = LOW_RECALL_THRESHOLD,
-    ) -> "TraceQualityReporter":
+    ) -> TraceQualityReporter:
         """Build a reporter from codeprobe-native results.
 
         ``config_results`` maps config label → completed task records,
@@ -397,7 +397,7 @@ class TraceQualityReporter:
         cls,
         metrics: Sequence[TraceQualityMetrics],
         experiment_warnings: Sequence[str] = (),
-    ) -> "TraceQualityReporter":
+    ) -> TraceQualityReporter:
         """Adapter entry point — wrap pre-built metrics rows.
 
         External benchmark adapters (EnterpriseBench, CodeScaleBench)

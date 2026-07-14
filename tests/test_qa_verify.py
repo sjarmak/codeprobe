@@ -19,15 +19,12 @@ import json
 import textwrap
 from pathlib import Path
 
-import pytest
-
 from codeprobe.qa.verify import (
     DEFAULT_SCORING_METHOD_TIERS,
     QAVerifyResult,
     load_task_meta,
     verify_task_qa,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
