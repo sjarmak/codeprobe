@@ -28,6 +28,11 @@ def test_claude_pricing_cache_creation_is_1_25x_input() -> None:
 
 
 def test_claude_pricing_not_stale() -> None:
+    """Intentional CI tripwire: fails ~90 days after last_verified so the
+    rates get re-checked against the vendor's pricing page on a cadence,
+    rather than drifting silently like Codex/Copilot's warn-only staleness
+    currently does. On failure: re-verify against the current pricing page,
+    update the rates if needed, and bump CLAUDE_PRICING.last_verified."""
     age_days = (date.today() - CLAUDE_PRICING.last_verified).days
     assert age_days <= PRICING_STALENESS_DAYS
 
