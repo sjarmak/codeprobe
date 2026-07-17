@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warnings
-from contextlib import contextmanager
 from datetime import date, timedelta
 
 import pytest
@@ -14,13 +13,6 @@ from codeprobe.adapters.pricing import (
     PricingTable,
     staleness_warn,
 )
-
-
-@contextmanager
-def warnings_none():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        yield
 
 
 def test_claude_pricing_current_rates() -> None:
@@ -56,5 +48,6 @@ def test_staleness_warn_silent_within_threshold() -> None:
         rates={"m": (1.0, 2.0)},
         last_verified=date.today(),
     )
-    with warnings_none():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         staleness_warn(fresh_table)
