@@ -69,11 +69,8 @@ CODEX_PRICING = PricingTable(
 
 # Claude pricing per 1M tokens: (input, output, cache_read, cache_creation)
 # Cache creation is billed at 1.25x the input rate (5-minute cache write).
-# Verified 2026-07-17 against https://platform.claude.com/docs/en/about-claude/pricing.
-# claude-opus-4-6 and claude-haiku-4-5 had both fallen stale: opus-4-6 was still
-# carrying its Opus 4/4.1-era rate ($15/$75) against a current $5/$25, and
-# haiku-4-5 was carrying its launch rate ($0.80/$4.00) against a current $1/$5.
-# claude-sonnet-4-6 was re-checked and is unchanged.
+# Verified against https://platform.claude.com/docs/en/about-claude/pricing;
+# see last_verified below.
 CLAUDE_PRICING = PricingTable(
     vendor="claude",
     rates={
