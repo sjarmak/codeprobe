@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codeprobe.adapters.pricing import ALL_PRICING_TABLES
 from codeprobe.adapters.telemetry import (
     CLAUDE_PRICING,
     COPILOT_PRICING,
@@ -324,8 +325,6 @@ class TestPricingMetadata:
     def test_every_table_has_last_verified_date(self):
         from datetime import date
 
-        from codeprobe.adapters.pricing import ALL_PRICING_TABLES
-
         for table in ALL_PRICING_TABLES:
             assert isinstance(table.last_verified, date), table.vendor
             age = (date.today() - table.last_verified).days
@@ -346,17 +345,18 @@ class TestPricingMetadata:
         for model, (input_rate, _output, _cache_read, cache_creation) in CLAUDE_PRICING.rates.items():
             assert cache_creation == pytest.approx(input_rate * 1.25), model
 
-    def test_claude_pricing_not_stale(self):
-        """Intentional CI tripwire: fails ~90 days after last_verified so the
-        rates get re-checked against the vendor's pricing page on a cadence,
-        rather than drifting silently. On failure: re-verify against the
-        current pricing page, update the rates if needed, and bump
-        CLAUDE_PRICING.last_verified."""
+    @pytest.mark.parametrize("table", ALL_PRICING_TABLES, ids=lambda t: t.vendor)
+    def test_pricing_not_stale(self, table):
+        """Intentional CI tripwire, one per vendor: fails ~90 days after
+        last_verified so the rates get re-checked against the vendor's
+        pricing page on a cadence, rather than drifting silently. On
+        failure: re-verify against the current pricing page, update the
+        rates if needed, and bump the table's last_verified."""
         from codeprobe.adapters.pricing import staleness_warn
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            staleness_warn(CLAUDE_PRICING)
+            staleness_warn(table)
 
     def test_staleness_warn_fires_past_threshold(self):
         from datetime import date, timedelta

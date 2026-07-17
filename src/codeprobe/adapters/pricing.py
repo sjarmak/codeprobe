@@ -64,7 +64,7 @@ CODEX_PRICING = PricingTable(
         "codex-mini-latest": (1.50, 6.00),
         "codex-latest": (2.00, 8.00),
     },
-    last_verified=date(2026, 4, 2),
+    last_verified=date(2026, 7, 17),
 )
 
 # Claude pricing per 1M tokens: (input, output, cache_read, cache_creation)
@@ -89,7 +89,7 @@ COPILOT_PRICING = PricingTable(
         "gpt-4o": (2.50, 10.00),
         "gpt-4o-mini": (0.15, 0.60),
     },
-    last_verified=date(2026, 4, 2),
+    last_verified=date(2026, 7, 17),
 )
 
 ALL_PRICING_TABLES: tuple[PricingTable, ...] = (
