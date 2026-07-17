@@ -237,7 +237,6 @@ class TestClassifyTrial:
             "hit your session limit",
             "quota exhausted for this account",
             "budget exceeded for this run",
-            "halting after repeated failures",
             "connection refused by host",
             "connection reset by peer",
             "network is unreachable",
@@ -271,6 +270,8 @@ class TestClassifyTrial:
             "budget calculation returned None",
             "connection pool was misconfigured",
             "the agent produced no answer.txt",
+            "the halting problem is undecidable",
+            "graceful halting of the worker pool",
         ]
         for msg in benign:
             assert not _matches_infra_text(_crash_with_error("t", msg)), msg

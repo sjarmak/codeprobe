@@ -50,7 +50,7 @@ fault-signature table, like a quota-pattern matcher.
 | 1 | `error_category` in `{quota, timeout, system}` | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
 | 2 | `status == "completed"` or non-empty `scoring_details` | `VALID` | **in** | pass |
 | 3 | terminal `result_subtype` (`error_max_turns`), or `status == "failed"` | `GENUINE_FAILURE` | **in** | pass |
-| 4 | infra marker in the error text (token-ceiling, API Error, rate limit, OAuth, usage/session limit, budget exceeded, halting, connection refused/reset/failed, network unreachable, failed to connect, timed out) | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
+| 4 | infra marker in the error text (token-ceiling, API Error, rate limit, OAuth, usage/session limit, budget exceeded, connection refused/reset/failed, network unreachable, failed to connect, timed out) | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
 | 5 | remaining `status == "error"` | `INFRA_FAILURE` | **excluded** | **fail until re-run** |
 
 Two ordering decisions carry the weight:

@@ -85,7 +85,6 @@ _INFRA_TEXT_PATTERNS: tuple[str, ...] = (
     r"\bquota (?:exceeded|exhausted)\b",
     r"\boauth\b",
     r"\bbudget exceeded\b",
-    r"\bhalting\b",
     r"\bconnection (?:refused|reset|error|failed|timed out)\b",
     r"\bnetwork is unreachable\b",
     r"\bfailed to connect\b",
