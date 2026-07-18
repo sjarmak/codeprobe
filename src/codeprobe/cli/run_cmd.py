@@ -261,6 +261,68 @@ def _filter_tasks_by_suite(
     return filtered
 
 
+def _check_ground_truth_present(task_dirs: list[Path], path: str) -> None:
+    """Reject artifact_eval/dual tasks whose ground_truth.json oracle is missing.
+
+    Loads each task's task.toml (or metadata.json) to read
+    ``verification.verification_mode``. Tasks in "artifact_eval" or "dual"
+    mode are scored by ``ArtifactScorer``, which looks up
+    ``tests/ground_truth.json`` and falls back to the legacy task-root
+    ``ground_truth.json`` (mirrors the lookup in
+    ``core/scoring/scorers.py:ArtifactScorer.score``). A stale or interrupted
+    ``codeprobe mine`` run can leave a task in one of those modes with
+    neither file present; without this check it scores ``verifier_error`` on
+    every trial instead of failing loudly here.
+    """
+    from codeprobe.loaders import load_task
+
+    missing: list[str] = []
+    for td in task_dirs:
+        toml_path = td / "task.toml"
+        json_path = td / "metadata.json"
+        meta_path = toml_path if toml_path.exists() else (json_path if json_path.exists() else None)
+        if meta_path is None:
+            continue  # no metadata to check
+
+        try:
+            task = load_task(meta_path)
+        except (ValueError, KeyError):
+            logger.warning(
+                "Skipping ground-truth preflight for %s: failed to load metadata", td.name
+            )
+            continue
+
+        if task.verification.verification_mode not in ("artifact_eval", "dual"):
+            continue
+
+        gt_path = td / "tests" / "ground_truth.json"
+        if not gt_path.exists():
+            gt_path = td / "ground_truth.json"
+        if not gt_path.exists():
+            missing.append(td.name)
+
+    if not missing:
+        return
+
+    raise DiagnosticError(
+        code="MISSING_GROUND_TRUTH",
+        message=(
+            f"{len(missing)} artifact_eval/dual task(s) missing "
+            f"tests/ground_truth.json: {', '.join(missing)}. These would "
+            "score verifier_error instead of a real result."
+        ),
+        diagnose_cmd=f"codeprobe validate {path} --json",
+        terminal=True,
+        next_steps=[
+            (
+                "Re-mine to regenerate ground truth",
+                f"codeprobe mine {path} --dual-verify",
+            ),
+        ],
+        detail={"path": path, "missing_ground_truth_tasks": missing},
+    )
+
+
 def _print_dry_run(estimate: DryRunEstimate) -> None:
     """Pretty-print a DryRunEstimate to stdout."""
     cost_lo, cost_hi = estimate.estimated_cost_range
@@ -673,6 +735,10 @@ def run_eval(
                     },
                 )
             click.echo(f"Suite '{suite.name}': {len(task_dirs)}/{pre_count} tasks selected")
+
+        # Fail loud on a stale/interrupted mine run before any adapter spawns
+        # (codeprobe-yxex) — applies whether or not a suite filter was given.
+        _check_ground_truth_present(task_dirs, path)
 
         configs_to_run = experiment.configs
         if not configs_to_run:
