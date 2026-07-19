@@ -768,6 +768,9 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
     ``git clean -fd``.  Always excludes ``.codeprobe``,
     ``.codeprobe-worktrees``, and any directories containing
     ``experiment.json`` (codeprobe experiment dirs).
+
+    Raises ``subprocess.CalledProcessError`` if either step fails, so callers
+    can tell a clean workspace from a dirty one.
     """
     # ``--staged --worktree`` reverts BOTH the index and the working tree to
     # HEAD. A plain ``git restore .`` only touches the working tree, so an
@@ -775,17 +778,25 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
     # leave staged tracked changes behind — and the next task's pin
     # (``git checkout``) then fails with "your local changes would be
     # overwritten" because a pooled worktree is reused dirty (codeprobe-9tk).
-    result = subprocess.run(
-        ["git", "restore", "--staged", "--worktree", "."],
-        cwd=workdir,
-        capture_output=True,
-    )
+    restore_cmd = ["git", "restore", "--staged", "--worktree", "."]
+    result = subprocess.run(restore_cmd, cwd=workdir, capture_output=True)
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace")
-        # "could not resolve HEAD" is expected in a truly empty/detached
-        # worktree — not worth warning about.
+        # "could not resolve HEAD" is expected in a truly empty worktree:
+        # there is no commit to restore to, so nothing tracked can be dirty.
         if "could not resolve" not in stderr:
-            logger.debug("git restore in %s: %s", workdir, stderr)
+            # Any other failure left tracked files holding the previous
+            # trial's content. ``git clean`` below only removes UNTRACKED
+            # files, so logging this and carrying on reported a dirty
+            # worktree as successfully reset and handed the next trial the
+            # prior agent's source edits — the exact contamination the
+            # quarantine is meant to stop (codeprobe-qn2f).
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                restore_cmd,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
     clean_cmd = [
         "git",
         "clean",
@@ -923,20 +934,58 @@ def cleanup_multi_repo_workspace(workspace: Path) -> None:
         logger.warning("Failed to remove %s: %s", repos_root, exc)
 
 
+class IsolationError(RuntimeError):
+    """Base for pool-level isolation failures.
+
+    Always a system error: the harness, not the agent, is at fault.
+    """
+
+
+class WorktreeResetError(IsolationError):
+    """A workspace could not be reset to a clean state.
+
+    The workspace still holds the previous trial's edits, generated answers,
+    or staged files, so it must never be handed to another trial.
+    """
+
+    def __init__(self, workspace: Path, cause: BaseException) -> None:
+        super().__init__(f"Worktree reset failed for {workspace}: {cause}")
+        self.workspace = workspace
+
+
+class WorktreePoolExhaustedError(IsolationError):
+    """Every workspace in the pool has been quarantined.
+
+    Raised by ``acquire()`` instead of blocking forever on a pool that can
+    never refill.
+    """
+
+
 @runtime_checkable
 class IsolationStrategy(Protocol):
     """Protocol for workspace isolation strategies."""
 
     def acquire(self) -> Path:
-        """Get an isolated workspace path (blocks until one is available)."""
+        """Get an isolated workspace path (blocks until one is available).
+
+        Raises ``WorktreePoolExhaustedError`` when no workspace can ever become
+        available again.
+        """
         ...
 
     def reset(self, workspace: Path) -> None:
-        """Reset the workspace to a clean state."""
+        """Reset the workspace to a clean state.
+
+        Raises ``WorktreeResetError`` if the workspace is still dirty.
+        """
         ...
 
     def release(self, workspace: Path) -> None:
-        """Return the workspace to the pool."""
+        """Return the workspace to the pool.
+
+        Only a successfully reset workspace is returned. One that fails to
+        reset is quarantined and ``WorktreeResetError`` is re-raised.
+        """
         ...
 
     def cleanup(self) -> None:
@@ -960,8 +1009,12 @@ class WorktreeIsolation:
         if namespace:
             base_name = f"{base_name}-{namespace}"
         self._base_dir = self._repo_path / base_name
-        self._available: queue.Queue[Path] = queue.Queue()
+        # ``None`` is a poison pill: it marks a pool where every slot has
+        # been quarantined, so blocked acquirers wake instead of hanging.
+        self._available: queue.Queue[Path | None] = queue.Queue()
         self._all_paths: list[Path] = []
+        self._quarantined: list[Path] = []
+        self._usable = 0
         self._lock = threading.Lock()
         self._created = False
 
@@ -983,6 +1036,7 @@ class WorktreeIsolation:
                     self._add_worktree(wt_path)
                 self._all_paths.append(wt_path)
                 self._available.put(wt_path)
+            self._usable = self._pool_size
             self._created = True
 
     def _add_worktree(self, wt_path: Path) -> None:
@@ -1013,14 +1067,39 @@ class WorktreeIsolation:
                 capture_output=True,
             )
 
+    @property
+    def quarantined(self) -> tuple[Path, ...]:
+        """Slots retired after a failed reset; never reused."""
+        with self._lock:
+            return tuple(self._quarantined)
+
     def acquire(self) -> Path:
-        """Get a worktree from the pool (blocks until available)."""
+        """Get a worktree from the pool (blocks until available).
+
+        Raises ``WorktreePoolExhaustedError`` once every slot has been
+        quarantined — otherwise a caller would block on a pool that can
+        never refill.
+        """
         if not self._created:
             self._create_pool()
-        return self._available.get()
+        workspace = self._available.get()
+        if workspace is None:
+            # Leave the pill in place so every other waiter wakes too.
+            self._available.put(None)
+            raise WorktreePoolExhaustedError(
+                f"All {self._pool_size} worktrees under {self._base_dir} were "
+                "quarantined after failed resets"
+            )
+        return workspace
 
     def reset(self, workspace: Path) -> None:
-        """Reset a worktree to clean state."""
+        """Reset a worktree to clean state.
+
+        Raises ``WorktreeResetError`` when the workspace is still dirty. The
+        caller owns the decision of what to do with a contaminated slot;
+        swallowing the failure here let a later trial inherit the previous
+        agent's edits and score against them (codeprobe-qn2f).
+        """
         # Multi-repo layouts are full git clones under workspace/repos/;
         # ``git clean -fd`` refuses to remove nested git repos, so they
         # must be removed explicitly or task N's repos/ leaks into task
@@ -1028,20 +1107,39 @@ class WorktreeIsolation:
         cleanup_multi_repo_workspace(workspace)
         try:
             git_restore_clean(workspace)
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                "Worktree reset failed for %s (exit %d): %s",
-                workspace,
-                exc.returncode,
-                exc.stderr.decode(errors="replace") if exc.stderr else "",
-            )
-        except OSError as exc:
-            logger.warning("Worktree reset failed for %s: %s", workspace, exc)
+        except (subprocess.CalledProcessError, OSError) as exc:
+            raise WorktreeResetError(workspace, exc) from exc
 
     def release(self, workspace: Path) -> None:
-        """Reset and return a worktree to the pool."""
-        self.reset(workspace)
+        """Reset and return a worktree to the pool.
+
+        A worktree that fails to reset is quarantined instead: it never
+        re-enters the pool, usable capacity shrinks by one, and the failure
+        propagates so the caller can record it.
+
+        Catches broadly on purpose. A slot that neither returns to the queue
+        nor decrements ``_usable`` is worse than either outcome: the pool
+        silently loses capacity, never reaches the exhausted state, and
+        blocked acquirers wait on a refill that can never come. Quarantining
+        on *any* reset failure keeps that accounting honest even when a
+        subclass overrides ``reset`` with its own exception type.
+        """
+        try:
+            self.reset(workspace)
+        except Exception:  # noqa: BLE001 — see docstring; re-raised below
+            self._quarantine(workspace)
+            raise
         self._available.put(workspace)
+
+    def _quarantine(self, workspace: Path) -> None:
+        """Retire a contaminated slot, poisoning the pool when none remain."""
+        with self._lock:
+            self._quarantined.append(workspace)
+            self._usable -= 1
+            exhausted = self._usable <= 0
+        logger.error("Quarantined contaminated worktree %s", workspace)
+        if exhausted:
+            self._available.put(None)
 
     def cleanup(self) -> None:
         """Remove all managed worktrees."""
@@ -1078,4 +1176,16 @@ class WorktreeIsolation:
                 self._base_dir.rmdir()
         except OSError:
             pass
+        # Drain the queue and reset quarantine bookkeeping. Without this a
+        # poison pill (or a stale slot path) left over from this life-cycle
+        # would be handed to the first acquire() after the pool is rebuilt,
+        # failing a healthy pool that has nothing quarantined in it.
+        with self._lock:
+            while True:
+                try:
+                    self._available.get_nowait()
+                except queue.Empty:
+                    break
+            self._quarantined.clear()
+            self._usable = 0
         self._created = False

@@ -1246,6 +1246,9 @@ class TestWorktreeIsolation:
         wt = tmp_path / "worktree"
         wt.mkdir()
         with patch("subprocess.run") as mock_run:
+            # git_restore_clean now raises on a non-zero restore, so the mock
+            # has to model a successful git rather than a bare MagicMock.
+            mock_run.return_value.returncode = 0
             iso.reset(wt)
             assert mock_run.call_count == 2
             calls = [c[0][0] for c in mock_run.call_args_list]
@@ -1269,7 +1272,8 @@ class TestWorktreeIsolation:
             iso = WorktreeIsolation(tmp_path, pool_size=1)
             iso._create_pool()
             wt = iso.acquire()
-        with patch("subprocess.run"):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
             iso.release(wt)
         # Should be available again
         assert not iso._available.empty()

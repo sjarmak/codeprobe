@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -33,6 +33,7 @@ from codeprobe.core.events import (
     TaskStarted,
 )
 from codeprobe.core.isolation import (
+    IsolationError,
     IsolationStrategy,
     WorktreeIsolation,
     git_pin_commit,
@@ -205,7 +206,7 @@ def _classify_error(exc: BaseException) -> str:
         return "quota"
     if isinstance(exc, subprocess.TimeoutExpired):
         return "timeout"
-    if isinstance(exc, (OSError, MemoryError)):
+    if isinstance(exc, (OSError, MemoryError, IsolationError)):
         return "system"
     return "agent"
 
@@ -1246,6 +1247,11 @@ def execute_config(
     # (codeprobe-9xrl).
     quota_exhausted = False
     quota_message: str | None = None
+    # Set when a pooled worktree could not be reset after a trial. The slot is
+    # quarantined by the isolation layer, so the run halts rather than scoring
+    # later trials against a shrinking pool of possibly dirty slots
+    # (codeprobe-qn2f).
+    isolation_failed = False
 
     def _handle_result(task_result: TaskResult) -> None:
         nonlocal budget_warning_emitted
@@ -1344,10 +1350,11 @@ def execute_config(
         )
 
     def _should_halt() -> bool:
-        """Stop dispatching new trials when budget is exhausted OR a
-        quota error has been detected (codeprobe-9xrl).
+        """Stop dispatching new trials when budget is exhausted, a quota
+        error has been detected (codeprobe-9xrl), or a worktree reset failed
+        and its slot was quarantined (codeprobe-qn2f).
         """
-        return _budget_exceeded() or quota_exhausted
+        return _budget_exceeded() or quota_exhausted or isolation_failed
 
     # Quarantine sibling experiment dirs at the repo root for the duration of
     # the dispatch.  Without this, an agent in a slot worktree can ``cd ../..``
@@ -1374,6 +1381,23 @@ def execute_config(
         )
         owns_isolation = True
 
+    def _release_slot(wt: Path, task_result: TaskResult | None) -> None:
+        """Return *wt* to the pool, recording a quarantine if it fails.
+
+        Never raises: the trial that just ran produced valid output and must
+        survive. The failure is recorded on that trial's metadata and on the
+        run-level flag ``_should_halt`` reads, so no later trial is scored
+        against a shrunken pool.
+        """
+        nonlocal isolation_failed
+        try:
+            active_isolation.release(wt)
+        except Exception as exc:  # noqa: BLE001 — runs in a finally
+            isolation_failed = True
+            logger.error("[%s] %s", experiment_config.label, exc)
+            if task_result is not None:
+                task_result.completed.metadata["isolation_reset_failed"] = str(exc)
+
     def _run_in_slot(
         task_dir: Path,
         repeat_index: int,
@@ -1398,6 +1422,7 @@ def execute_config(
                 )
             )
         wt = active_isolation.acquire()
+        task_result: TaskResult | None = None
         try:
             sess_env = precomputed_session_env
             if sess_env is None and session_namespace is not None:
@@ -1412,14 +1437,15 @@ def execute_config(
                     namespace=session_namespace,
                     pristine=pristine_config,
                 )
-            return _run_one(
+            task_result = _run_one(
                 task_dir,
                 repeat_index=repeat_index,
                 worktree_path=wt,
                 session_env=sess_env,
             )
+            return task_result
         finally:
-            active_isolation.release(wt)
+            _release_slot(wt, task_result)
 
     with quarantine_cm:
         try:
@@ -1443,6 +1469,12 @@ def execute_config(
                                 f"{len(pending_work) - idx} trials"
                             )
                             break
+                        if isolation_failed:
+                            _budget_msg(
+                                "Worktree reset failed — slot quarantined; "
+                                "halting remaining trials"
+                            )
+                            break
                         if _budget_exceeded():
                             _budget_msg(_budget_halt_message())
                             break
@@ -1460,6 +1492,12 @@ def execute_config(
                             # dropped every already-collected result.
                             task_result = _crash_result(task_dir, repeat_index, exc)
                         _handle_result(task_result)
+                        if isolation_failed:
+                            _budget_msg(
+                                "Worktree reset failed — slot quarantined; "
+                                "halting remaining trials"
+                            )
+                            break
                 finally:
                     _cleanup_session_namespace(adapter, session_namespace)
             else:
@@ -1479,35 +1517,38 @@ def execute_config(
                             ): (td, ri)
                             for td, ri in pending_work
                         }
+                        halt_announced = False
                         for future in as_completed(future_to_work):
                             task_dir, repeat_index = future_to_work[future]
                             try:
                                 task_result = future.result()
-                            except (
-                                Exception
-                            ) as exc:  # noqa: BLE001 — preserve, don't drop
+                            except CancelledError:
+                                continue
+                            except Exception as exc:  # noqa: BLE001 — preserve, don't drop
                                 task_result = _crash_result(
                                     task_dir, repeat_index, exc
                                 )
                             _handle_result(task_result)
 
-                            # Halt on either budget exhaustion or quota
-                            # detection (codeprobe-9xrl). Both are
-                            # unrecoverable within this run; only
-                            # not-yet-started futures are cancellable, but
-                            # that's still cheaper than letting them all
-                            # run to a guaranteed failure.
-                            if _should_halt():
+                            # Keep draining after cancelling: in-flight trials
+                            # have already burned their cost, and their results
+                            # must not be silently dropped.
+                            if _should_halt() and not halt_announced:
+                                halt_announced = True
                                 if quota_exhausted:
                                     _budget_msg(
                                         "OAuth quota exhausted — cancelling "
                                         "pending trials"
                                     )
+                                elif isolation_failed:
+                                    _budget_msg(
+                                        "Worktree reset failed — slot "
+                                        "quarantined; cancelling pending trials"
+                                    )
                                 else:
                                     _budget_msg(_budget_halt_message())
                                 for f in future_to_work:
                                     f.cancel()
-                                break
                 finally:
                     _cleanup_session_namespace(adapter, session_namespace)
         finally:
