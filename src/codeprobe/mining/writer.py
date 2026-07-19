@@ -1049,6 +1049,15 @@ def resolve_checkpoint_scripts(task: Task) -> dict[str, str] | None:
     return None
 
 
+def _is_safe_path_component(name: str) -> bool:
+    """True when *name* is a bare filename safe to join onto an output dir.
+
+    Rejects empty strings and anything with a directory part, so a value
+    read out of task.toml can't escape the directory it's written into.
+    """
+    return bool(name) and Path(name).name == name
+
+
 class CheckpointScriptError(ValueError):
     """A task declares checkpoints whose verifier scripts cannot be emitted.
 
@@ -1060,24 +1069,7 @@ class CheckpointScriptError(ValueError):
     """
 
 
-def _resolve_checkpoint_script_map(
-    task: Task,
-    checkpoint_scripts: dict[str, str] | None,
-) -> dict[str, str]:
-    """Resolve the verifier-filename -> bash-body map for *task*.
-
-    Falls back to the built-in scripts for the task's category when the
-    caller didn't pass an explicit map, keeping the mine CLI a one-liner
-    without every dispatcher importing category-specific constants.
-
-    Validation and emission share this resolver so they can never disagree
-    about which map is in play (an explicit ``{}`` falls through to category
-    resolution in both).
-    """
-    return checkpoint_scripts or resolve_checkpoint_scripts(task) or {}
-
-
-def _has_executable_body(body: str) -> bool:
+def _has_non_comment_line(body: str) -> bool:
     """True when *body* holds at least one non-blank, non-comment line.
 
     A shebang-only or all-comments script is syntactically a bash file but
@@ -1089,28 +1081,36 @@ def _has_executable_body(body: str) -> bool:
     )
 
 
-def validate_checkpoint_scripts(
+def resolve_verified_checkpoint_scripts(
     task: Task,
     checkpoint_scripts: dict[str, str] | None = None,
-) -> None:
-    """Raise :class:`CheckpointScriptError` if a declared checkpoint has no
-    usable verifier script.
+) -> dict[str, str]:
+    """Return the verifier-filename -> bash-body map *task* will be written with.
 
-    Reports every offending checkpoint in one error rather than failing on
-    the first, so a caller fixing a task definition sees the whole list.
-    No-op when the task declares no checkpoints.
+    Falls back to the built-in scripts for the task's category when the
+    caller didn't pass an explicit map, keeping the mine CLI a one-liner
+    without every dispatcher importing category-specific constants.
+
+    Raises :class:`CheckpointScriptError` if any declared checkpoint has no
+    usable script in that map, reporting every offending checkpoint in one
+    error rather than failing on the first. Returns ``{}`` for a task that
+    declares no checkpoints.
+
+    Callers that only want the check discard the return value; emission
+    writes from it directly, so validation and emission cannot disagree
+    about which map is in play.
     """
     checkpoints = task.verification.checkpoints
     if not checkpoints:
-        return
+        return {}
 
-    scripts = _resolve_checkpoint_script_map(task, checkpoint_scripts)
+    scripts = checkpoint_scripts or resolve_checkpoint_scripts(task) or {}
     problems: list[str] = []
     for cp in checkpoints:
         # Checkpoint.verifier is copied verbatim out of task.toml by the
         # loader and joined onto verifiers_dir below, so it needs the same
         # traversal check write_task_dir applies to task.id.
-        if not cp.verifier or Path(cp.verifier).name != cp.verifier:
+        if not _is_safe_path_component(cp.verifier):
             problems.append(
                 f"{cp.name!r}: unsafe verifier filename {cp.verifier!r}"
             )
@@ -1120,7 +1120,7 @@ def validate_checkpoint_scripts(
             problems.append(
                 f"{cp.name!r}: no script provided for verifier {cp.verifier!r}"
             )
-        elif not _has_executable_body(body):
+        elif not _has_non_comment_line(body):
             problems.append(
                 f"{cp.name!r}: verifier {cp.verifier!r} has no executable body"
             )
@@ -1130,6 +1130,7 @@ def validate_checkpoint_scripts(
             f"task {task.id!r} declares checkpoints without usable verifier "
             f"scripts: {'; '.join(problems)}"
         )
+    return scripts
 
 
 def _write_checkpoints(
@@ -1153,10 +1154,9 @@ def _write_checkpoints(
     if not checkpoints:
         return
 
-    # Re-validated here (not only at the write_task_dir boundary) so direct
-    # callers of this helper can't route around the check.
-    validate_checkpoint_scripts(task, checkpoint_scripts)
-    scripts = _resolve_checkpoint_script_map(task, checkpoint_scripts)
+    # Resolved here rather than taken on trust, so direct callers of this
+    # helper get the same check write_task_dir applies at its boundary.
+    scripts = resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
 
     verifiers_dir = tests_dir / "verifiers"
     verifiers_dir.mkdir(parents=True, exist_ok=True)
@@ -1204,13 +1204,12 @@ def write_quarantined_task(
     Returns the directory path. Raises :class:`ValueError` if *task_id* is
     unsafe for filesystem use (matches :func:`write_task_dir`).
     """
-    safe_id = Path(task_id).name
-    if not safe_id or safe_id != task_id:
+    if not _is_safe_path_component(task_id):
         raise ValueError(
             f"Invalid task id for quarantine output: {task_id!r}"
         )
 
-    task_dir = base_dir / safe_id
+    task_dir = base_dir / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
     instruction = (
@@ -1280,17 +1279,15 @@ def write_task_dir(
     provenance block records the backend names that contributed to the
     curated file set.
     """
-    # Validate task.id is safe for filesystem use (no path traversal)
-    safe_id = Path(task.id).name
-    if not safe_id or safe_id != task.id:
+    if not _is_safe_path_component(task.id):
         raise ValueError(f"Invalid task id for filesystem use: {task.id!r}")
 
     # Checked before anything hits disk: a task whose checkpoints can't be
     # backed by real verifiers must not leave a half-written directory that
     # a later run would score as passing.
-    validate_checkpoint_scripts(task, checkpoint_scripts)
+    resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
 
-    task_dir = base_dir / safe_id
+    task_dir = base_dir / task.id
     tests_dir = task_dir / "tests"
     tests_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1305,7 +1302,7 @@ def write_task_dir(
             task_dir,
             tests_dir,
             repo_path,
-            safe_id,
+            task.id,
             curation_backends=curation_backends,
         )
         _write_checkpoints(task, tests_dir, checkpoint_scripts)
@@ -1314,7 +1311,7 @@ def write_task_dir(
 
     # Dual-verification tasks: direct test.sh + artifact answer.json
     if task.verification.verification_mode == "dual":
-        _write_dual_task(task, task_dir, tests_dir, repo_path, safe_id)
+        _write_dual_task(task, task_dir, tests_dir, repo_path, task.id)
         _write_checkpoints(task, tests_dir, checkpoint_scripts)
         _emit_confidence(task_dir)
         return task_dir
@@ -1384,7 +1381,7 @@ def write_task_dir(
             repo_path,
             language=language,
             ground_truth=ground_truth,
-            header=f"Weighted-checklist verification for task {safe_id}",
+            header=f"Weighted-checklist verification for task {task.id}",
         )
         # Composite is a float in [0, 1] → downstream must use ContinuousScorer.
         task = replace(
@@ -1395,7 +1392,7 @@ def write_task_dir(
         test_script = _build_test_script(
             task.verification.command,
             repo_path,
-            header=f"Verification script for task {safe_id}",
+            header=f"Verification script for task {task.id}",
         )
     test_sh_path = tests_dir / "test.sh"
     test_sh_path.write_text(test_script, encoding="utf-8")

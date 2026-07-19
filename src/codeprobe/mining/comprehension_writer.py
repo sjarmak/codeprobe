@@ -11,7 +11,11 @@ from dataclasses import asdict
 from pathlib import Path
 
 from codeprobe.mining.comprehension import _TASK_SPECS, ComprehensionTaskSpec
-from codeprobe.mining.writer import _write_checkpoints, validate_checkpoint_scripts
+from codeprobe.mining.writer import (
+    _is_safe_path_component,
+    _write_checkpoints,
+    resolve_verified_checkpoint_scripts,
+)
 from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -93,31 +97,31 @@ def write_comprehension_tasks(
 
     registry = specs if specs is not None else _TASK_SPECS
 
-    # Validate every writable task's checkpoint contract up front: a bad
-    # verifier map on task N must not leave tasks 1..N-1 on disk. Scripts
-    # resolve from the task category here, so None is the whole map.
-    for task in tasks:
-        if registry.get(task.id) is not None:
-            validate_checkpoint_scripts(task, None)
-
+    # Vet every writable task before anything hits disk: a task N that can't
+    # be written must not leave tasks 1..N-1 behind. Scripts resolve from the
+    # task category here, so None is the whole map.
+    writable: list[tuple[Task, ComprehensionTaskSpec]] = []
     for task in tasks:
         spec = registry.get(task.id)
         if spec is None:
             logger.warning("No spec registered for task %s, skipping", task.id)
             continue
 
-        safe_id = Path(task.id).name
-        if not safe_id or safe_id != task.id:
+        if not _is_safe_path_component(task.id):
             raise ValueError(f"Invalid task id for filesystem use: {task.id!r}")
 
-        is_dual = task.verification.verification_mode == "dual"
-        if is_dual and repo_path is None:
+        if task.verification.verification_mode == "dual" and repo_path is None:
             raise ValueError(
                 f"task {task.id}: dual comprehension tasks require repo_path "
                 "for the direct-leg TASK_REPO_ROOT fallback"
             )
 
-        task_dir = output_dir / safe_id
+        resolve_verified_checkpoint_scripts(task, None)
+        writable.append((task, spec))
+
+    for task, spec in writable:
+        is_dual = task.verification.verification_mode == "dual"
+        task_dir = output_dir / task.id
         tests_dir = task_dir / "tests"
         tests_dir.mkdir(parents=True, exist_ok=True)
 
@@ -154,7 +158,7 @@ def write_comprehension_tasks(
             test_sh = tests_dir / "test.sh"
             test_sh.write_text(
                 _DUAL_DIRECT_LEG_TEMPLATE.format(
-                    task_id=safe_id, repo_default=repo_path
+                    task_id=task.id, repo_default=repo_path
                 ),
                 encoding="utf-8",
             )
