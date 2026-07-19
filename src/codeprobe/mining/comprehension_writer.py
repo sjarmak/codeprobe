@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from codeprobe.mining.comprehension import _TASK_SPECS, ComprehensionTaskSpec
-from codeprobe.mining.writer import _write_checkpoints
+from codeprobe.mining.writer import _write_checkpoints, validate_checkpoint_scripts
 from codeprobe.models.task import Task
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,14 @@ def write_comprehension_tasks(
     written: list[Path] = []
 
     registry = specs if specs is not None else _TASK_SPECS
+
+    # Validate every writable task's checkpoint contract up front: a bad
+    # verifier map on task N must not leave tasks 1..N-1 on disk. Scripts
+    # resolve from the task category here, so None is the whole map.
+    for task in tasks:
+        if registry.get(task.id) is not None:
+            validate_checkpoint_scripts(task, None)
+
     for task in tasks:
         spec = registry.get(task.id)
         if spec is None:

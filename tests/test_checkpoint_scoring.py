@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from codeprobe.core.scoring import CheckpointScorer
-from codeprobe.models.task import Checkpoint, TaskVerification
+from codeprobe.mining.writer import CheckpointScriptError, write_task_dir
+from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -367,3 +368,92 @@ verifier = "cp3.sh"
         # 0.2 * 1.0 + 0.45 * 0.0 + 0.35 * 1.0 = 0.55
         assert result.score == pytest.approx(0.55)
         assert result.passed is True
+
+
+class TestWriterScorerRoundTrip:
+    """The writer's own output must never score full credit unverified.
+
+    ``_run_verifier`` treats exit-zero-with-no-JSON as 1.0, so any placeholder
+    the mining writer emits for a checkpoint it cannot implement is worth full
+    marks. These tests pin both halves of that coupling.
+    """
+
+    _HISTORICAL_STUB = "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"
+
+    def _task(self, verifier: str) -> Task:
+        return Task(
+            id="roundtrip-cp-001",
+            repo="example/repo",
+            metadata=TaskMetadata(
+                name="roundtrip-cp-001",
+                category="sdlc",
+                task_type="sdlc_code_change",
+                issue_title="X",
+                issue_body="Y",
+                language="python",
+            ),
+            verification=TaskVerification(
+                type="test_script",
+                command="bash tests/test.sh",
+                reward_type="checkpoint",
+                checkpoints=(
+                    Checkpoint(name="cp", weight=1.0, verifier=verifier),
+                ),
+            ),
+        )
+
+    def test_stub_verifier_would_score_full_credit(self, tmp_path: Path) -> None:
+        """Why the writer must refuse: this body is worth 1.0 to the scorer."""
+        task_dir = tmp_path / "task"
+        _make_verifier(task_dir, "cp.sh", self._HISTORICAL_STUB)
+
+        scorer = CheckpointScorer(
+            metadata_checkpoints=[
+                {"name": "cp", "weight": 1.0, "verifier": "cp.sh"},
+            ]
+        )
+        result = scorer.score("", task_dir)
+        assert result.score == pytest.approx(1.0)
+
+    def test_writer_refuses_to_emit_a_scorable_stub(self, tmp_path: Path) -> None:
+        """The end-to-end path the original probe exercised, now closed."""
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        base_dir = tmp_path / "tasks"
+        base_dir.mkdir()
+
+        with pytest.raises(CheckpointScriptError):
+            write_task_dir(
+                self._task("cp.sh"),
+                base_dir,
+                repo_path,
+                checkpoint_scripts={"misspelled.sh": "#!/bin/bash\nexit 1\n"},
+            )
+
+        assert list(base_dir.iterdir()) == [], (
+            "no task directory may exist for the scorer to award credit on"
+        )
+
+    def test_real_failing_verifier_round_trips_to_zero(self, tmp_path: Path) -> None:
+        """A genuine verifier still writes, and a failing one scores 0.0."""
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        base_dir = tmp_path / "tasks"
+        base_dir.mkdir()
+
+        task_dir = write_task_dir(
+            self._task("cp.sh"),
+            base_dir,
+            repo_path,
+            checkpoint_scripts={
+                "cp.sh": '#!/usr/bin/env bash\necho \'{"score": 0.0}\'\nexit 1\n'
+            },
+        )
+
+        scorer = CheckpointScorer(
+            metadata_checkpoints=[
+                {"name": "cp", "weight": 1.0, "verifier": "cp.sh"},
+            ]
+        )
+        result = scorer.score("", task_dir)
+        assert result.score == pytest.approx(0.0)

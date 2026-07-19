@@ -26,6 +26,8 @@ from codeprobe.mining.org_scale import (
     _change_scope_checkpoints,
 )
 from codeprobe.mining.writer import (
+    CheckpointScriptError,
+    _write_checkpoints,
     resolve_checkpoint_scripts,
     write_task_dir,
 )
@@ -108,10 +110,15 @@ class TestChangeScopeAuditEmitsCheckpoints:
         for name in scripts:
             path = verifiers_dir / name
             assert path.stat().st_mode & 0o111, f"{name} must be executable"
-            # Each script must have real content (not a stub).
+            # Each script must be the real built-in body, byte-for-byte.
+            # A weaker "looks non-stub" assertion (the previous `... or
+            # "answer" in body` form) passes for almost any text and would
+            # not have caught the exit-0 stub this suite now guards against.
             body = path.read_text()
-            assert "#!/usr/bin/env bash" in body
-            assert body.strip().splitlines()[-1] != "exit 0" or "answer" in body
+            assert body == CHANGE_SCOPE_CHECKPOINT_SCRIPTS[name], (
+                f"{name} must be emitted verbatim from "
+                "CHANGE_SCOPE_CHECKPOINT_SCRIPTS, not a placeholder"
+            )
 
     def test_writes_checkpoints_manifest(self, tmp_path: Path) -> None:
         task = _make_change_scope_task()
@@ -308,3 +315,155 @@ class TestExplicitCheckpointScripts:
         b_body = (task_dir / "tests" / "verifiers" / "b.sh").read_text()
         assert "MARKER-A" in a_body
         assert "MARKER-B" in b_body
+
+
+def _make_custom_checkpoint_task(*verifiers: str) -> Task:
+    """A task declaring one checkpoint per name in *verifiers*, weights even."""
+    weight = 1.0 / len(verifiers)
+    return Task(
+        id="custom-cp-validate",
+        repo="example/repo",
+        metadata=TaskMetadata(
+            name="custom-cp-validate",
+            category="sdlc",
+            task_type="sdlc_code_change",
+            issue_title="X",
+            issue_body="Y",
+            language="python",
+        ),
+        verification=TaskVerification(
+            type="test_script",
+            command="bash tests/test.sh",
+            reward_type="checkpoint",
+            checkpoints=tuple(
+                Checkpoint(name=f"cp{i}", weight=weight, verifier=name)
+                for i, name in enumerate(verifiers)
+            ),
+        ),
+    )
+
+
+class TestCheckpointScriptValidation:
+    """A declared checkpoint with no real script aborts the write.
+
+    Regression for the silent-pass-through class: writer used to emit an
+    ``exit 0`` placeholder for any verifier missing from the script map, and
+    ``CheckpointScorer`` reads exit-zero-with-no-JSON as score 1.0 — so a
+    typo in a verifier name handed out full credit.
+    """
+
+    def _dirs(self, tmp_path: Path) -> tuple[Path, Path]:
+        repo_path = tmp_path / "repo"
+        repo_path.mkdir()
+        base_dir = tmp_path / "tasks"
+        base_dir.mkdir()
+        return repo_path, base_dir
+
+    def test_misspelled_verifier_raises_and_writes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        task = _make_custom_checkpoint_task("a.sh", "b.sh")
+        repo_path, base_dir = self._dirs(tmp_path)
+
+        with pytest.raises(CheckpointScriptError) as excinfo:
+            write_task_dir(
+                task,
+                base_dir,
+                repo_path,
+                checkpoint_scripts={
+                    "a.sh": "#!/usr/bin/env bash\nexit 1\n",
+                    "typo_b.sh": "#!/usr/bin/env bash\nexit 1\n",
+                },
+            )
+
+        assert "b.sh" in str(excinfo.value)
+        assert list(base_dir.iterdir()) == [], (
+            "a task whose checkpoints cannot be verified must leave "
+            "nothing on disk"
+        )
+
+    def test_error_names_every_offending_checkpoint(self, tmp_path: Path) -> None:
+        task = _make_custom_checkpoint_task("a.sh", "b.sh")
+        repo_path, base_dir = self._dirs(tmp_path)
+
+        with pytest.raises(CheckpointScriptError) as excinfo:
+            write_task_dir(task, base_dir, repo_path, checkpoint_scripts={})
+
+        message = str(excinfo.value)
+        assert "a.sh" in message and "b.sh" in message
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("   \n\n\t\n", id="whitespace-only"),
+            pytest.param("#!/usr/bin/env bash\n", id="shebang-only"),
+            pytest.param(
+                "#!/usr/bin/env bash\n# TODO: verify something\n",
+                id="comments-only",
+            ),
+        ],
+    )
+    def test_body_without_executable_lines_raises(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """A script that parses as bash but checks nothing exits 0 == score 1.0."""
+        task = _make_custom_checkpoint_task("a.sh")
+        repo_path, base_dir = self._dirs(tmp_path)
+
+        with pytest.raises(CheckpointScriptError) as excinfo:
+            write_task_dir(
+                task, base_dir, repo_path, checkpoint_scripts={"a.sh": body}
+            )
+
+        assert "a.sh" in str(excinfo.value)
+        assert list(base_dir.iterdir()) == []
+
+    def test_traversal_verifier_name_raises(self, tmp_path: Path) -> None:
+        """Checkpoint.verifier is loader-verbatim from task.toml and is joined
+        onto verifiers_dir then chmod 0755 — it needs the task.id check."""
+        escapee = tmp_path / "escapee.sh"
+        task = _make_custom_checkpoint_task("../../escapee.sh")
+        repo_path, base_dir = self._dirs(tmp_path)
+
+        with pytest.raises(CheckpointScriptError) as excinfo:
+            write_task_dir(
+                task,
+                base_dir,
+                repo_path,
+                checkpoint_scripts={
+                    "../../escapee.sh": "#!/usr/bin/env bash\nexit 0\n"
+                },
+            )
+
+        assert "unsafe verifier filename" in str(excinfo.value)
+        assert not escapee.exists(), "verifier must not be written outside the task tree"
+
+    def test_direct_write_checkpoints_call_cannot_bypass(
+        self, tmp_path: Path
+    ) -> None:
+        """comprehension_writer calls the helper directly, not via write_task_dir."""
+        task = _make_custom_checkpoint_task("a.sh")
+        tests_dir = tmp_path / "task" / "tests"
+        tests_dir.mkdir(parents=True)
+
+        with pytest.raises(CheckpointScriptError):
+            _write_checkpoints(task, tests_dir, {"other.sh": "#!/bin/bash\nexit 1\n"})
+
+        assert not (tests_dir / "verifiers").exists()
+
+    def test_explicit_empty_map_falls_through_to_category_scripts(
+        self, tmp_path: Path
+    ) -> None:
+        """`checkpoint_scripts or resolve(...)` treats {} as "resolve for me".
+
+        Validation shares that resolver, so a change-scope task passes with an
+        explicit {} rather than failing on a map the writer never uses.
+        """
+        task = _make_change_scope_task()
+        repo_path, base_dir = self._dirs(tmp_path)
+
+        task_dir = write_task_dir(task, base_dir, repo_path, checkpoint_scripts={})
+
+        body = (task_dir / "tests" / "verifiers" / "step1_answer_provided.sh").read_text()
+        assert body == CHANGE_SCOPE_CHECKPOINT_SCRIPTS["step1_answer_provided.sh"]
