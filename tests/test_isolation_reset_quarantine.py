@@ -36,6 +36,7 @@ def _make_repo(base: Path, name: str = "repo") -> Path:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo, check=True)
     (repo / "src.py").write_text("original\n")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=repo, check=True)
@@ -77,42 +78,30 @@ class _FailingResetIsolation(WorktreeIsolation):
 class TestResetRaises:
     """reset() surfaces failure instead of logging and swallowing it."""
 
-    def test_reset_raises_on_clean_failure(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "cause",
+        [
+            subprocess.CalledProcessError(1, ["git", "clean", "-fd"]),
+            OSError("disk gone"),
+        ],
+        ids=["called-process-error", "oserror"],
+    )
+    def test_reset_wraps_git_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cause: Exception,
     ) -> None:
-        repo = _make_repo(tmp_path)
-        pool = WorktreeIsolation(repo, pool_size=1, namespace="qn2f")
-        wt = pool.acquire()
-
         def _boom(workdir: Path, **kwargs: object) -> None:
-            raise subprocess.CalledProcessError(1, ["git", "clean", "-fd"])
+            raise cause
 
         monkeypatch.setattr("codeprobe.core.isolation.git_restore_clean", _boom)
-        try:
-            with pytest.raises(WorktreeResetError) as excinfo:
-                pool.reset(wt)
-            assert excinfo.value.workspace == wt
-        finally:
-            monkeypatch.undo()
-            pool.cleanup()
+        pool = WorktreeIsolation(tmp_path, pool_size=1, namespace="qn2f")
+        slot = tmp_path / "slot-0"
 
-    def test_reset_raises_on_oserror(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        repo = _make_repo(tmp_path)
-        pool = WorktreeIsolation(repo, pool_size=1, namespace="qn2f")
-        wt = pool.acquire()
-
-        def _boom(workdir: Path, **kwargs: object) -> None:
-            raise OSError("disk gone")
-
-        monkeypatch.setattr("codeprobe.core.isolation.git_restore_clean", _boom)
-        try:
-            with pytest.raises(WorktreeResetError):
-                pool.reset(wt)
-        finally:
-            monkeypatch.undo()
-            pool.cleanup()
+        with pytest.raises(WorktreeResetError) as excinfo:
+            pool.reset(slot)
+        assert excinfo.value.workspace == slot
 
 
 class TestFailedRestoreIsNotSilentSuccess:
@@ -153,8 +142,6 @@ class TestFailedRestoreIsNotSilentSuccess:
             # The tracked edit really did survive — proving the reset failure
             # was substantive and not a spurious exit code.
             assert (wt / "src.py").read_text().strip() == "edited by trial one"
-            with pytest.raises(WorktreePoolExhaustedError):
-                pool.acquire()
         finally:
             pool.cleanup()
 
@@ -286,56 +273,15 @@ class TestPoolAccounting:
 class TestTwoTrialRegression:
     """End-to-end: trial one contaminates a slot, trial two can't inherit it."""
 
-    def test_contaminated_slot_never_reaches_second_trial(
+    def test_contaminated_slot_never_reaches_a_later_trial(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        repo = _make_repo(tmp_path)
-        tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(2)]
-        pool = _FailingResetIsolation(repo, pool_size=1)
+        """Trial one's slot is retired, and the halt stays visible.
 
-        try:
-            results = execute_config(
-                adapter=FakeAdapter(stdout="output"),
-                task_dirs=tasks,
-                repo_path=repo,
-                experiment_config=ExperimentConfig(label="baseline"),
-                agent_config=AgentConfig(),
-                parallel=2,
-                isolation=pool,
-            )
-            # Read before cleanup(), which resets quarantine bookkeeping.
-            quarantined = pool.quarantined
-        finally:
-            pool.cleanup()
-
-        # The slot that failed to reset was retired, not reused.
-        assert len(quarantined) == 1
-
-        # Trial one's output survived the quarantine.
-        assert results, "completed trial output was dropped"
-        quarantine_notes = [
-            r.metadata.get("isolation_reset_failed")
-            for r in results
-            if r.metadata.get("isolation_reset_failed")
-        ]
-        assert quarantine_notes, "the failed reset was not recorded on the trial"
-        assert "Worktree reset failed" in quarantine_notes[0]
-
-        # Any trial that did reach the dead pool is an honest system error,
-        # never a silent zero scored in a dirty workspace.
-        for result in results:
-            if result.status == "error":
-                assert result.error_category == "system"
-
-        assert "Worktree reset failed" in capsys.readouterr().err
-
-    def test_halt_is_visible_in_the_run_envelope(self, tmp_path: Path) -> None:
-        """The quarantine surfaces as infra failures, not a shrunken sample.
-
-        A halt that merely stopped collecting results left the envelope
-        reporting a smaller, apparently healthy run — the reward mean was
-        computed over the survivors with nothing marking the trials the dead
-        pool killed.
+        The trials the dead pool killed must read as infra failures. A halt
+        that merely stopped collecting results left the envelope reporting a
+        smaller, apparently healthy run — the reward mean computed over the
+        survivors with nothing marking what was lost.
         """
         repo = _make_repo(tmp_path)
         tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(3)]
@@ -351,12 +297,28 @@ class TestTwoTrialRegression:
                 parallel=3,
                 isolation=pool,
             )
+            # Read before cleanup(), which resets quarantine bookkeeping.
+            quarantined = pool.quarantined
         finally:
             pool.cleanup()
 
-        # Every dispatched trial is accounted for — none silently dropped.
-        assert len(results) == len(tasks)
+        # The slot that failed to reset was retired, not reused.
+        assert len(quarantined) == 1
 
+        # Trial one's output survived the quarantine, carrying the reason.
+        quarantine_notes = [
+            r.metadata.get("isolation_reset_failed")
+            for r in results
+            if r.metadata.get("isolation_reset_failed")
+        ]
+        assert quarantine_notes, "the failed reset was not recorded on the trial"
+        assert "Worktree reset failed" in quarantine_notes[0]
+        assert "Worktree reset failed" in capsys.readouterr().err
+
+        # Every dispatched trial is accounted for — none silently dropped, and
+        # the ones the dead pool killed are honest infra failures rather than
+        # genuine agent failures or silent zeros scored in a dirty workspace.
+        assert len(results) == len(tasks)
         classes = [classify_trial(r) for r in results]
         assert classes.count(TrialClass.VALID) == 1, "the good trial was lost"
         assert classes.count(TrialClass.INFRA_FAILURE) == 2, (

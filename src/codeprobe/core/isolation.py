@@ -778,25 +778,22 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
     # leave staged tracked changes behind — and the next task's pin
     # (``git checkout``) then fails with "your local changes would be
     # overwritten" because a pooled worktree is reused dirty (codeprobe-9tk).
-    restore_cmd = ["git", "restore", "--staged", "--worktree", "."]
-    result = subprocess.run(restore_cmd, cwd=workdir, capture_output=True)
-    if result.returncode != 0:
-        stderr = result.stderr.decode(errors="replace")
-        # "could not resolve HEAD" is expected in a truly empty worktree:
-        # there is no commit to restore to, so nothing tracked can be dirty.
-        if "could not resolve" not in stderr:
-            # Any other failure left tracked files holding the previous
-            # trial's content. ``git clean`` below only removes UNTRACKED
-            # files, so logging this and carrying on reported a dirty
-            # worktree as successfully reset and handed the next trial the
-            # prior agent's source edits — the exact contamination the
-            # quarantine is meant to stop (codeprobe-qn2f).
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                restore_cmd,
-                output=result.stdout,
-                stderr=result.stderr,
-            )
+    restore = subprocess.run(
+        ["git", "restore", "--staged", "--worktree", "."],
+        cwd=workdir,
+        capture_output=True,
+    )
+    # "could not resolve HEAD" is expected in a truly empty worktree: there is
+    # no commit to restore to, so nothing tracked can be dirty. Any other
+    # failure left tracked files holding the previous trial's content, and the
+    # ``git clean`` below only removes UNTRACKED ones — so logging it and
+    # carrying on reported a dirty worktree as successfully reset and handed
+    # the next trial the prior agent's source edits (codeprobe-qn2f). Still
+    # run the clean before propagating, so a caller that catches this loses
+    # nothing it swept before.
+    restore_failed = (
+        restore.returncode != 0 and b"could not resolve" not in restore.stderr
+    )
     clean_cmd = [
         "git",
         "clean",
@@ -812,6 +809,8 @@ def git_restore_clean(workdir: Path, *, extra_excludes: tuple[str, ...] = ()) ->
     for exc in extra_excludes:
         clean_cmd += ["-e", exc]
     subprocess.run(clean_cmd, cwd=workdir, check=True, capture_output=True)
+    if restore_failed:
+        restore.check_returncode()
 
 
 def git_pin_commit(workdir: Path, commit: str) -> None:
@@ -1014,7 +1013,6 @@ class WorktreeIsolation:
         self._available: queue.Queue[Path | None] = queue.Queue()
         self._all_paths: list[Path] = []
         self._quarantined: list[Path] = []
-        self._usable = 0
         self._lock = threading.Lock()
         self._created = False
 
@@ -1036,7 +1034,6 @@ class WorktreeIsolation:
                     self._add_worktree(wt_path)
                 self._all_paths.append(wt_path)
                 self._available.put(wt_path)
-            self._usable = self._pool_size
             self._created = True
 
     def _add_worktree(self, wt_path: Path) -> None:
@@ -1114,15 +1111,11 @@ class WorktreeIsolation:
         """Reset and return a worktree to the pool.
 
         A worktree that fails to reset is quarantined instead: it never
-        re-enters the pool, usable capacity shrinks by one, and the failure
-        propagates so the caller can record it.
-
-        Catches broadly on purpose. A slot that neither returns to the queue
-        nor decrements ``_usable`` is worse than either outcome: the pool
-        silently loses capacity, never reaches the exhausted state, and
-        blocked acquirers wait on a refill that can never come. Quarantining
-        on *any* reset failure keeps that accounting honest even when a
-        subclass overrides ``reset`` with its own exception type.
+        re-enters the pool, and the failure propagates so the caller can
+        record it. The catch is deliberately broad — a slot that neither
+        returns to the queue nor gets quarantined would shrink the pool
+        without ever letting it reach the exhausted state, hanging every
+        blocked acquirer.
         """
         try:
             self.reset(workspace)
@@ -1135,8 +1128,7 @@ class WorktreeIsolation:
         """Retire a contaminated slot, poisoning the pool when none remain."""
         with self._lock:
             self._quarantined.append(workspace)
-            self._usable -= 1
-            exhausted = self._usable <= 0
+            exhausted = len(self._quarantined) >= self._pool_size
         logger.error("Quarantined contaminated worktree %s", workspace)
         if exhausted:
             self._available.put(None)
@@ -1176,16 +1168,11 @@ class WorktreeIsolation:
                 self._base_dir.rmdir()
         except OSError:
             pass
-        # Drain the queue and reset quarantine bookkeeping. Without this a
-        # poison pill (or a stale slot path) left over from this life-cycle
-        # would be handed to the first acquire() after the pool is rebuilt,
-        # failing a healthy pool that has nothing quarantined in it.
+        # Discard the queue and quarantine bookkeeping. Without this a poison
+        # pill (or a stale slot path) left over from this life-cycle would be
+        # handed to the first acquire() after the pool is rebuilt, failing a
+        # healthy pool that has nothing quarantined in it.
         with self._lock:
-            while True:
-                try:
-                    self._available.get_nowait()
-                except queue.Empty:
-                    break
+            self._available = queue.Queue()
             self._quarantined.clear()
-            self._usable = 0
         self._created = False
