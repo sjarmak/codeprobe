@@ -384,7 +384,10 @@ class TestCancelledTrialsAreNotRecorded:
         finally:
             pool.cleanup()
 
-        assert len(results) < len(tasks), (
+        # Validity sentinel, kept independent of the guard under test: a
+        # cancelled trial never invokes the adapter whether or not the guard
+        # records it, so this fails only when the halt left nothing queued.
+        assert len(adapter.run_calls) < len(tasks), (
             "no future was cancelled, so this test proves nothing — the "
             "adapter delay is too short to leave work queued at halt time"
         )
