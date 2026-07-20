@@ -1523,6 +1523,10 @@ def execute_config(
                             try:
                                 task_result = future.result()
                             except CancelledError:
+                                # Cancelled by the halt below: the trial never
+                                # ran, so there is no output to record. This
+                                # must precede ``except Exception`` because
+                                # CancelledError is an Exception subclass.
                                 continue
                             except Exception as exc:  # noqa: BLE001 — preserve, don't drop
                                 task_result = _crash_result(

@@ -11,11 +11,12 @@ import queue
 import stat
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
-from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.analysis.validity import TrialClass, classify_trial
 from codeprobe.cli.run_cmd import build_run_envelope_summary
 from codeprobe.core.executor import execute_config
@@ -330,3 +331,65 @@ class TestTwoTrialRegression:
         assert summary["tasks"] == 3
         assert summary["infra_failure_count"] == 2
         assert summary["scored_count"] == 1
+
+
+class _SlowAdapter(FakeAdapter):
+    """Occupies its worker long enough for the halt to reach queued futures.
+
+    Without a real delay the pool drains faster than the dispatch loop can
+    cancel, and nothing is left to cancel.
+    """
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
+        time.sleep(0.05)
+        return super().run(prompt, config, session_env)
+
+
+class TestCancelledTrialsAreNotRecorded:
+    """A trial cancelled by the halt leaves no row behind."""
+
+    def test_cancelled_trial_produces_no_result(self, tmp_path: Path) -> None:
+        """Cancelled futures must not be scored as failures that never ran.
+
+        ``future.result()`` raises ``CancelledError`` for a cancelled trial,
+        and ``concurrent.futures.CancelledError`` is an ``Exception``
+        subclass — so without the dedicated guard ahead of ``except
+        Exception`` each one falls through to ``_crash_result`` and lands in
+        the envelope as a 0.0-scored ``agent`` error. That invents failures
+        for trials the harness itself cancelled and drags the reward mean
+        down with them.
+        """
+        repo = _make_repo(tmp_path)
+        tasks = [_make_task_dir(tmp_path, f"task-{i:03d}") for i in range(8)]
+        adapter = _SlowAdapter(stdout="output")
+        # pool_size=2 so the single failing reset quarantines one slot without
+        # exhausting the pool — the halt, not a dead pool, ends the run.
+        pool = _FailingResetIsolation(repo, pool_size=2)
+
+        try:
+            results = execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=repo,
+                experiment_config=ExperimentConfig(label="baseline"),
+                agent_config=AgentConfig(),
+                parallel=2,
+                isolation=pool,
+            )
+        finally:
+            pool.cleanup()
+
+        assert len(results) < len(tasks), (
+            "no future was cancelled, so this test proves nothing — the "
+            "adapter delay is too short to leave work queued at halt time"
+        )
+        assert len(results) == len(adapter.run_calls), (
+            "a trial that never invoked the adapter was recorded as a result; "
+            "the CancelledError guard in the dispatch loop is missing or "
+            "ordered after `except Exception`"
+        )
