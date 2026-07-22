@@ -556,7 +556,7 @@ class ClaudeAdapter(BaseAdapter):
         # one when quota is detected (codeprobe-9xrl).
         quota_message = _detect_quota_error(result.stdout, result.stderr)
         if quota_message is not None:
-            error_text = f"OAuth quota exhausted: {quota_message}"
+            error_text: str | None = f"OAuth quota exhausted: {quota_message}"
             error_category: str | None = "quota"
         else:
             error_text = usage.error

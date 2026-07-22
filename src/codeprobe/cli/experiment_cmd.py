@@ -8,7 +8,7 @@ import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 import click
 
@@ -208,7 +208,7 @@ def experiment_add_config(
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         mcp_mode=mcp_mode,
-        hide_local_source=hide_local_source,
+        hide_local_source=cast(Literal["off", "hide", "scaffold"], hide_local_source),
     )
 
     # Validate the label is a safe path component
@@ -398,13 +398,13 @@ def experiment_status(path: str) -> None:
         try:
             results = load_config_results(exp_dir, cfg.label)
             completed = len(results.completed)
-            scores = [
+            automated_scores = [
                 t.automated_score
                 for t in results.completed
                 if t.automated_score is not None
             ]
-            if scores:
-                avg_score = statistics.mean(scores)
+            if automated_scores:
+                avg_score = statistics.mean(automated_scores)
         except FileNotFoundError:
             pass
 

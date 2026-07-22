@@ -892,7 +892,7 @@ def _format_elapsed(seconds: float) -> str:
     return f"{mins}m {secs}s"
 
 
-def _enrichment_status(tasks: list, *, llm_attempted: bool) -> str:
+def _enrichment_status(tasks: list[Task], *, llm_attempted: bool) -> str:
     """Honest per-task LLM-enrichment status for the summary block.
 
     The summary previously read ``LLM-enriched`` whenever an LLM backend was
@@ -907,9 +907,7 @@ def _enrichment_status(tasks: list, *, llm_attempted: bool) -> str:
     enriched = sum(
         1
         for t in tasks
-        if is_dataclass(t)
-        and is_dataclass(t.metadata)
-        and "llm" in (t.metadata.enrichment_source or "").split("+")
+        if "llm" in (t.metadata.enrichment_source or "").split("+")
     )
     fell_back = total - enriched
     if fell_back == 0:

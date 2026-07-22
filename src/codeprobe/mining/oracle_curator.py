@@ -176,7 +176,7 @@ def curate_consensus(
     # Single-backend fallback: skip both tier filtering and LLM curation.
     if n_available == 1:
         only_backend = available[0].backend
-        items = tuple(
+        single_items = tuple(
             CuratedItem(
                 path=path,
                 backends=(only_backend,),
@@ -185,9 +185,9 @@ def curate_consensus(
             )
             for path in sorted(per_path)
         )
-        consensus = (only_backend,) if items else ()
+        consensus = (only_backend,) if single_items else ()
         return CuratedOracle(
-            items=items,
+            items=single_items,
             backends_consensus=consensus,
             quarantined=(),
             min_backends=min_backends,

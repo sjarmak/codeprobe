@@ -119,6 +119,19 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_any_generics = false
 
+# scipy-stubs ships PEP 695 ``type`` alias statements (3.12+ syntax) that mypy
+# rejects while checking under ``python_version = 3.11`` — the whole run aborts
+# with "Type statement is only supported in Python 3.12 and greater" even though
+# no codeprobe code is at fault (a fresh ``pip install`` pulls whatever
+# scipy-stubs >=1.11 resolves to, e.g. 1.18.0.1). scipy is used only in
+# analysis/stats.py and assess/oracle_diff.py, so skip following its stubs
+# instead of pinning a version that will drift again. Bump/remove this once the
+# floor mypy version parses the stub cleanly.
+[[tool.mypy.overrides]]
+module = ["scipy", "scipy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

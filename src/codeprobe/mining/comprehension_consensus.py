@@ -64,7 +64,7 @@ import subprocess
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from codeprobe.mining._graph import _path_to_module
 from codeprobe.mining.comprehension import ComprehensionTaskSpec
@@ -628,13 +628,13 @@ def _answers_agree(
     if derived is None:
         return False
     if answer_type == "file_list":
-        return isinstance(derived, list) and set(expected) == set(derived)
+        return isinstance(derived, list) and set(cast("list[str]", expected)) == set(derived)
     if answer_type == "boolean":
         return isinstance(derived, bool) and bool(expected) == derived
     if answer_type == "text":
         return isinstance(derived, str) and str(expected).strip() == derived.strip()
     if answer_type == "count":
-        return isinstance(derived, int) and int(expected) == int(derived)
+        return isinstance(derived, int) and int(cast("str | int", expected)) == int(derived)
     return False
 
 
@@ -644,8 +644,8 @@ def _divergence_reason(
     if rederived.answer is None:
         return rederived.detail or "ast backend produced no answer"
     if spec.answer_type == "file_list":
-        gen_set = set(spec.answer)
-        ast_set = set(rederived.answer)
+        gen_set = set(cast("list[str]", spec.answer))
+        ast_set = set(cast("list[str]", rederived.answer))
         return (
             f"file lists differ: {GENERATOR_BACKEND} only "
             f"{sorted(gen_set - ast_set)}, {AST_BACKEND} only "
@@ -686,7 +686,7 @@ def _report(
 
     is_transitive = spec.template == "transitive_dependency"
     if spec.answer_type == "file_list":
-        gen_files = sorted(spec.answer)
+        gen_files = sorted(cast("list[str]", spec.answer))
     elif is_transitive:
         # The regex backend's own witness chain, in chain order.
         gen_files = list(spec.metadata.get("witness_files") or [])

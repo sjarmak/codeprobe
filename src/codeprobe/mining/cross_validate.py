@@ -116,7 +116,8 @@ def extract_file_set(data: Mapping[str, object]) -> frozenset[str]:
     if not isinstance(expected, list):
         return frozenset()
 
-    repo = data.get("repo", "") if isinstance(data.get("repo"), str) else ""
+    repo_raw = data.get("repo", "")
+    repo = repo_raw if isinstance(repo_raw, str) else ""
     return frozenset(
         strip_repo_prefix(normalize_path(str(p)), repo) for p in expected if p
     )
@@ -412,13 +413,13 @@ def cross_validate(
     for entry in per_task:
         if entry.get("min_f1") is None:
             continue
-        for bucket, key in (
-            (suite_summary, entry["suite"]),
-            (family_summary, entry.get("family") or ""),
+        for bucket, bucket_key in (
+            (suite_summary, str(entry["suite"])),
+            (family_summary, str(entry.get("family") or "")),
         ):
-            if not key:
+            if not bucket_key:
                 continue
-            slot = bucket.setdefault(key, {"n_tasks": 0, "min_f1s": []})
+            slot = bucket.setdefault(bucket_key, {"n_tasks": 0, "min_f1s": []})
             slot["n_tasks"] += 1
             slot["min_f1s"].append(entry["min_f1"])
 

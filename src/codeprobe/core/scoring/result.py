@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from codeprobe.analysis.stats import PASS_THRESHOLD  # noqa: F401  — re-exported
+from codeprobe.analysis.stats import (  # noqa: F401  — re-exported
+    PASS_THRESHOLD as PASS_THRESHOLD,
+)
 
 
 def read_task_metadata(task_dir: Path) -> dict:

@@ -475,7 +475,7 @@ def parse_backend_list(raw: str | None) -> tuple[BackendName, ...]:
                 f"(expected one of: {', '.join(sorted(valid))})"
             )
         seen.add(name)
-        out.append(name)  # type: ignore[arg-type]
+        out.append(name)
     if not out:
         return DEFAULT_BACKENDS
     return tuple(out)

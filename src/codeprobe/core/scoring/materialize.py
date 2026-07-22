@@ -94,11 +94,6 @@ def _run_git(
     back, and the error flows verbatim into ``ScoreResult.error`` and
     ``scoring.json``.
     """
-    kwargs: dict[str, object] = {}
-    if input_bytes is not None:
-        kwargs["input"] = input_bytes
-    if env is not None:
-        kwargs["env"] = env
     try:
         result = subprocess.run(
             args,
@@ -106,7 +101,8 @@ def _run_git(
             check=True,
             capture_output=True,
             timeout=_GIT_TIMEOUT_SECONDS,
-            **kwargs,
+            input=input_bytes,
+            env=env,
         )
         return result.stdout, None
     except subprocess.CalledProcessError as exc:

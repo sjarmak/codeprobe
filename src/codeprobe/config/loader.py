@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from itertools import product
 from pathlib import Path
+from typing import Literal, cast
 
 import yaml
 
@@ -132,7 +133,7 @@ def _to_evalrc(data: dict) -> EvalrcConfig:
 _HIDE_LOCAL_SOURCE_VALUES = frozenset({"off", "hide", "scaffold"})
 
 
-def _coerce_hide_local_source(raw: object) -> str:
+def _coerce_hide_local_source(raw: object) -> Literal["off", "hide", "scaffold"]:
     """Map legacy bool / typed string into the new Literal field.
 
     Accepted forms:
@@ -151,7 +152,7 @@ def _coerce_hide_local_source(raw: object) -> str:
         return "hide" if raw else "off"
     if isinstance(raw, str):
         if raw in _HIDE_LOCAL_SOURCE_VALUES:
-            return raw
+            return cast(Literal["off", "hide", "scaffold"], raw)
         raise ValueError(
             f"hide_local_source must be one of {sorted(_HIDE_LOCAL_SOURCE_VALUES)} "
             f"or a boolean; got {raw!r}"

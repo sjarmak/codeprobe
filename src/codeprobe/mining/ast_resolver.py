@@ -463,8 +463,8 @@ def _resolve_python_symbol_at(
 
 
 def _resolve_go_symbol_at(
-    path: Path, line: int, repo: str, rel_path: str, symbol_cls: type
-):
+    path: Path, line: int, repo: str, rel_path: str, symbol_cls: type[Symbol]
+) -> Symbol | None:
     """Identify the Go func/method declared at *line* in *path*.
 
     Mechanical: read the line, regex-match a func/method declaration

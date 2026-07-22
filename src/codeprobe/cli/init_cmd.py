@@ -394,7 +394,7 @@ def _goal_factorial(agents: list[str], name: str) -> _Result:
         default="",
         show_default=False,
     )
-    tool_configs = None
+    tool_configs: list[dict] | None = None
     if mcp_path.strip():
         tool_configs = [
             {"label": "baseline", "mcp_config": None, "preambles": ()},

@@ -200,7 +200,7 @@ def make_server(html_body: str, host: str = "127.0.0.1", port: int = DEFAULT_POR
             else:
                 self.send_error(404, "Not found")
 
-        def log_message(self, *args) -> None:  # silence per-request stderr noise
+        def log_message(self, *args: object) -> None:  # silence per-request stderr noise
             return
 
     return HTTPServer((host, port), _Handler)
