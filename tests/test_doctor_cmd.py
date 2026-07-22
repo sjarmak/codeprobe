@@ -145,6 +145,11 @@ class TestApiKeyWarnDemotion:
         monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/" + name)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # GITHUB_TOKEN is a hard check; set it so this test isolates the
+        # API-key advisory behaviour instead of tripping on an unrelated
+        # missing token in a bare environment (e.g. CI, where $GITHUB_TOKEN
+        # is not exported). Mirrors TestDoctorCLI.test_doctor_all_pass.
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
         by_name = {r.name: r for r in run_checks()}
         assert by_name["ANTHROPIC_API_KEY"].passed is False
         assert by_name["ANTHROPIC_API_KEY"].warn_only is True
