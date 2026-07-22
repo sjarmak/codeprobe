@@ -684,3 +684,100 @@ class TestWizardTasksLocationGuidance:
         assert result.exit_code == 0, result.output
         assert ".codeprobe/tasks/" in result.output
         assert "automatically" in result.output
+
+
+class TestInitNonInteractiveFallback:
+    """Non-TTY init creates a real default experiment instead of no-oping
+    (codeprobe-f7rl.12): the run NO_EXPERIMENT -> init -> run loop must
+    terminate, idempotently, without ever clobbering an existing experiment."""
+
+    def test_json_init_creates_default_experiment(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["init", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+
+        envelope = json.loads(result.output)
+        assert envelope["ok"] is True
+        assert envelope["data"]["created"] is True
+        assert envelope["data"]["configs"] == []
+        assert envelope["data"]["interactive"] is False
+        assert envelope["next_steps"]
+
+        exp_json = tmp_path / ".codeprobe" / "experiment.json"
+        assert exp_json.is_file()
+        data = json.loads(exp_json.read_text())
+        assert data["name"] == "default"
+        assert envelope["data"]["experiment_dir"] == str(tmp_path / ".codeprobe")
+        assert (tmp_path / ".codeprobe" / "tasks").is_dir()
+
+    def test_second_invocation_is_idempotent(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        first = runner.invoke(main, ["init", str(tmp_path), "--json"])
+        assert first.exit_code == 0, first.output
+
+        exp_json = tmp_path / ".codeprobe" / "experiment.json"
+        content_before = exp_json.read_text()
+        mtime_before = exp_json.stat().st_mtime_ns
+
+        second = runner.invoke(main, ["init", str(tmp_path), "--json"])
+        assert second.exit_code == 0, second.output
+        envelope = json.loads(second.output)
+        assert envelope["ok"] is True
+        assert envelope["data"]["created"] is False
+        assert str(exp_json) in envelope["data"]["message"]
+
+        assert exp_json.read_text() == content_before
+        assert exp_json.stat().st_mtime_ns == mtime_before
+
+    def test_existing_named_subdir_is_not_clobbered(self, tmp_path: Path) -> None:
+        """A single wizard-created named experiment is reported, not duplicated."""
+        exp_dir = tmp_path / ".codeprobe" / "mcp-comparison"
+        exp_dir.mkdir(parents=True)
+        (exp_dir / "experiment.json").write_text(
+            json.dumps({"name": "mcp-comparison", "configs": []})
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["init", str(tmp_path), "--json"])
+        assert result.exit_code == 0, result.output
+        envelope = json.loads(result.output)
+        assert envelope["data"]["created"] is False
+        assert envelope["data"]["experiment_dir"] == str(exp_dir)
+        # No default experiment written next to the existing one.
+        assert not (tmp_path / ".codeprobe" / "experiment.json").exists()
+
+    def test_multiple_experiments_refuse_prescriptively(
+        self, tmp_path: Path
+    ) -> None:
+        for name in ("exp-a", "exp-b"):
+            d = tmp_path / ".codeprobe" / name
+            d.mkdir(parents=True)
+            (d / "experiment.json").write_text(json.dumps({"name": name}))
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["init", str(tmp_path), "--json"])
+        assert result.exit_code != 0
+        envelope = json.loads(result.output)
+        assert envelope["ok"] is False
+        assert envelope["error"]["code"] == "AMBIGUOUS_EXPERIMENT"
+        assert envelope["error"]["next_try_flag"] == "--config"
+        # Neither existing experiment was touched and no third one appeared.
+        assert not (tmp_path / ".codeprobe" / "experiment.json").exists()
+
+    def test_run_init_run_loop_terminates(self, tmp_path: Path) -> None:
+        """The exact agent loop from the audit: run fails NO_EXPERIMENT,
+        init actually fixes it, and the second run moves past NO_EXPERIMENT."""
+        runner = CliRunner()
+
+        before = runner.invoke(main, ["run", str(tmp_path), "--dry-run", "--json"])
+        assert before.exit_code != 0
+        envelope = json.loads(before.output)
+        assert envelope["error"]["code"] == "NO_EXPERIMENT"
+
+        init_result = runner.invoke(main, ["init", str(tmp_path), "--json"])
+        assert init_result.exit_code == 0, init_result.output
+
+        after = runner.invoke(main, ["run", str(tmp_path), "--dry-run", "--json"])
+        after_envelope = json.loads(after.output)
+        error = after_envelope.get("error") or {}
+        assert error.get("code") != "NO_EXPERIMENT"

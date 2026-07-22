@@ -65,6 +65,67 @@ def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
     return exp_dir
 
 
+def find_experiment_candidates(repo_path: Path) -> list[Path]:
+    """Return experiment directories discoverable under ``<repo>/.codeprobe``.
+
+    Mirrors the run/interpret resolution order: a direct
+    ``.codeprobe/experiment.json`` (the canonical location written by
+    ``experiment init --non-interactive``) wins outright; otherwise every
+    named subdirectory holding an ``experiment.json`` is a candidate,
+    sorted for deterministic output.
+    """
+    codeprobe_dir = Path(repo_path) / ".codeprobe"
+    if (codeprobe_dir / "experiment.json").is_file():
+        return [codeprobe_dir]
+    if not codeprobe_dir.is_dir():
+        return []
+    return sorted(
+        child
+        for child in codeprobe_dir.iterdir()
+        if child.is_dir() and (child / "experiment.json").is_file()
+    )
+
+
+def ensure_default_experiment(
+    repo_path: Path,
+    *,
+    description: str = "Auto-created by codeprobe",
+) -> Path:
+    """Return the repo's default experiment directory, creating it if absent.
+
+    Resolution follows :func:`find_experiment_candidates`. When no experiment
+    exists, a minimal ``default`` experiment is materialized at
+    ``<repo>/.codeprobe/`` in the exact shape produced by
+    ``codeprobe experiment init --non-interactive`` (experiment.json plus an
+    empty ``tasks/`` directory, with ``.codeprobe/`` git-excluded).
+
+    Raises ``ValueError`` when multiple named experiments exist — callers
+    decide whether ambiguity is fatal (init) or a no-op (mine); this helper
+    never guesses between experiments.
+    """
+    repo = Path(repo_path)
+    codeprobe_dir = repo / ".codeprobe"
+    candidates = find_experiment_candidates(repo)
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Multiple experiments found under {codeprobe_dir}: "
+            + ", ".join(c.name for c in candidates)
+        )
+    if candidates:
+        return candidates[0]
+
+    from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
+
+    codeprobe_dir.mkdir(parents=True, exist_ok=True)
+    ensure_codeprobe_excluded(repo)
+    save_experiment(
+        codeprobe_dir,
+        Experiment(name="default", description=description),
+    )
+    (codeprobe_dir / "tasks").mkdir(exist_ok=True)
+    return codeprobe_dir
+
+
 def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
     """Write experiment.json to the experiment directory."""
     serialized_configs = []

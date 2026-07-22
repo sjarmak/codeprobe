@@ -91,6 +91,9 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.7: entries below experiment_status shifted +9
         # (repeat-aware completion counts distinct task_ids and appends the
         # trial count to the progress column).
+        # codeprobe-f7rl.12: init_cmd.py shifted +6 (non-TTY default
+        # experiment creation replaces the no-op). Real line numbers below,
+        # confirmed by running the lint test against the merged file.
         ("src/codeprobe/cli/experiment_cmd.py", 185),
         ("src/codeprobe/cli/experiment_cmd.py", 194),
         ("src/codeprobe/cli/experiment_cmd.py", 210),

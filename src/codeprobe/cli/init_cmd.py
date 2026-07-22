@@ -8,6 +8,8 @@ import click
 
 from codeprobe.adapters.models import model_set, validate_model
 from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+from codeprobe.cli.envelope import NextStep
+from codeprobe.cli.errors import PrescriptiveError
 from codeprobe.cli.wizard import (
     _load_json,
     ask_custom,
@@ -17,7 +19,11 @@ from codeprobe.cli.wizard import (
     ask_prompt_comparison,
     validate_experiment_name,
 )
-from codeprobe.core.experiment import create_experiment_dir
+from codeprobe.core.experiment import (
+    create_experiment_dir,
+    ensure_default_experiment,
+    find_experiment_candidates,
+)
 from codeprobe.core.mcp_discovery import discover_mcp_configs
 from codeprobe.core.registry import available
 from codeprobe.models.evalrc import EvalrcConfig
@@ -51,21 +57,67 @@ def run_init(
             "No agent adapters registered. Install an adapter first."
         )
 
-    # Non-pretty mode: init is an interactive wizard, so we short-circuit
-    # to a minimal envelope that advertises the surface without prompting.
+    # Non-pretty mode (agent callers): create a working default experiment
+    # instead of no-oping, so run's NO_EXPERIMENT -> init -> run loop
+    # terminates (codeprobe-f7rl.12). Idempotent: an existing experiment is
+    # never touched; multiple named experiments refuse prescriptively.
     if mode.mode != "pretty":
+        codeprobe_dir = target / ".codeprobe"
+        candidates = find_experiment_candidates(target)
+        if len(candidates) > 1:
+            raise PrescriptiveError(
+                code="AMBIGUOUS_EXPERIMENT",
+                message=(
+                    f"Multiple experiments found in {codeprobe_dir}: "
+                    + ", ".join(c.name for c in candidates)
+                    + ". Use --config to specify which experiment."
+                ),
+                next_try_flag="--config",
+                next_try_value=str(candidates[0]),
+                detail={"candidates": [str(c) for c in candidates]},
+            )
+
+        created = not candidates
+        exp_dir = (
+            ensure_default_experiment(
+                target, description="Auto-created by codeprobe init"
+            )
+            if created
+            else candidates[0]
+        )
+
+        data: dict = {
+            "target": str(target),
+            "experiment_dir": str(exp_dir),
+            "created": created,
+            "configs": [],
+            "interactive": False,
+        }
+        if not created:
+            data["message"] = (
+                "Experiment already exists at "
+                f"{exp_dir / 'experiment.json'}; left unchanged."
+            )
         emit_envelope(
             command="init",
-            data={
-                "target": str(target),
-                "agents_available": list(agents),
-                "interactive": False,
-                "message": (
-                    "codeprobe init is an interactive wizard; run it in a "
-                    "TTY (without --json / --json-lines) to configure an "
-                    "experiment."
+            data=data,
+            next_steps=[
+                NextStep(
+                    summary="Add a config",
+                    command=(
+                        f"codeprobe experiment add-config {exp_dir} "
+                        "--label baseline --agent claude"
+                    ),
                 ),
-            },
+                NextStep(
+                    summary="Mine tasks",
+                    command=f"codeprobe mine {path} --json",
+                ),
+                NextStep(
+                    summary="Run",
+                    command=f"codeprobe run {path} --json --agent claude",
+                ),
+            ],
         )
         return
 
