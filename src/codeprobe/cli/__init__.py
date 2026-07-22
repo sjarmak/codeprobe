@@ -513,6 +513,19 @@ def init(
         "history is reset to root at the new commit."
     ),
 )
+@click.option(
+    "--resume",
+    "resume",
+    is_flag=True,
+    default=False,
+    help=(
+        "Resume an interrupted mine: preserve previously written tasks and "
+        "skip merge commits already processed (recorded in this repo's "
+        "mining state). Applies to SDLC/mixed mining only; rejected for "
+        "org-scale, cross-repo, refresh, and probe/comprehension mining. "
+        "With no prior state, warns and mines fresh."
+    ),
+)
 @tenant_option(required=False)
 @click.pass_context
 def mine(
@@ -555,6 +568,7 @@ def mine(
     narrative_source: tuple[str, ...],
     refresh_dir: str | None,
     accept_structural_change: bool,
+    resume: bool,
     tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
@@ -720,6 +734,8 @@ def mine(
                 "json_lines_flag",
                 # tenant_id is identity, not a mining setting — never persist.
                 "tenant_id",
+                # resume is per-invocation recovery, not a mining setting.
+                "resume",
             }
         )
         values = {
@@ -854,6 +870,7 @@ def mine(
         narrative_source=narrative_source,
         refresh_dir=refresh_dir,
         accept_structural_change=accept_structural_change,
+        resume=resume,
         explicit_set=explicitly_set,
         profile_set=profile_set,
         tenant=mine_tenant,

@@ -422,3 +422,167 @@ class TestMineAutoCreatesExperiment:
             "Created default experiment at .codeprobe/experiment.json"
             in captured.out
         )
+
+
+# ---------------------------------------------------------------------------
+# Ctrl-C recovery + --resume (codeprobe-f7rl.14)
+# ---------------------------------------------------------------------------
+
+
+def _make_sdlc_repo(base: Path) -> Path:
+    """Create a git repo with merged feature branches that include tests."""
+    repo = base / "sdlcrepo"
+    repo.mkdir()
+
+    def _git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+    _git("init", "-q", "-b", "main")
+    _git("config", "user.email", "test@example.com")
+    _git("config", "user.name", "test")
+    (repo / "README.md").write_text("sdlc fixture\n")
+    _git("add", ".")
+    _git("commit", "-qm", "chore: init")
+
+    for i in (1, 2):
+        branch = f"feat/{i}"
+        _git("checkout", "-q", "-b", branch)
+        (repo / f"feature_{i}.py").write_text(
+            f'"""Feature {i}."""\n\n\ndef feature_{i}() -> int:\n    return {i}\n'
+        )
+        (repo / "tests").mkdir(exist_ok=True)
+        (repo / "tests" / f"test_feature_{i}.py").write_text(
+            f"from feature_{i} import feature_{i}\n\n\n"
+            f"def test_feature_{i}():\n    assert feature_{i}() == {i}\n"
+        )
+        _git("add", ".")
+        _git(
+            "commit",
+            "-qm",
+            f"feat: add feature {i}\n\nImplements feature {i} with unit tests.",
+        )
+        _git("checkout", "-q", "main")
+        _git(
+            "merge",
+            "--no-ff",
+            "-q",
+            "-m",
+            f"Merge PR #{i}: add feature {i}\n\nAdds feature {i} and its tests.",
+            branch,
+        )
+    return repo
+
+
+class TestMineInterruptRecovery:
+    """Ctrl-C must preserve partial output and print a real recovery command."""
+
+    def test_ctrl_c_preserves_partial_output_and_prints_real_resume(
+        self, tmp_path, monkeypatch
+    ):
+        repo = _make_probe_repo(tmp_path)
+        tasks_dir = repo / ".codeprobe" / "tasks"
+
+        def _boom(**kwargs):
+            partial = tasks_dir / "task-partial"
+            partial.mkdir(parents=True)
+            (partial / "instruction.md").write_text("partial\n")
+            monkeypatch.setattr(
+                "codeprobe.cli.mine_cmd._CURRENT_TASKS_DIR", tasks_dir
+            )
+            raise KeyboardInterrupt
+
+        with patch(
+            "codeprobe.cli.mine_cmd._dispatch_by_task_type", side_effect=_boom
+        ):
+            result = CliRunner().invoke(
+                main, ["mine", str(repo), "--no-interactive", "--json"]
+            )
+
+        assert result.exit_code == 130, result.output
+        # Partial output survives — never rmtree'd (locked decision 3).
+        assert (tasks_dir / "task-partial" / "instruction.md").is_file()
+        envelope = json.loads(
+            [ln for ln in result.output.splitlines() if ln.strip()][-1]
+        )
+        assert envelope["error"]["code"] == "INTERRUPTED"
+        # The printed recovery command is a real invocation of a real flag.
+        assert (
+            envelope["error"]["diagnose_cmd"] == f"codeprobe mine {repo} --resume"
+        )
+
+    def test_mine_help_lists_resume(self):
+        result = CliRunner().invoke(main, ["mine", "--help"])
+        assert result.exit_code == 0
+        assert "--resume" in result.output
+
+
+class TestMineResumeFlag:
+    """--resume semantics: fresh-state warning, SDLC mining, rejections."""
+
+    def test_resume_without_prior_state_warns_and_mines(
+        self, tmp_path, monkeypatch
+    ):
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        monkeypatch.setenv("CODEPROBE_STATE_ROOT", str(state_root))
+        repo = _make_sdlc_repo(tmp_path)
+
+        result = CliRunner().invoke(
+            main,
+            [
+                "mine",
+                str(repo),
+                "--goal",
+                "quality",
+                "--resume",
+                "--no-interactive",
+                "--no-llm",
+                "--min-quality",
+                "0",
+                "--narrative-source",
+                "commits",
+                "--json",
+            ],
+        )
+
+        combined = result.output + (result.stderr or "")
+        assert result.exit_code == 0, combined
+        assert "no prior mining state" in combined
+        envelope = json.loads(
+            [ln for ln in result.output.splitlines() if ln.strip()][-1]
+        )
+        assert envelope["data"]["task_count"] >= 1
+
+    def test_resume_rejected_with_org_scale(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+
+        result = CliRunner().invoke(
+            main,
+            ["mine", str(repo), "--org-scale", "--resume", "--no-interactive"],
+        )
+        combined = result.output + (result.stderr or "")
+        assert result.exit_code != 0
+        assert "Cannot use --resume with --org-scale" in combined
+
+    def test_resume_rejected_for_probe_task_type(self, tmp_path, monkeypatch):
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        monkeypatch.setenv("CODEPROBE_STATE_ROOT", str(state_root))
+        repo = _make_probe_repo(tmp_path)
+
+        result = CliRunner().invoke(
+            main,
+            [
+                "mine",
+                str(repo),
+                "--task-type",
+                "micro_probe",
+                "--resume",
+                "--no-interactive",
+            ],
+        )
+        combined = result.output + (result.stderr or "")
+        assert result.exit_code != 0
+        assert "Cannot use --resume with task type micro_probe" in combined

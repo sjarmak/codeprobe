@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from codeprobe.mining.curator import CurationBackend
+    from codeprobe.mining.state import MineState
 from collections.abc import Callable
 from dataclasses import is_dataclass, replace
 from pathlib import Path
@@ -679,22 +680,96 @@ def _discover_and_select(
 _CURRENT_TASKS_DIR: Path | None = None
 
 
-def _clear_tasks_dir(repo_path: Path) -> Path:
-    """Clear stale tasks and return the tasks directory path.
+def _clear_tasks_dir(repo_path: Path, *, preserve: bool = False) -> Path:
+    """Return the tasks directory path, clearing stale tasks unless *preserve*.
 
+    ``preserve=True`` (the ``--resume`` path) keeps partial output from an
+    interrupted mine in place so already-written task dirs survive.
     Records the path in module state so that the top-level ``run_mine``
-    handler can remove a partially-populated directory on Ctrl-C.
+    handler can name the partially-populated directory on Ctrl-C.
     """
     from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
 
     ensure_codeprobe_excluded(repo_path)
 
     tasks_dir = repo_path / ".codeprobe" / "tasks"
-    if tasks_dir.exists():
+    if not preserve and tasks_dir.exists():
         shutil.rmtree(tasks_dir)
     global _CURRENT_TASKS_DIR
     _CURRENT_TASKS_DIR = tasks_dir
     return tasks_dir
+
+
+def _existing_task_ids(tasks_dir: Path) -> set[str]:
+    """Return the ids of task dirs already present under *tasks_dir*.
+
+    A task dir is any subdirectory carrying an ``instruction.md`` — the
+    same shape the terminal envelope counts. Used on ``--resume`` so the
+    experiment records the union of preserved and newly mined tasks.
+    """
+    if not tasks_dir.is_dir():
+        return set()
+    return {
+        c.name
+        for c in tasks_dir.iterdir()
+        if c.is_dir() and (c / "instruction.md").is_file()
+    }
+
+
+def _mine_repo_hash(repo_path: Path) -> str:
+    """Deterministic MineState identity for *repo_path*.
+
+    Combines the origin remote URL (empty when absent), the current branch
+    ref (empty when undeterminable), and the resolved worktree root. The
+    interrupted invocation and its ``--resume`` hash identically, which is
+    what lets the resume find its state.
+    """
+    from codeprobe.paths import compute_repo_hash
+
+    def _git(*args: str) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_path), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    remote = _git("remote", "get-url", "origin")
+    ref = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return compute_repo_hash(remote, ref, str(repo_path.resolve()))
+
+
+def _open_mine_state(
+    repo_path: Path, tenant: str | None, resume: bool
+) -> MineState:
+    """Open the MineState store for an SDLC mine (every run, not just resume).
+
+    Fresh mines reset the store first: the tasks dir is being rebuilt from
+    scratch, so stale ``completed`` rows must not suppress re-mining. On
+    ``--resume`` with no prior state we warn and proceed fresh (no error).
+    """
+    from codeprobe.mining.state import MineState
+    from codeprobe.paths import DEFAULT_TENANT
+
+    state = MineState.open(
+        tenant_id=tenant or DEFAULT_TENANT,
+        repo_hash=_mine_repo_hash(repo_path),
+    )
+    if resume:
+        if not state.all_rows():
+            click.echo(
+                "Warning: --resume passed but no prior mining state exists "
+                "for this repo — mining fresh.",
+                err=True,
+            )
+    else:
+        state.reset()
+    return state
 
 
 _EXPERIMENT_CREATED: bool = False
@@ -1544,6 +1619,8 @@ def _dispatch_by_task_type(
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
     sg_repo: str = "",
+    resume: bool = False,
+    tenant: str | None = None,
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
@@ -1556,6 +1633,11 @@ def _dispatch_by_task_type(
     ``org_scale_cross_repo`` is handled upstream via the ``--org-scale``
     flag path in :func:`run_mine` (it has a dedicated multi-repo scanning
     pipeline that doesn't share the single-repo dispatch surface here).
+
+    ``--resume`` only makes sense where SDLC merge mining records
+    MineState (the ``sdlc`` and ``mixed`` pipelines); probe and
+    comprehension generation is stateless, so *resume* on those paths is
+    rejected loudly rather than silently ignored.
     """
     from codeprobe.mining.task_types import TASK_TYPE_REGISTRY
 
@@ -1573,6 +1655,8 @@ def _dispatch_by_task_type(
         dual_verify=dual_verify,
         narrative_source=narrative_source,
         sg_repo=sg_repo,
+        resume=resume,
+        tenant=tenant,
     )
 
     def _sdlc() -> None:
@@ -1613,6 +1697,25 @@ def _dispatch_by_task_type(
         )
         _sdlc()
         return
+
+    # Probe and comprehension generation is stateless — there is no
+    # MineState to resume from. Refuse --resume rather than silently
+    # ignore it (codeprobe-f7rl.14).
+    if resume and info.dispatch_key in ("probe", "comprehension"):
+        raise PrescriptiveError(
+            code="MUTEX_FLAGS",
+            message=(
+                f"Cannot use --resume with task type {task_type}: only SDLC "
+                "merge mining records resumable state; probe and "
+                "comprehension tasks are regenerated from scratch. "
+                "Re-run without --resume."
+            ),
+            next_try_flag="--resume",
+            next_try_value="",
+            detail={
+                "conflicting_flags": ["--resume", f"--task-type {task_type}"],
+            },
+        )
 
     # Probes are statically generated: no PR diff for an artifact oracle, no
     # mined test command for a direct leg. Refuse --dual-verify rather than
@@ -1861,6 +1964,7 @@ def _mine_tasks_with_progress(
     min_quality: float,
     subsystems: tuple[str, ...],
     no_llm: bool = False,
+    state: MineState | None = None,
 ) -> MineResult:
     """Call :func:`mine_tasks` with a click.progressbar when stderr is a TTY.
 
@@ -1869,6 +1973,9 @@ def _mine_tasks_with_progress(
     internal search-limit (``count*4`` or ``count*8``), so it only tracks
     the per-PR scoring loop — the subsequent LLM enrichment and writing
     phases print their own progress messages.
+
+    *state* threads the resumable MineState store into the extractor so
+    per-commit progress is durable across Ctrl-C (see ``mine --resume``).
     """
     from codeprobe.mining import mine_tasks
 
@@ -1886,6 +1993,7 @@ def _mine_tasks_with_progress(
             min_files=min_files,
             min_quality=min_quality,
             subsystems=subsystems,
+            state=state,
             no_llm=no_llm,
         )
 
@@ -1902,6 +2010,7 @@ def _mine_tasks_with_progress(
             min_quality=min_quality,
             subsystems=subsystems,
             progress=bar.update,
+            state=state,
             no_llm=no_llm,
         )
 
@@ -2084,19 +2193,32 @@ def _dispatch_sdlc(
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
     sg_repo: str = "",
+    resume: bool = False,
+    tenant: str | None = None,
 ) -> None:
-    """Run PR-based SDLC mining pipeline."""
+    """Run PR-based SDLC mining pipeline.
+
+    MineState is opened on every run — not just ``--resume`` — so per-commit
+    progress is durable and a later resume has state to pick up. On resume
+    the extractor skips commits already recorded ``completed`` and the
+    partial tasks dir is preserved instead of cleared.
+    """
     from codeprobe.mining import write_task_dir
 
-    mine_result = _mine_tasks_with_progress(
-        repo_path,
-        count=count,
-        source_hint=source,
-        min_files=min_files,
-        min_quality=min_quality,
-        subsystems=subsystems,
-        no_llm=no_llm,
-    )
+    state = _open_mine_state(repo_path, tenant, resume)
+    try:
+        mine_result = _mine_tasks_with_progress(
+            repo_path,
+            count=count,
+            source_hint=source,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            state=state,
+        )
+    finally:
+        state.close()
     tasks = mine_result.tasks
     effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
 
@@ -2138,9 +2260,16 @@ def _dispatch_sdlc(
             mine_result = replace(mine_result, tasks=tasks)
 
     if not tasks:
-        click.echo(
-            "No suitable tasks found. Try a repo with merged PRs that include tests."
-        )
+        if resume:
+            click.echo(
+                "No new tasks mined on resume — commits already recorded as "
+                "completed were skipped and existing task output is preserved."
+            )
+        else:
+            click.echo(
+                "No suitable tasks found. Try a repo with merged PRs that "
+                "include tests."
+            )
         return
 
     if (
@@ -2160,7 +2289,8 @@ def _dispatch_sdlc(
 
     llm_used = _was_llm_used(no_llm)
 
-    tasks_dir = _clear_tasks_dir(repo_path)
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume)
+    preserved_ids = _existing_task_ids(tasks_dir) if resume else set()
     for task in tasks:
         write_task_dir(
             task,
@@ -2169,7 +2299,9 @@ def _dispatch_sdlc(
             ground_truth=mine_result.ground_truth_map.get(task.id),
         )
 
-    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
+    _record_task_ids_in_experiment(
+        repo_path, sorted(preserved_ids | {t.id for t in tasks})
+    )
     _show_results_table(tasks)
     _show_shortfall_notice(count, len(tasks), mine_result.rejections)
     _finish_mine_output(
@@ -2419,8 +2551,15 @@ def _dispatch_mixed(
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
     sg_repo: str = "",
+    resume: bool = False,
+    tenant: str | None = None,
 ) -> None:
-    """Run SDLC mining + probe generation, combining results."""
+    """Run SDLC mining + probe generation, combining results.
+
+    The SDLC half records MineState exactly like :func:`_dispatch_sdlc`;
+    on ``--resume`` completed merge commits are skipped and preserved task
+    dirs are kept. Probe generation is stateless and simply regenerates.
+    """
     from codeprobe.mining import write_task_dir as write_mining_task
     from codeprobe.probe.adapter import ProbeTaskAdapter
     from codeprobe.probe.generator import generate_probes
@@ -2429,20 +2568,25 @@ def _dispatch_mixed(
     sdlc_count = max(1, count // 2)
     probe_count = max(1, count - sdlc_count)
 
-    tasks_dir = _clear_tasks_dir(repo_path)
-    all_task_ids: list[str] = []
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume)
+    all_task_ids: list[str] = sorted(_existing_task_ids(tasks_dir)) if resume else []
     sdlc_tasks: list = []
 
     # SDLC mining (may produce 0 tasks on cold-start repos)
-    mine_result = _mine_tasks_with_progress(
-        repo_path,
-        count=sdlc_count,
-        source_hint=source,
-        min_files=min_files,
-        min_quality=min_quality,
-        subsystems=subsystems,
-        no_llm=no_llm,
-    )
+    state = _open_mine_state(repo_path, tenant, resume)
+    try:
+        mine_result = _mine_tasks_with_progress(
+            repo_path,
+            count=sdlc_count,
+            source_hint=source,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            state=state,
+        )
+    finally:
+        state.close()
     sdlc_tasks = mine_result.tasks
     if sdlc_tasks:
         effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
@@ -2484,13 +2628,20 @@ def _dispatch_mixed(
         all_task_ids.extend(p.name for p in probe_dirs)
 
     if not sdlc_tasks and not probes:
-        click.echo(
-            "No tasks generated. Try a repo with merged PRs or more "
-            "extractable symbols."
-        )
+        if resume and all_task_ids:
+            _record_task_ids_in_experiment(repo_path, sorted(set(all_task_ids)))
+            click.echo(
+                "No new tasks generated on resume — existing task output "
+                "is preserved."
+            )
+        else:
+            click.echo(
+                "No tasks generated. Try a repo with merged PRs or more "
+                "extractable symbols."
+            )
         return
 
-    _record_task_ids_in_experiment(repo_path, all_task_ids)
+    _record_task_ids_in_experiment(repo_path, sorted(set(all_task_ids)))
 
     # Show combined results
     if sdlc_tasks:
@@ -2622,6 +2773,7 @@ def run_mine(
     narrative_source: tuple[str, ...] = (),
     refresh_dir: str | None = None,
     accept_structural_change: bool = False,
+    resume: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
     tenant: str | None = None,
@@ -2735,6 +2887,22 @@ def run_mine(
                     err=True,
                 )
 
+
+        # --resume replays interrupted SDLC merge mining from MineState.
+        # --refresh re-mines a single existing task dir — there is nothing
+        # for resume to pick up there, so the combination is refused.
+        if resume and refresh_dir is not None:
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    "Cannot use --resume with --refresh: --refresh re-mines "
+                    "an existing task directory and records no resumable "
+                    "state. Re-run without --resume."
+                ),
+                next_try_flag="--resume",
+                next_try_value="",
+                detail={"conflicting_flags": ["--resume", "--refresh"]},
+            )
 
         # Refresh dispatch: runs before any other mining path so users don't
         # accidentally re-mine a whole tasks dir when they only meant to
@@ -2850,6 +3018,24 @@ def run_mine(
                 next_try_flag="--dual-verify",
                 next_try_value="",
                 detail={"conflicting_flags": ["--dual-verify", conflicting]},
+            )
+
+        # --resume only applies to single-repo SDLC merge mining: the
+        # org-scale and cross-repo pipelines record no MineState. Refuse
+        # loudly instead of silently ignoring the flag. Must run after
+        # resolve_effective_config: --goal mcp sets org_scale.
+        if resume and (org_scale or cross_repo):
+            conflicting = "--org-scale" if org_scale else "--cross-repo"
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    f"Cannot use --resume with {conflicting}: only single-repo "
+                    "SDLC merge mining records resumable state. Re-run "
+                    "without --resume."
+                ),
+                next_try_flag="--resume",
+                next_try_value="",
+                detail={"conflicting_flags": ["--resume", conflicting]},
             )
 
         # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
@@ -2994,15 +3180,16 @@ def run_mine(
                 dual_verify=dual_verify,
                 narrative_source=narrative_source,
                 sg_repo=sg_repo,
+                resume=resume,
+                tenant=tenant,
             )
         except KeyboardInterrupt as exc:
-            # AC3: clean up partial output and exit with the standard SIGINT code.
+            # Never destroy customer-side work (locked decision 3): the
+            # partial tasks dir survives so `mine --resume` can pick up
+            # where the interrupt landed. Exit with the standard SIGINT code.
             partial = _CURRENT_TASKS_DIR
             if partial is not None and partial.exists():
-                shutil.rmtree(partial, ignore_errors=True)
-                message = (
-                    f"Interrupted. Removed partial output at {partial}."
-                )
+                message = f"Interrupted. Partial output preserved at {partial}."
                 partial_path = str(partial)
             else:
                 message = "Interrupted."
@@ -3010,7 +3197,7 @@ def run_mine(
             raise DiagnosticError(
                 code="INTERRUPTED",
                 message=message,
-                diagnose_cmd="codeprobe mine ... --resume",
+                diagnose_cmd=f"codeprobe mine {path} --resume",
                 terminal=True,
                 exit_code=130,
                 detail={"partial_path": partial_path},

@@ -67,9 +67,10 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # entirely — __init__.py has zero bare-usage violations now.
         # codeprobe-f7rl.19: PATH/github: shorthand docs, codeprobe-f7rl.20:
         # supported-languages block, codeprobe-f7rl.21: --no-llm guarantee,
-        # and codeprobe-f7rl.22: GitHub-only note in --source help — all
-        # text-only mine help additions, no new raise, confirmed by running
-        # the lint test against the merged file.
+        # codeprobe-f7rl.22: GitHub-only note in --source help, and
+        # codeprobe-f7rl.14: --resume option on mine — all text-only mine
+        # help additions, no new raise, confirmed by running the lint test
+        # against the merged file.
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),

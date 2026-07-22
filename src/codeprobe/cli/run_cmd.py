@@ -1214,13 +1214,17 @@ def run_eval(
 
             if interrupted:
                 partial = checkpoint_store.load_ids()
+                # Checkpoint resume is implicit: re-running the same command
+                # skips checkpointed tasks (see CheckpointStore wiring above).
+                # There is no --resume flag on run — never print one.
                 raise DiagnosticError(
                     code="INTERRUPTED",
                     message=(
-                        f"Interrupted — partial results saved "
-                        f"({len(partial)} tasks completed)"
+                        f"Interrupted — partial results saved; re-running "
+                        f"resumes from checkpoint ({len(partial)} tasks "
+                        f"already completed)"
                     ),
-                    diagnose_cmd=f"codeprobe run {path} --resume",
+                    diagnose_cmd=f"codeprobe run {path}",
                     terminal=True,
                     exit_code=130,
                     detail={
