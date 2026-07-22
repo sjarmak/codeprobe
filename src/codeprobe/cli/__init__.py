@@ -1188,7 +1188,7 @@ def interpret(
     )
 
 
-@main.group()
+@main.group(cls=CodeprobeGroup)
 def experiment() -> None:
     """Manage eval experiments — init, configure, validate, and aggregate."""
 

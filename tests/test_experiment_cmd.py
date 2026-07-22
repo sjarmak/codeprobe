@@ -14,6 +14,7 @@ from codeprobe.core.experiment import (
     create_experiment_dir,
     load_experiment,
     save_config_results,
+    save_experiment,
 )
 from codeprobe.models.experiment import (
     CompletedTask,
@@ -753,3 +754,122 @@ def test_status_completes_with_repeats(runner: CliRunner, tmp_path: Path) -> Non
     assert "complete" in result.output
     assert "(2 trials)" in result.output
     assert "pending" not in result.output
+# ---- repo-root path resolution (codeprobe-f7rl.13) ----
+#
+# Every path token accepted by ``experiment init`` must be accepted by
+# status / add-config / validate / aggregate. Before the shared resolver
+# these commands did ``load_experiment(Path(path))`` directly and rejected
+# the repo root that ``experiment init . --non-interactive`` had just
+# accepted with "Experiment not found: experiment.json".
+
+
+def _init_non_interactive(runner: CliRunner, repo: Path) -> None:
+    result = runner.invoke(
+        main, ["experiment", "init", str(repo), "--non-interactive"]
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_status_accepts_repo_root_after_init(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    _init_non_interactive(runner, tmp_path)
+    result = runner.invoke(main, ["experiment", "status", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Experiment: default" in result.output
+    assert "Experiment not found" not in result.output
+
+
+def test_add_config_accepts_repo_root_after_init(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    _init_non_interactive(runner, tmp_path)
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "add-config",
+            str(tmp_path),
+            "--label",
+            "x",
+            "--agent",
+            "claude",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    saved = load_experiment(tmp_path / ".codeprobe")
+    assert [c.label for c in saved.configs] == ["x"]
+    assert (tmp_path / ".codeprobe" / "runs" / "x").is_dir()
+
+
+def test_validate_accepts_repo_root_after_init(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    _init_non_interactive(runner, tmp_path)
+    result = runner.invoke(main, ["experiment", "validate", str(tmp_path)])
+    # Fails on content (no tasks / no configs yet), not on resolution.
+    assert result.exit_code == 1
+    assert "Experiment not found" not in result.output
+    assert "No tasks" in result.output
+
+
+def test_aggregate_accepts_repo_root_after_init(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    _init_non_interactive(runner, tmp_path)
+    add = runner.invoke(
+        main,
+        ["experiment", "add-config", str(tmp_path), "--label", "x"],
+    )
+    assert add.exit_code == 0, add.output
+    result = runner.invoke(main, ["experiment", "aggregate", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".codeprobe" / "reports" / "aggregate.json").is_file()
+
+
+def test_status_accepts_explicit_codeprobe_dir(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    _init_non_interactive(runner, tmp_path)
+    result = runner.invoke(
+        main, ["experiment", "status", str(tmp_path / ".codeprobe")]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Experiment: default" in result.output
+
+
+def test_status_resolves_named_subdir_layout(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    named = tmp_path / ".codeprobe" / "myexp"
+    named.mkdir(parents=True)
+    save_experiment(named, Experiment(name="myexp"))
+    result = runner.invoke(main, ["experiment", "status", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "Experiment: myexp" in result.output
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["experiment", "status"],
+        ["experiment", "add-config", "--label", "x"],
+        ["experiment", "validate"],
+        ["experiment", "aggregate"],
+    ],
+    ids=["status", "add-config", "validate", "aggregate"],
+)
+def test_zero_experiment_reports_no_experiment(
+    runner: CliRunner, tmp_path: Path, argv: list[str]
+) -> None:
+    """No experiment anywhere → NO_EXPERIMENT envelope, not the old
+    unhelpful "Experiment not found: experiment.json" text."""
+    full_argv = [argv[0], argv[1], str(tmp_path), *argv[2:]]
+    result = runner.invoke(main, full_argv)
+    assert result.exit_code == 2, result.output
+    envelope = json.loads(result.output)
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "NO_EXPERIMENT"
+    combined = result.output + (result.stderr or "")
+    assert "Experiment not found: experiment.json" not in combined
+    assert "Traceback" not in combined

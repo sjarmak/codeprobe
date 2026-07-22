@@ -15,6 +15,7 @@ import click
 from codeprobe.adapters.protocol import quarantine_message
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
+from codeprobe.config.defaults import resolve_experiment_config
 from codeprobe.core.experiment import (
     create_experiment_dir,
     load_config_results,
@@ -30,6 +31,28 @@ from codeprobe.models.experiment import (
 
 def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _resolve_exp_dir(path: str) -> Path:
+    """Resolve a user-supplied path token to the experiment directory.
+
+    Accepts the same tokens as ``experiment init``: an explicit experiment
+    directory (one containing ``experiment.json``) is used as-is; any other
+    path is treated as a repo root and the shared resolver discovers the
+    experiment under ``<path>/.codeprobe/`` — both the direct
+    ``experiment.json`` layout written by ``experiment init
+    --non-interactive`` and the named-subdir layout.
+
+    On failure the typed CLI errors from
+    :func:`codeprobe.config.defaults.resolve_experiment_config`
+    (``NO_EXPERIMENT`` / ``AMBIGUOUS_EXPERIMENT``) propagate to
+    :class:`codeprobe.cli._error_handler.CodeprobeGroup` for rendering.
+    """
+    base_dir = Path(path)
+    if (base_dir / "experiment.json").is_file():
+        return base_dir
+    config_path, _ = resolve_experiment_config(base_dir)
+    return config_path.parent
 
 
 def experiment_init(
@@ -176,7 +199,7 @@ def experiment_add_config(
         # lint-exempt: f7rl.27 pins SystemExit(1), the add-config echo+exit style
         raise SystemExit(1)
 
-    exp_dir = Path(path)
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
@@ -274,7 +297,7 @@ def experiment_validate(
         score_task_confidence,
     )
 
-    exp_dir = Path(path)
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
@@ -361,7 +384,7 @@ def experiment_status(path: str) -> None:
         score_task_confidence,
     )
 
-    exp_dir = Path(path)
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
@@ -452,7 +475,7 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
     ``aggregate.json`` is always written so downstream tooling still
     sees the signal.
     """
-    exp_dir = Path(path)
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)

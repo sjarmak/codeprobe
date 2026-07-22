@@ -73,7 +73,10 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-77z: lines shifted +1 by the is_infra_failure import
         # (infra-failure count surfaced on the experiment.json summary).
         # codeprobe-f7rl.27: +2 by the quarantine_message and registry
-        # imports at the top of the module.
+        # imports at the top of the module, and codeprobe-f7rl.13: shifted
+        # further by the shared `_resolve_exp_dir` helper (and its import)
+        # added above `experiment_init`. Real line numbers below, confirmed
+        # by running the lint test against the merged file.
         ("src/codeprobe/cli/experiment_cmd.py", 58),
         ("src/codeprobe/cli/experiment_cmd.py", 70),
         ("src/codeprobe/cli/experiment_cmd.py", 77),
@@ -92,7 +95,9 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # (repeat-aware completion counts distinct task_ids and appends the
         # trial count to the progress column).
         # codeprobe-f7rl.12: init_cmd.py shifted +6 (non-TTY default
-        # experiment creation replaces the no-op). Real line numbers below,
+        # experiment creation replaces the no-op).
+        # codeprobe-f7rl.13: experiment_cmd.py entries shifted further by
+        # the shared `_resolve_exp_dir` helper. Real line numbers below,
         # confirmed by running the lint test against the merged file.
         ("src/codeprobe/cli/experiment_cmd.py", 185),
         ("src/codeprobe/cli/experiment_cmd.py", 194),
