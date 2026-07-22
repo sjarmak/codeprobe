@@ -75,6 +75,39 @@ def test_build_run_command_uses_rw_mode_when_allowed() -> None:
     assert "/host/src:/workspace:ro" not in argv
 
 
+def test_build_run_command_network_parameter() -> None:
+    """codeprobe-f7rl.5: ``network`` overrides the default ``--network=none``."""
+    argv = _build_run_command(
+        "docker",
+        ["echo", "hi"],
+        {},
+        allow_writes=False,
+        image="codeprobe-sandbox:sg-only",
+        workdir=None,
+        env=None,
+        network="bridge",
+    )
+    assert "--network=bridge" in argv
+    assert "--network=none" not in argv
+
+
+def test_run_in_sandbox_forwards_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
+        captured["argv"] = list(argv)
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "codeprobe.sandbox.runner._detect_engine", lambda: "docker"
+    )
+    monkeypatch.setattr("codeprobe.sandbox.runner.subprocess.run", fake_run)
+
+    run_in_sandbox(["true"], {}, network="bridge")
+
+    assert "--network=bridge" in captured["argv"]
+
+
 def test_build_run_command_string_cmd_wrapped_in_sh_c() -> None:
     argv = _build_run_command(
         "docker",

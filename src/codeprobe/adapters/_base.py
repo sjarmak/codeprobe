@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from abc import abstractmethod
+from pathlib import Path
 
 from codeprobe.adapters.protocol import (
     AdapterSetupError,
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.core import containment
+from codeprobe.sandbox.agent_container import containerize_argv
+from codeprobe.sandbox.runner import DEFAULT_AGENT_IMAGE
+
+logger = logging.getLogger(__name__)
 
 # Only these env vars are forwarded to agent subprocesses.
 # Keeps secrets (OPENAI_API_KEY, AWS_SECRET_*, etc.) out of the child
@@ -63,6 +71,39 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
 )
 
 
+# Whitelist keys NOT forwarded into the agent container via ``-e KEY``
+# (codeprobe-f7rl.5). Only the slot worktree and the session config dir are
+# identity-mounted, so host-path-shaped values (toolchain roots, XDG/DBus
+# session paths, TMPDIR) would dangle inside the container, and forwarding
+# the host PATH/HOME would shadow the image's own toolchain.
+_CONTAINER_ENV_EXCLUDED: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+        "NODE_PATH",
+        "NPM_CONFIG_PREFIX",
+        "GOPATH",
+        "GOROOT",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+    }
+)
+
+# Env keys the agent container receives (``-e KEY`` passthrough): the
+# adapter whitelist minus the host-path-shaped exclusions above. Credentials
+# (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, ...) and locale/identity keys
+# survive; the value is copied by the engine from its client environment so
+# secrets never appear in the argv.
+_CONTAINER_ENV_KEYS: frozenset[str] = _ADAPTER_ENV_WHITELIST - _CONTAINER_ENV_EXCLUDED
+
+
 def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a filtered environment for agent subprocesses.
 
@@ -85,6 +126,26 @@ def _decode_timeout_output(raw: str | bytes | None) -> str:
     if isinstance(raw, bytes):
         return raw.decode("utf-8", errors="replace")
     return raw
+
+
+def _remove_container(engine: str, name: str) -> None:
+    """Best-effort ``<engine> rm -f <name>`` after a client-side timeout.
+
+    ``subprocess.run(timeout=...)`` kills the engine client, not the
+    container; without this a hung agent container outlives the run.
+    Failures are logged, never raised — the caller is already unwinding a
+    TimeoutExpired and must return the partial AgentOutput.
+    """
+    try:
+        subprocess.run(  # noqa: S603 — argv list, no shell=True
+            [engine, "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("failed to remove timed-out agent container %s", name)
 
 
 class BaseAdapter:
@@ -172,6 +233,32 @@ class BaseAdapter:
                     if candidate.startswith(tempfile.gettempdir()):
                         mcp_tmpfile = candidate
 
+        run_env = _adapter_safe_env(session_env) if session_env else None
+
+        # Containerize the agent argv when the run resolved a "container"
+        # plan (codeprobe-f7rl.5). Sandboxed / host-consented / plan-less
+        # (library and test) callers keep the exact build_command argv.
+        container_engine: str | None = None
+        container_name: str | None = None
+        plan = containment.active_plan()
+        if plan is not None and plan.mode == "container" and plan.engine:
+            container_engine = plan.engine
+            container_name = f"codeprobe-agent-{uuid.uuid4().hex}"
+            raw_config_dir = (session_env or {}).get(
+                "CLAUDE_CONFIG_DIR"
+            ) or os.environ.get("CLAUDE_CONFIG_DIR")
+            cmd = containerize_argv(
+                cmd,
+                engine=container_engine,
+                workspace=Path(config.cwd) if config.cwd else Path.cwd(),
+                config_dir=Path(raw_config_dir) if raw_config_dir else None,
+                mcp_tmpfile=mcp_tmpfile,
+                env_keys=sorted(_CONTAINER_ENV_KEYS),
+                image=DEFAULT_AGENT_IMAGE,
+                name=container_name,
+                env=run_env,
+            )
+
         start = time.monotonic()
 
         try:
@@ -181,10 +268,13 @@ class BaseAdapter:
                 text=True,
                 timeout=config.timeout_seconds,
                 cwd=config.cwd,
-                env=_adapter_safe_env(session_env) if session_env else None,
+                env=run_env,
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start
+            if container_engine and container_name:
+                # The timeout killed the engine client, not the container.
+                _remove_container(container_engine, container_name)
             timeout_error = f"Agent timed out after {config.timeout_seconds}s"
 
             raw_stdout = _decode_timeout_output(exc.stdout)

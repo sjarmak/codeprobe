@@ -122,6 +122,21 @@ With an engine present but the image missing, scoring refuses host execution
 unless the run was started with `--uncontained`, and the error message repeats
 the build command above.
 
+The agent process is containerized the same way. With an engine on PATH and
+the agent image built, `codeprobe run` proceeds on a bare host with no
+`--uncontained` flag: each agent runs inside a `--network=bridge` container
+(the agent needs the model API) where only the task worktree and the session
+config dir are writable, and stderr discloses container mode. Build the agent
+image once from the repository root:
+
+```bash
+docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .
+```
+
+With an engine present but the agent image missing, `codeprobe run` still
+refuses (`UNCONTAINED_REFUSED`) and the error message repeats this build
+command.
+
 To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.

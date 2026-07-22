@@ -41,6 +41,11 @@ DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 # tracks the toolchain matrix, bump it when the Dockerfile changes.
 DEFAULT_SCORING_IMAGE: Final[str] = "codeprobe-scoring:0.12"
 
+# Image used to run the agent subprocess itself (codeprobe-f7rl.5). Built
+# from ``src/codeprobe/sandbox/Dockerfile.agent``; the version tag tracks
+# the installed agent CLI surface, bump it when the Dockerfile changes.
+DEFAULT_AGENT_IMAGE: Final[str] = "codeprobe-agent:0.12"
+
 # Lower-cased stderr fragments that indicate a write to a read-only mount.
 # Kept explicit because the exact wording varies between docker, podman, and
 # the underlying kernel, but these three substrings cover all observed cases.
@@ -148,14 +153,17 @@ def _build_run_command(
     image: str,
     workdir: str | None,
     env: dict[str, str] | None,
+    network: str = "none",
 ) -> list[str]:
     """Build the argv for ``<engine> run ...``.
 
     Exposed as a module-private helper so unit tests can assert the flags
-    without spawning a container.
+    without spawning a container. ``network`` defaults to ``"none"`` — the
+    mined-script posture; callers that need egress (the agent talks to the
+    model API) pass ``"bridge"`` explicitly.
     """
     mode = "rw" if allow_writes else "ro"
-    argv: list[str] = [engine, "run", "--rm", "--network=none"]
+    argv: list[str] = [engine, "run", "--rm", f"--network={network}"]
 
     if workdir is not None:
         argv += ["-w", workdir]
@@ -200,6 +208,7 @@ def run_in_sandbox(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     workdir: str | None = None,
     env: dict[str, str] | None = None,
+    network: str = "none",
 ) -> SandboxResult:
     """Run ``cmd`` inside a sandbox container and capture its output.
 
@@ -225,6 +234,10 @@ def run_in_sandbox(
         Optional ``-w`` working directory inside the container.
     env:
         Optional environment variables forwarded with ``-e KEY=VAL``.
+    network:
+        Container network mode, emitted as ``--network=<value>``. Defaults
+        to ``"none"`` so sandboxed commands have no egress; pass
+        ``"bridge"`` only when the command genuinely needs the network.
 
     Returns
     -------
@@ -248,6 +261,7 @@ def run_in_sandbox(
         image=image,
         workdir=workdir,
         env=env,
+        network=network,
     )
 
     logger.debug("sandbox run: %s", argv)

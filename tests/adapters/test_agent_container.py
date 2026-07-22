@@ -1,0 +1,267 @@
+"""Unit tests for agent containerization (codeprobe-f7rl.5).
+
+Covers the pure argv wrapper (``containerize_argv``) and the
+``BaseAdapter.run`` integration: a ``container`` plan wraps the adapter
+argv in ``<engine> run``; sandboxed / host-consented / plan-less callers
+keep the exact ``build_command`` argv; a client-side timeout triggers a
+best-effort ``<engine> rm -f <name>``.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from codeprobe.adapters._base import BaseAdapter
+from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.core import containment
+from codeprobe.sandbox.agent_container import containerize_argv
+
+ENGINE = "/usr/bin/docker"
+IMAGE = "codeprobe-agent:0.12"
+
+
+# ---------------------------------------------------------------------------
+# containerize_argv (pure argv construction)
+# ---------------------------------------------------------------------------
+
+
+class TestContainerizeArgv:
+    def test_full_shape_and_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+        argv = containerize_argv(
+            ["/host/bin/claude", "-p", "hi", "--verbose"],
+            engine=ENGINE,
+            workspace=Path("/work/slot0"),
+            config_dir=Path("/cfg/slot0"),
+            mcp_tmpfile="/tmp/codeprobe-mcp-x.json",
+            env_keys=["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
+            image=IMAGE,
+            name="codeprobe-agent-abc",
+        )
+
+        assert argv == [
+            ENGINE,
+            "run",
+            "--rm",
+            "--network=bridge",
+            "--name",
+            "codeprobe-agent-abc",
+            "-v",
+            "/work/slot0:/work/slot0:rw",
+            "-v",
+            "/cfg/slot0:/cfg/slot0:rw",
+            "-v",
+            "/tmp/codeprobe-mcp-x.json:/tmp/codeprobe-mcp-x.json:ro",
+            "-e",
+            "ANTHROPIC_API_KEY",
+            "-w",
+            "/work/slot0",
+            IMAGE,
+            "claude",
+            "-p",
+            "hi",
+            "--verbose",
+        ]
+
+    def test_optional_mounts_omitted_when_absent(self) -> None:
+        argv = containerize_argv(
+            ["/host/bin/claude", "-p", "hi"],
+            engine=ENGINE,
+            workspace=Path("/work/slot0"),
+            config_dir=None,
+            mcp_tmpfile=None,
+            env_keys=[],
+            image=IMAGE,
+            name="codeprobe-agent-abc",
+        )
+
+        mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
+        assert mounts == ["/work/slot0:/work/slot0:rw"]
+        assert "-e" not in argv
+
+    def test_env_keys_filtered_against_explicit_mapping(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Session-env-only keys survive when the effective env is passed."""
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+        argv = containerize_argv(
+            ["/host/bin/claude"],
+            engine=ENGINE,
+            workspace=Path("/work/slot0"),
+            config_dir=None,
+            mcp_tmpfile=None,
+            env_keys=["CLAUDE_CONFIG_DIR", "GITHUB_TOKEN"],
+            image=IMAGE,
+            name="codeprobe-agent-abc",
+            env={"CLAUDE_CONFIG_DIR": "/cfg/slot0"},
+        )
+
+        assert ["-e", "CLAUDE_CONFIG_DIR"] == argv[argv.index("-e") : argv.index("-e") + 2]
+        assert "GITHUB_TOKEN" not in argv
+
+    def test_empty_cmd_rejected(self) -> None:
+        with pytest.raises(ValueError, match="non-empty"):
+            containerize_argv(
+                [],
+                engine=ENGINE,
+                workspace=Path("/work"),
+                config_dir=None,
+                mcp_tmpfile=None,
+                env_keys=[],
+                image=IMAGE,
+                name="codeprobe-agent-abc",
+            )
+
+
+# ---------------------------------------------------------------------------
+# BaseAdapter.run integration
+# ---------------------------------------------------------------------------
+
+
+class _FakeAdapter(BaseAdapter):
+    _binary_name = "fake-agent"
+    _install_hint = "install fake-agent"
+
+    def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+        return ["/host/bin/fake-agent", "-p", prompt]
+
+
+@pytest.fixture()
+def capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Patch subprocess.run inside the adapter module; return captured argvs."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("codeprobe.adapters._base.subprocess.run", fake_run)
+    return calls
+
+
+class TestRunContainerization:
+    def test_container_plan_wraps_argv(
+        self,
+        capture_run: list[list[str]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine=ENGINE)
+        )
+
+        output = _FakeAdapter().run("hello", AgentConfig(cwd=str(tmp_path)))
+
+        assert output.exit_code == 0
+        (argv,) = capture_run
+        assert argv[:4] == [ENGINE, "run", "--rm", "--network=bridge"]
+        name = argv[argv.index("--name") + 1]
+        assert name.startswith("codeprobe-agent-")
+        assert f"{tmp_path}:{tmp_path}:rw" in argv
+        assert argv[argv.index(IMAGE) :] == [IMAGE, "fake-agent", "-p", "hello"]
+
+    def test_container_plan_mounts_session_config_dir(
+        self,
+        capture_run: list[list[str]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine=ENGINE)
+        )
+
+        _FakeAdapter().run(
+            "hello",
+            AgentConfig(cwd=str(tmp_path)),
+            session_env={"CLAUDE_CONFIG_DIR": "/cfg/slot3"},
+        )
+
+        (argv,) = capture_run
+        assert "/cfg/slot3:/cfg/slot3:rw" in argv
+        assert "CLAUDE_CONFIG_DIR" in argv  # -e passthrough from session env
+
+    @pytest.mark.parametrize(
+        "plan",
+        [
+            None,
+            containment.ContainmentPlan(mode="sandboxed"),
+            containment.ContainmentPlan(mode="host-consented"),
+        ],
+    )
+    def test_non_container_plans_keep_build_command_argv(
+        self,
+        capture_run: list[list[str]],
+        tmp_path: Path,
+        plan: containment.ContainmentPlan | None,
+    ) -> None:
+        if plan is not None:
+            containment.set_active_plan(plan)
+
+        adapter = _FakeAdapter()
+        adapter.run("hello", AgentConfig(cwd=str(tmp_path)))
+
+        (argv,) = capture_run
+        assert argv == adapter.build_command("hello", AgentConfig(cwd=str(tmp_path)))
+
+    def test_timeout_removes_container(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(
+            argv: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(list(argv))
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
+            return subprocess.CompletedProcess(
+                args=argv, returncode=0, stdout="", stderr=""
+            )
+
+        monkeypatch.setattr("codeprobe.adapters._base.subprocess.run", fake_run)
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine=ENGINE)
+        )
+
+        output = _FakeAdapter().run(
+            "hello", AgentConfig(cwd=str(tmp_path), timeout_seconds=1)
+        )
+
+        assert output.exit_code == -1
+        assert output.error is not None and "timed out" in output.error
+        assert len(calls) == 2
+        run_argv, rm_argv = calls
+        name = run_argv[run_argv.index("--name") + 1]
+        assert rm_argv == [ENGINE, "rm", "-f", name]
+
+    def test_timeout_without_container_plan_skips_rm(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(
+            argv: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(list(argv))
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
+
+        monkeypatch.setattr("codeprobe.adapters._base.subprocess.run", fake_run)
+
+        output = _FakeAdapter().run(
+            "hello", AgentConfig(cwd=str(tmp_path), timeout_seconds=1)
+        )
+
+        assert output.exit_code == -1
+        assert len(calls) == 1

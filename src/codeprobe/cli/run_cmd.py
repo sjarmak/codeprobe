@@ -935,6 +935,17 @@ def run_eval(
         set_active_plan(containment_plan)
         if containment_plan.mode == "host-consented":
             click.echo(f"--uncontained accepted: {DISCLOSURE}", err=True)
+        elif containment_plan.mode == "container":
+            engine_name = (
+                Path(containment_plan.engine).name
+                if containment_plan.engine
+                else "container engine"
+            )
+            click.echo(
+                "Containment: agent and mined test/verifier scripts execute "
+                f"in containers via {engine_name}.",
+                err=True,
+            )
 
         # Pre-create a shared Rich listener when running multiple configs in
         # parallel so a single Live context owns the terminal.
