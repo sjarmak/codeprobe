@@ -362,23 +362,3 @@ Apache-2.0. See [LICENSE](LICENSE).
   year   = {2026}
 }
 ```
-
----
-
-## Repository metadata (maintainer note)
-
-Not part of the package; suggestions for the GitHub repository settings.
-
-- **About description:** "Turn your repo's merged PRs into coding-agent
-  evaluations. Measure the whole agent setup (model, tools, retrieval, cost),
-  not just the model."
-- **Website / docs:** point the repository website field at the PyPI page,
-  `https://pypi.org/project/codeprobe/`, until a dedicated docs site exists;
-  the `docs/` tree is the current documentation home.
-- **Topics (8–12):** `ai`, `coding-agents`, `llm-evaluation`, `benchmark`,
-  `mcp`, `swe-bench`, `agent-evaluation`, `code-generation`, `python`,
-  `developer-tools`, `retrieval`, `eval`.
-- **Social preview:** worth adding. A 1280×640 image with the name, the
-  one-line positioning, and the ranking-table capture from the top of this
-  README would render well in link unfurls; the current default (owner avatar
-  plus repo name) carries none of the positioning.
