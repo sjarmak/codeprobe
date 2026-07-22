@@ -15,11 +15,12 @@ if TYPE_CHECKING:
     from codeprobe.mining.curator import CurationBackend
     from codeprobe.mining.state import MineState
 from collections.abc import Callable
-from dataclasses import is_dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 
 import click
 
+from codeprobe.cli.envelope import NextStep, WarningEntry
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.mining._lang import (
     SUPPORTED_MINING_LANGUAGES,
@@ -514,6 +515,33 @@ _REJECTION_HINTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _rejection_payload(rejections: RejectionBreakdown | None) -> dict[str, int]:
+    """Shape a :class:`RejectionBreakdown` for the envelope ``data`` block.
+
+    ``None`` (mining found no merge-commit candidates at all) maps to an
+    all-zero breakdown so consumers always see the same keys.
+    """
+    r = rejections if rejections is not None else RejectionBreakdown()
+    return {
+        "quality": r.quality,
+        "min_files": r.min_files,
+        "subsystem": r.subsystem,
+        "extraction": r.extraction,
+        "total": r.total,
+    }
+
+
+def _dominant_rejection(rejections: RejectionBreakdown) -> tuple[str, str, str, int]:
+    """Return ``(reason, label, hint, count)`` for the highest rejection counter.
+
+    Ties resolve by :data:`_REJECTION_HINTS` order (``max`` keeps the first
+    entry it sees among equal-count winners).
+    """
+    counts = _rejection_payload(rejections)
+    reason, label, hint = max(_REJECTION_HINTS, key=lambda rh: counts[rh[0]])
+    return reason, label, hint, counts[reason]
+
+
 def _show_shortfall_notice(
     requested: int,
     mined: int,
@@ -528,22 +556,98 @@ def _show_shortfall_notice(
     if mined >= requested or rejections is None or rejections.total == 0:
         return
 
-    counts = {
-        "quality": rejections.quality,
-        "min_files": rejections.min_files,
-        "subsystem": rejections.subsystem,
-        "extraction": rejections.extraction,
-    }
-    # Dominant reason: highest count; ties resolved by _REJECTION_HINTS order
-    # (max returns the first entry it sees among equal-count winners).
-    reason, label, hint = max(_REJECTION_HINTS, key=lambda rh: counts[rh[0]])
+    _reason, label, hint, dominant_count = _dominant_rejection(rejections)
     click.echo(
         f"  ⚠ requested {requested}, mined {mined} "
         f"({rejections.total} candidate(s) filtered; "
-        f"most common: {counts[reason]} {label}). "
+        f"most common: {dominant_count} {label}). "
         f"To recover: {hint}."
     )
     click.echo()
+
+
+def _shortfall_warning(
+    requested: int,
+    mined: int,
+    rejections: RejectionBreakdown | None,
+) -> WarningEntry:
+    """Build the ``MINE_SHORTFALL`` warning carried on a shortfall envelope."""
+    payload = _rejection_payload(rejections)
+    if rejections is not None and rejections.total > 0:
+        _reason, label, _hint, dominant_count = _dominant_rejection(rejections)
+        breakdown = f"most common: {dominant_count} {label}"
+    else:
+        breakdown = "no merge-commit candidates found"
+    return WarningEntry(
+        code="MINE_SHORTFALL",
+        message=(
+            f"Requested {requested} task(s), mined {mined}: "
+            f"{payload['total']} candidate(s) filtered ({breakdown})."
+        ),
+        detail={"requested": requested, "mined": mined, "rejections": payload},
+    )
+
+
+def _shortfall_next_steps(
+    path_arg: str,
+    rejections: RejectionBreakdown | None,
+    min_quality: float,
+    min_files: int,
+) -> list[NextStep]:
+    """Map the dominant rejection filter to one executable remediation command.
+
+    Pure mechanical mapping from the existing rejection counters (ZFC): the
+    highest counter wins, ties resolve by :data:`_REJECTION_HINTS` order. No
+    candidates at all (or extraction-dominated rejection: merged PRs without
+    usable tests) routes to probe generation, which needs no PR history.
+    """
+    if rejections is None or rejections.total == 0:
+        return [
+            NextStep(
+                summary=(
+                    "No test-bearing merged PRs found; generate probe "
+                    "tasks instead"
+                ),
+                command=f"codeprobe mine {path_arg} --task-type micro_probe --json",
+            )
+        ]
+    reason, _label, _hint, _count = _dominant_rejection(rejections)
+    if reason == "quality":
+        return [
+            NextStep(
+                summary="Lower the quality floor",
+                command=(
+                    f"codeprobe mine {path_arg} "
+                    f"--min-quality {round(min_quality / 2, 2)} --json"
+                ),
+            )
+        ]
+    if reason == "min_files":
+        return [
+            NextStep(
+                summary="Lower --min-files",
+                command=(
+                    f"codeprobe mine {path_arg} "
+                    f"--min-files {max(1, min_files - 1)} --json"
+                ),
+            )
+        ]
+    if reason == "subsystem":
+        return [
+            NextStep(
+                summary="Broaden or drop --subsystem",
+                command=f"codeprobe mine {path_arg} --json",
+            )
+        ]
+    # extraction: merged PRs exist but carry no usable tests/metadata.
+    return [
+        NextStep(
+            summary=(
+                "Merged PRs lack usable tests; generate probe tasks instead"
+            ),
+            command=f"codeprobe mine {path_arg} --task-type micro_probe --json",
+        )
+    ]
 
 
 def _show_next_steps(
@@ -678,6 +782,36 @@ def _discover_and_select(
 
 
 _CURRENT_TASKS_DIR: Path | None = None
+
+
+@dataclass(frozen=True)
+class _MineYield:
+    """Requested-vs-mined summary stashed by the SDLC mining paths.
+
+    Recorded in module state (next to ``_CURRENT_TASKS_DIR``) so the
+    terminal envelope in :func:`run_mine` can distinguish zero-yield /
+    shortfall mining from productive mining and derive remediation
+    ``next_steps`` from the rejection counters.
+    """
+
+    requested: int
+    mined: int
+    rejections: RejectionBreakdown | None
+
+
+_MINE_YIELD: _MineYield | None = None
+
+
+def _record_mine_yield(
+    requested: int,
+    mined: int,
+    rejections: RejectionBreakdown | None,
+) -> None:
+    """Stash the final requested/mined/rejections summary for the envelope."""
+    global _MINE_YIELD
+    _MINE_YIELD = _MineYield(
+        requested=requested, mined=mined, rejections=rejections
+    )
 
 
 def _clear_tasks_dir(repo_path: Path, *, preserve: bool = False) -> Path:
@@ -2220,6 +2354,7 @@ def _dispatch_sdlc(
     finally:
         state.close()
     tasks = mine_result.tasks
+    _record_mine_yield(count, len(tasks), mine_result.rejections)
     effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
 
     if tasks:
@@ -2588,6 +2723,7 @@ def _dispatch_mixed(
     finally:
         state.close()
     sdlc_tasks = mine_result.tasks
+    _record_mine_yield(sdlc_count, len(sdlc_tasks), mine_result.rejections)
     if sdlc_tasks:
         effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
         resolved_selection = _resolve_narrative_source(
@@ -2784,19 +2920,24 @@ def run_mine(
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
-    from codeprobe.cli.envelope import WarningEntry as _WarningEntry
     from codeprobe.tenant_lock import acquire_tenant_lock
 
     global _MINE_START_TIME, _EXPERIMENT_CREATED, _EXPERIMENT_DIR
+    global _CURRENT_TASKS_DIR, _MINE_YIELD
     _MINE_START_TIME = time.monotonic()
     _EXPERIMENT_CREATED = False
     _EXPERIMENT_DIR = None
+    # Reset per-invocation module state so a zero-yield mine cannot report
+    # a stale tasks dir or shortfall summary left over from a previous
+    # in-process invocation (CliRunner-based tests share module state).
+    _CURRENT_TASKS_DIR = None
+    _MINE_YIELD = None
 
     # Warnings that should ride along with the terminating envelope. The v0.7
     # defaults block below appends to this when the narrative-source resolver
     # fell back to the deterministic priority because no LLM backend was
     # available (PRD §13-T4 ZFC refactor).
-    _defaults_warnings: list[_WarningEntry] = []
+    _defaults_warnings: list[WarningEntry] = []
 
     # R4 tenant lock: serialize concurrent mine invocations in the same
     # tenant (same cwd + same $USER). On contention a DiagnosticError
@@ -2859,7 +3000,7 @@ def run_mine(
                         "llm-unavailable",
                     ):
                         _defaults_warnings.append(
-                            _WarningEntry(
+                            WarningEntry(
                                 code="LLM_UNAVAILABLE",
                                 message=(
                                     "Narrative-source was selected by the "
@@ -3218,19 +3359,48 @@ def run_mine(
                         for c in tasks_dir.iterdir()
                         if c.is_dir() and (c / "instruction.md").is_file()
                     )
+            data: dict[str, Any] = {
+                "tasks_dir": tasks_dir_str,
+                "task_count": task_count,
+                "goal": goal,
+                "tenant": tenant,
+                "tenant_source": tenant_source,
+                "comprehension_consensus": _COMPREHENSION_CONSENSUS,
+                "experiment_created": _EXPERIMENT_CREATED,
+                "experiment_dir": _EXPERIMENT_DIR,
+            }
+            # Zero-yield / shortfall honesty: mining executed correctly, so
+            # ok stays true and exit stays 0 (emptiness is data) — but the
+            # envelope must be distinguishable from productive mining. Fire
+            # on zero yield, or on a filtered shortfall (mined < requested
+            # with at least one rejection counter set — mirrors the pretty
+            # _show_shortfall_notice guard, so a --resume run that merely
+            # skipped completed commits stays silent).
+            envelope_warnings = list(_defaults_warnings)
+            shortfall_steps: list[NextStep] = []
+            mine_yield = _MINE_YIELD
+            if mine_yield is not None:
+                rejections = mine_yield.rejections
+                filtered_shortfall = (
+                    mine_yield.mined < mine_yield.requested
+                    and rejections is not None
+                    and rejections.total > 0
+                )
+                if task_count == 0 or filtered_shortfall:
+                    data["rejections"] = _rejection_payload(rejections)
+                    envelope_warnings.append(
+                        _shortfall_warning(
+                            mine_yield.requested, mine_yield.mined, rejections
+                        )
+                    )
+                    shortfall_steps = _shortfall_next_steps(
+                        path, rejections, min_quality, min_files
+                    )
             emit_envelope(
                 command="mine",
-                data={
-                    "tasks_dir": tasks_dir_str,
-                    "task_count": task_count,
-                    "goal": goal,
-                    "tenant": tenant,
-                    "tenant_source": tenant_source,
-                    "comprehension_consensus": _COMPREHENSION_CONSENSUS,
-                    "experiment_created": _EXPERIMENT_CREATED,
-                    "experiment_dir": _EXPERIMENT_DIR,
-                },
-                warnings=_defaults_warnings or None,
+                data=data,
+                warnings=envelope_warnings or None,
+                next_steps=shortfall_steps or None,
             )
     finally:
         if no_llm:

@@ -223,7 +223,9 @@ class TestGoalFlag:
         from codeprobe.cli.mine_cmd import run_mine
 
         mock_resolve.return_value = tmp_path
-        mock_mine.return_value = MagicMock(tasks=[], pr_bodies={}, changed_files_map={})
+        mock_mine.return_value = MagicMock(
+            tasks=[], pr_bodies={}, changed_files_map={}, rejections=None
+        )
 
         # Should not raise and should not call _ask_eval_goal
         with patch("codeprobe.cli.mine_cmd._ask_eval_goal") as mock_ask:
@@ -248,7 +250,9 @@ class TestGoalFlag:
         from codeprobe.cli.mine_cmd import run_mine
 
         mock_resolve.return_value = tmp_path
-        mock_mine.return_value = MagicMock(tasks=[], pr_bodies={}, changed_files_map={})
+        mock_mine.return_value = MagicMock(
+            tasks=[], pr_bodies={}, changed_files_map={}, rejections=None
+        )
 
         run_mine(str(tmp_path), goal="navigation", interactive=False)
 
@@ -283,7 +287,9 @@ class TestGoalFlag:
         from codeprobe.cli.mine_cmd import run_mine
 
         mock_resolve.return_value = tmp_path
-        mock_mine.return_value = MagicMock(tasks=[], pr_bodies={}, changed_files_map={})
+        mock_mine.return_value = MagicMock(
+            tasks=[], pr_bodies={}, changed_files_map={}, rejections=None
+        )
 
         run_mine(str(tmp_path), goal="general", interactive=False)
 

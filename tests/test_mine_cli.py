@@ -429,8 +429,14 @@ class TestMineAutoCreatesExperiment:
 # ---------------------------------------------------------------------------
 
 
-def _make_sdlc_repo(base: Path) -> Path:
-    """Create a git repo with merged feature branches that include tests."""
+def _make_sdlc_repo(base: Path, *, untested_merges: int = 0) -> Path:
+    """Create a git repo with merged feature branches that include tests.
+
+    *untested_merges* adds merges that touch two source files but carry no
+    test files — the extractor rejects those with the ``extraction`` counter
+    (no test command can be mined), independent of any goal-profile
+    ``min_files`` value.
+    """
     repo = base / "sdlcrepo"
     repo.mkdir()
 
@@ -468,6 +474,22 @@ def _make_sdlc_repo(base: Path) -> Path:
             "-q",
             "-m",
             f"Merge PR #{i}: add feature {i}\n\nAdds feature {i} and its tests.",
+            branch,
+        )
+    for i in range(untested_merges):
+        branch = f"notes/{i}"
+        _git("checkout", "-q", "-b", branch)
+        (repo / f"notes_a_{i}.py").write_text(f"NOTES_A = {i}\n")
+        (repo / f"notes_b_{i}.py").write_text(f"NOTES_B = {i}\n")
+        _git("add", ".")
+        _git("commit", "-qm", f"docs: notes {i}\n\nAdds untested notes modules.")
+        _git("checkout", "-q", "main")
+        _git(
+            "merge",
+            "--no-ff",
+            "-q",
+            "-m",
+            f"Merge PR #{i + 10}: notes {i}\n\nAdds notes modules without tests.",
             branch,
         )
     return repo
@@ -586,3 +608,109 @@ class TestMineResumeFlag:
         combined = result.output + (result.stderr or "")
         assert result.exit_code != 0
         assert "Cannot use --resume with task type micro_probe" in combined
+
+
+# ---------------------------------------------------------------------------
+# Zero-yield / shortfall envelope honesty (codeprobe-f7rl.16)
+# ---------------------------------------------------------------------------
+
+
+def _mine_sdlc_envelope(repo: Path, *extra_args: str):
+    """Run an SDLC mine in --json mode and return (result, envelope)."""
+    result = CliRunner().invoke(
+        main,
+        [
+            "mine",
+            str(repo),
+            "--goal",
+            "quality",
+            "--no-interactive",
+            "--no-llm",
+            "--narrative-source",
+            "commits",
+            "--json",
+            *extra_args,
+        ],
+    )
+    lines = [ln for ln in result.output.splitlines() if ln.strip()]
+    envelope = json.loads(lines[-1]) if lines else None
+    return result, envelope
+
+
+class TestMineShortfallEnvelope:
+    """Zero-yield and shortfall mines must be machine-distinguishable."""
+
+    def test_zero_yield_carries_rejections_warning_and_next_steps(
+        self, tmp_path, monkeypatch
+    ):
+        """All candidates filtered: ok stays true but remediation is emitted."""
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        monkeypatch.setenv("CODEPROBE_STATE_ROOT", str(state_root))
+        repo = _make_sdlc_repo(tmp_path, untested_merges=1)
+
+        result, envelope = _mine_sdlc_envelope(repo, "--min-quality", "1.0")
+
+        assert result.exit_code == 0, result.output
+        assert envelope["ok"] is True
+        assert envelope["data"]["task_count"] == 0
+        # Both tested PRs score 0.5 < 1.0 (quality), the untested merge has
+        # no minable test command (extraction): total 3 filtered.
+        rejections = envelope["data"]["rejections"]
+        assert rejections["quality"] == 2
+        assert rejections["extraction"] == 1
+        assert rejections["total"] == 3
+        warning_codes = [w["code"] for w in envelope["warnings"]]
+        assert "MINE_SHORTFALL" in warning_codes
+        # Dominant filter is quality — the remediation command must be
+        # executable and carry the dominant filter's flag.
+        assert envelope["next_steps"], "zero-yield envelope must carry next_steps"
+        first = envelope["next_steps"][0]
+        assert "--min-quality" in first["command"]
+        assert first["command"].startswith(f"codeprobe mine {repo}")
+
+    def test_partial_shortfall_carries_rejections_and_next_steps(
+        self, tmp_path, monkeypatch
+    ):
+        """Mined < requested with filtering: rejections + next_steps present."""
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        monkeypatch.setenv("CODEPROBE_STATE_ROOT", str(state_root))
+        repo = _make_sdlc_repo(tmp_path, untested_merges=1)
+
+        result, envelope = _mine_sdlc_envelope(
+            repo, "--count", "5", "--min-quality", "0"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert envelope["ok"] is True
+        assert envelope["data"]["task_count"] == 2
+        rejections = envelope["data"]["rejections"]
+        assert rejections["total"] >= 1
+        warning_codes = [w["code"] for w in envelope["warnings"]]
+        assert "MINE_SHORTFALL" in warning_codes
+        # The remediation is an executable codeprobe mine/--task-type command
+        # derived from whichever filter dominated.
+        assert envelope["next_steps"]
+        assert envelope["next_steps"][0]["command"].startswith("codeprobe mine ")
+
+    def test_full_yield_keeps_next_steps_empty_and_no_rejections_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Request met: the envelope stays indistinguishable from before."""
+        state_root = tmp_path / "state"
+        state_root.mkdir()
+        monkeypatch.setenv("CODEPROBE_STATE_ROOT", str(state_root))
+        repo = _make_sdlc_repo(tmp_path, untested_merges=1)
+
+        result, envelope = _mine_sdlc_envelope(
+            repo, "--count", "2", "--min-quality", "0"
+        )
+
+        assert result.exit_code == 0, result.output
+        assert envelope["ok"] is True
+        assert envelope["data"]["task_count"] == 2
+        assert "rejections" not in envelope["data"]
+        assert envelope["next_steps"] == []
+        warning_codes = [w["code"] for w in envelope["warnings"]]
+        assert "MINE_SHORTFALL" not in warning_codes
