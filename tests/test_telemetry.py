@@ -196,6 +196,108 @@ class TestJsonStdoutCollector:
         assert "Tool execution failed" in usage.error
 
 
+def _assistant_turn(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int = 0,
+    cache_creation: int = 0,
+) -> str:
+    """One stream-json assistant event carrying per-turn usage."""
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "model": model,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_input_tokens": cache_read,
+                    "cache_creation_input_tokens": cache_creation,
+                },
+                "content": [],
+            },
+        }
+    )
+
+
+def test_collect_sums_per_turn_usage_on_truncated_stream():
+    """Truncated stream (no result event) recovers billed per-turn usage
+    with calculated-cost provenance (codeprobe-f7rl.34)."""
+    collector = JsonStdoutCollector()
+
+    # Known model → summed tokens, cost calculated at CLAUDE_PRICING rates
+    # (date suffix stripped for the lookup).
+    stream = "\n".join(
+        [
+            _assistant_turn("claude-sonnet-4-6-20250514", 1000, 200, 500, 100),
+            _assistant_turn("claude-sonnet-4-6-20250514", 2000, 300, 1500, 0),
+        ]
+    )
+    usage = collector.collect(stream)
+    assert usage.input_tokens == 3000
+    assert usage.output_tokens == 500
+    assert usage.cache_read_tokens == 2000
+    assert usage.cache_creation_tokens == 100
+    rates = CLAUDE_PRICING.rates["claude-sonnet-4-6"]
+    expected = (
+        3000 * rates[0] + 500 * rates[1] + 2000 * rates[2] + 100 * rates[3]
+    ) / 1_000_000
+    assert usage.cost_usd == pytest.approx(expected)
+    assert usage.cost_model == "per_token"
+    assert usage.cost_source == "calculated"
+    assert "usage summed from 2 assistant turns" in usage.error
+
+    # Unknown model → tokens preserved, cost never a wrong-rate guess.
+    unknown_stream = "\n".join(
+        [
+            _assistant_turn("claude-nonexistent-9-9", 60, 6),
+            _assistant_turn("claude-nonexistent-9-9", 40, 4),
+        ]
+    )
+    usage = collector.collect(unknown_stream)
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 10
+    assert usage.cost_usd is None
+    assert usage.cost_source == "unavailable"
+    assert "usage summed from 2 assistant turns" in usage.error
+
+    # Mixed models → no single rate is safe; tokens kept, cost unavailable.
+    mixed_stream = "\n".join(
+        [
+            _assistant_turn("claude-sonnet-4-6", 50, 5),
+            _assistant_turn("claude-haiku-4-5", 50, 5),
+        ]
+    )
+    usage = collector.collect(mixed_stream)
+    assert usage.input_tokens == 100
+    assert usage.output_tokens == 10
+    assert usage.cost_usd is None
+    assert usage.cost_source == "unavailable"
+
+    # No per-turn usage at all → existing parse-failure UsageData unchanged.
+    empty_stream = "\n".join(
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"model": "claude-sonnet-4-6", "content": []},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"model": "claude-sonnet-4-6", "content": []},
+                }
+            ),
+        ]
+    )
+    usage = collector.collect(empty_stream)
+    assert usage.error.startswith("JSON parse failed")
+    assert usage.input_tokens is None
+    assert usage.cost_usd is None
+
+
 # -- NdjsonStreamCollector tests -----------------------------------------------
 
 

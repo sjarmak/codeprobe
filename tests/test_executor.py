@@ -625,6 +625,74 @@ def test_execute_config_halts_at_budget(tmp_path: Path):
     assert len(adapter.run_calls) == 3
 
 
+class _RecoveredTimeoutAdapter(FakeAdapter):
+    """Returns the recovered-timeout AgentOutput shape (codeprobe-f7rl.34):
+    partial stream, summed tokens, calculated cost, merged timeout error."""
+
+    def __init__(self, *, error_category: str | None = None) -> None:
+        super().__init__()
+        self._recovered_error_category = error_category
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
+        self.run_calls.append((prompt, config))
+        return AgentOutput(
+            stdout="partial stream",
+            stderr=None,
+            exit_code=-1,
+            duration_seconds=60.0,
+            input_tokens=3000,
+            output_tokens=500,
+            cost_usd=1.0,
+            cost_model="per_token",
+            cost_source="calculated",
+            error=(
+                "Agent timed out after 60s; stream ended without a result "
+                "event; usage summed from 2 assistant turns"
+            ),
+            error_category=self._recovered_error_category,
+        )
+
+
+def test_timed_out_trial_counts_toward_budget(tmp_path: Path):
+    """Recovered timed-out spend counts toward --max-cost-usd, and a quota
+    stub inside a timed-out trial halts remaining dispatch (codeprobe-f7rl.34)."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(5)]
+
+    # $1.00 recovered per timed-out trial, budget $2.50 → halt after task 3.
+    adapter = _RecoveredTimeoutAdapter()
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="baseline"),
+        agent_config=AgentConfig(),
+        max_cost_usd=2.50,
+    )
+    assert len(results) == 3
+    assert len(adapter.run_calls) == 3
+    assert all(r.cost_usd == 1.0 for r in results)
+    assert all(r.cost_model == "per_token" for r in results)
+
+    # Quota classification preserved through the timeout path halts the run
+    # after the first trial, same as a non-timeout quota stub.
+    quota_adapter = _RecoveredTimeoutAdapter(error_category="quota")
+    quota_results = execute_config(
+        adapter=quota_adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="quota-arm"),
+        agent_config=AgentConfig(),
+    )
+    assert len(quota_adapter.run_calls) == 1
+    assert len(quota_results) == 1
+    assert quota_results[0].error_category == "quota"
+
+
 def test_execute_config_no_budget_runs_all(tmp_path: Path):
     """Without max_cost_usd, all tasks run regardless of cost."""
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(5)]

@@ -12,6 +12,7 @@ from codeprobe.adapters.pricing import (
     CODEX_PRICING,
     COPILOT_PRICING,
     PricingTable,
+    strip_model_date_suffix,
 )
 from codeprobe.adapters.protocol import (
     ALLOWED_COST_MODELS,
@@ -151,19 +152,60 @@ def _count_tool_use_blocks(envelope: dict[str, Any]) -> int | None:
     return count
 
 
-def _parse_stream_json(raw_output: str) -> tuple[dict[str, Any] | None, int, dict[str, int]]:
+@dataclass(frozen=True)
+class _StreamUsage:
+    """Per-turn ``assistant`` usage summed across a stream-json transcript.
+
+    A stream that dies before its terminal ``result`` event (timeout kill)
+    still carries the tokens the API actually billed on each assistant
+    event's ``message.usage``. ``models`` holds the distinct
+    ``message.model`` values seen on usage-bearing turns, in stream order;
+    ``turns`` counts those usage-bearing turns.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    models: tuple[str, ...] = ()
+    turns: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_creation_tokens
+        )
+
+
+def _usage_int(usage: dict[str, Any], key: str) -> int:
+    """Return ``usage[key]`` when it is an int, else 0 — never coerced."""
+    value = usage.get(key)
+    return value if isinstance(value, int) else 0
+
+
+def _parse_stream_json(
+    raw_output: str,
+) -> tuple[dict[str, Any] | None, int, dict[str, int], _StreamUsage]:
     """Parse a ``--output-format stream-json --verbose`` transcript.
 
-    Returns ``(result_event, tool_use_count, tool_use_by_name)``.
-    ``result_event`` is the final ``type: "result"`` event (same shape as
-    ``--output-format json`` envelope), or None when the stream is
-    malformed or has no terminal event. ``tool_use_by_name`` aggregates
-    tool-use block counts by tool name (including MCP tools, which appear
-    as ``mcp__<server>__<tool>``), useful for observability.
+    Returns ``(result_event, tool_use_count, tool_use_by_name,
+    stream_usage)``. ``result_event`` is the final ``type: "result"`` event
+    (same shape as ``--output-format json`` envelope), or None when the
+    stream is malformed or has no terminal event. ``tool_use_by_name``
+    aggregates tool-use block counts by tool name (including MCP tools,
+    which appear as ``mcp__<server>__<tool>``), useful for observability.
+    ``stream_usage`` sums ``message.usage`` across assistant events so a
+    truncated stream still accounts for billed tokens.
     """
     result_event: dict[str, Any] | None = None
     tool_use_count = 0
     by_name: dict[str, int] = {}
+    input_sum = output_sum = cache_read_sum = cache_creation_sum = 0
+    usage_turns = 0
+    models: list[str] = []
     for line in raw_output.splitlines():
         line = line.strip()
         if not line:
@@ -185,9 +227,99 @@ def _parse_stream_json(raw_output: str) -> tuple[dict[str, Any] | None, int, dic
                         name = block.get("name", "")
                         if isinstance(name, str) and name:
                             by_name[name] = by_name.get(name, 0) + 1
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    usage_turns += 1
+                    input_sum += _usage_int(usage, "input_tokens")
+                    output_sum += _usage_int(usage, "output_tokens")
+                    cache_read_sum += _usage_int(usage, "cache_read_input_tokens")
+                    cache_creation_sum += _usage_int(
+                        usage, "cache_creation_input_tokens"
+                    )
+                    model = msg.get("model")
+                    if isinstance(model, str) and model and model not in models:
+                        models.append(model)
         if ev.get("type") == "result":
             result_event = ev
-    return result_event, tool_use_count, by_name
+    stream_usage = _StreamUsage(
+        input_tokens=input_sum,
+        output_tokens=output_sum,
+        cache_read_tokens=cache_read_sum,
+        cache_creation_tokens=cache_creation_sum,
+        models=tuple(models),
+        turns=usage_turns,
+    )
+    return result_event, tool_use_count, by_name, stream_usage
+
+
+def _recover_truncated_stream_usage(
+    stream_usage: _StreamUsage,
+    *,
+    tool_call_count: int | None,
+    tool_use_by_name: dict[str, int] | None,
+) -> UsageData | None:
+    """Rebuild telemetry for a stream that died before its ``result`` event.
+
+    A timed-out (or killed) agent stream carries real billed usage on its
+    per-turn assistant events even though the terminal envelope never
+    arrived. Sum that usage and price it from :data:`CLAUDE_PRICING` so the
+    spend counts toward the run budget with honest provenance
+    (``cost_source='calculated'`` — never ``api_reported``). Returns None
+    when the stream carried no usage at all; the caller keeps its
+    parse-failure UsageData (codeprobe-f7rl.34).
+
+    Cost requires exactly one known model across the usage-bearing turns.
+    Otherwise tokens are preserved but cost stays None with
+    ``cost_source='unavailable'`` — a missing figure, never a wrong-rate
+    guess.
+    """
+    if stream_usage.turns == 0 or stream_usage.total_tokens == 0:
+        return None
+
+    error = (
+        "stream ended without a result event; usage summed from "
+        f"{stream_usage.turns} assistant turns"
+    )
+    rate: tuple[float, ...] | None = None
+    if len(stream_usage.models) == 1:
+        rate = CLAUDE_PRICING.rates.get(
+            strip_model_date_suffix(stream_usage.models[0])
+        )
+    if rate is None:
+        logger.warning(
+            "Truncated stream usage recovered but no single known model "
+            "(saw %r); tokens preserved, cost unavailable",
+            stream_usage.models,
+        )
+        return UsageData(
+            input_tokens=stream_usage.input_tokens,
+            output_tokens=stream_usage.output_tokens,
+            cache_read_tokens=stream_usage.cache_read_tokens,
+            cache_creation_tokens=stream_usage.cache_creation_tokens,
+            error=error,
+            tool_call_count=tool_call_count,
+            tool_use_by_name=tool_use_by_name,
+        )
+
+    input_rate, output_rate, cache_read_rate, cache_creation_rate = rate
+    cost_usd = (
+        stream_usage.input_tokens * input_rate
+        + stream_usage.output_tokens * output_rate
+        + stream_usage.cache_read_tokens * cache_read_rate
+        + stream_usage.cache_creation_tokens * cache_creation_rate
+    ) / 1_000_000
+    return UsageData(
+        input_tokens=stream_usage.input_tokens,
+        output_tokens=stream_usage.output_tokens,
+        cache_read_tokens=stream_usage.cache_read_tokens,
+        cache_creation_tokens=stream_usage.cache_creation_tokens,
+        cost_usd=cost_usd,
+        cost_model="per_token",
+        cost_source="calculated",
+        error=error,
+        tool_call_count=tool_call_count,
+        tool_use_by_name=tool_use_by_name,
+    )
 
 
 def parse_mcp_init_manifest(raw_output: str) -> McpInitManifest:
@@ -318,10 +450,23 @@ class JsonStdoutCollector:
         else:
             envelope = None
         if envelope is None:
-            result_ev, stream_tool_count, stream_tool_by_name = _parse_stream_json(
-                raw_output
-            )
+            (
+                result_ev,
+                stream_tool_count,
+                stream_tool_by_name,
+                stream_usage,
+            ) = _parse_stream_json(raw_output)
             if result_ev is None:
+                # Truncated stream (timeout kill): recover the billed
+                # usage from per-turn assistant events so the spend still
+                # reaches the budget and reports (codeprobe-f7rl.34).
+                recovered = _recover_truncated_stream_usage(
+                    stream_usage,
+                    tool_call_count=stream_tool_count,
+                    tool_use_by_name=stream_tool_by_name or None,
+                )
+                if recovered is not None:
+                    return recovered
                 return UsageData(
                     error="JSON parse failed: output is neither a valid "
                     "envelope nor a stream-json transcript ending in a "

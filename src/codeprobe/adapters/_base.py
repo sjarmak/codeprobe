@@ -338,10 +338,12 @@ class BaseAdapter:
                     merged_error = timeout_error
                     if parsed.error:
                         merged_error = f"{timeout_error}; {parsed.error}"
-                    # Rebuild via replace() so every telemetry field the
-                    # partial parse recovered survives — dropping fields
-                    # here previously lost e.g. a quota stub's category
-                    # inside a timed-out trial (codeprobe-f7rl.29). An
+                    # dataclasses.replace preserves every adapter-declared
+                    # field (error_category, error_terminal, tool_use_by_name,
+                    # num_turns, mcp_init, ...) by construction — dropping
+                    # fields here previously lost e.g. a quota stub's category
+                    # inside a timed-out trial, and a quota stub must still
+                    # halt the run (codeprobe-f7rl.29, codeprobe-f7rl.34). An
                     # adapter-declared category (quota) outranks the
                     # generic timeout classification.
                     return dataclasses.replace(

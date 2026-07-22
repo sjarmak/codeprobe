@@ -14,12 +14,23 @@ staleness warning keys off it.
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from datetime import date
 
 #: Days after ``last_verified`` before a table is considered stale.
 PRICING_STALENESS_DAYS = 90
+
+# Full Anthropic API model IDs carry a date suffix
+# (``claude-sonnet-4-6-20250514``); rate-table keys and Claude CLI model
+# arguments use the bare ID. Strip the suffix before either lookup.
+_API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
+
+
+def strip_model_date_suffix(model: str) -> str:
+    """Return *model* without a trailing ``-YYYYMMDD`` API date suffix."""
+    return _API_MODEL_DATE_SUFFIX.sub("", model)
 
 
 @dataclass(frozen=True)

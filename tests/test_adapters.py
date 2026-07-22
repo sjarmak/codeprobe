@@ -665,6 +665,84 @@ class TestTimeoutTelemetryExtraction:
         assert output.exit_code == -1
 
 
+def test_timeout_preserves_adapter_telemetry() -> None:
+    """Timeout rebuild keeps every adapter-declared field (codeprobe-f7rl.34).
+
+    A timed-out trial with a partial stream (init event, two usage-bearing
+    assistant turns, a literal quota stub) must keep quota classification,
+    per-turn token sums, calculated cost, tool counts, and the MCP init
+    manifest — none of which survived the old field-by-field rebuild.
+    """
+    adapter = ClaudeAdapter()
+    config = AgentConfig(timeout_seconds=5)
+    stream_lines = [
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "tools": ["Read", "mcp__sourcegraph__keyword_search"],
+                "mcp_servers": [{"name": "sourcegraph", "status": "connected"}],
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": "claude-sonnet-4-6-20250514",
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 200,
+                        "cache_read_input_tokens": 500,
+                        "cache_creation_input_tokens": 100,
+                    },
+                    "content": [{"type": "tool_use", "name": "Read"}],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": "claude-sonnet-4-6-20250514",
+                    "usage": {
+                        "input_tokens": 2000,
+                        "output_tokens": 300,
+                        "cache_read_input_tokens": 1500,
+                        "cache_creation_input_tokens": 0,
+                    },
+                    "content": [{"type": "text", "text": "working..."}],
+                },
+            }
+        ),
+        "You've hit your session limit · resets 1:10pm",
+    ]
+    exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+    exc.stdout = "\n".join(stream_lines)
+    exc.stderr = ""
+    with (
+        patch("subprocess.run", side_effect=exc),
+        patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+    ):
+        output = adapter.run("test prompt", config)
+
+    assert "timed out" in output.error
+    assert "quota" in output.error
+    assert output.error_category == "quota"
+    assert output.exit_code == -1
+    assert output.input_tokens == 3000
+    assert output.output_tokens == 500
+    assert output.cache_read_tokens == 2000
+    assert output.cache_creation_tokens == 100
+    # sonnet rates (3.00, 15.00, 0.30, 3.75) per 1M tokens:
+    # (3000*3.00 + 500*15.00 + 2000*0.30 + 100*3.75) / 1e6
+    assert output.cost_usd == pytest.approx(0.017475)
+    assert output.cost_model == "per_token"
+    assert output.cost_source == "calculated"
+    assert output.tool_use_by_name == {"Read": 1}
+    assert output.mcp_init is not None
+    assert output.mcp_init.captured is True
+
+
 # -- BaseAdapter parse_output() ------------------------------------------------
 
 

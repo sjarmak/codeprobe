@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from codeprobe.adapters._base import BaseAdapter
+from codeprobe.adapters.pricing import strip_model_date_suffix
 from codeprobe.adapters.protocol import (
     ALLOWED_PERMISSION_MODES,
     AdapterCapabilities,
@@ -27,10 +28,26 @@ from codeprobe.adapters.telemetry import (
 )
 from codeprobe.core.sandbox import is_sandboxed
 
-# Claude CLI accepts aliases (sonnet, opus, haiku) or short model IDs
-# (claude-sonnet-4-6) but NOT full API model IDs with date suffixes
-# (claude-sonnet-4-6-20250514). Strip the date suffix when present.
-_API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
+# Patterns that indicate an OAuth / API quota was exhausted. Detected
+# from raw stdout/stderr because the Claude CLI does not surface these
+# as JSON envelopes — it returns a short literal message and exits
+# successfully, which would otherwise be scored as a 0.0 task failure
+# and silently contaminate the run mean (codeprobe-9xrl).
+#
+# Robust to wording variants: monthly limits, rate limits, generic
+# "quota" terminology. Case-insensitive.
+_QUOTA_PATTERN = re.compile(
+    r"(?i)"
+    r"(monthly\s+usage\s+limit"
+    r"|rate\s+limit\s+(?:exceeded|reached)"
+    r"|quota\s+(?:exceeded|exhausted)"
+    r"|usage\s+limit\s+reached"
+    # 2026-06 OAuth wording: "You've hit your session limit · resets 1:10pm".
+    # Anchored on "hit your" because bare "session limit" appears in agent
+    # prose on session-management tasks and must not halt the run.
+    r"|hit\s+your\s+session\s+limit)"
+)
+
 
 def _cli_origin_text(stdout: str) -> str:
     """Return only the CLI's own literal lines of *stdout*.
@@ -141,10 +158,12 @@ _SAFE_NAMESPACE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 def _normalize_model_for_cli(model: str) -> str:
     """Normalize a model identifier for the Claude CLI.
 
-    Strips date suffixes from full API model IDs so the CLI can resolve them.
+    The CLI accepts aliases (sonnet, opus, haiku) or short model IDs
+    (claude-sonnet-4-6) but NOT full API model IDs with date suffixes
+    (claude-sonnet-4-6-20250514) — strip the suffix when present.
     Aliases like 'sonnet' or 'haiku' pass through unchanged.
     """
-    return _API_MODEL_DATE_SUFFIX.sub("", model)
+    return strip_model_date_suffix(model)
 
 
 def _effective_claude_config_dir() -> Path:
