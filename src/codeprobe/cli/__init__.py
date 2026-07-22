@@ -246,7 +246,8 @@ def init(
     "cross_repo",
     multiple=True,
     metavar="REPO",
-    help="Additional repo (path or git URL) for cross-repo task mining. Can be passed multiple times.",
+    help="Additional repo (path, git URL, or github:owner/repo) for cross-repo "
+    "task mining. Can be passed multiple times.",
 )
 @click.option(
     "--advanced",
@@ -331,7 +332,8 @@ def init(
     multiple=True,
     default=(),
     hidden=True,
-    help="Repo paths or URLs for multi-repo org-scale mining. Repeatable.",
+    help="Repo paths, git URLs, or github:owner/repo for multi-repo org-scale "
+    "mining. Repeatable.",
 )
 @click.option(
     "--scan-timeout",
@@ -554,6 +556,10 @@ def mine(
     json_lines_flag: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
+
+    PATH is an existing local repo (always mined in place, never cloned),
+    a full git URL (https:// or git@), or github:owner/repo to clone from
+    GitHub. Bare owner/repo without the github: prefix is rejected.
 
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics. Use --goal to pick a use case:

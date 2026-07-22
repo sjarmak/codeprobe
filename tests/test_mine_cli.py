@@ -137,17 +137,12 @@ class TestMineUrlValidation:
         assert "missing repository path" in result.output
         assert "Cloning" not in result.output
 
-    def test_accepts_owner_repo_shorthand(self, tmp_path, monkeypatch):
-        """owner/repo shorthand should still route through clone, not URL validator."""
+    def test_rejects_bare_owner_repo_shorthand(self, tmp_path, monkeypatch):
+        """Bare owner/repo is ambiguous: exit 2 naming github:owner/repo, no clone."""
         from codeprobe.cli import mine_cmd
 
-        called = {}
-
         def fake_clone(url: str):
-            called["url"] = url
-            raise click.UsageError("stub")  # noqa: F821  # click imported below
-
-        import click
+            raise AssertionError(f"_clone_repo must not be called (got {url!r})")
 
         monkeypatch.setattr(mine_cmd, "_clone_repo", fake_clone)
 
@@ -155,10 +150,86 @@ class TestMineUrlValidation:
         result = runner.invoke(
             main, ["mine", "octocat/hello-world", "--no-interactive"]
         )
-        # We expect the stub clone to be reached (shorthand accepted).
-        assert called.get("url") == "octocat/hello-world"
+        assert result.exit_code == 2
+        assert "github:octocat/hello-world" in result.output
+        assert "not an existing local path" in result.output
+        assert "Cloning" not in result.output
+
+    def test_github_prefix_shorthand_clones(self, tmp_path, monkeypatch):
+        """github:owner/repo routes to clone with the normalized https URL."""
+        import click
+
+        from codeprobe.cli import mine_cmd
+
+        called = {}
+
+        def fake_clone(url: str):
+            called["url"] = url
+            raise click.UsageError("stub")
+
+        monkeypatch.setattr(mine_cmd, "_clone_repo", fake_clone)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["mine", "github:octocat/hello-world", "--no-interactive"]
+        )
+        assert called.get("url") == "https://github.com/octocat/hello-world.git"
         assert result.exit_code == 2  # our stub raised
         assert "stub" in result.output
+
+    def test_relative_path_never_cloned(self, monkeypatch):
+        """./minerepo resolves as a local path; git clone is never invoked."""
+        from pathlib import Path
+
+        from codeprobe.cli import mine_cmd
+
+        def fake_clone(url: str):
+            raise AssertionError(f"_clone_repo must not be called (got {url!r})")
+
+        monkeypatch.setattr(mine_cmd, "_clone_repo", fake_clone)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("minerepo/.git").mkdir(parents=True)
+            result = runner.invoke(main, ["mine", "./minerepo", "--no-interactive"])
+        assert "Cloning" not in result.output
+        assert "not an existing local path" not in result.output
+
+    def test_local_dir_wins_over_github_name_collision(self, monkeypatch):
+        """A local work/api dir wins over the identically named GitHub repo."""
+        from pathlib import Path
+
+        from codeprobe.cli import mine_cmd
+
+        def fake_clone(url: str):
+            raise AssertionError(f"_clone_repo must not be called (got {url!r})")
+
+        monkeypatch.setattr(mine_cmd, "_clone_repo", fake_clone)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("work/api/.git").mkdir(parents=True)
+            result = runner.invoke(main, ["mine", "work/api", "--no-interactive"])
+        assert "Cloning" not in result.output
+        assert "not an existing local path" not in result.output
+
+    def test_nonexistent_relative_path_errors_as_path(self, monkeypatch):
+        """./does-not-exist gets a path error, never a clone attempt."""
+        from codeprobe.cli import mine_cmd
+
+        def fake_clone(url: str):
+            raise AssertionError(f"_clone_repo must not be called (got {url!r})")
+
+        monkeypatch.setattr(mine_cmd, "_clone_repo", fake_clone)
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            result = runner.invoke(
+                main, ["mine", "./does-not-exist", "--no-interactive"]
+            )
+        assert result.exit_code == 2
+        assert "Path does not exist" in result.output
+        assert "Cloning" not in result.output
 
 
 class TestCrossRepoDispatch:

@@ -65,6 +65,9 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.15: the __init__.py:1151 UsageError (experiment init
         # --name check) migrated to a typed error, so this entry came off
         # entirely — __init__.py has zero bare-usage violations now.
+        # codeprobe-f7rl.19: PATH/github: shorthand docs added to mine help
+        # text only, no new raise — confirmed no entry needed by running the
+        # lint test against the merged file.
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),

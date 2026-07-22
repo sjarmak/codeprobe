@@ -30,9 +30,13 @@ from codeprobe.models.task import Task
 # ---------------------------------------------------------------------------
 
 _GIT_URL_PATTERN = re.compile(
-    r"^(?:https?://|git@)"  # https:// or git@
-    r"|^[\w.-]+/[\w.-]+$"  # owner/repo shorthand
+    r"^(?:https?://|git@|github:)"  # https://, git@, or explicit github: shorthand
 )
+
+# Shape of a bare ``owner/repo`` token. Used to validate the remainder of a
+# ``github:owner/repo`` argument and to recognize ambiguous bare tokens so
+# they get a prescriptive error instead of a silent clone.
+_SHORTHAND_SHAPE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 # Schemes we recognize as potentially-cloneable.  Anything else is rejected
 # with a "not a valid git URL" message before we reach git itself.
@@ -42,15 +46,35 @@ _ACCEPTED_GIT_URL_SCHEMES = frozenset(
 
 
 def _is_git_url(path_or_url: str) -> bool:
-    """Return True if the argument looks like a git URL or owner/repo shorthand."""
+    """Return True for explicit clone forms: https://, git@, or github:owner/repo."""
     return bool(_GIT_URL_PATTERN.match(path_or_url))
 
 
+def _is_shorthand_shaped(path: str) -> bool:
+    """Return True for bare ``owner/repo`` tokens (excluding ``./x`` / ``../x``)."""
+    if not _SHORTHAND_SHAPE.match(path):
+        return False
+    owner, _, repo = path.partition("/")
+    return owner not in (".", "..") and repo not in (".", "..")
+
+
 def _normalize_url(url: str) -> str:
-    """Expand owner/repo shorthand to a full GitHub URL."""
-    if "/" in url and not url.startswith(("https://", "http://", "git@")):
-        return f"https://github.com/{url}.git"
-    return url
+    """Expand explicit ``github:owner/repo`` shorthand to a full GitHub URL."""
+    if not url.startswith("github:"):
+        return url
+    shorthand = url[len("github:") :]
+    if not _SHORTHAND_SHAPE.match(shorthand):
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"{url!r} is not a valid github: shorthand "
+                "(expected github:owner/repo)."
+            ),
+            next_try_flag="path-or-github-shorthand",
+            next_try_value="github:owner/repo",
+            detail={"url": url},
+        )
+    return f"https://github.com/{shorthand}.git"
 
 
 def _validate_git_url_shape(url: str) -> None:
@@ -87,8 +111,9 @@ def _validate_git_url_shape(url: str) -> None:
             next_try_value="",
             detail={"url": url, "scheme": parsed.scheme},
         )
-    # urlparse keeps the leading slash in .path, so a bare host has path=''
-    # and 'owner/repo' shorthand never reaches this function (see _is_git_url).
+    # urlparse keeps the leading slash in .path, so a bare host has path=''.
+    # 'github:owner/repo' shorthand is expanded to a full https URL before
+    # this function runs (see _normalize_url); bare 'owner/repo' never clones.
     if not parsed.netloc:
         raise PrescriptiveError(
             code="INVALID_GIT_URL",
@@ -137,10 +162,11 @@ def _validate_clone_url(url: str) -> None:
 def _clone_repo(url: str) -> Path:
     """Shallow-clone a repo into a temp directory. Returns the clone path.
 
-    Uses ``--filter=blob:none`` for a fast treeless clone. The temp directory
-    persists until the process exits (the user sees the path in output).
+    Uses ``--filter=blob:none`` for a fast treeless clone. Expects a full git
+    URL (callers expand ``github:owner/repo`` via :func:`_normalize_url`).
+    The temp directory persists until the process exits (the user sees the
+    path in output).
     """
-    url = _normalize_url(url)
     _validate_git_url_shape(url)
     _validate_clone_url(url)
     # Derive a directory name from the URL
@@ -785,13 +811,22 @@ def _looks_like_url(path: str) -> bool:
 
 
 def _resolve_repo_path(path: str) -> Path:
-    """Resolve a path or URL to a local repo directory.
+    """Resolve a local path, git URL, or ``github:owner/repo`` to a repo directory.
+
+    An existing filesystem path always wins: it is validated as a git repo
+    and never cloned. Cloning requires an explicit form (``https://``,
+    ``git@``, or ``github:owner/repo``); bare ``owner/repo`` tokens are
+    ambiguous and rejected with a prescriptive error naming both readings.
 
     Raises ``click.UsageError`` (exit 2) with actionable messages when the
     path does not exist, is not a directory, or is not a git repository.
     """
+    if Path(path).exists():
+        repo_path = Path(path).resolve()
+        _validate_git_repo(repo_path)
+        return repo_path
     if _is_git_url(path):
-        return _clone_repo(path)
+        return _clone_repo(_normalize_url(path))
     # URL-shaped inputs that our git-URL regex rejected (wrong scheme, etc.)
     # are routed through the URL validator so the user gets a URL-appropriate
     # error, not a confusing "Path does not exist".
@@ -805,19 +840,28 @@ def _resolve_repo_path(path: str) -> Path:
             next_try_value="",
             detail={"path": path},
         )
-    repo_path = Path(path).resolve()
-    if not repo_path.exists():
-        suggestion = _suggest_path(repo_path)
-        hint = f" Did you mean: {suggestion}?" if suggestion else ""
+    if _is_shorthand_shaped(path):
         raise PrescriptiveError(
             code="INVALID_GIT_URL",
-            message=f"Path does not exist: {repo_path}.{hint}",
-            next_try_flag="paths-or-https-url",
-            next_try_value=suggestion or "",
-            detail={"path": str(repo_path), "suggestion": suggestion or ""},
+            message=(
+                f"{path!r} is not an existing local path. To clone from "
+                f"GitHub pass github:{path} or the full https URL; to mine "
+                "a local repo pass an existing path."
+            ),
+            next_try_flag="path-or-github-shorthand",
+            next_try_value=f"github:{path}",
+            detail={"path": path},
         )
-    _validate_git_repo(repo_path)
-    return repo_path
+    repo_path = Path(path).resolve()
+    suggestion = _suggest_path(repo_path)
+    hint = f" Did you mean: {suggestion}?" if suggestion else ""
+    raise PrescriptiveError(
+        code="INVALID_GIT_URL",
+        message=f"Path does not exist: {repo_path}.{hint}",
+        next_try_flag="paths-or-https-url",
+        next_try_value=suggestion or "",
+        detail={"path": str(repo_path), "suggestion": suggestion or ""},
+    )
 
 
 def _interactive_config(
@@ -1555,24 +1599,8 @@ def _dispatch_cross_repo(
     )
     from codeprobe.mining.writer import write_task_dir
 
-    # Resolve secondary repos
-    secondaries: list[Path] = []
-    for entry in cross_repo:
-        if _is_git_url(entry):
-            secondaries.append(_clone_repo(entry))
-        else:
-            rp = Path(entry).resolve()
-            if not rp.exists():
-                suggestion = _suggest_path(rp)
-                hint = f" Did you mean: {suggestion}?" if suggestion else ""
-                raise PrescriptiveError(
-                    code="INVALID_GIT_URL",
-                    message=f"--cross-repo path does not exist: {rp}.{hint}",
-                    next_try_flag="paths-or-https-url",
-                    next_try_value=suggestion or "",
-                    detail={"path": str(rp), "suggestion": suggestion or ""},
-                )
-            secondaries.append(rp)
+    # Resolve secondary repos (existing path wins; cloning needs an explicit form)
+    secondaries: list[Path] = [_resolve_repo_path(entry) for entry in cross_repo]
 
     # Select symbol resolver per --backend (default: auto).
     from codeprobe.mining.multi_repo import SymbolResolver
@@ -2752,28 +2780,9 @@ def run_mine(
 
             if org_scale:
                 # Build repo_paths list: primary path + any --repos entries
+                # (existing path wins; cloning needs an explicit form).
                 repo_paths = [repo_path]
-                for r in repos:
-                    if _is_git_url(r):
-                        repo_paths.append(_clone_repo(r))
-                    else:
-                        rp = Path(r).resolve()
-                        if not rp.exists():
-                            suggestion = _suggest_path(rp)
-                            hint = (
-                                f" Did you mean: {suggestion}?" if suggestion else ""
-                            )
-                            raise PrescriptiveError(
-                                code="INVALID_GIT_URL",
-                                message=f"--repos path does not exist: {rp}.{hint}",
-                                next_try_flag="paths-or-https-url",
-                                next_try_value=suggestion or "",
-                                detail={
-                                    "path": str(rp),
-                                    "suggestion": suggestion or "",
-                                },
-                            )
-                        repo_paths.append(rp)
+                repo_paths.extend(_resolve_repo_path(r) for r in repos)
                 _run_org_scale_mine(
                     repo_paths,
                     count=count,
