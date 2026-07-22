@@ -14,6 +14,7 @@ import click
 from codeprobe.adapters.models import validate_model
 from codeprobe.adapters.protocol import (
     ALLOWED_PERMISSION_MODES,
+    AgentAdapter,
     AgentConfig,
     quarantine_message,
 )
@@ -61,7 +62,7 @@ from codeprobe.core.experiment import (
 )
 from codeprobe.core.isolation import _discover_experiment_dirs
 from codeprobe.core.mcp_policy import resolve_tool_policy
-from codeprobe.core.registry import resolve
+from codeprobe.core.registry import available, resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from codeprobe.models.suite import Suite
 from codeprobe.trace.content_policy import ContentPolicy
@@ -779,19 +780,45 @@ def run_eval(
                 detail={"requested": agent},
             ) from exc
 
-        # Validate every config's model token up front — before task discovery
-        # and before any agent is spawned. An unknown token must fail loudly
-        # here with a prescriptive error; otherwise it flows through to the
+        # Resolve every arm's agent backend and validate its model token up
+        # front — before task discovery and before any agent is spawned. A
+        # typo'd backend in ANY config must fail here with a prescriptive
+        # error; previously only the CLI --agent flag was checked, so a bad
+        # per-arm agent crashed with a raw KeyError after another arm had
+        # already spent money (codeprobe-f7rl.25). An unknown model token
+        # must likewise fail loudly here; otherwise it flows through to the
         # agent CLI, errors deep in the run, and is scored 0.0, silently
         # corrupting the comparison (codeprobe-fvfo Gap 1/2). Layered
         # resolution mirrors _run_config: a CLI --model override wins, else
-        # the config's own model.
-        _configs_to_validate = experiment.configs or [
+        # the config's own model. Resolved adapters are cached by config
+        # label so preflight and dispatch share the same instance.
+        preflight_configs = experiment.configs or [
             ExperimentConfig(label="default", agent=agent, model=model)
         ]
-        for cfg in _configs_to_validate:
+        adapters_by_label: dict[str, AgentAdapter] = {}
+        for cfg in preflight_configs:
+            cfg_agent = cfg.agent or agent
+            try:
+                adapters_by_label[cfg.label] = resolve(cfg_agent)
+            except KeyError as exc:
+                raise PrescriptiveError(
+                    code="UNKNOWN_BACKEND",
+                    message=(
+                        f"Config {cfg.label!r} requests unknown agent "
+                        f"backend {cfg_agent!r}. "
+                        f"Available: {', '.join(available())}"
+                    ),
+                    terminal=True,
+                    next_try_flag="--agent",
+                    next_try_value="claude",
+                    detail={
+                        "config_label": cfg.label,
+                        "requested": cfg_agent,
+                        "available": available(),
+                    },
+                ) from exc
             validate_model(
-                cfg.agent or agent,
+                cfg_agent,
                 model if model is not None else cfg.model,
             )
 
@@ -800,24 +827,10 @@ def run_eval(
         # capabilities is treated as prompt+model only. Without this gate
         # the knobs silently no-op (e.g. copilot never blocks
         # Grep/Bash/Glob/Read under mcp_mode=strict) and the report
-        # compares arms that never differed. Resolving here also surfaces
-        # a typo'd per-arm agent before the other arm spends money.
-        for cfg in _configs_to_validate:
-            try:
-                arm_adapter = resolve(cfg.agent or agent)
-            except KeyError as exc:
-                raise PrescriptiveError(
-                    code="UNKNOWN_BACKEND",
-                    message=(
-                        f"Unknown agent backend in config {cfg.label!r}: {exc}"
-                    ),
-                    next_try_flag="--agent",
-                    next_try_value="claude",
-                    detail={
-                        "config_label": cfg.label,
-                        "requested": cfg.agent or agent,
-                    },
-                ) from exc
+        # compares arms that never differed. Backend resolution already
+        # happened above (codeprobe-f7rl.25); reuse the cached adapter.
+        for cfg in preflight_configs:
+            arm_adapter = adapters_by_label[cfg.label]
             # Quarantined adapters (codeprobe-f7rl decision 4, currently
             # codex) are registered — so the failure is prescriptive, not
             # a raw KeyError — but must never dispatch: their all-zero
@@ -1021,7 +1034,9 @@ def run_eval(
                     },
                 )
 
-            config_adapter = resolve(exp_config.agent or agent)
+            # Resolved and validated during preflight — reusing the cached
+            # instance keeps preflight and dispatch on the same adapter.
+            config_adapter = adapters_by_label[exp_config.label]
 
             # Layered config resolution: defaults < experiment.json < CLI flags
             resolved_model = model if model is not None else exp_config.model

@@ -300,6 +300,57 @@ def test_add_config_codex_quarantined(runner: CliRunner, exp_dir: Path) -> None:
     assert "codex-arm" not in [c.label for c in loaded.configs]
 
 
+def test_add_config_rejects_unknown_agent(runner: CliRunner, exp_dir: Path) -> None:
+    """A typo'd backend fails at authoring time, before it reaches a run."""
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "add-config",
+            str(exp_dir),
+            "--label",
+            "typo-arm",
+            "--agent",
+            "claud",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "UNKNOWN_BACKEND" in result.output
+    assert "claude, codex, copilot" in result.output
+
+    loaded = load_experiment(exp_dir)
+    assert "typo-arm" not in [c.label for c in loaded.configs]
+
+
+def test_add_config_accepts_entry_point_registered_agent(
+    runner: CliRunner, exp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Third-party adapters registered via entry points pass validation."""
+    import codeprobe.cli.experiment_cmd as experiment_cmd_mod
+
+    monkeypatch.setattr(
+        experiment_cmd_mod,
+        "available",
+        lambda: ["claude", "codex", "copilot", "third-party"],
+    )
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "add-config",
+            str(exp_dir),
+            "--label",
+            "tp-arm",
+            "--agent",
+            "third-party",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    loaded = load_experiment(exp_dir)
+    assert "tp-arm" in [c.label for c in loaded.configs]
+
+
 # ---- validate ----
 
 

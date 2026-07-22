@@ -25,6 +25,7 @@ from codeprobe.core.experiment import (
     load_experiment,
     save_experiment,
 )
+from codeprobe.core.registry import available
 from codeprobe.core.registry import resolve as resolve_agent
 from codeprobe.models.experiment import (
     Experiment,
@@ -353,6 +354,23 @@ def experiment_add_config(
             next_try_value=_next_free_label(label, existing_labels),
             exit_code=1,
             detail={"label": label, "existing_labels": existing_labels},
+        )
+
+    # Refuse unknown agent backends at authoring time — a typo here would
+    # otherwise persist to experiment.json (codeprobe-f7rl.25). available()
+    # merges builtins with entry-point-registered third-party adapters.
+    known_agents = available()
+    if agent not in known_agents:
+        raise PrescriptiveError(
+            code="UNKNOWN_BACKEND",
+            message=(
+                f"unknown agent backend {agent!r}. "
+                f"Available: {', '.join(known_agents)}"
+            ),
+            next_try_flag="--agent",
+            next_try_value="claude",
+            exit_code=1,
+            detail={"agent": agent, "available": known_agents},
         )
 
     # Parse MCP config — offer interactive discovery when omitted in a TTY
