@@ -80,6 +80,8 @@ EXPECTED_CODES: list[tuple[str, str]] = [
     ("TENANT_REQUIRED_IN_CI", "diagnostic"),
     ("STALE_USER_HOME_SKILL", "diagnostic"),
     ("LLM_UNAVAILABLE", "diagnostic"),
+    ("DIRTY_CHECKOUT", "prescriptive"),
+    ("NOT_A_GIT_REPO", "diagnostic"),
 ]
 
 

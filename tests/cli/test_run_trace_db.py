@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -145,7 +146,36 @@ class _StreamJsonFakeClaudeAdapter:
 
 
 def _setup_experiment(tmp_path: Path) -> Path:
-    """Create a minimal experiment directory with a single passing task."""
+    """Create a minimal experiment directory with a single passing task.
+
+    The parent dir is git-initialized with one commit: ``codeprobe run``
+    hard-refuses non-git dirs (NOT_A_GIT_REPO) and dirty checkouts
+    (DIRTY_CHECKOUT) since codeprobe-f7rl.1. The experiment itself lives
+    under ``.codeprobe/`` which is codeprobe-owned and exempt.
+    """
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main", str(tmp_path)],
+        check=True,
+        capture_output=True,
+    )
+    for cfg in (["user.email", "t@example.com"], ["user.name", "t"]):
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", *cfg],
+            check=True,
+            capture_output=True,
+        )
+    (tmp_path / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", "README.md"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "commit", "-q", "-m", "seed"],
+        check=True,
+        capture_output=True,
+    )
+
     exp_dir = tmp_path / ".codeprobe" / "trace-test"
     task_dir = exp_dir / "tasks" / "task-001"
     tests_dir = task_dir / "tests"

@@ -887,6 +887,17 @@ def mine(
     help="Print estimated resource requirements without executing any agents.",
 )
 @click.option(
+    "--allow-dirty",
+    is_flag=True,
+    default=False,
+    help=(
+        "Proceed even when the checkout has uncommitted changes. Worktrees "
+        "are created from HEAD, so uncommitted changes are excluded from "
+        "every trial. Without this flag a dirty checkout is refused "
+        "(DIRTY_CHECKOUT)."
+    ),
+)
+@click.option(
     "--force-plain",
     is_flag=True,
     default=False,
@@ -1003,6 +1014,7 @@ def run(
     parallel: int,
     config_parallel: int,
     dry_run: bool,
+    allow_dirty: bool,
     force_plain: bool,
     force_rich: bool,
     timeout: int | None,
@@ -1024,6 +1036,11 @@ def run(
 
     Spawns isolated agent sessions for each task, scores results with
     automated tests, and produces a results summary.
+
+    Refuses to run on a checkout with uncommitted changes (DIRTY_CHECKOUT):
+    trial worktrees are created from HEAD, so uncommitted changes would be
+    invisible to every agent. Commit or stash first, or pass --allow-dirty
+    to run against HEAD anyway.
     """
     from pathlib import Path as _Path
 
@@ -1055,6 +1072,7 @@ def run(
         parallel=parallel,
         config_parallel=config_parallel,
         dry_run=dry_run,
+        allow_dirty=allow_dirty,
         log_format=log_format,
         quiet=quiet,
         force_plain=force_plain,

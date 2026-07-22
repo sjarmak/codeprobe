@@ -54,6 +54,7 @@ from codeprobe.core.experiment import (
     save_config_results,
     save_experiment,
 )
+from codeprobe.core.isolation import _discover_experiment_dirs
 from codeprobe.core.mcp_policy import resolve_tool_policy
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -82,6 +83,120 @@ def _should_use_rich() -> bool:
     if os.environ.get("TERM") == "dumb":
         return False
     return True
+
+
+def _is_codeprobe_owned(rel_path: str, experiment_dir_names: frozenset[str]) -> bool:
+    """Return True when a porcelain status path is a codeprobe-owned artifact.
+
+    Codeprobe writes into ``.codeprobe/``, ``.codeprobe-worktrees*``,
+    ``runs/``, and top-level experiment directories (any directory holding
+    an ``experiment.json``). Untracked/modified entries under those paths
+    must never trigger the dirty-checkout refusal.
+    """
+    top = rel_path.split("/", 1)[0]
+    if top in (".codeprobe", "runs"):
+        return True
+    if top.startswith(".codeprobe-worktrees"):
+        return True
+    return top in experiment_dir_names
+
+
+def assert_clean_checkout(repo_root: Path, *, allow_dirty: bool = False) -> None:
+    """Hard-refuse ``codeprobe run`` on a dirty checkout (codeprobe-f7rl.1).
+
+    Trial worktrees are created detached from HEAD
+    (``codeprobe.core.isolation``), so any uncommitted change in *repo_root*
+    is invisible to every trial — the eval would measure a tree the customer
+    isn't looking at.
+
+    Raises
+    ------
+    DiagnosticError(NOT_A_GIT_REPO)
+        When *repo_root* is not a git work tree (or git cannot inspect it):
+        worktree isolation cannot function at all.
+    PrescriptiveError(DIRTY_CHECKOUT)
+        When the checkout has a tracked modification, staged change, or
+        untracked file outside codeprobe-owned dirs and *allow_dirty* is
+        False. With *allow_dirty* True, a one-line stderr disclosure is
+        emitted instead and the run proceeds.
+    """
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        raise DiagnosticError(
+            code="NOT_A_GIT_REPO",
+            message=(
+                f"{repo_root} is not a git work tree (or git cannot inspect "
+                "it), so worktree isolation cannot function. Run codeprobe "
+                "from inside a git repository: clone the repo, or git init "
+                "and commit first."
+            ),
+            diagnose_cmd=f"git -C {repo_root} rev-parse --is-inside-work-tree",
+            detail={"repo_root": str(repo_root), "git_stderr": stderr.strip()},
+        ) from exc
+
+    experiment_dir_names = frozenset(_discover_experiment_dirs(repo_root))
+    offending: list[str] = []
+    for line in status.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        rel = line[3:]
+        if " -> " in rel:  # rename entry: "XY orig -> dest"
+            rel = rel.split(" -> ", 1)[1]
+        rel = rel.strip().strip('"')
+        if not _is_codeprobe_owned(rel, experiment_dir_names):
+            offending.append(rel)
+
+    if not offending:
+        return
+
+    if allow_dirty:
+        click.echo(
+            f"--allow-dirty: {len(offending)} uncommitted change(s) in "
+            f"{repo_root} will NOT be visible to agents (worktrees are "
+            "created from HEAD).",
+            err=True,
+        )
+        return
+
+    shown = offending[:10]
+    remainder = len(offending) - len(shown)
+    listing = "\n  ".join(shown)
+    if remainder:
+        listing += f"\n  (and {remainder} more)"
+    raise PrescriptiveError(
+        code="DIRTY_CHECKOUT",
+        message=(
+            f"Refusing to run: {repo_root} has uncommitted changes:\n"
+            f"  {listing}\n"
+            "Worktrees are created from HEAD, so uncommitted changes are "
+            "excluded from every trial. Commit or stash first, or pass "
+            "--allow-dirty to run against HEAD anyway."
+        ),
+        next_try_flag="--allow-dirty",
+        next_try_value="",
+        detail={
+            "repo_root": str(repo_root),
+            "dirty_paths": shown,
+            "dirty_count": len(offending),
+        },
+    )
 
 
 def _format_task_status(score: float) -> str:
@@ -501,6 +616,7 @@ def run_eval(
     config_parallel: int = 1,
     repeats: int = 1,
     dry_run: bool = False,
+    allow_dirty: bool = False,
     log_format: str = "text",
     quiet: bool = False,
     force_plain: bool = False,
@@ -646,6 +762,27 @@ def run_eval(
 
         assert experiment is not None  # narrowed above; keep mypy happy
 
+        # Resolve to the git repo root — `path` may be an experiment subdir.
+        try:
+            repo_root = Path(
+                subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=Path(path).resolve(),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+            )
+        except (subprocess.CalledProcessError, OSError):
+            repo_root = Path(path).resolve()
+
+        # Dirty-checkout preflight (codeprobe-f7rl.1): worktrees detach from
+        # HEAD, so uncommitted work is invisible to every trial. Refuse hard
+        # before any adapter is resolved; --dry-run only estimates, so it is
+        # exempt.
+        if not dry_run:
+            assert_clean_checkout(repo_root, allow_dirty=allow_dirty)
+
         try:
             resolve(agent)
         except KeyError as exc:
@@ -718,20 +855,6 @@ def run_eval(
                     },
                 )
             check_arm_capabilities(cfg, arm_adapter, cli_max_turns=max_turns)
-
-        # Resolve to the git repo root — `path` may be an experiment subdir.
-        try:
-            repo_root = Path(
-                subprocess.run(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    cwd=Path(path).resolve(),
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-            )
-        except (subprocess.CalledProcessError, OSError):
-            repo_root = Path(path).resolve()
 
         tasks_dir = exp_dir / experiment.tasks_dir
         repo_tasks = repo_root / ".codeprobe" / experiment.tasks_dir

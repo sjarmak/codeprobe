@@ -93,6 +93,11 @@ codeprobe run . --agent claude --max-cost-usd 5.00
 codeprobe interpret .         # rank configs, print a report
 ```
 
+`codeprobe run` refuses to start on a checkout with uncommitted changes (error
+code `DIRTY_CHECKOUT`): every trial executes in an isolated worktree created
+from HEAD, so uncommitted changes would be invisible to the agents. Commit or
+stash first, or pass `--allow-dirty` to accept that agents only see HEAD.
+
 To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.
