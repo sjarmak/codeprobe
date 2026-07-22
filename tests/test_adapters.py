@@ -7,7 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codeprobe.adapters._base import BaseAdapter
+from codeprobe.adapters._base import (
+    _ADAPTER_ENV_WHITELIST,
+    BaseAdapter,
+    _adapter_safe_env,
+)
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.copilot import CopilotAdapter
 from codeprobe.adapters.protocol import (
@@ -305,18 +309,56 @@ class _StubAdapter(BaseAdapter):
 
 
 class TestBaseAdapterEnvWhitelist:
-    """Verify subprocess.run() env handling: inherit when no isolation, filter when isolated."""
+    """Verify subprocess.run() env is whitelist-filtered on every dispatch path."""
 
-    def test_inherits_full_env_without_session_env(self) -> None:
-        """Without session isolation, subprocess inherits the full parent env."""
+    def test_serial_dispatch_is_filtered_without_session_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """session_env=None (serial dispatch) still gets a whitelist-only env."""
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t")
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             adapter.run("test", config)
 
-        _, kwargs = mock_run.call_args
-        assert kwargs.get("env") is None, "env=None inherits parent process env"
+        env = mock_run.call_args[1]["env"]
+        assert isinstance(env, dict), "serial dispatch must not inherit the parent env"
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+
+    def test_safe_env_none_excludes_secrets_admits_proxy_ca_gateway(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t")
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.setenv("SSL_CERT_FILE", "/etc/corp/ca.pem")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-gw.corp/anthropic")
+
+        env = _adapter_safe_env(None)
+
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
+        assert env["SSL_CERT_FILE"] == "/etc/corp/ca.pem"
+        assert env["ANTHROPIC_BASE_URL"] == "https://llm-gw.corp/anthropic"
+
+    def test_whitelist_contains_proxy_ca_gateway_not_node_options(self) -> None:
+        expected = {
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+            "NODE_EXTRA_CA_CERTS",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+        }
+        assert expected <= _ADAPTER_ENV_WHITELIST
+        assert "NODE_OPTIONS" not in _ADAPTER_ENV_WHITELIST
 
     def test_filters_env_with_session_env(self) -> None:
         """With session isolation, subprocess gets a filtered env."""

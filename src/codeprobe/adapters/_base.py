@@ -25,9 +25,10 @@ from codeprobe.sandbox.runner import DEFAULT_AGENT_IMAGE
 
 logger = logging.getLogger(__name__)
 
-# Only these env vars are forwarded to agent subprocesses.
-# Keeps secrets (OPENAI_API_KEY, AWS_SECRET_*, etc.) out of the child
-# unless explicitly listed here.
+# Only these env vars are forwarded to agent subprocesses, on EVERY
+# dispatch path (serial and parallel alike) — keeps secrets
+# (AWS_SECRET_ACCESS_KEY, unlisted API keys, etc.) out of the child and
+# guarantees serial and parallel arms see the same environment.
 _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
     {
         # System essentials
@@ -67,6 +68,29 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         # Rust toolchain
         "CARGO_HOME",
         "RUSTUP_HOME",
+        # Corporate proxy / TLS trust — enterprise networks front all
+        # egress with a proxy and a private CA; without these the agent
+        # works serially (full-env inherit was the old behavior) but
+        # breaks under isolation. NODE_OPTIONS is deliberately excluded
+        # (arbitrary code-injection surface).
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        # Anthropic gateway routing — enterprises fronting the Anthropic
+        # API (LLM gateways) set these; same works-serial/breaks-parallel
+        # failure class as the proxy vars.
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
     }
 )
 
@@ -93,6 +117,14 @@ _CONTAINER_ENV_EXCLUDED: frozenset[str] = frozenset(
         "GOROOT",
         "CARGO_HOME",
         "RUSTUP_HOME",
+        # CA-trust vars hold host filesystem paths that are not mounted
+        # into the container; a dangling SSL_CERT_FILE hard-fails TLS in
+        # most stacks. Proxy URL vars stay in the passthrough.
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
     }
 )
 
@@ -233,7 +265,11 @@ class BaseAdapter:
                     if candidate.startswith(tempfile.gettempdir()):
                         mcp_tmpfile = candidate
 
-        run_env = _adapter_safe_env(session_env) if session_env else None
+        # Whitelist-filter unconditionally: serial dispatch (session_env is
+        # None) and adapters with no session isolation get the same
+        # filtered environment as parallel dispatch — never the full
+        # parent env.
+        run_env = _adapter_safe_env(session_env)
 
         # Containerize the agent argv when the run resolved a "container"
         # plan (codeprobe-f7rl.5). Sandboxed / host-consented / plan-less
