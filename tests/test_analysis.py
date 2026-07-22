@@ -2103,3 +2103,148 @@ class TestRepeatsPerTaskMean:
             if row["config"] == "arm-a" and row["task_id"] == "t1"
         }
         assert t1_repeats == {"1", "2", "3"}
+
+
+class TestKArmCorrection:
+    """k>2 experiments Holm-correct the pairwise family (codeprobe-f7rl.10).
+
+    Fixture: 3 binary arms over 6 shared tasks. arm-a vs arm-b has 6
+    discordant pairs -> McNemar exact raw p = 2/64 = 0.03125, inside
+    (0.05/2, 0.05): significant uncorrected, NOT significant after Holm
+    (adjusted = 3 * 0.03125 = 0.09375). arm-c alternates, so both pairs
+    against it have 3 discordant pairs -> raw p = 0.25.
+    """
+
+    _TASKS = [f"t{i}" for i in range(6)]
+    _A = [1.0] * 6
+    _B = [0.0] * 6
+    _C = [1.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+
+    def _arm(self, label: str, scores: list[float]) -> ConfigResults:
+        return ConfigResults(
+            config=label,
+            completed=[_task(tid, s) for tid, s in zip(self._TASKS, scores)],
+        )
+
+    def _three_arm_report(self) -> Report:
+        return generate_report(
+            "karm-exp",
+            [
+                self._arm("arm-a", self._A),
+                self._arm("arm-b", self._B),
+                self._arm("arm-c", self._C),
+            ],
+        )
+
+    def _two_arm_report(self) -> Report:
+        return generate_report(
+            "karm-exp", [self._arm("arm-a", self._A), self._arm("arm-b", self._B)]
+        )
+
+    def test_wins_gated_on_adjusted_p(self) -> None:
+        """The (0.025, 0.05) raw pair loses 'wins' after Holm."""
+        report = self._three_arm_report()
+        ab = report.comparisons[0]
+        assert ab.config_a == "arm-a" and ab.config_b == "arm-b"
+        assert ab.p_value == pytest.approx(0.03125)
+        assert ab.p_value_adjusted == pytest.approx(0.09375)
+        assert ab.p_value_adjusted > 0.05
+        assert ab.correction == "holm"
+        assert ab.n_comparisons == 3
+        assert "wins" not in ab.summary
+        assert "not significant" in ab.summary
+
+    def test_all_pairs_carry_family_metadata(self) -> None:
+        report = self._three_arm_report()
+        assert len(report.comparisons) == 3
+        for c in report.comparisons:
+            assert c.correction == "holm"
+            assert c.n_comparisons == 3
+            assert c.p_value_adjusted is not None
+            assert c.p_value_adjusted >= c.p_value
+
+    def test_two_arm_report_unchanged(self) -> None:
+        """k=2 is a single test: no correction, raw verdict stands."""
+        report = self._two_arm_report()
+        assert len(report.comparisons) == 1
+        c = report.comparisons[0]
+        assert c.correction == "none"
+        assert c.n_comparisons == 1
+        assert c.p_value_adjusted == c.p_value == pytest.approx(0.03125)
+        assert "wins" in c.summary
+
+    def test_text_disclosure_only_for_k_gt_2(self) -> None:
+        disclosure = (
+            "3 arms -> 3 pairwise tests; p-values Holm-corrected "
+            "(family-wise alpha=0.05)"
+        )
+        assert disclosure in format_text_report(self._three_arm_report())
+        assert "Holm" not in format_text_report(self._two_arm_report())
+
+    def test_html_disclosure_only_for_k_gt_2(self) -> None:
+        html3 = format_html_report(self._three_arm_report())
+        assert "3 arms -&gt; 3 pairwise tests" in html3 or (
+            "3 arms -> 3 pairwise tests" in html3
+        )
+        assert "Holm-corrected (family-wise alpha=0.05)" in html3
+        assert "p-value (Holm-adj.)" in html3
+        assert "0.0938" in html3  # adjusted value rendered
+        assert "raw 0.0312" in html3  # raw value kept in parentheses
+        assert "Holm" not in format_html_report(self._two_arm_report())
+
+    def test_json_exposes_correction_fields(self) -> None:
+        data = json.loads(format_json_report(self._three_arm_report()))
+        ab = data["comparisons"][0]
+        assert ab["p_value"] == pytest.approx(0.03125)
+        assert ab["p_value_adjusted"] == pytest.approx(0.09375)
+        assert ab["correction"] == "holm"
+        assert ab["n_comparisons"] == 3
+
+    def test_refused_pairs_untouched_by_correction(self) -> None:
+        """arm-c on disjoint tasks: its pairs are REFUSED and contribute
+        None to the family; the one tested pair adjusts with m=1."""
+        disjoint = ConfigResults(
+            config="arm-c",
+            completed=[_task(f"u{i}", 1.0) for i in range(3)],
+        )
+        report = generate_report(
+            "karm-exp",
+            [self._arm("arm-a", self._A), self._arm("arm-b", self._B), disjoint],
+        )
+        by_pair = {(c.config_a, c.config_b): c for c in report.comparisons}
+
+        ab = by_pair[("arm-a", "arm-b")]
+        assert ab.correction == "holm"
+        assert ab.n_comparisons == 1
+        assert ab.p_value_adjusted == pytest.approx(ab.p_value)
+
+        for pair in (("arm-a", "arm-c"), ("arm-b", "arm-c")):
+            refused = by_pair[pair]
+            assert refused.comparable is False
+            assert refused.correction == "none"
+            assert refused.p_value_adjusted is None
+            assert "NOT COMPARABLE" in refused.summary
+
+    def test_streaming_applies_same_correction(self) -> None:
+        batch = self._three_arm_report()
+
+        def stream() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+            for label, scores in (
+                ("arm-a", self._A),
+                ("arm-b", self._B),
+                ("arm-c", self._C),
+            ):
+                yield (
+                    label,
+                    iter(
+                        [_task(t, s) for t, s in zip(self._TASKS, scores)]
+                    ),
+                )
+
+        streaming = generate_report_streaming("karm-exp", stream())
+        assert len(streaming.comparisons) == 3
+        for b_c, s_c in zip(batch.comparisons, streaming.comparisons):
+            assert s_c.p_value_adjusted == b_c.p_value_adjusted
+            assert s_c.correction == b_c.correction == "holm"
+            assert s_c.n_comparisons == b_c.n_comparisons == 3
+            assert s_c.summary == b_c.summary

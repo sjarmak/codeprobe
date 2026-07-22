@@ -7,14 +7,17 @@ import io
 import json
 import statistics
 from collections.abc import Iterator
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
     ConfigSummary,
     PairwiseComparison,
+    _comparison_summary,
+    _derive_verdict,
     compare_configs,
+    holm_adjusted,
     is_scorable_run,
     summarize_completed_tasks,
     summarize_config,
@@ -125,6 +128,11 @@ def generate_report(
                 compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
             )
 
+    # k>2 runs a family of tests, so gate "wins" on Holm-adjusted p-values
+    # (codeprobe-f7rl.10). k=2 is a single test: no correction.
+    if len(summaries) > 2:
+        comparisons = _apply_multiple_comparison_correction(comparisons)
+
     is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
         summaries, total_tasks
     )
@@ -204,6 +212,59 @@ def _paired_task_scores(
     )
 
 
+def _apply_multiple_comparison_correction(
+    comparisons: list[PairwiseComparison],
+) -> list[PairwiseComparison]:
+    """Holm-correct the family of pairwise tests for a k>2 experiment.
+
+    Runs all-at-once over the C(k,2) comparisons: REFUSED pairs contribute
+    ``None`` to the family and are never re-verdicted; every comparable pair
+    gets ``p_value_adjusted``, ``correction="holm"``, ``n_comparisons=m``
+    (the number of tested pairs), and its verdict/summary re-derived from
+    the ADJUSTED p — so "wins" is gated on the corrected result (locked
+    decision 6, epic codeprobe-f7rl). Callers gate on k>2; k=2 reports are
+    untouched by construction.
+    """
+    raw = [c.p_value if c.comparable else None for c in comparisons]
+    m = sum(1 for p in raw if p is not None)
+    if m == 0:
+        return comparisons
+    adjusted = holm_adjusted(raw)
+
+    corrected: list[PairwiseComparison] = []
+    for c, adj_p in zip(comparisons, adjusted):
+        if not c.comparable:
+            corrected.append(c)
+            continue
+        verdict = _derive_verdict(
+            c.winner, c.score_diff, c.effect_size, c.effect_size_method, adj_p
+        )
+        summary = _comparison_summary(
+            c.config_a, c.config_b, c.score_diff, c.cost_diff, c.speed_diff, verdict
+        )
+        corrected.append(
+            replace(
+                c,
+                summary=summary,
+                p_value_adjusted=adj_p,
+                correction="holm",
+                n_comparisons=m,
+            )
+        )
+    return corrected
+
+
+def _holm_disclosure(report: Report) -> str | None:
+    """Disclosure sentence for Holm-corrected reports, or None for k=2."""
+    holm = [c for c in report.comparisons if c.correction == "holm"]
+    if not holm:
+        return None
+    return (
+        f"{len(report.summaries)} arms -> {holm[0].n_comparisons} pairwise "
+        "tests; p-values Holm-corrected (family-wise alpha=0.05)"
+    )
+
+
 def generate_report_streaming(
     experiment_name: str,
     config_task_pairs: Iterator[tuple[str, Iterator[CompletedTask]]],
@@ -243,6 +304,11 @@ def generate_report_streaming(
             comparisons.append(
                 compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
             )
+
+    # Same k>2 Holm gate as generate_report — streaming parity
+    # (codeprobe-f7rl.10).
+    if len(summaries) > 2:
+        comparisons = _apply_multiple_comparison_correction(comparisons)
 
     is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
         summaries, total_tasks
@@ -431,6 +497,9 @@ def format_text_report(report: Report) -> str:
     # Detailed Comparison
     if report.comparisons:
         lines.append("### Detailed Comparison")
+        disclosure = _holm_disclosure(report)
+        if disclosure is not None:
+            lines.append(disclosure)
         for c in report.comparisons:
             lines.append(c.summary)
         lines.append("")
@@ -1059,6 +1128,9 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     # --- Pairwise Comparison Cards ---
     if report.comparisons:
         parts.append('<h2 id="pairwise-comparisons">Pairwise Comparisons</h2>\n')
+        disclosure = _holm_disclosure(report)
+        if disclosure is not None:
+            parts.append(f"<p>{_esc(disclosure)}</p>\n")
         parts.append('<div class="pairwise-grid">\n')
         for c in report.comparisons:
             parts.append('<div class="pairwise-card">\n')
@@ -1090,10 +1162,21 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                     f'<span class="stat-value">{c.effect_size:.3f}</span></div>\n'
                 )
             if c.p_value is not None:
-                parts.append(
-                    f'<div class="stat-row"><span class="stat-label">p-value</span>'
-                    f'<span class="stat-value">{c.p_value:.4f}</span></div>\n'
-                )
+                if c.correction == "holm" and c.p_value_adjusted is not None:
+                    # Holm-corrected family: the adjusted value is the one
+                    # verdicts are gated on; the raw value stays visible
+                    # (codeprobe-f7rl.10).
+                    parts.append(
+                        f'<div class="stat-row"><span class="stat-label">'
+                        f"p-value (Holm-adj.)</span>"
+                        f'<span class="stat-value">{c.p_value_adjusted:.4f} '
+                        f"(raw {c.p_value:.4f})</span></div>\n"
+                    )
+                else:
+                    parts.append(
+                        f'<div class="stat-row"><span class="stat-label">p-value</span>'
+                        f'<span class="stat-value">{c.p_value:.4f}</span></div>\n'
+                    )
             if not has_single_run:
                 parts.append(
                     f'<div class="stat-row"><span class="stat-label">CI</span>'

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from codeprobe.analysis.stats import (
+    holm_adjusted,
     is_scorable_run,
     partition_reward_population,
     summarize_completed_tasks,
@@ -662,3 +663,39 @@ class TestDistinctTaskCount:
         for s in (batch, stream):
             assert s.distinct_task_count == 2
             assert s.is_partial is False
+
+
+class TestHolmAdjusted:
+    """holm_adjusted — pure step-down correction (codeprobe-f7rl.10)."""
+
+    def test_known_vector(self) -> None:
+        """[0.01, 0.04, 0.03]: sorted multipliers 3,2,1 with monotone
+        enforcement give [0.03, 0.06, 0.06]."""
+        assert holm_adjusted([0.01, 0.04, 0.03]) == pytest.approx(
+            [0.03, 0.06, 0.06]
+        )
+
+    def test_none_entries_pass_through_and_reduce_m(self) -> None:
+        """None (untested/refused pair) keeps its position; m counts only
+        tested entries, so [0.01, None, 0.04] adjusts with m=2."""
+        result = holm_adjusted([0.01, None, 0.04])
+        assert result[1] is None
+        assert result[0] == pytest.approx(0.02)  # 2 * 0.01
+        assert result[2] == pytest.approx(0.04)  # max(0.02, 1 * 0.04)
+
+    def test_single_p_unchanged(self) -> None:
+        assert holm_adjusted([0.03]) == pytest.approx([0.03])
+
+    def test_monotone_and_clamped(self) -> None:
+        """Adjusted values never decrease in p-rank order and never exceed
+        1.0."""
+        raw = [0.9, 0.01, 0.5, 0.04]
+        result = holm_adjusted(raw)
+        assert all(p is not None and p <= 1.0 for p in result)
+        ranked = [adj for _, adj in sorted(zip(raw, result))]
+        assert ranked == sorted(ranked)
+        assert result[0] == 1.0  # 4 * 0.9 clamps
+
+    def test_empty_and_all_none(self) -> None:
+        assert holm_adjusted([]) == []
+        assert holm_adjusted([None, None]) == [None, None]

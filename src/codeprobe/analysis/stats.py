@@ -211,6 +211,26 @@ def wilcoxon_test(a_scores: Sequence[float], b_scores: Sequence[float]) -> float
         return None
 
 
+def holm_adjusted(p_values: Sequence[float | None]) -> list[float | None]:
+    """Holm step-down adjusted p-values for a family of pairwise tests.
+
+    ``None`` entries (untested pairs, e.g. REFUSED comparisons) stay ``None``
+    and keep their positions; the family size ``m`` counts only the non-None
+    entries. Standard step-down: sort the tested p-values ascending, then
+    ``adjusted[i] = max(adjusted so far, (m - rank) * p)`` clamped to 1.0,
+    which enforces monotonicity by construction. Deterministic math
+    (ZFC-allowed; locked decision 6, epic codeprobe-f7rl).
+    """
+    tested = [(i, p) for i, p in enumerate(p_values) if p is not None]
+    adjusted: list[float | None] = [None] * len(p_values)
+    m = len(tested)
+    running = 0.0
+    for rank, (i, p) in enumerate(sorted(tested, key=lambda ip: ip[1])):
+        running = max(running, (m - rank) * p)
+        adjusted[i] = min(running, 1.0)
+    return adjusted
+
+
 def cliffs_delta(a: Sequence[float], b: Sequence[float]) -> float:
     """Cliff's delta effect size for ordinal/binary data.
 
@@ -433,6 +453,14 @@ class PairwiseComparison:
     ci_upper: float = 0.0
     comparable: bool = True
     refusal_reason: str = ""
+    # Multiple-comparison correction (codeprobe-f7rl.10). For k=2 experiments
+    # no correction runs: ``p_value_adjusted`` equals the raw ``p_value`` and
+    # ``correction`` stays "none". For k>2 the report layer Holm-corrects the
+    # family and re-derives the verdict from the ADJUSTED p; ``n_comparisons``
+    # is the family size m (number of tested pairs).
+    p_value_adjusted: float | None = None
+    correction: str = "none"
+    n_comparisons: int = 1
 
 
 def summarize_config(
@@ -746,6 +774,60 @@ def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
     return a.label
 
 
+def _derive_verdict(
+    winner: str,
+    score_diff: float,
+    effect_size: float | None,
+    effect_size_method: str,
+    p_value: float | None,
+) -> str:
+    """Derive the verdict phrase from the comparison statistics.
+
+    Module-level so the report layer can re-run it with a Holm-ADJUSTED
+    p-value for k>2 experiments (codeprobe-f7rl.10). Softens the verdict
+    when the effect is negligible or the test is underpowered, so we don't
+    confidently declare a "winner" on what may be noise. Thresholds:
+      Cohen's d: |d| < 0.2 is "negligible" (Cohen 1988).
+      Cliff's delta: |delta| < 0.147 is "negligible" (Romano et al. 2006).
+      p-value > 0.05: not significant at the conventional threshold.
+    """
+    scores_tied = abs(score_diff) < 0.01
+    negligible_threshold = 0.2 if effect_size_method == "cohens_d" else 0.147
+    small_effect = (
+        effect_size is not None and abs(effect_size) < negligible_threshold
+    )
+    not_significant = p_value is not None and p_value > 0.05
+
+    if scores_tied:
+        return "effectively tied"
+    if small_effect and not_significant:
+        return f"{winner} nominally ahead (not significant; small effect)"
+    if small_effect:
+        return f"{winner} nominally ahead (small effect size)"
+    if not_significant:
+        return f"{winner} nominally ahead (not significant at p=0.05)"
+    return f"{winner} wins"
+
+
+def _comparison_summary(
+    label_a: str,
+    label_b: str,
+    score_diff: float,
+    cost_diff: float | None,
+    speed_diff: float,
+    verdict: str,
+) -> str:
+    """Build the one-line human-readable comparison summary."""
+    parts = [f"{score_diff:+.0%} score"]
+    if cost_diff is not None:
+        parts.append(f"{cost_diff:+.2f} cost")
+    if speed_diff < 0:
+        parts.append(f"{abs(speed_diff):.1f}s faster")
+    elif speed_diff > 0:
+        parts.append(f"{speed_diff:.1f}s slower")
+    return f"{label_a} vs {label_b}: {', '.join(parts)} → {verdict}"
+
+
 def compare_configs(
     a: ConfigSummary,
     b: ConfigSummary,
@@ -828,41 +910,10 @@ def compare_configs(
             ci_lo = mean_diff - 1.96 * se
             ci_hi = mean_diff + 1.96 * se
 
-    # Build human-readable summary
-    parts: list[str] = []
-    parts.append(f"{score_diff:+.0%} score")
-    if cost_diff is not None:
-        parts.append(f"{cost_diff:+.2f} cost")
-    if speed_diff < 0:
-        parts.append(f"{abs(speed_diff):.1f}s faster")
-    elif speed_diff > 0:
-        parts.append(f"{speed_diff:.1f}s slower")
-
-    # Soften the verdict when the effect is negligible or the test is
-    # underpowered, so we don't confidently declare a "winner" on what may
-    # be noise. Thresholds:
-    #   Cohen's d: |d| < 0.2 is "negligible" (Cohen 1988).
-    #   Cliff's delta: |delta| < 0.147 is "negligible" (Romano et al. 2006).
-    #   p-value > 0.05: not significant at the conventional threshold.
-    scores_tied = abs(score_diff) < 0.01
-    negligible_threshold = 0.2 if eff_method == "cohens_d" else 0.147
-    small_effect = (
-        eff_size is not None and abs(eff_size) < negligible_threshold
+    verdict = _derive_verdict(winner, score_diff, eff_size, eff_method, p_val)
+    summary = _comparison_summary(
+        a.label, b.label, score_diff, cost_diff, speed_diff, verdict
     )
-    not_significant = p_val is not None and p_val > 0.05
-
-    if scores_tied:
-        verdict = "effectively tied"
-    elif small_effect and not_significant:
-        verdict = f"{winner} nominally ahead (not significant; small effect)"
-    elif small_effect:
-        verdict = f"{winner} nominally ahead (small effect size)"
-    elif not_significant:
-        verdict = f"{winner} nominally ahead (not significant at p=0.05)"
-    else:
-        verdict = f"{winner} wins"
-
-    summary = f"{a.label} vs {b.label}: {', '.join(parts)} \u2192 {verdict}"
 
     return PairwiseComparison(
         config_a=a.label,
@@ -877,4 +928,7 @@ def compare_configs(
         effect_size_method=eff_method,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
+        # Uncorrected single-pair default: adjusted == raw. The report layer
+        # overwrites this for k>2 families (codeprobe-f7rl.10).
+        p_value_adjusted=p_val,
     )
