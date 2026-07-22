@@ -193,6 +193,17 @@ def run_interpret(
         configs=list(experiment.configs),
     )
 
+    # codeprobe-f7rl.32: ``--format html`` always materializes the report
+    # file, in every output mode. Envelope mode previously ignored ``fmt``
+    # entirely, so agent-driven (non-TTY) callers got no HTML file at all.
+    # The write happens before the validity gate so a FAILED run still
+    # leaves the (validity-stamped) report on disk; a write failure
+    # propagates — no silent fallback.
+    html_report_path: Path | None = None
+    if fmt == "html":
+        html_report_path = exp_dir / f"{experiment.name}_report.html"
+        html_report_path.write_text(format_html_report(report))
+
     # codeprobe-c4al: the gate FAILs the command, it does not merely narrate.
     # Rendering comes first in every mode — the caller keeps the full report —
     # and the raise is the last thing that happens. ``None`` means the report
@@ -212,10 +223,7 @@ def run_interpret(
         elif fmt == "json":
             click.echo(format_json_report(report))
         elif fmt == "html":
-            html = format_html_report(report)
-            out_path = exp_dir / f"{experiment.name}_report.html"
-            out_path.write_text(html)
-            click.echo(f"HTML report written to {out_path}")
+            click.echo(f"HTML report written to {html_report_path}")
         else:
             click.echo(format_text_report(report))
 
@@ -242,6 +250,10 @@ def run_interpret(
         "validity": report_payload.get("validity"),
         "report": report_payload,
     }
+    if html_report_path is not None:
+        # codeprobe-f7rl.32: the artifact must be discoverable from the
+        # envelope — this key rides into the VALIDITY_FAILED envelope too.
+        data["html_report_path"] = str(html_report_path)
 
     if validity is not None and not validity.passed:
         # The error renderer emits the envelope (ok=false, exit_code=2) with

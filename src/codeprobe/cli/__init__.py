@@ -1121,7 +1121,17 @@ def run(
 @main.command()
 @add_json_flags
 @click.argument("path", type=click.Path(exists=True))
-@click.option("--format", "fmt", default="text", help="Output format: text, json, csv.")
+@click.option(
+    "--format",
+    "fmt",
+    default="text",
+    help=(
+        "Output format: text, json, csv, html. 'html' writes "
+        "<experiment>_report.html into the experiment directory in every "
+        "output mode; the JSON envelope reports the path as "
+        "data.html_report_path."
+    ),
+)
 @click.option(
     "--regression",
     "regression",
