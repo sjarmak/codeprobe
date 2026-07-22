@@ -178,6 +178,14 @@
       "remediation_pattern": "Pass --backend=<one of: claude|codex|copilot|...> \u2014 see `codeprobe run --help` for the current registry."
     },
     {
+      "code": "ADAPTER_CAPABILITY",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "An experiment arm requests knobs (mcp_config, allowed/disallowed tools, max_turns, permission_mode) its agent adapter cannot honor; running would silently drop them and the arms would not be comparable. Refused pre-spend, no override flag.",
+      "remediation_pattern": "Set agent=claude for the arm, or remove the unsupported knobs from the config. For MCP arms on tool-surface-less adapters, mcp_mode=loose runs with a comparison-validity warning."
+    },
+    {
       "code": "NO_BACKENDS_CONFIGURED",
       "kind": "diagnostic",
       "exit_code": 2,

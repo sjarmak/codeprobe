@@ -6,7 +6,11 @@ import logging
 
 import pytest
 
-from codeprobe.adapters.protocol import AgentConfig, AgentOutput
+from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
+    AgentConfig,
+    AgentOutput,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +67,21 @@ class FakeAdapter:
     @property
     def name(self) -> str:
         return "fake"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # The fake stands in for a fully capable agent so run-path tests
+        # exercising mcp_config / tool policy / max_turns aren't refused
+        # by the fail-closed capability preflight (codeprobe-f7rl.26).
+        return AdapterCapabilities(
+            mcp_config=True,
+            allowed_tools=True,
+            disallowed_tools=True,
+            max_turns=True,
+            permission_mode=True,
+            workspace_cwd=True,
+            timeout=True,
+        )
 
     def find_binary(self) -> str | None:
         return self._binary

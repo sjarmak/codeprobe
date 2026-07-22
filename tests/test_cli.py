@@ -327,7 +327,13 @@ def test_run_help_agent_lists_codex_from_registry():
 
 
 def _setup_pristine_experiment(tmp_path):
-    """Minimal experiment dir with one fake-agent task for run tests."""
+    """Minimal experiment dir with one claude-agent task for run tests.
+
+    Uses a registered agent: the upfront per-arm backend/capability
+    preflight (codeprobe-f7rl.26) rejects unknown backends before the
+    --dry-run early return, so 'fake' would fail with UNKNOWN_BACKEND.
+    Dry-run never spawns the adapter, so no claude CLI is required.
+    """
     import json
     import stat
 
@@ -348,7 +354,7 @@ def _setup_pristine_experiment(tmp_path):
         "configs": [
             {
                 "label": "baseline",
-                "agent": "fake",
+                "agent": "claude",
                 "model": None,
                 "extra": {"timeout_seconds": 60},
             }

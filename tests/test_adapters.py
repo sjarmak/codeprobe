@@ -180,12 +180,17 @@ class TestAgentOutputValidation:
 
 class TestNarrowedProtocol:
     def test_minimal_adapter_satisfies_protocol(self) -> None:
-        """A class with only name/preflight/run satisfies AgentAdapter."""
+        """The minimal protocol surface now includes a capability declaration."""
+        from codeprobe.adapters.protocol import AdapterCapabilities
 
         class MinimalAdapter:
             @property
             def name(self) -> str:
                 return "minimal"
+
+            @property
+            def capabilities(self) -> AdapterCapabilities:
+                return AdapterCapabilities()
 
             def preflight(self, config: AgentConfig) -> list[str]:
                 return []
@@ -199,6 +204,28 @@ class TestNarrowedProtocol:
         adapter = MinimalAdapter()
         assert isinstance(adapter, AgentAdapter)
         assert adapter.name == "minimal"
+
+    def test_undeclared_adapter_fails_isinstance_but_reads_fail_closed(self) -> None:
+        """An adapter without ``capabilities`` isn't Protocol-conformant, and
+        ``capabilities_of`` treats it as prompt+model only (codeprobe-f7rl.26)."""
+        from codeprobe.adapters.protocol import AdapterCapabilities, capabilities_of
+
+        class LegacyAdapter:
+            @property
+            def name(self) -> str:
+                return "legacy"
+
+            def preflight(self, config: AgentConfig) -> list[str]:
+                return []
+
+            def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+                return AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1)
+
+            def isolate_session(self, slot_id: int) -> dict[str, str]:
+                return {}
+
+        assert not isinstance(LegacyAdapter(), AgentAdapter)
+        assert capabilities_of(LegacyAdapter()) == AdapterCapabilities()
 
 
 # -- AgentOutput error / cost_source fields ------------------------------------

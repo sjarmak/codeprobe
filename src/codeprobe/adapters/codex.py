@@ -7,6 +7,7 @@ import os
 import time
 
 from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
     AdapterExecutionError,
     AdapterSetupError,
     AgentConfig,
@@ -40,6 +41,13 @@ class CodexAdapter:
     @property
     def name(self) -> str:
         return "codex"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: run() honors prompt and model only — no MCP
+        # config, tool restriction, turn cap, permission mode, cwd, or
+        # timeout reaches the API call. All-False (fail-closed default).
+        return AdapterCapabilities()
 
     def preflight(self, config: AgentConfig) -> list[str]:
         issues: list[str] = []

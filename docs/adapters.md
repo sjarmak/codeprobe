@@ -40,14 +40,18 @@ class AgentAdapter(Protocol):
 ```
 
 Because `AgentAdapter` is a `@runtime_checkable` Protocol, you never need to
-inherit from it. Any class with `name`, `preflight`, and `run` satisfies the
-contract:
+inherit from it. Any class with `name`, `capabilities`, `preflight`, and
+`run` satisfies the contract:
 
 ```python
 class MinimalAdapter:
     @property
     def name(self) -> str:
         return "my-agent"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities()  # prompt+model only
 
     def preflight(self, config: AgentConfig) -> list[str]:
         return []
@@ -57,6 +61,33 @@ class MinimalAdapter:
 
 assert isinstance(MinimalAdapter(), AgentAdapter)  # passes
 ```
+
+### Capabilities
+
+Adapters declare which `AgentConfig` knobs they actually honor via a
+`capabilities` property returning `AdapterCapabilities` (defined in
+`protocol.py`):
+
+```python
+@property
+def capabilities(self) -> AdapterCapabilities:
+    return AdapterCapabilities(mcp_config=True, workspace_cwd=True, timeout=True)
+```
+
+The contract is **fail-closed**: an adapter without the property is treated
+as supporting nothing beyond prompt+model. `codeprobe run` checks every
+experiment arm's requested knobs (`mcp_config`, resolved
+`allowed_tools`/`disallowed_tools` — including the `mcp_mode`
+strict/pragmatic auto-derived restriction — `max_turns`, and a declared
+`permission_mode`) against the arm's adapter before any agent spawns, and
+hard-refuses with `ADAPTER_CAPABILITY` on mismatch. There is no override
+flag: a knob the adapter would silently drop makes the A/B labels lie.
+Consequence: an MCP arm under the default `mcp_mode=strict` is refused on
+adapters without tool-surface control (e.g. copilot); the honest path is
+`mcp_mode=loose`, which runs with a comparison-validity warning.
+
+Declarations must match the adapter's actual `config.*` usage — declare
+what the code enforces today, not what the vendor CLI could support.
 
 ## Data Types
 
@@ -441,6 +472,7 @@ def test_myagent_output_valid_cost_model():
 Before submitting a new adapter:
 
 - [ ] Implements `name` (property), `preflight()`, and `run()`
+- [ ] Declares `capabilities` (`AdapterCapabilities`) matching actual `config.*` usage — undeclared knobs get the arm refused at preflight
 - [ ] `preflight()` checks for binary/SDK and credentials
 - [ ] `run()` extracts token counts and cost when available
 - [ ] `cost_model` and `cost_source` are set honestly (never claim `api_reported` when parsing logs)

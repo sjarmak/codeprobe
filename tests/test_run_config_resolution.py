@@ -202,6 +202,136 @@ class TestConfigResolutionLogging:
         assert "sonnet-4" in caplog.text
 
 
+class TestArmCapabilityPreflight:
+    """Pre-spend hard refusal of knobs the arm's adapter cannot honor.
+
+    codeprobe-f7rl.26: no experiment reaches dispatch with a knob its
+    adapter would silently drop; refusal is prescriptive and terminal.
+    """
+
+    _MCP = {"mcpServers": {"sourcegraph": {"url": "https://example.invalid"}}}
+
+    def _copilot(self):
+        from codeprobe.adapters.copilot import CopilotAdapter
+
+        return CopilotAdapter()
+
+    def _claude(self):
+        from codeprobe.adapters.claude import ClaudeAdapter
+
+        return ClaudeAdapter()
+
+    def _check(self, cfg: ExperimentConfig, adapter, **kwargs) -> None:
+        from codeprobe.cli.capability_preflight import check_arm_capabilities
+
+        check_arm_capabilities(cfg, adapter, **kwargs)
+
+    def test_copilot_mcp_strict_arm_is_refused(self) -> None:
+        """Default mcp_mode=strict derives a tool surface copilot can't enforce."""
+        from codeprobe.cli.errors import PrescriptiveError
+
+        cfg = ExperimentConfig(label="with-mcp", agent="copilot", mcp_config=self._MCP)
+        with pytest.raises(PrescriptiveError) as exc_info:
+            self._check(cfg, self._copilot())
+        err = exc_info.value
+        assert err.code == "ADAPTER_CAPABILITY"
+        assert err.terminal is True
+        assert "allowed_tools" in err.message
+        assert "disallowed_tools" in err.message
+        assert "with-mcp" in err.message
+        assert "copilot" in err.message
+        # The honest path for an MCP arm on copilot is named in the message.
+        assert "loose" in err.message
+        assert "claude" in (err.message_for_agent or "")
+        assert err.detail["unsupported_knobs"] == [
+            "allowed_tools",
+            "disallowed_tools",
+        ]
+
+    def test_copilot_mcp_loose_arm_runs(self) -> None:
+        """loose derives no restriction — the arm passes, warning intact."""
+        from codeprobe.core.mcp_policy import resolve_tool_policy
+
+        cfg = ExperimentConfig(
+            label="with-mcp",
+            agent="copilot",
+            mcp_config=self._MCP,
+            mcp_mode="loose",
+        )
+        self._check(cfg, self._copilot())  # must not raise
+        # The declared permission_mode is "default": the sandbox flip to
+        # dangerously_skip happens post-preflight and must not refuse here.
+        assert resolve_tool_policy(cfg).warning is not None
+
+    def test_copilot_max_turns_arm_is_refused(self) -> None:
+        from codeprobe.cli.errors import PrescriptiveError
+
+        cfg = ExperimentConfig(label="capped", agent="copilot", max_turns=30)
+        with pytest.raises(PrescriptiveError) as exc_info:
+            self._check(cfg, self._copilot())
+        assert exc_info.value.detail["unsupported_knobs"] == ["max_turns"]
+
+    def test_cli_max_turns_flag_is_refused_on_copilot(self) -> None:
+        """The --max-turns CLI flag counts as a requested knob too."""
+        from codeprobe.cli.errors import PrescriptiveError
+
+        cfg = ExperimentConfig(label="capped", agent="copilot")
+        with pytest.raises(PrescriptiveError):
+            self._check(cfg, self._copilot(), cli_max_turns=30)
+
+    def test_legacy_extra_max_turns_is_refused_on_copilot(self) -> None:
+        """Configs authored before the max_turns field used extra."""
+        from codeprobe.cli.errors import PrescriptiveError
+
+        cfg = ExperimentConfig(
+            label="capped", agent="copilot", extra={"max_turns": 30}
+        )
+        with pytest.raises(PrescriptiveError):
+            self._check(cfg, self._copilot())
+
+    def test_claude_arm_using_every_knob_passes(self) -> None:
+        cfg = ExperimentConfig(
+            label="full",
+            agent="claude",
+            mcp_config=self._MCP,
+            permission_mode="acceptEdits",
+            max_turns=30,
+        )
+        self._check(cfg, self._claude(), cli_max_turns=50)  # must not raise
+
+    def test_undeclared_adapter_refuses_all_knobs(self) -> None:
+        """Fail-closed: no capabilities attribute means prompt+model only."""
+        from codeprobe.cli.errors import PrescriptiveError
+
+        class StubAdapter:
+            name = "stub"
+
+        cfg = ExperimentConfig(
+            label="full",
+            agent="stub",
+            mcp_config=self._MCP,
+            permission_mode="acceptEdits",
+            max_turns=30,
+        )
+        with pytest.raises(PrescriptiveError) as exc_info:
+            self._check(cfg, StubAdapter())
+        assert exc_info.value.detail["unsupported_knobs"] == [
+            "mcp_config",
+            "allowed_tools",
+            "disallowed_tools",
+            "max_turns",
+            "permission_mode",
+        ]
+
+    def test_knobless_arm_passes_on_any_adapter(self) -> None:
+        """An arm asking for nothing beyond prompt+model is never refused."""
+
+        class StubAdapter:
+            name = "stub"
+
+        self._check(ExperimentConfig(label="plain", agent="stub"), StubAdapter())
+
+
 class TestCliRepeatsPassthrough:
     """Test that --repeats is passed through to execute_config."""
 

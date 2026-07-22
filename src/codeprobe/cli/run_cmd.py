@@ -22,6 +22,7 @@ from codeprobe.cli._output_helpers import (
     emit_event,
     resolve_mode,
 )
+from codeprobe.cli.capability_preflight import check_arm_capabilities
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.config.defaults import (
@@ -667,6 +668,31 @@ def run_eval(
                 cfg.agent or agent,
                 model if model is not None else cfg.model,
             )
+
+        # Refuse, pre-spend, any arm whose knobs its adapter cannot honor
+        # (codeprobe-f7rl.26). Fail-closed: an adapter that declares no
+        # capabilities is treated as prompt+model only. Without this gate
+        # the knobs silently no-op (e.g. copilot never blocks
+        # Grep/Bash/Glob/Read under mcp_mode=strict) and the report
+        # compares arms that never differed. Resolving here also surfaces
+        # a typo'd per-arm agent before the other arm spends money.
+        for cfg in _configs_to_validate:
+            try:
+                arm_adapter = resolve(cfg.agent or agent)
+            except KeyError as exc:
+                raise PrescriptiveError(
+                    code="UNKNOWN_BACKEND",
+                    message=(
+                        f"Unknown agent backend in config {cfg.label!r}: {exc}"
+                    ),
+                    next_try_flag="--agent",
+                    next_try_value="claude",
+                    detail={
+                        "config_label": cfg.label,
+                        "requested": cfg.agent or agent,
+                    },
+                ) from exc
+            check_arm_capabilities(cfg, arm_adapter, cli_max_turns=max_turns)
 
         # Resolve to the git repo root — `path` may be an experiment subdir.
         try:

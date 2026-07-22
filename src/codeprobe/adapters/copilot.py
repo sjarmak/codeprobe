@@ -7,7 +7,11 @@ import logging
 import subprocess
 
 from codeprobe.adapters._base import BaseAdapter
-from codeprobe.adapters.protocol import AgentConfig, AgentOutput
+from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
+    AgentConfig,
+    AgentOutput,
+)
 from codeprobe.adapters.telemetry import NdjsonStreamCollector
 
 logger = logging.getLogger(__name__)
@@ -23,6 +27,19 @@ class CopilotAdapter(BaseAdapter):
 
     def __init__(self) -> None:
         self._collector = NdjsonStreamCollector()
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: build_command consumes only model and mcp_config;
+        # BaseAdapter.run enforces cwd and timeout_seconds. allowed_tools,
+        # disallowed_tools, max_turns, and permission_mode have no CLI
+        # mapping here (--allow-all-tools is unconditional), so they are
+        # declared unsupported and run preflight refuses arms that set them.
+        return AdapterCapabilities(
+            mcp_config=True,
+            workspace_cwd=True,
+            timeout=True,
+        )
 
     def preflight(self, config: AgentConfig) -> list[str]:
         return super().preflight(config)

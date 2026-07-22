@@ -12,6 +12,7 @@ import os
 import time
 
 from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
     AdapterExecutionError,
     AdapterSetupError,
     AgentConfig,
@@ -59,6 +60,14 @@ class OpenAICompatAdapter:
     @property
     def name(self) -> str:
         return self._adapter_name
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: run() honors prompt and model only. The chat
+        # completions call enforces neither timeout_seconds nor cwd, and
+        # carries no MCP config, tool restriction, turn cap, or
+        # permission mode. All-False (fail-closed default).
+        return AdapterCapabilities()
 
     def preflight(self, config: AgentConfig) -> list[str]:
         issues: list[str] = []

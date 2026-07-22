@@ -16,6 +16,7 @@ from typing import Any
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import (
     ALLOWED_PERMISSION_MODES,
+    AdapterCapabilities,
     AgentConfig,
     AgentOutput,
 )
@@ -320,6 +321,21 @@ class ClaudeAdapter(BaseAdapter):
 
     _binary_name = "claude"
     _install_hint = "Claude CLI not found. Install from https://claude.ai/download"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: build_command consumes mcp_config, allowed_tools,
+        # disallowed_tools, max_turns, and permission_mode; BaseAdapter.run
+        # enforces cwd and timeout_seconds on the subprocess.
+        return AdapterCapabilities(
+            mcp_config=True,
+            allowed_tools=True,
+            disallowed_tools=True,
+            max_turns=True,
+            permission_mode=True,
+            workspace_cwd=True,
+            timeout=True,
+        )
 
     def __init__(self) -> None:
         self._collector = JsonStdoutCollector()
