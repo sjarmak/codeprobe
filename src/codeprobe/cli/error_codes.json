@@ -432,6 +432,14 @@
       "since": "0.12.0",
       "description": "The repository's primary language is outside the supported mining matrix — Python, Go, and JavaScript/TypeScript — or comprehension mining (Python-only import-graph analysis) was requested on a non-Python repository. Other languages produce zero tasks because test-command generation exists only for the supported matrix.",
       "remediation_pattern": "Mine a Python, Go, or JavaScript/TypeScript repository. For comprehension mining on a Go or JS/TS repo, use --goal quality instead."
+    },
+    {
+      "code": "SG_REPO_UNRESOLVED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.12.0",
+      "description": "MCP-family mining could not derive the Sourcegraph repo identifier from the repository's origin remote (missing or not a parsable GitHub URL). An empty --sg-repo silently disables the Sourcegraph consensus leg and a wrong value corrupts the MCP-benefit comparison, so codeprobe refuses instead of degrading.",
+      "remediation_pattern": "Pass --sg-repo github.com/{owner}/{repo} matching the repository's Sourcegraph identifier."
     }
   ]
 }

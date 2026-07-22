@@ -2026,15 +2026,18 @@ def _resolve_narrative_source(
     )
 
 
-def _resolve_sdlc_sg_repo(repo_path: Path, explicit_sg_repo: str) -> str:
-    """Derive ``sg_repo`` for SDLC mining.
+def _resolve_origin_sg_repo(repo_path: Path, explicit_sg_repo: str) -> str:
+    """Derive ``sg_repo`` from the repo's origin remote.
 
     Explicit ``--sg-repo`` wins. Otherwise we look up the repo's origin
     remote and convert it to the natural Sourcegraph identifier
     ``github.com/{owner}/{repo}`` so the Sourcegraph preamble's
-    ``repo:^{sg_repo}$`` filter matches the live repository (Q4: SDLC
-    tasks were silently shipping with empty ``sg_repo`` and unscoping the
-    agent's queries).
+    ``repo:^{sg_repo}$`` filter matches the live repository (Q4: tasks
+    were silently shipping with empty ``sg_repo`` and unscoping the
+    agent's queries). Used by both the SDLC and org-scale mining paths.
+
+    Returns ``""`` when the origin remote is missing or not a parsable
+    GitHub URL; callers decide whether that is fatal.
     """
     if explicit_sg_repo:
         return explicit_sg_repo
@@ -2095,7 +2098,7 @@ def _dispatch_sdlc(
         no_llm=no_llm,
     )
     tasks = mine_result.tasks
-    effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
+    effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
 
     if tasks:
         # INV1 loud-error guard: if mining produced tasks but no
@@ -2442,7 +2445,7 @@ def _dispatch_mixed(
     )
     sdlc_tasks = mine_result.tasks
     if sdlc_tasks:
-        effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
+        effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
         resolved_selection = _resolve_narrative_source(
             narrative_source,
             repo_path,
@@ -3134,10 +3137,31 @@ def _run_org_scale_mine(
             click.echo("No families selected. Aborted.")
             return
 
-    # Default sg_repo from primary repo name if not explicitly provided
+    # Derive sg_repo from the primary repo's origin remote when not
+    # explicitly provided. An empty value would silently disable the
+    # Sourcegraph leg (org_scale._get_sg_config returns disabled on empty
+    # sg_repo), corrupting the MCP-benefit comparison — refuse instead.
     effective_sg_repo = sg_repo
     if not effective_sg_repo and mcp_families:
-        effective_sg_repo = f"github.com/sg-evals/{repo_paths[0].name}"
+        effective_sg_repo = _resolve_origin_sg_repo(primary_repo, sg_repo)
+        if not effective_sg_repo:
+            from codeprobe.mining.sources import detect_source
+
+            raise PrescriptiveError(
+                code="SG_REPO_UNRESOLVED",
+                message=(
+                    "Could not derive the Sourcegraph repo identifier from "
+                    "the origin remote. MCP-family mining scopes Sourcegraph "
+                    "consensus queries by --sg-repo; an empty value silently "
+                    "disables the Sourcegraph leg (see "
+                    "org_scale._get_sg_config) and a wrong value corrupts "
+                    "the MCP-benefit comparison. "
+                    "Pass --sg-repo github.com/{owner}/{repo}."
+                ),
+                next_try_flag="--sg-repo",
+                next_try_value="github.com/<owner>/<repo>",
+                detail={"origin": detect_source(primary_repo).remote_url},
+            )
 
     result = mine_org_scale_tasks(
         repo_paths,

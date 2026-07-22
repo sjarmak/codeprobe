@@ -390,8 +390,8 @@ def init(
     default="",
     hidden=True,
     help="Sourcegraph repo identifier for ground truth enrichment "
-    "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
-    "when --mcp-families is used. Requires one of: SRC_ACCESS_TOKEN, "
+    "(e.g. github.com/numpy/numpy). Defaults to github.com/{owner}/{repo} "
+    "derived from the origin remote. Requires one of: SRC_ACCESS_TOKEN, "
     "SOURCEGRAPH_TOKEN, SOURCEGRAPH_ACCESS_TOKEN. With --mcp-families, missing "
     "auth is a hard error (no silent grep fallback).",
 )
