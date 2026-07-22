@@ -1,378 +1,384 @@
-# codeprobe
+# CodeProbe
 
-Benchmark AI coding agents against **your own codebase**.
+Turn your repository's own merged pull requests into coding-agent evaluations,
+then measure the whole agent setup (model, tools, retrieval, cost, and harness)
+against them, not just the model.
 
-Mine real tasks from your repo history, run agents against them, and find out which setup actually works best for **your** code, not someone else's benchmark suite.
+[![PyPI version](https://img.shields.io/pypi/v/codeprobe.svg)](https://pypi.org/project/codeprobe/)
+[![Python versions](https://img.shields.io/pypi/pyversions/codeprobe.svg)](https://pypi.org/project/codeprobe/)
+[![CI](https://github.com/sjarmak/codeprobe/actions/workflows/ci.yml/badge.svg)](https://github.com/sjarmak/codeprobe/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-## Why codeprobe?
+```
+$ codeprobe interpret ./compare
 
-Existing benchmarks (SWE-bench, HumanEval) use fixed task sets that AI models may have memorized from training data, and as general public benchmarks likely don't capture what is most important to your unique workflows. codeprobe mines tasks from **your private repo history**, producing benchmarks that are impossible to contaminate. You can also point the tool at any public repo to mine tasks from.
+## Experiment: compare
 
-## Prerequisites
+### Rankings
+1. sonnet — 82% pass rate, $1.94 total — recommended
+2. haiku  — 61% pass rate, $0.38 total — cheaper, lower pass rate
 
-codeprobe orchestrates external AI coding agents — you need at least one installed:
+### Per-Task Results
+| Config | Task     | Score | Pass | Duration (s) | Cost ($) |
+|--------|----------|-------|------|--------------|----------|
+| sonnet | cb4bbd77 | 0.82  | Y    | 143.2        | 0.6100   |
+| haiku  | cb4bbd77 | 0.40  | N    | 96.7         | 0.0900   |
+```
 
-| Agent              | Install                                          | Required env var                |
-| ------------------ | ------------------------------------------------ | ------------------------------- |
-| **Claude Code**    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY`             |
-| **GitHub Copilot** | `npm install -g @github/copilot-cli` (>= 1.0.4)  | GitHub auth via `gh auth login` |
-| **Codex**          | Included via `pip install codeprobe[codex]`      | `OPENAI_API_KEY`                |
+CodeProbe mines real tasks from a repository's history, reconstructs the state
+each change started from, runs one or more agent configurations against them,
+and verifies the result. Point it at your private repositories to get an
+evaluation set built from your own engineering work, or at any public repository
+you can clone.
 
-You also need:
+## Why CodeProbe?
 
-- **Python 3.11+**
-- **Git** (for task mining and worktree isolation)
-- **GitHub CLI** (`gh`) — optional, for mining tasks from GitHub PRs with linked issues
+Public coding benchmarks answer a different question than the one most teams
+have. SWE-bench and HumanEval measure a model against a fixed, shared task set.
+That leaves three gaps:
 
-The `assess` and `mine --enrich` commands need an LLM for scoring/enrichment. codeprobe auto-detects the best available backend:
+- **Representativeness.** A public benchmark's tasks may look nothing like your
+  codebase, your conventions, or the changes your team actually ships.
+- **Contamination.** Static, widely published task sets can leak into training
+  data or be optimized against over time, so a rising score is hard to trust.
+- **System vs. model.** A model benchmark scores the model. What ships to
+  developers is a full system: a model plus a prompt, tools, retrieval, an MCP
+  surface, and a harness. Those pieces move the outcome and a model-only number
+  never sees them.
 
-| Priority | Backend       | Install                                          | Env var             |
-| -------- | ------------- | ------------------------------------------------ | ------------------- |
-| 1        | Anthropic SDK | `pip install codeprobe[anthropic]`               | `ANTHROPIC_API_KEY` |
-| 2        | OpenAI SDK    | `pip install codeprobe[codex]`                   | `OPENAI_API_KEY`    |
-| 3        | Claude CLI    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY` |
+Merged pull requests are a different kind of ground truth. Each one is a real
+task your team chose to do, with a known-good solution and, often, tests that
+already encode acceptance. CodeProbe reconstructs tasks from that history so the
+evaluation reflects your work and stays specific to your repository, which
+reduces contamination risk compared with a shared public set.
 
-Override with `CODEPROBE_LLM_BACKEND=anthropic|openai|claude-cli`. Without any backend, `assess` falls back to heuristic scoring.
+## How it works
 
-## Quick Start
+```mermaid
+flowchart LR
+    A[Repo history<br/>merged PRs / commits] --> B[mine]
+    B --> C[Task<br/>instruction + verification<br/>+ ground-truth commit]
+    C --> D[run<br/>one or more agent configs]
+    D --> E[verify<br/>test script / oracle / dual]
+    E --> F[interpret<br/>rank + report]
+    F --> G[quality, cost, tokens,<br/>latency, failures]
+```
+
+1. **Identify** candidate historical changes (merged PRs and merge commits),
+   filtered by size, quality, and subsystem.
+2. **Reconstruct** the repository state the change started from, in an isolated
+   git worktree.
+3. **Generate** an agent-ready task: an instruction plus a verification
+   contract, with the known-good commit recorded as ground truth.
+4. **Run** one or more agent configurations (agent, model, tools, preamble)
+   against the task.
+5. **Verify** the resulting change with a test script, an oracle answer, or both
+   (dual verification).
+6. **Record** the outcome: score, and where the agent backend supports it, cost,
+   tokens, latency, tool-call counts, and failure category.
+
+## Quick start
+
+CodeProbe drives external coding agents, so install at least one. Claude Code is
+the default target.
 
 ```bash
 pip install codeprobe
 
-cd /path/to/your/repo
+cd /path/to/your/repo         # a full clone; shallow clones cannot be mined
 
-codeprobe assess .      # Score benchmarking potential (optional)
-codeprobe mine .        # Extract tasks from repo history
-codeprobe run .         # Run agents against tasks
-codeprobe interpret .   # Get recommendations
+codeprobe doctor              # check agents, API keys, git, Python
+codeprobe mine .              # reconstruct tasks from repo history
+codeprobe run . --agent claude --max-cost-usd 5.00
+codeprobe interpret .         # rank configs, print a report
 ```
 
-**Want to compare models, prompts, or tools** (A/B test which setup works best on your repo)? Start with `codeprobe init` — the guided "what do you want to learn?" wizard that builds the comparison experiment for you. See [MCP Comparison Experiments](#mcp-comparison-experiments) for the full configuration surface.
+To compare models, prompts, or tools rather than run a single agent, start with
+`codeprobe init`, a guided "what do you want to learn?" wizard that builds the
+comparison for you.
 
-Prefer driving codeprobe through a coding agent instead? See [docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the skills-based workflow (`/experiment`, `/assess-codebase`, `/interpret`).
+Prerequisites: Python 3.11+, git, and one coding agent.
 
-## Commands
+| Agent          | Install                                          | Auth                            |
+| -------------- | ------------------------------------------------ | ------------------------------- |
+| Claude Code    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY`             |
+| Codex          | ships with `codeprobe` (uses the OpenAI API)     | `OPENAI_API_KEY`                |
+| GitHub Copilot | `npm install -g @github/copilot-cli` (>= 1.0.4)  | `gh auth login`                 |
 
-| Command                    | Purpose                                          |
-| -------------------------- | ------------------------------------------------ |
-| `codeprobe assess`         | Score a codebase's benchmarking potential        |
-| `codeprobe init`           | Interactive wizard — choose what to compare      |
-| `codeprobe mine`           | Mine eval tasks from merged PRs/MRs              |
-| `codeprobe probe`          | Generate fast micro-benchmark probes (30s each)  |
-| `codeprobe experiment`     | Manage comparison experiments (init, add-config) |
-| `codeprobe run`            | Execute tasks against AI agents                  |
-| `codeprobe interpret`      | Analyze results, rank configurations             |
-| `codeprobe doctor`         | Check environment readiness (agents, keys, git)  |
-| `codeprobe preambles list` | List available preambles at all search levels    |
-| `codeprobe oracle-check`   | Compare agent answer against oracle ground truth |
-| `codeprobe scaffold`       | Create/validate eval task directories            |
-| `codeprobe ratings`        | Record and analyze agent session quality ratings |
+The Anthropic and OpenAI SDKs are core dependencies, so both are installed with
+the base package. Mining enrichment and LLM scoring auto-detect a backend in
+this order: Anthropic SDK, OpenAI SDK, then the Claude CLI, selected by which
+API key is present. Override with `CODEPROBE_LLM_BACKEND`. With no key, mining
+falls back to template instructions and `assess` falls back to heuristic
+scoring.
 
-## Two Ways to Generate Tasks
+## A merged PR becomes an evaluation
 
-### 1. SDLC Tasks (from merged PRs)
+The full flow, with real commands and real output, is in
+[docs/example-walkthrough.md](docs/example-walkthrough.md). The short version:
 
-Mine real code-change tasks from your git history. Agents must reproduce known fixes and features.
+**Input.** A merged change in repo history, for example CodeProbe's own merge
+commit `cb4bbd77` (the "Agent-friendly CLI" work).
+
+**Mine it.** `codeprobe mine . --goal quality --count 1` produces a task
+directory whose `metadata.json` records the provenance and verification:
+
+```json
+{
+  "id": "cb4bbd77",
+  "metadata": { "difficulty": "hard", "task_type": "sdlc_code_change",
+                "ground_truth_commit": "cb4bbd77d64b...", "enrichment_source": "pr" },
+  "verification": { "type": "test_script",
+                    "command": "pytest tests/cli/test_envelope.py ...",
+                    "reward_type": "continuous" }
+}
+```
+
+The verification command is the set of tests the original PR touched. The agent
+works against the pre-change state; the tests carry the expected outcome.
+
+**Configure and run.** An experiment pins each setup under test:
 
 ```bash
-codeprobe mine . --count 10 --source github
-codeprobe mine . --count 5 --min-files 4    # Harder tasks (more files changed)
-codeprobe mine . --no-llm                    # Skip LLM enrichment (offline/CI)
+codeprobe experiment add-config ./compare --label haiku  --agent claude --model claude-haiku-4-5-20251001
+codeprobe experiment add-config ./compare --label sonnet --agent claude --model claude-sonnet-4-6
+codeprobe run ./compare --max-cost-usd 5.00
+codeprobe interpret ./compare      # ranking table shown at the top of this README
 ```
 
-> **LLM enrichment is on by default.** `mine` calls an LLM to rewrite each
-> task's instructions (problem statement + acceptance criteria) with a **60s
-> per-task timeout**. On timeout or error, that task falls back to its template
-> instructions and the mining summary reports the honest `K/M` enriched split
-> (e.g. `Instructions: LLM-enriched (2/3; 1 fell back to template after
-> timeout/error)`). Use `--no-llm` to skip enrichment entirely.
+For a fully offline check that needs no agent or API key, validate the committed
+example tasks: `codeprobe validate examples/dual/sdlc/fix-import`.
 
-#### Mining a large monorepo
+## What CodeProbe evaluates
 
-Pointing codeprobe at a big enterprise repo (e.g. `kubernetes`, `grafana`)?
-Scope the mine to the subsystems you care about instead of scanning the whole
-history — otherwise mining traverses every merged PR across the entire tree.
+CodeProbe scores the complete configuration, and separates the signals that
+usually get collapsed into a single number:
+
+- **Task generation.** Reconstructs tasks from merged PRs/commits with a quality
+  gate; `codeprobe assess` scores a repo's suitability first.
+- **Agent execution.** Runs Claude Code, Codex, or Copilot headless in an
+  isolated worktree, with configurable timeout, parallelism, and repeats.
+- **Correctness / verification.** Test-script, oracle-answer, checkpoint, and IR
+  (file/symbol-overlap) scorers; dual verification combines a runnable test with
+  an artifact answer and flags disagreement.
+- **Model and harness configuration.** Each config pins agent, model, preamble,
+  and MCP surface; results are compared per config, not per model.
+- **Retrieval and tooling.** MCP servers (for example Sourcegraph) attach per
+  config, with source-isolation modes to force tool use and bias detectors that
+  catch tautological tool wins.
+- **Token, cost, and latency.** Adapters extract input/output/cache tokens,
+  cost, and duration where the backend exposes them, tagged with a `cost_source`
+  so estimated values are never reported as measured.
+- **Regression and comparison.** Pairwise config deltas with confidence
+  intervals; `interpret --regression` plots per-task score across commit history.
+
+## Supported agents
+
+First-class adapters are selectable by name with `--agent`:
+
+| Agent          | `--agent`  | How it runs           | Telemetry                          |
+| -------------- | ---------- | --------------------- | ---------------------------------- |
+| Claude Code    | `claude`   | headless `claude -p`  | tokens, cost, tool calls, sessions |
+| Codex          | `codex`    | OpenAI API            | tokens, cost (calculated)          |
+| GitHub Copilot | `copilot`  | Copilot CLI           | tokens where exposed               |
+
+Beyond the built-ins:
+
+- **OpenAI-compatible endpoints** (Ollama, vLLM, Together, Groq, and similar)
+  via `OpenAICompatAdapter`, wired programmatically with a `base_url` and a
+  pricing table. Not registered under `--agent` by default.
+- **Custom agents** via the `AgentAdapter` protocol
+  (`src/codeprobe/adapters/protocol.py`), registered through the
+  `codeprobe.agents` entry-point group. See [docs/adapters.md](docs/adapters.md).
+
+Git hosts supported for mining: GitHub, GitLab, Bitbucket, Azure DevOps,
+Gitea/Forgejo, and local repositories.
+
+## Methodology
+
+**Task selection.** Mining reads full merge history and keeps merged PRs/commits
+that pass a quality gate, filtered by `--min-files`, `--min-quality`, and
+`--subsystem`. `--goal` picks the task shape: `quality` (SDLC code changes),
+`navigation` (comprehension), `mcp` (org-scale, tool-benefit), or `general`.
+
+**Historical state reconstruction.** Each task pins the base commit the change
+started from and runs the agent in an isolated git worktree, so trials never
+touch each other or the working tree.
+
+**Task information vs. expected solution.** The instruction and verification
+contract are what the agent sees. The known-good commit is recorded as ground
+truth and kept separate, so the answer is not handed to the agent.
+
+**Test / acceptance-criterion generation.** Verification reuses the tests the
+original change touched, an oracle answer, or both. LLM enrichment (on by
+default, 60s per-task timeout) rewrites weak instructions into a problem
+statement plus acceptance criteria, and falls back to the template on timeout,
+reporting the honest enriched split.
+
+**Leakage and contamination risk.** Tasks built from your own history are
+specific to your repository, which reduces the contamination and
+optimize-against risk of a shared public benchmark; it does not eliminate it,
+since the underlying commits may still be public or in training data. For
+MCP-vs-no-MCP comparisons, multi-source consensus mining, a tool-independent AST
+oracle, and aggregate-time bias detectors guard against ground truth that
+tautologically favors one tool surface.
+
+**Filtering unsuitable PRs.** Mining skips changes that are too small, low
+quality, or lack a usable verifier; `codeprobe assess` scores whether a repo is
+worth mining at all before you start.
+
+**Repeatability.** Seeds, `--repeats`, saved mine profiles, and pinned base
+commits make runs reproducible. `codeprobe check-infra` preflights capability
+drift and credential TTLs before an offline run.
+
+CodeProbe is alpha software. Scores are only as good as the mined tasks and the
+verifier behind them; treat a curated suite as something to review, not a
+turnkey oracle.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    subgraph Curate
+        assess[assess<br/>repo suitability] --> mine[mine<br/>+ enrich]
+        mine --> tasks[(task directories<br/>.codeprobe/tasks)]
+    end
+    subgraph Execute
+        exp[experiment<br/>configs] --> run[run]
+        tasks --> run
+        run --> adapters[adapters<br/>claude / codex / copilot]
+        adapters --> score[scoring<br/>test / oracle / dual / IR]
+    end
+    subgraph Analyze
+        score --> results[(results)]
+        results --> interpret[interpret<br/>rank + report]
+        results --> snapshot[snapshot<br/>shareable export]
+        interpret --> out[text / json / csv / html]
+    end
+```
+
+Source layout lives under `src/codeprobe/`: `mining/` (curation), `adapters/`
+(agent execution and telemetry), `core/` (isolation and scoring), `analysis/`
+(ranking, statistics, reports), `assess/`, and `cli/`. See
+[docs/onboarding/architecture_tour.md](docs/onboarding/architecture_tour.md) for
+the diagrammed tour and [AGENTS.md](AGENTS.md) for the contributor contract.
+
+## Use cases
+
+- **Choose among agents or models.** A/B configs on the same tasks and rank by
+  pass rate and cost.
+- **Test retrieval or context systems.** Attach an MCP server (for example
+  Sourcegraph) to one config, keep a baseline on another, and measure the delta
+  with the isolation modes and bias detectors that keep the comparison honest.
+- **Measure a harness change.** Vary preamble, timeout, turn limits, or tool
+  surface and see whether the change moves quality or cost.
+- **Build a repository-specific regression suite.** Mine once, rerun across
+  commits, and plot per-task score over history with `interpret --regression`.
+- **Evaluate cost-quality tradeoffs.** Every ranking carries cost and token
+  data next to the score, with a budget cap via `--max-cost-usd`.
+- **Validate an enterprise deployment.** Scope mining to the subsystems you care
+  about, run against the exact agent stack you plan to ship, and export a
+  shareable snapshot.
+
+## Command reference
+
+| Command                | Purpose                                              |
+| ---------------------- | ---------------------------------------------------- |
+| `codeprobe doctor`     | Check environment readiness (agents, keys, git)      |
+| `codeprobe assess`     | Score a codebase's suitability for benchmarking      |
+| `codeprobe init`       | Interactive wizard: choose what to compare           |
+| `codeprobe mine`       | Reconstruct eval tasks from merged PRs/commits       |
+| `codeprobe probe`      | Generate fast micro-benchmark probes                 |
+| `codeprobe experiment` | Manage comparison experiments (init, add-config)     |
+| `codeprobe run`        | Execute tasks against an agent configuration         |
+| `codeprobe interpret`  | Analyze results, rank configs, emit reports          |
+| `codeprobe validate`   | Validate a task directory (offline)                  |
+| `codeprobe snapshot`   | Create and verify shareable run snapshots            |
+| `codeprobe oracle-check` | Compare an agent answer against oracle ground truth |
+
+Run `codeprobe --help` for the full command set (calibration, trace inspection,
+ratings, preambles, and more), and see the
+[docs/workflows/](docs/workflows/) guides (standard, cold-start, cross-repo) for
+end-to-end recipes. Deep reference for MCP comparison experiments, consensus
+mining, source-isolation modes, and aggregate bias detection lives in
+[docs/workflows/](docs/workflows/) and [docs/adapters.md](docs/adapters.md).
+
+## Limitations
+
+- **Alpha.** APIs, flags, and task formats change between minor versions.
+- **Verifier-bound.** A task is only as trustworthy as its test or oracle. A
+  weak verifier passes wrong solutions; mining rejects changes with no usable
+  verifier, but cannot certify the ones it keeps.
+- **History shape.** Repositories with squashed or vendored history, or with
+  thin commit messages, yield weaker tasks. LLM enrichment helps but does not
+  invent detail the history never had.
+- **Full clone required.** Mining needs complete merge history; a
+  `git clone --depth 1` cannot be mined.
+- **Telemetry varies by backend.** Cost, tokens, and tool counts are extracted
+  only where the agent exposes them; missing values are tagged `unavailable`,
+  not estimated silently.
+- **Not a public leaderboard.** CodeProbe produces a repository-specific result,
+  not a number comparable across organizations.
+- **Contamination is reduced, not removed.** Tasks are specific to your repo,
+  but public commits may still appear in model training data.
+
+## Development
 
 ```bash
-codeprobe mine . --subsystem pkg/ --subsystem cmd/   # only these prefixes
-codeprobe mine . --discover-subsystems               # list subsystems, pick interactively
+git clone https://github.com/sjarmak/codeprobe
+cd codeprobe
+uv sync --extra dev          # or: pip install -e '.[dev]'
 ```
 
-Mining reads **full merge history**, so the repo must be a complete local
-clone — a `git clone --depth 1` (shallow) clone cannot be mined. There is no
-URL-based mode for the primary path; clone the repo first and run `mine`
-against the local checkout. (`--cross-repo` accepts a git URL, but only for
-additional repos in cross-repo task mining.)
-
-### 2. Micro-Benchmark Probes
-
-Fast exact-match tasks (30s each) that test code navigation and comprehension — no agent sandbox needed.
+Reproduce the CI gates before handing off a change:
 
 ```bash
-codeprobe probe . -n 10 -l python -s 42 -o ./probes
+uv run ruff check src/ tests/ scripts/
+uv run mypy src/codeprobe --strict-optional
+uv run pytest tests/ -x --cov=src/codeprobe --cov-fail-under=80
+uv run python3 scripts/lint_zfc.py src/codeprobe/ --allowlist scripts/lint_zfc.allowlist.toml
+uv run pytest tests/lint/test_scorer_honesty.py -q
 ```
 
-Generates four probe types: find-function, count-callers, return-type, module-dependency.
+CI runs the same chain on Python 3.11, 3.12, and 3.13. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, the second-reviewer
+rule, and TDD expectations, and [AGENTS.md](AGENTS.md) for the scoring, adapter,
+and ZFC contracts.
 
-## Curation Workflows
-
-End-to-end flows from a raw repo to ranked agent results. Each workflow covers the full `assess → mine → validate → run → interpret` pipeline.
-
-| Workflow       | When to use                               | Guide                                                        |
-| -------------- | ----------------------------------------- | ------------------------------------------------------------ |
-| **Standard**   | Repo has merged PRs/MRs                   | [docs/workflows/standard.md](docs/workflows/standard.md)     |
-| **Cold-start** | New repo, squashed history, vendored code | [docs/workflows/cold-start.md](docs/workflows/cold-start.md) |
-| **Cross-repo** | Tasks spanning multiple repositories      | [docs/workflows/cross-repo.md](docs/workflows/cross-repo.md) |
-
-**Quick start (standard path):**
-
-```bash
-codeprobe assess /path/to/repo
-codeprobe mine /path/to/repo --goal quality --count 10 --no-interactive
-codeprobe validate /path/to/repo/.codeprobe/tasks/<task-id>
-codeprobe run /path/to/repo --agent claude --max-cost-usd 5.00
-codeprobe interpret /path/to/repo
-```
-
-For the full MCP comparison setup (preambles, baseline vs with-MCP configs), see the next section.
-
-## MCP Comparison Experiments
-
-Compare agent performance with and without MCP tools (Sourcegraph, GitHub, etc.).
-
-### Avoid the ground-truth tautology (read first)
-
-When `--mcp-families` mining writes ground truth using a single backend (e.g. Sourcegraph's `sg_find_references`), and the experiment then gives one config the *same* MCP tool, the with-MCP config can score 1.0 simply because it called the backend that wrote the answer key. The reported delta then measures "did the agent invoke the grading rubric" rather than tool value (tracked as `codeprobe-ekhi`).
-
-codeprobe ships three structural mitigations that are on by default; do not disable them unless you know what you are giving up:
-
-1. **Multi-source consensus mining** — `--mcp-families` runs every available backend (`sourcegraph`, `ast`, `grep`) and only ships tasks where ≥2 backends agree above `--consensus-threshold` (default `0.8` pairwise file-level F1). Tasks below the threshold are quarantined under `tasks_quarantined/` with a `divergence_report.json`. `--consensus-mode intersection` (default) keeps the high-precision intersection; `--consensus-mode union` keeps everything any backend found. `--no-consensus` reverts to legacy single-backend GT and is unsafe for MCP-vs-no-MCP comparisons.
-2. **Tool-independent AST oracle** — `--backend ast` (also one of the consensus backends) resolves ground truth via Python `ast` and a Go scanner, with no dependency on Sourcegraph or grep. Use it as a standalone backend or as the independent leg of consensus.
-3. **Aggregate-time bias detection** — `codeprobe experiment aggregate` flags `backend_overlap`, `overshipping`, and `no_independent_baseline` patterns before printing the score table. See [How to read aggregate output](#how-to-read-aggregate-output).
-
-After mining, also run cross-validation to surface remaining divergences across the per-backend ground-truth files:
-
-```bash
-codeprobe mine-cross-validate /path/to/repo/.codeprobe/tasks \
-  --threshold 0.6   # exit 1 if any pair falls below — useful in CI
-```
-
-The full command set above is the supported path for honest MCP-vs-no-MCP measurement; tasks that survive consensus + cross-validation are independent of the agent's tool surface and safe to publish.
-
-### Mine org-scale comprehension tasks
-
-```bash
-# Set up Sourcegraph credentials (used as one of the consensus backends)
-export SOURCEGRAPH_TOKEN="your-token"
-
-# Mine MCP-optimized tasks with default consensus across sourcegraph + ast + grep
-codeprobe mine /path/to/repo \
-  --org-scale --mcp-families --count 5 \
-  --no-interactive --no-llm \
-  --sg-repo github.com/sg-evals/your-repo
-
-# Optional: cross-validate the resulting per-backend ground truths
-codeprobe mine-cross-validate /path/to/repo/.codeprobe/tasks
-```
-
-MCP task families: `symbol-reference-trace`, `type-hierarchy-consumers`, `change-scope-audit`.
-
-> The Sourcegraph token enables the SG leg of consensus. With no token, consensus falls back to `ast + grep`; you'll see fewer shipped tasks but the comparison stays honest. Pass `--backend ast` to skip Sourcegraph entirely.
-
-### Set up the experiment
-
-```bash
-# Create experiment
-codeprobe experiment init /path/to/repo --name mcp-comparison
-
-# Copy mined tasks into the experiment
-cp -r /path/to/repo/.codeprobe/tasks/* /path/to/repo/mcp-comparison/tasks/
-
-# Baseline config (no MCP, no preamble)
-codeprobe experiment add-config /path/to/repo/mcp-comparison \
-  --label baseline --agent claude --model claude-haiku-4-5-20251001
-
-# Sourcegraph MCP config (preamble + MCP server)
-codeprobe experiment add-config /path/to/repo/mcp-comparison \
-  --label with-sourcegraph --agent claude --model claude-haiku-4-5-20251001 \
-  --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}'
-
-# Run and interpret
-codeprobe run /path/to/repo/mcp-comparison --agent claude --max-cost-usd 5.00
-codeprobe interpret /path/to/repo/mcp-comparison
-```
-
-### sg-only mode (file-removal isolation, v0.10.0+)
-
-The `--hide-local-source` flag chooses the source-isolation mode for
-sg-only / sg-hybrid runs. Three values are accepted (v0.11.0+):
-
-- **`off`** (default): source is visible to the agent; no isolation.
-- **`hide`** (v0.10.0; codeprobe-jf28): source is stashed for the
-  duration of the agent run and restored on exit. The workspace
-  appears empty during the run so the agent *must* use Sourcegraph
-  MCP. Use this for **oracle / symbol-reference-trace / change-scope-
-  audit tasks** where the agent's answer is a text artifact
-  (`answer.txt`, `reward.txt`, etc.).
-- **`scaffold`** (v0.11.0; codeprobe-2nw2): source is stashed AND
-  replaced with 0-byte placeholder files at every original path under
-  a tracked extension set. The agent reads exclusively via MCP but can
-  write edits to the known paths. On exit, agent edits are overlaid on
-  top of the restored source, so the verifier sees the merged tree.
-  Use this for **SDLC code-edit tasks** where the verifier runs
-  against the workspace (e.g. `test.sh` greps a source file or
-  invokes a build).
-
-Pair either mode with the v2 `sourcegraph` preamble (which declares
-"Local source files are not present"):
-
-```bash
-# Oracle / text-answer task
-codeprobe experiment add-config /path/to/repo/mcp-comparison \
-  --label with-sg-isolated --agent claude --model claude-sonnet-4-6 \
-  --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}' \
-  --hide-local-source hide
-
-# SDLC code-edit task
-codeprobe experiment add-config /path/to/repo/mcp-comparison \
-  --label with-sg-isolated-sdlc --agent claude --model claude-sonnet-4-6 \
-  --preamble sourcegraph \
-  --mcp-config '{"mcpServers":{"sourcegraph":{"type":"http","url":"https://sourcegraph.com/.api/mcp/all","headers":{"Authorization":"token ${SOURCEGRAPH_TOKEN}"}}}}' \
-  --hide-local-source scaffold
-```
-
-The `hide` mode mirrors CodeScaleBench's `Dockerfile.sg_only` and
-EnterpriseBench's `generate_sg_only_dockerfile` pattern; the
-`scaffold` mode mirrors CodeScaleBench's "truncate at build time,
-restore at verify time" pattern in pure Python so codeprobe doesn't
-need per-task Docker. `.git`, `.codeprobe`, and `.codeprobe-worktrees*`
-are preserved by default in both modes.
-
-Legacy boolean values in `experiment.json` keep working — `true` is
-loaded as `"hide"` and `false` as `"off"` — so jf28-era experiments
-do not require migration.
-
-### Preambles
-
-Preambles are composable instruction templates prepended to the agent's prompt for MCP-enabled configs. Built-in preambles: `sourcegraph`, `github`.
-
-Override built-ins by placing a `.md` file in:
-
-- `<task_dir>/preambles/` (per-task)
-- `.codeprobe/preambles/` (project-level)
-- `~/.codeprobe/preambles/` (user-level)
-
-Template variables (filled by `task_preamble_context`):
-
-- `{{sg_repo}}`, `{{repo_name}}`, `{{repo_path}}`, `{{task_id}}` — task identity
-- `{{repo_scope}}` — one-line repo-scoping directive (sourcegraph
-  preamble; built from `metadata.sg_repo`)
-- `{{workflow_tail}}` — category-specialised continuation of the
-  numbered "Required Workflow" list (sourcegraph preamble; varies by
-  `metadata.category`)
-
-## Key Flags
-
-```bash
-# Running
-codeprobe run . --parallel 5          # Run 5 tasks concurrently within each config
-codeprobe run . --config-parallel 2   # Run 2 configs concurrently (default 1 = serial).
-                                      # Cross-config parallelism multiplies in-flight
-                                      # task count and inflates --max-cost-usd
-                                      # overshoot proportionally; default 1 keeps the
-                                      # cost cap honest. Opt in only when you don't
-                                      # need cost containment.
-codeprobe run . --max-cost-usd 2.00   # Stop when cost budget is reached
-codeprobe run . --dry-run             # Estimate resource usage without running
-codeprobe run . --model claude-opus-4-7  # Override experiment.json model (see `codeprobe models list`)
-codeprobe run . --timeout 600         # Override default 300s timeout
-codeprobe run . --repeats 3           # Run each task 3 times
-codeprobe run . --show-prompt         # Print resolved prompt without running agent
-
-# Mining
-codeprobe mine . --enrich             # Use LLM to improve weak task instructions
-codeprobe mine . --org-scale          # Mine comprehension tasks (not SDLC)
-codeprobe mine . --mcp-families       # Include MCP-optimized task families
-codeprobe mine . --sg-repo REPO       # Sourcegraph repo for ground truth enrichment
-codeprobe mine . --backend ast        # Tool-independent ground truth (Python + Go AST)
-codeprobe mine . --mcp-families       # Default: consensus across sourcegraph + ast + grep
-codeprobe mine . --mcp-families --consensus-threshold 0.9  # Stricter agreement
-codeprobe mine . --mcp-families --consensus-backends ast,grep  # Drop a backend
-codeprobe mine . --mcp-families --no-consensus  # UNSAFE: legacy single-backend GT
-codeprobe mine . --preset quick       # Quick scan: count=3
-codeprobe mine . --preset mcp         # MCP eval: org-scale + MCP families + enrich
-
-# Cross-validate after mining
-codeprobe mine-cross-validate ./.codeprobe/tasks --threshold 0.6
-
-# Mine profiles (save/load custom flag combinations)
-codeprobe mine --save-profile my-setup --count 10 --org-scale .
-codeprobe mine --profile my-setup .   # Load saved flags
-codeprobe mine --list-profiles        # Show available profiles
-
-# Experiment configs
-codeprobe experiment add-config . --preamble sourcegraph  # Attach MCP preamble
-codeprobe experiment add-config . --mcp-config config.json  # Attach MCP server
-codeprobe experiment add-config . --hide-local-source hide      # sg-only oracle mode
-                                                                # (v0.10.0+): stash source
-                                                                # for the run, restore
-                                                                # after. Text answers only.
-codeprobe experiment add-config . --hide-local-source scaffold  # sg-only SDLC mode
-                                                                # (v0.11.0+): stash source
-                                                                # AND scaffold 0-byte
-                                                                # placeholders; overlay
-                                                                # agent edits before
-                                                                # scoring. Pair both modes
-                                                                # with --preamble
-                                                                # sourcegraph.
-
-# Diagnostics
-codeprobe doctor                      # Check agents, API keys, git, Python
-codeprobe preambles list              # Show available preambles at all levels
-
-# Output
-codeprobe interpret . --format csv    # Export for pivot tables
-codeprobe interpret . --format html   # Self-contained HTML report
-```
-
-## How to read aggregate output
-
-`codeprobe experiment aggregate` prints per-config metrics and pairwise deltas, and emits `reports/aggregate.json`. It also runs three lightweight bias detectors so silent measurement artifacts don't get reported as real signal.
-
-When a warning fires, it appears above the score table as `[<kind>] <message>` and is mirrored to `aggregate.json` under `bias_warnings`.
-
-| Warning kind              | What it means                                                                              | What to do                                                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `backend_overlap`         | A config's MCP tool surface includes a backend that produced the ground truth.             | Do not report the with-MCP win as tool value — it may be tautological. Use an independent oracle (AST, hand-curated GT) instead. |
-| `overshipping`            | The losing config scored ≈0 with recall ≈1.0; it found everything but was over-shipping.   | Likely measures a tool capability boundary, not tool quality. Tighten the loser's tool surface or expand the GT.                 |
-| `no_independent_baseline` | Every task's GT comes from a single backend reachable by some configs but not all.         | Aggregate winner is suppressed (pairwise deltas hidden). Mine GT with a different backend before declaring a winner.             |
-
-Pass `--no-warn` to suppress the stdout block and re-enable winner ranking — useful when scripting. The structured `bias_warnings` array is always written to `aggregate.json` regardless.
-
-```bash
-codeprobe experiment aggregate ./mcp-comparison
-codeprobe experiment aggregate ./mcp-comparison --no-warn   # for CI / pivots
-```
-
-## Supported Agents
-
-- **Claude Code** (`--agent claude`) — headless via `claude -p`
-- **GitHub Copilot** (`--agent copilot`) — via Copilot CLI
-- **Codex** (`--agent codex`) — via OpenAI API
-- Custom agents via the `AgentAdapter` protocol
-
-## Supported Git Hosts
-
-GitHub, GitLab, Bitbucket, Azure DevOps, Gitea/Forgejo, and local repos.
-
-## Configuration
-
-Configuration lives in `experiment.json` (created by `codeprobe init` or `codeprobe experiment init`). CLI flags override experiment.json values — precedence: built-in defaults < experiment.json < CLI flags.
-
-Run-time observability is on by default: Rich Live dashboard in TTY, JSON event lines with `--log-format json` for CI. Cost budget warnings at 80% and 100% thresholds are always visible on stderr.
+**Release.** Pushing a `v*` tag runs the test matrix, then builds and uploads to
+PyPI (`.github/workflows/publish.yml`).
 
 ## License
 
-Apache-2.0
+Apache-2.0. See [LICENSE](LICENSE).
+
+## Citation
+
+```bibtex
+@software{codeprobe,
+  title  = {CodeProbe: repository-native evaluations for coding agents},
+  author = {CodeProbe contributors},
+  url    = {https://github.com/sjarmak/codeprobe},
+  year   = {2026}
+}
+```
+
+---
+
+## Repository metadata (maintainer note)
+
+Not part of the package; suggestions for the GitHub repository settings.
+
+- **About description:** "Turn your repo's merged PRs into coding-agent
+  evaluations. Measure the whole agent setup (model, tools, retrieval, cost),
+  not just the model."
+- **Website / docs:** point the repository website field at the PyPI page,
+  `https://pypi.org/project/codeprobe/`, until a dedicated docs site exists;
+  the `docs/` tree is the current documentation home.
+- **Topics (8–12):** `ai`, `coding-agents`, `llm-evaluation`, `benchmark`,
+  `mcp`, `swe-bench`, `agent-evaluation`, `code-generation`, `python`,
+  `developer-tools`, `retrieval`, `eval`.
+- **Social preview:** worth adding. A 1280×640 image with the name, the
+  one-line positioning, and the ranking-table capture from the top of this
+  README would render well in link unfurls; the current default (owner avatar
+  plus repo name) carries none of the positioning.
