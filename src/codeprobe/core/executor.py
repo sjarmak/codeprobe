@@ -787,25 +787,22 @@ def execute_task(
         # For oracle tasks, the agent writes answer.txt / answer.json to the
         # workspace root. Locate any such artifacts now; the actual copy
         # into the scoring sandbox happens below so the ORIGINAL task_dir is
-        # never mutated by scoring. In dual mode the effective workspace is
-        # authoritative — we never fall back to ``repo_path`` because a
-        # stale file from another run or manual testing could silently
-        # leak in and pass the artifact leg.
+        # never mutated by scoring. Only the effective workspace is ever
+        # consulted: with worktree isolation on every run path
+        # (codeprobe-f7rl.2), ``repo_path`` is never an execution workspace
+        # when a worktree exists, so a root-level answer file can only be
+        # stale or cross-slot contamination. Refusing to score it means the
+        # trial honestly records a missing artifact instead of crediting a
+        # wrong file (codeprobe-f7rl.6).
         dual_mode = reward_type == "dual"
         effective_repo = _effective_wt or repo_path
-        allow_repo_fallback = _effective_wt is not None and not dual_mode
 
-        found_answer: Path | None = None
-        if (effective_repo / "answer.txt").is_file():
-            found_answer = effective_repo / "answer.txt"
-        elif allow_repo_fallback and (repo_path / "answer.txt").is_file():
-            found_answer = repo_path / "answer.txt"
-
-        found_answer_json: Path | None = None
-        if (effective_repo / "answer.json").is_file():
-            found_answer_json = effective_repo / "answer.json"
-        elif allow_repo_fallback and (repo_path / "answer.json").is_file():
-            found_answer_json = repo_path / "answer.json"
+        _answer_txt = effective_repo / "answer.txt"
+        _answer_json = effective_repo / "answer.json"
+        found_answer: Path | None = _answer_txt if _answer_txt.is_file() else None
+        found_answer_json: Path | None = (
+            _answer_json if _answer_json.is_file() else None
+        )
 
         # If the agent failed with no output AND no answer file was produced,
         # return an error. But if an answer exists (e.g. agent timed out

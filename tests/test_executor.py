@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import subprocess
 import threading
@@ -1801,51 +1802,6 @@ class TestAnswerJsonCopy:
         # Original task_dir was NOT mutated
         assert not (task_dir / "answer.json").exists()
 
-    def test_answer_json_fallback_from_original_repo(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
-        """answer.json is found via repo_path fallback when worktree is used."""
-        task_dir = tmp_path / "task-json-fb"
-        task_dir.mkdir()
-        (task_dir / "instruction.md").write_text("Answer the question.\n")
-        tests_dir = task_dir / "tests"
-        tests_dir.mkdir()
-        test_sh = tests_dir / "test.sh"
-        test_sh.write_text("#!/bin/bash\nexit 0\n")
-        test_sh.chmod(0o755)
-
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-
-        import json
-
-        answer_data = {"answer": ["baz"]}
-        # Agent wrote to real repo root, not worktree
-        (repo / "answer.json").write_text(json.dumps(answer_data))
-
-        captured: dict = {}
-        monkeypatch.setattr(
-            "codeprobe.core.executor.get_scorer",
-            lambda rt: self._scorer_spy(captured),
-        )
-
-        adapter = self._make_adapter_mock()
-
-        execute_task(
-            adapter=adapter,
-            task_dir=task_dir,
-            repo_path=repo,
-            agent_config=AgentConfig(),
-            reward_type="binary",
-            worktree_path=worktree,
-        )
-        assert "answer.json" in captured["files"]
-        assert json.loads(captured["files"]["answer.json"]) == answer_data
-        # Original task_dir was NOT mutated
-        assert not (task_dir / "answer.json").exists()
-
     def test_answer_txt_still_staged(self, tmp_path: Path, monkeypatch) -> None:
         """answer.txt copy still works — staged into the scoring sandbox."""
         task_dir = tmp_path / "task-txt"
@@ -1923,6 +1879,109 @@ class TestAnswerJsonCopy:
         assert (
             result.completed.status != "error"
         ), "answer.json should prevent early error return"
+
+
+# --- Slot-worktree cwd + repo-root answer isolation (codeprobe-f7rl.6) ---
+
+
+def _make_oracle_task(task_dir: Path, answer: str = "42") -> Path:
+    """Create a minimal artifact-scored task with a text ground truth."""
+    task_dir.mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("Answer the question.\n")
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "ground_truth.json").write_text(
+        json.dumps({"answer_type": "text", "answer": answer})
+    )
+    return task_dir
+
+
+def test_execute_task_sets_cwd_to_worktree(tmp_path: Path) -> None:
+    """The agent subprocess starts inside the slot worktree, not repo root."""
+    task_dir = _make_task(tmp_path / "task-cwd")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    adapter = FakeAdapter()
+    config = AgentConfig(cwd=str(repo))
+
+    execute_task(adapter, task_dir, repo, config, worktree_path=worktree)
+
+    assert len(adapter.run_calls) == 1
+    received = adapter.run_calls[0][1]
+    assert received.cwd == str(worktree)
+    # Immutability: the executor replaced the config, never mutated it.
+    assert config.cwd == str(repo)
+
+
+def test_execute_task_cwd_unchanged_without_worktree(tmp_path: Path) -> None:
+    """Library callers that pass no worktree keep their configured cwd."""
+    task_dir = _make_task(tmp_path / "task-cwd-none")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    adapter = FakeAdapter()
+    config = AgentConfig(cwd=str(repo))
+
+    execute_task(adapter, task_dir, repo, config)
+
+    assert adapter.run_calls[0][1].cwd == str(repo)
+
+
+def test_repo_root_answer_never_scored(tmp_path: Path) -> None:
+    """A stray repo-root answer file must never be credited to a trial.
+
+    Regression test for the deleted repo-root fallback: with a slot
+    worktree bound, an answer at repo_path is stale or cross-slot
+    contamination, so the trial scores as missing-artifact instead.
+    """
+    task_dir = _make_oracle_task(tmp_path / "task-oracle-root")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    # Both would score 1.0 if the fallback credited them.
+    (repo / "answer.json").write_text(json.dumps({"answer": "42"}))
+    (repo / "answer.txt").write_text("42")
+    adapter = FakeAdapter(stdout="done")
+
+    result = execute_task(
+        adapter,
+        task_dir,
+        repo,
+        AgentConfig(),
+        reward_type="artifact",
+        worktree_path=worktree,
+    )
+
+    assert result.completed.status == "completed"
+    assert result.completed.automated_score == 0.0
+    details = result.completed.scoring_details or {}
+    assert details["passed"] is False
+    assert details["error"] == "answer.json not found"
+
+
+def test_worktree_answer_scored(tmp_path: Path) -> None:
+    """An answer written into the slot worktree scores normally."""
+    task_dir = _make_oracle_task(tmp_path / "task-oracle-wt")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "answer.json").write_text(json.dumps({"answer": "42"}))
+    adapter = FakeAdapter(stdout="done")
+
+    result = execute_task(
+        adapter,
+        task_dir,
+        repo,
+        AgentConfig(),
+        reward_type="artifact",
+        worktree_path=worktree,
+    )
+
+    assert result.completed.automated_score == 1.0
+    assert (result.completed.scoring_details or {})["passed"] is True
 
 
 # --- Commit pinning tests ---
