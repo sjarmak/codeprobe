@@ -47,6 +47,24 @@ class LLMParseError(LLMError):
 
 
 # ---------------------------------------------------------------------------
+# No-LLM mode (--no-llm hard guarantee)
+# ---------------------------------------------------------------------------
+
+# Process-wide kill switch for model calls. When enabled, ``llm_available()``
+# reports False (steering callers onto their deterministic fallbacks) and
+# ``call_llm`` raises ``LLMUnavailableError`` (turning any missed call site
+# into a loud failure instead of silent quota spend). Set by ``run_mine``
+# when ``--no-llm`` is passed and reset in its ``finally``.
+_no_llm_mode: bool = False
+
+
+def set_no_llm_mode(enabled: bool) -> None:
+    """Enable or disable the process-wide no-LLM gate."""
+    global _no_llm_mode
+    _no_llm_mode = enabled
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
@@ -374,7 +392,12 @@ def _resolve_backend() -> LLMBackend:
 
 
 def llm_available() -> bool:
-    """Return True if any LLM backend is available."""
+    """Return True if any LLM backend is available.
+
+    Always False while no-LLM mode is active (see :func:`set_no_llm_mode`).
+    """
+    if _no_llm_mode:
+        return False
     return any(b.available() for b in _ALL_BACKENDS)
 
 
@@ -386,10 +409,14 @@ def call_llm(request: LLMRequest) -> LLMResponse:
     """Route to the best available backend and return a response.
 
     Raises:
-        LLMUnavailableError: No backend available.
+        LLMUnavailableError: No backend available, or no-LLM mode is active.
         LLMExecutionError: Backend call failed.
         LLMParseError: Response parsing failed.
     """
+    if _no_llm_mode:
+        raise LLMUnavailableError(
+            "no-llm mode active: model calls are disabled (--no-llm)"
+        )
     backend = _resolve_backend()
     logger.debug("Using LLM backend: %s", backend.name)
     return backend.call(request)

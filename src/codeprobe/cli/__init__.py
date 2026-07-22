@@ -311,7 +311,10 @@ def init(
     is_flag=True,
     default=False,
     hidden=True,
-    help="Skip LLM instruction generation; use regex fallback (for offline/CI).",
+    help=(
+        "Guarantees zero model calls; instruction generation uses the "
+        "regex fallback (for offline/CI)."
+    ),
 )
 @click.option(
     "--org-scale",

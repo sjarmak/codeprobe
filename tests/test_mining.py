@@ -2612,3 +2612,190 @@ class TestCliMinQualityOption:
         assert mock_dispatch.called
         kwargs = mock_dispatch.call_args.kwargs
         assert kwargs.get("min_quality") == pytest.approx(0.25)
+
+
+# ---------------------------------------------------------------------------
+# --no-llm zero-model-call guarantee tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractTaskNoLLM:
+    """extract_task_from_merge threads no_llm to the tool-benefit curator."""
+
+    _FILES = ["src/auth.py", "tests/test_auth.py"]
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_no_llm_skips_score_tool_benefit(
+        self, mock_run: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_run.side_effect = _mock_with_commit_body(
+            self._FILES, "Fix auth\n\nTokens expired silently on 401."
+        )
+        source = RepoSource(host="local", owner="", repo="myrepo", remote_url="")
+
+        def _boom(*args: object, **kwargs: object) -> tuple[str, str]:
+            raise AssertionError("score_tool_benefit must not run under no_llm")
+
+        monkeypatch.setattr(
+            "codeprobe.mining.curator_backends.score_tool_benefit", _boom
+        )
+
+        result = extract_task_from_merge(
+            "abc12345deadbeef",
+            Path("/fake/myrepo"),
+            source=source,
+            merge_title="Fix auth",
+            no_llm=True,
+        )
+        assert result is not None
+        task, _ = result
+        assert task.metadata.expected_tool_benefit == ""
+        assert task.metadata.tool_benefit_rationale == ""
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    def test_default_invokes_score_tool_benefit(
+        self, mock_run: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ZFC contract preserved: without no_llm the curator judgment runs."""
+        mock_run.side_effect = _mock_with_commit_body(
+            self._FILES, "Fix auth\n\nTokens expired silently on 401."
+        )
+        source = RepoSource(host="local", owner="", repo="myrepo", remote_url="")
+
+        calls: list[tuple[object, ...]] = []
+
+        def _recorder(*args: object, **kwargs: object) -> tuple[str, str]:
+            calls.append(args)
+            return ("low", "trivial diff")
+
+        monkeypatch.setattr(
+            "codeprobe.mining.curator_backends.score_tool_benefit", _recorder
+        )
+
+        result = extract_task_from_merge(
+            "abc12345deadbeef",
+            Path("/fake/myrepo"),
+            source=source,
+            merge_title="Fix auth",
+        )
+        assert result is not None
+        task, _ = result
+        assert len(calls) == 1
+        assert task.metadata.expected_tool_benefit == "low"
+        assert task.metadata.tool_benefit_rationale == "trivial diff"
+
+
+class TestRunMineNoLLMZeroCalls:
+    """End-to-end: --no-llm performs zero backend invocations even with a
+    "credentialed" backend importable, and mode never leaks across runs."""
+
+    @staticmethod
+    def _make_repo(tmp_path: Path) -> Path:
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "tests").mkdir(exist_ok=True)
+        (tmp_path / "tests" / "test_auth.py").touch()
+        return tmp_path
+
+    @staticmethod
+    def _extractor_side_effect(cmd, **kwargs):
+        merge_log = "aaaa1111bbbb2222 Merge pull request #1 from fix/auth\n"
+        diff_files = "src/auth.py\ntests/test_auth.py\n"
+        if "log" in cmd:
+            if "--merges" in cmd:
+                return subprocess.CompletedProcess(cmd, 0, merge_log, "")
+            return subprocess.CompletedProcess(
+                cmd, 0, "Fix auth\n\nTokens expired on 401.", ""
+            )
+        if "diff" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, diff_files, "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    @pytest.fixture()
+    def _counting_backends(self):
+        """Patch every backend to look available and count call() invocations."""
+        import codeprobe.core.llm as llm_mod
+
+        counter = {"calls": 0}
+
+        def _counting_call(self_backend, request):
+            counter["calls"] += 1
+            return llm_mod.LLMResponse(text="{}", backend="fake")
+
+        with (
+            patch.object(
+                llm_mod.AnthropicSDKBackend, "available", lambda self: True
+            ),
+            patch.object(
+                llm_mod.OpenAISDKBackend, "available", lambda self: True
+            ),
+            patch.object(
+                llm_mod.ClaudeCLIBackend, "available", lambda self: True
+            ),
+            patch.object(llm_mod.AnthropicSDKBackend, "call", _counting_call),
+            patch.object(llm_mod.OpenAISDKBackend, "call", _counting_call),
+            patch.object(llm_mod.ClaudeCLIBackend, "call", _counting_call),
+        ):
+            yield counter
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_no_llm_zero_backend_calls(
+        self,
+        mock_sources_run: object,
+        mock_extractor_run: object,
+        tmp_path: Path,
+        _counting_backends: dict,
+    ) -> None:
+        from codeprobe.cli.mine_cmd import run_mine
+
+        repo = self._make_repo(tmp_path)
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+        mock_extractor_run.side_effect = self._extractor_side_effect
+
+        run_mine(str(repo), count=5, no_llm=True)
+        assert _counting_backends["calls"] == 0
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_no_llm_zero_backend_calls_goal_quality(
+        self,
+        mock_sources_run: object,
+        mock_extractor_run: object,
+        tmp_path: Path,
+        _counting_backends: dict,
+    ) -> None:
+        """--goal quality sets enrich=True; --no-llm must still win."""
+        from codeprobe.cli.mine_cmd import run_mine
+
+        repo = self._make_repo(tmp_path)
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+        mock_extractor_run.side_effect = self._extractor_side_effect
+
+        run_mine(str(repo), count=5, goal="quality", no_llm=True)
+        assert _counting_backends["calls"] == 0
+
+    @patch("codeprobe.mining.extractor.subprocess.run")
+    @patch("codeprobe.mining.sources.subprocess.run")
+    def test_no_llm_mode_does_not_leak_across_runs(
+        self,
+        mock_sources_run: object,
+        mock_extractor_run: object,
+        tmp_path: Path,
+        _counting_backends: dict,
+    ) -> None:
+        """The finally-reset restores LLM availability for the next run."""
+        import codeprobe.core.llm as llm_mod
+        from codeprobe.cli.mine_cmd import run_mine
+
+        repo = self._make_repo(tmp_path)
+        mock_sources_run.side_effect = _mock_git_remote("https://github.com/o/r.git\n")
+        mock_extractor_run.side_effect = self._extractor_side_effect
+
+        run_mine(str(repo), count=5, no_llm=True)
+        assert llm_mod._no_llm_mode is False
+        assert llm_mod.llm_available() is True  # backends patched available
+
+        # Second invocation without no_llm: the gate must stay off.
+        run_mine(str(repo), count=5)
+        assert llm_mod._no_llm_mode is False
+        assert _counting_backends["calls"] > 0  # LLM path actually ran

@@ -916,28 +916,35 @@ def _enrich_sdlc_tasks(
     no_llm: bool,
     enrich: bool,
 ) -> list[Task]:
-    """Apply LLM instruction generation or legacy enrichment to SDLC tasks."""
-    if not no_llm:
-        from codeprobe.core.llm import llm_available
+    """Apply LLM instruction generation or legacy enrichment to SDLC tasks.
+
+    ``no_llm`` wins over everything, including ``enrich``: --no-llm is a
+    zero-model-call guarantee, so tasks pass through untouched.
+    """
+    if no_llm:
+        return tasks
+
+    from codeprobe.core.llm import llm_available
+
+    if llm_available():
         from codeprobe.mining import generate_instructions
 
-        if llm_available():
-            click.echo("Generating instructions via LLM...")
-            return generate_instructions(
-                tasks,
-                pr_bodies=mine_result.pr_bodies,
-                changed_files_map=mine_result.changed_files_map,
-            )
-        click.echo(
-            "No LLM backend available — using regex fallback for instructions.\n"
-            "Install an LLM backend for better quality: "
-            "pip install codeprobe[anthropic]"
+        click.echo("Generating instructions via LLM...")
+        return generate_instructions(
+            tasks,
+            pr_bodies=mine_result.pr_bodies,
+            changed_files_map=mine_result.changed_files_map,
         )
-    elif enrich:
+    if enrich:
         from codeprobe.mining.extractor import enrich_tasks
 
         click.echo("Enriching low-quality tasks via LLM...")
         return enrich_tasks(tasks)
+    click.echo(
+        "No LLM backend available — using regex fallback for instructions.\n"
+        "Install an LLM backend for better quality: "
+        "pip install codeprobe[anthropic]"
+    )
     return tasks
 
 
@@ -1843,6 +1850,7 @@ def _mine_tasks_with_progress(
     min_files: int,
     min_quality: float,
     subsystems: tuple[str, ...],
+    no_llm: bool = False,
 ) -> MineResult:
     """Call :func:`mine_tasks` with a click.progressbar when stderr is a TTY.
 
@@ -1868,6 +1876,7 @@ def _mine_tasks_with_progress(
             min_files=min_files,
             min_quality=min_quality,
             subsystems=subsystems,
+            no_llm=no_llm,
         )
 
     with click.progressbar(
@@ -1883,6 +1892,7 @@ def _mine_tasks_with_progress(
             min_quality=min_quality,
             subsystems=subsystems,
             progress=bar.update,
+            no_llm=no_llm,
         )
 
 
@@ -2041,6 +2051,7 @@ def _dispatch_sdlc(
         min_files=min_files,
         min_quality=min_quality,
         subsystems=subsystems,
+        no_llm=no_llm,
     )
     tasks = mine_result.tasks
     effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
@@ -2386,6 +2397,7 @@ def _dispatch_mixed(
         min_files=min_files,
         min_quality=min_quality,
         subsystems=subsystems,
+        no_llm=no_llm,
     )
     sdlc_tasks = mine_result.tasks
     if sdlc_tasks:
@@ -2596,6 +2608,15 @@ def run_mine(
     _lock_cm = acquire_tenant_lock(tenant or "local", "mine")
     _lock_cm.__enter__()
     try:
+        # --no-llm hard guarantee: flip the process-wide gate so ANY code
+        # path that reaches call_llm fails loudly instead of spending quota,
+        # and llm_available() steers callers onto deterministic fallbacks.
+        # Reset in the finally below so state never leaks across invocations.
+        if no_llm:
+            from codeprobe.core.llm import set_no_llm_mode
+
+            set_no_llm_mode(True)
+
         _mine_mode = resolve_mode(
         "mine", json_flag, no_json_flag, json_lines_flag,
         )
@@ -2981,6 +3002,10 @@ def run_mine(
                 warnings=_defaults_warnings or None,
             )
     finally:
+        if no_llm:
+            from codeprobe.core.llm import set_no_llm_mode
+
+            set_no_llm_mode(False)
         _lock_cm.__exit__(None, None, None)
 
 

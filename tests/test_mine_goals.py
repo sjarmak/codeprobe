@@ -1131,3 +1131,52 @@ class TestResolveEffectiveConfig:
             goal="quality", min_files=0, explicit_set=frozenset({"min_files"})
         )
         assert result["min_files"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _enrich_sdlc_tasks --no-llm guarantee
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichSdlcTasksNoLLM:
+    def test_no_llm_wins_over_enrich(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """no_llm=True returns tasks unchanged even when enrich=True.
+
+        Regression: the old ``if not no_llm: ... elif enrich:`` shape made
+        the enrich branch reachable ONLY under no_llm, so
+        ``--no-llm --goal quality`` silently spent LLM quota.
+        """
+        import codeprobe.mining.extractor as extractor_mod
+        from codeprobe.cli.mine_cmd import _enrich_sdlc_tasks
+
+        def _boom(tasks: object) -> object:
+            raise AssertionError("enrich_tasks must not run under no_llm")
+
+        monkeypatch.setattr(extractor_mod, "enrich_tasks", _boom)
+
+        tasks = [MagicMock()]
+        mine_result = MagicMock(pr_bodies={}, changed_files_map={})
+        out = _enrich_sdlc_tasks(tasks, mine_result, no_llm=True, enrich=True)
+        assert out is tasks
+
+    def test_enrich_runs_when_llm_unavailable_and_requested(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without no_llm, enrich=True reaches enrich_tasks when no backend."""
+        import codeprobe.mining.extractor as extractor_mod
+        from codeprobe.cli.mine_cmd import _enrich_sdlc_tasks
+
+        enriched = [MagicMock()]
+        monkeypatch.setattr(
+            extractor_mod, "enrich_tasks", lambda tasks: enriched
+        )
+        with patch("codeprobe.core.llm.llm_available", return_value=False):
+            out = _enrich_sdlc_tasks(
+                [MagicMock()],
+                MagicMock(pr_bodies={}, changed_files_map={}),
+                no_llm=False,
+                enrich=True,
+            )
+        assert out is enriched

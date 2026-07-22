@@ -363,3 +363,42 @@ class TestCallLLMBackwardCompat:
             response = call_llm(LLMRequest(prompt="hello", model="haiku"))
             assert response.text == "hello"
             assert response.backend == "claude-cli"
+
+
+# ---------------------------------------------------------------------------
+# No-LLM mode (--no-llm hard guarantee) tests
+# ---------------------------------------------------------------------------
+
+
+class TestNoLLMMode:
+    @pytest.fixture(autouse=True)
+    def _reset_no_llm_mode(self):
+        """Always restore the default so the gate never leaks across tests."""
+        yield
+        codeprobe.core.llm.set_no_llm_mode(False)
+
+    def test_llm_available_false_even_with_available_backend(self) -> None:
+        with patch("codeprobe.core.llm.shutil.which", return_value="/usr/bin/claude"):
+            assert llm_available() is True
+            codeprobe.core.llm.set_no_llm_mode(True)
+            assert llm_available() is False
+            assert claude_available() is False  # alias gated too
+
+    def test_call_llm_raises_even_with_available_backend(self) -> None:
+        codeprobe.core.llm.set_no_llm_mode(True)
+        with (
+            patch.dict("os.environ", {"CODEPROBE_LLM_BACKEND": "claude-cli"}),
+            patch("codeprobe.core.llm.shutil.which", return_value="/usr/bin/claude"),
+            patch("codeprobe.core.llm.subprocess.run") as mock_run,
+        ):
+            with pytest.raises(LLMUnavailableError, match="no-llm mode active"):
+                call_llm(LLMRequest(prompt="hello", model="haiku"))
+            with pytest.raises(LLMUnavailableError, match="no-llm mode active"):
+                call_claude(LLMRequest(prompt="hello", model="haiku"))
+            mock_run.assert_not_called()
+
+    def test_disable_restores_availability(self) -> None:
+        codeprobe.core.llm.set_no_llm_mode(True)
+        codeprobe.core.llm.set_no_llm_mode(False)
+        with patch("codeprobe.core.llm.shutil.which", return_value="/usr/bin/claude"):
+            assert llm_available() is True

@@ -987,6 +987,7 @@ def extract_task_from_merge(
     merge_title: str = "",
     pr_body: str = "",
     pr_labels: tuple[str, ...] = (),
+    no_llm: bool = False,
 ) -> tuple[Task, PRMetadata] | None:
     """Extract an eval task from a merge commit.
 
@@ -995,6 +996,8 @@ def extract_task_from_merge(
     ``pr_body`` / ``pr_labels`` are passed through to ``resolve_pr_metadata``
     so callers that already fetched the body via ``gh pr list`` avoid a
     second API round-trip.
+    ``no_llm=True`` skips the tool-benefit curator call entirely (the
+    --no-llm zero-model-call guarantee); the tool-benefit fields stay empty.
     Returns (task, pr_metadata) so callers can score against raw PR body.
     """
     if changed_files is None:
@@ -1066,15 +1069,21 @@ def extract_task_from_merge(
     # curator model call. The call must happen BEFORE the TaskMetadata(...)
     # constructor so the ZFC lint rule (scripts/lint_zfc.py) sees a model
     # invocation in scope when ``expected_tool_benefit`` is populated.
+    # Under --no-llm the judgment is skipped outright (zero-model-call
+    # guarantee) and the fields stay empty, matching the unavailable-LLM
+    # fallback of score_tool_benefit itself.
     from codeprobe.mcp.capabilities import CAPABILITIES
     from codeprobe.mining.curator_backends import score_tool_benefit
 
     capability_snapshot = tuple(sorted(CAPABILITIES.keys()))
-    expected_tool_benefit, tool_benefit_rationale = score_tool_benefit(
-        description,
-        tuple(changed_files),
-        capability_snapshot,
-    )
+    if no_llm:
+        expected_tool_benefit, tool_benefit_rationale = "", ""
+    else:
+        expected_tool_benefit, tool_benefit_rationale = score_tool_benefit(
+            description,
+            tuple(changed_files),
+            capability_snapshot,
+        )
 
     metadata = TaskMetadata(
         name=f"merge-{short_sha}",
@@ -1162,6 +1171,7 @@ def _collect_candidates(
     subsystems: tuple[str, ...],
     progress: Callable[[int], None] | None = None,
     state: MineState | None = None,
+    no_llm: bool = False,
 ) -> tuple[
     list[tuple[float, int, Task]],
     dict[str, str],
@@ -1231,6 +1241,7 @@ def _collect_candidates(
                 merge_title=pr.title,
                 pr_body=pr.body,
                 pr_labels=pr.labels,
+                no_llm=no_llm,
             )
             if result is None:
                 rejected_extraction += 1
@@ -1305,6 +1316,7 @@ def mine_tasks(
     subsystems: tuple[str, ...] = (),
     progress: Callable[[int], None] | None = None,
     state: MineState | None = None,
+    no_llm: bool = False,
 ) -> MineResult:
     """Mine eval tasks from a repository.
 
@@ -1340,6 +1352,7 @@ def mine_tasks(
             subsystems,
             progress=progress,
             state=state,
+            no_llm=no_llm,
         )
     )
 
@@ -1362,6 +1375,7 @@ def mine_tasks(
                     min_quality,
                     subsystems,
                     state=state,
+                    no_llm=no_llm,
                 )
             )
             if candidates:
