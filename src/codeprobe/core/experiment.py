@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 from codeprobe.analysis.stats import is_quota_casualty, is_scorable_run
@@ -139,13 +139,7 @@ def record_task_ids(exp_dir: Path, task_ids: Sequence[str]) -> Experiment:
     """
     experiment = load_experiment(exp_dir)
     merged = tuple(sorted(set(experiment.task_ids) | set(task_ids)))
-    updated = Experiment(
-        name=experiment.name,
-        description=experiment.description,
-        configs=experiment.configs,
-        tasks_dir=experiment.tasks_dir,
-        task_ids=merged,
-    )
+    updated = replace(experiment, task_ids=merged)
     save_experiment(exp_dir, updated)
     return updated
 

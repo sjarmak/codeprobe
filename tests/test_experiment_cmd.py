@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import statistics
 from pathlib import Path
@@ -349,6 +350,76 @@ def test_add_config_accepts_entry_point_registered_agent(
 
     loaded = load_experiment(exp_dir)
     assert "tp-arm" in [c.label for c in loaded.configs]
+
+
+def test_add_config_preserves_task_ids(runner: CliRunner, exp_dir: Path) -> None:
+    """add-config must not erase the task_ids scoping that mine wrote.
+
+    mine records task_ids so run executes exactly the mined task set;
+    dropping them on add-config silently unscopes both arms
+    (codeprobe-f7rl.28). Two add-config calls mirror the golden path
+    mine -> add-config -> add-config -> run.
+    """
+    experiment = load_experiment(exp_dir)
+    save_experiment(
+        exp_dir, dataclasses.replace(experiment, task_ids=("task-a", "task-b"))
+    )
+
+    for label in ("arm-one", "arm-two"):
+        result = runner.invoke(
+            main,
+            [
+                "experiment",
+                "add-config",
+                str(exp_dir),
+                "--label",
+                label,
+                "--agent",
+                "claude",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.task_ids == ("task-a", "task-b")
+    assert {"arm-one", "arm-two"} <= {c.label for c in loaded.configs}
+
+
+def test_add_config_preserves_every_field_except_configs(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """Field-generic guard: add-config may only change ``configs``.
+
+    Compares every Experiment field before and after so a future field
+    cannot be silently dropped by add-config again (codeprobe-f7rl.28).
+    """
+    save_experiment(
+        exp_dir,
+        dataclasses.replace(load_experiment(exp_dir), task_ids=("task-a",)),
+    )
+    before = load_experiment(exp_dir)
+
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "add-config",
+            str(exp_dir),
+            "--label",
+            "guard-arm",
+            "--agent",
+            "claude",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    after = load_experiment(exp_dir)
+    before_fields = dataclasses.asdict(before)
+    after_fields = dataclasses.asdict(after)
+    del before_fields["configs"]
+    del after_fields["configs"]
+    assert after_fields == before_fields
+    assert "guard-arm" in [c.label for c in after.configs]
 
 
 # ---- validate ----

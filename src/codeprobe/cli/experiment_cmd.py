@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import statistics
@@ -406,11 +407,11 @@ def experiment_add_config(
     except ValueError as exc:
         raise _unsafe_component_error(exc, "--label", label, "baseline") from exc
 
-    updated = Experiment(
-        name=experiment.name,
-        description=experiment.description,
-        configs=[*experiment.configs, new_config],
-        tasks_dir=experiment.tasks_dir,
+    # Field-generic copy: any future Experiment field (like task_ids, which
+    # scopes run to the mined task set) survives without this call site
+    # knowing about it.
+    updated = dataclasses.replace(
+        experiment, configs=[*experiment.configs, new_config]
     )
     save_experiment(exp_dir, updated)
 

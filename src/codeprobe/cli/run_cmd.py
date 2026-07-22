@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -55,7 +56,6 @@ from codeprobe.core.executor import (
     resolve_instruction_variant,
 )
 from codeprobe.core.experiment import (
-    Experiment,
     load_experiment,
     save_config_results,
     save_experiment,
@@ -919,13 +919,7 @@ def run_eval(
                 ExperimentConfig(label="default", agent=agent, model=model),
             ]
             # Persist the auto-created config so interpret can find it later
-            experiment = Experiment(
-                name=experiment.name,
-                description=experiment.description,
-                tasks_dir=experiment.tasks_dir,
-                configs=configs_to_run,
-                task_ids=experiment.task_ids,
-            )
+            experiment = replace(experiment, configs=configs_to_run)
             save_experiment(exp_dir, experiment)
 
         if dry_run:

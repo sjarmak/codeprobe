@@ -666,7 +666,6 @@ def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None
     manually via ``--config``).
     """
     from codeprobe.core.experiment import load_experiment, save_experiment
-    from codeprobe.models.experiment import Experiment
 
     codeprobe_dir = repo_path / ".codeprobe"
     if not codeprobe_dir.is_dir():
@@ -682,13 +681,7 @@ def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None
 
     exp_dir = candidates[0]
     experiment = load_experiment(exp_dir)
-    updated = Experiment(
-        name=experiment.name,
-        description=experiment.description,
-        configs=experiment.configs,
-        tasks_dir=experiment.tasks_dir,
-        task_ids=tuple(sorted(task_ids)),
-    )
+    updated = replace(experiment, task_ids=tuple(sorted(task_ids)))
     save_experiment(exp_dir, updated)
 
 
