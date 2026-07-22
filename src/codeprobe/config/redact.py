@@ -19,7 +19,13 @@ _SENSITIVE_HEADER_NAMES = frozenset({"authorization"})
 # Prefixes that indicate a secret token value.  Kept intentionally broad —
 # false positives (redacting a non-secret that starts with ``sk-``) are
 # strictly better than false negatives (leaking a real key).
-_TOKEN_PREFIXES = (
+#
+# This is the canonical prefix list for the whole codebase — the scoring
+# sandbox (core/scoring/sandbox.py) and the trace content policy
+# (trace/content_policy.py) both derive their free-text token regexes
+# from it via :func:`token_freetext_pattern`, so a prefix added here
+# propagates to every redaction surface.
+TOKEN_PREFIXES = (
     "sgp_",  # Sourcegraph
     "ghp_",  # GitHub PAT
     "gho_",  # GitHub OAuth
@@ -50,9 +56,22 @@ def _has_env_var_ref(value: str) -> bool:
     return bool(_ENV_VAR_RE.search(value))
 
 
+def token_freetext_pattern() -> re.Pattern[str]:
+    """Compile a regex matching token-shaped strings in free text.
+
+    Each :data:`TOKEN_PREFIXES` entry followed by 16+ token-body chars
+    (alphanumerics, underscore, hyphen — so ``sk-proj-`` / ``sk-ant-``
+    long forms match in full). Shared by every redaction surface that
+    scans free text rather than structured config.
+    """
+    return re.compile(
+        "|".join(re.escape(p) + r"[A-Za-z0-9_\-]{16,}" for p in TOKEN_PREFIXES)
+    )
+
+
 def _is_secret(value: str) -> bool:
     """Heuristic: does *value* look like a secret token?"""
-    return any(value.startswith(prefix) for prefix in _TOKEN_PREFIXES)
+    return any(value.startswith(prefix) for prefix in TOKEN_PREFIXES)
 
 
 def _redact_auth_arg(value: str) -> str:

@@ -10,7 +10,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from codeprobe.config.redact import TOKEN_PREFIXES
+from codeprobe.core.scoring import sanitize_secrets
 from codeprobe.models.experiment import ExperimentConfig
+from codeprobe.trace.content_policy import ContentPolicy
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -526,3 +531,29 @@ class TestBareEnvVarReferencesPreserved:
         assert (
             result["mcpServers"]["sg"]["headers"]["Authorization"] == "[REDACTED]"
         )
+
+
+# ---------------------------------------------------------------------------
+# Cross-surface parity: every canonical prefix is redacted everywhere
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSurfaceParity:
+    """Drift guard: every prefix in TOKEN_PREFIXES must be redacted by BOTH
+    free-text surfaces (scoring sandbox and trace content policy). Fails if
+    the redaction surfaces ever diverge from the canonical list again."""
+
+    @pytest.mark.parametrize("prefix", TOKEN_PREFIXES)
+    def test_sanitize_secrets_redacts_prefix(self, prefix: str) -> None:
+        token = prefix + "A1b2C3d4E5f6G7h8J9k0"
+        cleaned = sanitize_secrets(f"leaked: {token}")
+        assert token not in cleaned
+        assert "[REDACTED]" in cleaned
+
+    @pytest.mark.parametrize("prefix", TOKEN_PREFIXES)
+    def test_content_policy_redacts_prefix(self, prefix: str) -> None:
+        token = prefix + "A1b2C3d4E5f6G7h8J9k0"
+        policy = ContentPolicy(env_values=frozenset())
+        out = policy.apply(f"leaked: {token}")
+        assert out is not None
+        assert token not in out

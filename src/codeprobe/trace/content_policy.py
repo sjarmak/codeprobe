@@ -8,7 +8,10 @@ recorder computes bytes or issues an INSERT. Three mechanical passes:
    exact string membership — no regex, no keyword heuristic — because
    we know the exact values at construction time.
 2. **Auth regex** — Authorization / X-Api-Key / AWS session token / GCP
-   ``ya29.*`` bearer patterns replaced with ``[REDACTED-AUTH]``.
+   ``ya29.*`` bearer patterns, plus token-shaped strings built from the
+   canonical prefix list in ``config/redact.py`` (so a pasted token not
+   present in the live environment — e.g. read from a customer's
+   ``.env`` file — is still stripped), replaced with ``[REDACTED-AUTH]``.
 3. **Deny-glob** — if any user-supplied ``fnmatch`` pattern matches the
    full string, replace the entire value with ``[REDACTED-GLOB]``.
 
@@ -22,6 +25,8 @@ import fnmatch
 import os
 import re
 from dataclasses import dataclass, field
+
+from codeprobe.config.redact import token_freetext_pattern
 
 # Minimum env-value length. Shorter values (e.g. ``TERM=xterm``) produce
 # too many false positives — the value "xterm" appears legitimately in
@@ -45,6 +50,10 @@ _AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
     _AUTH_HEADER_RE,
     _BEARER_RE,
     _GCP_BEARER_RE,
+    # Token-shaped strings derived from the canonical prefix list in
+    # config/redact.py — catches tokens NOT present in the current
+    # environment (Pass 1 only knows live env values).
+    token_freetext_pattern(),
 )
 
 REDACTED_ENV = "[REDACTED-ENV]"
