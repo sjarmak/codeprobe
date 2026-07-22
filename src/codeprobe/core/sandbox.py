@@ -11,7 +11,11 @@ def is_sandboxed() -> bool:
 
     Checks three signals:
     1. ``/.dockerenv`` file exists (Docker creates this in every container)
-    2. ``CODEPROBE_SANDBOX=1`` environment variable is set (explicit opt-in)
+    2. ``CODEPROBE_SANDBOX=1`` environment variable is set — a USER-set
+       consent signal declaring the environment already contained (e.g. a
+       VM or jail the detection below cannot see). codeprobe itself never
+       sets this variable; the containment gate in
+       ``codeprobe.core.containment`` refuses uncontained runs instead.
     3. ``/proc/1/cgroup`` contains 'docker' or 'containerd'
 
     Returns False on a bare Linux host without any of the above.

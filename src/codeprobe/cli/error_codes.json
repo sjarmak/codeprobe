@@ -352,6 +352,14 @@
       "since": "0.11.0",
       "description": "The run path does not resolve to a git work tree, so worktree isolation cannot function.",
       "remediation_pattern": "Run codeprobe from inside a git repository: clone the repo, or `git init` and commit, then retry."
+    },
+    {
+      "code": "UNCONTAINED_REFUSED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "codeprobe run was invoked outside a detected container without explicit consent. A run executes an autonomous agent with --dangerously-skip-permissions plus mined third-party test/verifier scripts directly on this machine, with the invoking user's full filesystem, credential, and network access.",
+      "remediation_pattern": "Run inside a container (or set CODEPROBE_SANDBOX=1 yourself if your containment is not auto-detected), or re-run with `--uncontained` to accept host execution."
     }
   ]
 }

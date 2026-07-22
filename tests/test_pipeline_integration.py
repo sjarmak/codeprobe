@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 import stat
 import subprocess
-import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -670,69 +668,31 @@ class TestBudgetWarningVisibility:
 
 
 # ---------------------------------------------------------------------------
-# Sandbox thread-safety tests (phase0-budget-warning)
+# Containment: codeprobe never satisfies its own gate (codeprobe-f7rl.3)
 # ---------------------------------------------------------------------------
 
 
-class TestSandboxThreadSafety:
-    """os.environ['CODEPROBE_SANDBOX'] uses ref-counting, not raw set/pop."""
+class TestNoSelfSandbox:
+    """run_cmd must never write CODEPROBE_SANDBOX — it is a user-set signal."""
 
-    def test_acquire_release_sandbox_refcount(self) -> None:
-        """Ref-counting prevents early removal when multiple threads hold sandbox."""
+    def test_sandbox_refcount_plumbing_is_gone(self) -> None:
         import codeprobe.cli.run_cmd as run_cmd
-        from codeprobe.cli.run_cmd import (
-            _acquire_sandbox,
-            _release_sandbox,
-        )
 
-        # Clean state
-        os.environ.pop("CODEPROBE_SANDBOX", None)
-        run_cmd._sandbox_refcount = 0
+        assert not hasattr(run_cmd, "_acquire_sandbox")
+        assert not hasattr(run_cmd, "_release_sandbox")
+        assert not hasattr(run_cmd, "_sandbox_lock")
+        assert not hasattr(run_cmd, "_sandbox_refcount")
 
-        _acquire_sandbox()
-        assert os.environ.get("CODEPROBE_SANDBOX") == "1"
-        assert run_cmd._sandbox_refcount == 1
+    def test_run_cmd_source_never_mutates_codeprobe_sandbox(self) -> None:
+        """No line in run_cmd assigns, pops, or deletes CODEPROBE_SANDBOX."""
+        import inspect
 
-        _acquire_sandbox()
-        assert os.environ.get("CODEPROBE_SANDBOX") == "1"
-        assert run_cmd._sandbox_refcount == 2
-
-        _release_sandbox()
-        # Still held by one thread — env var should persist
-        assert os.environ.get("CODEPROBE_SANDBOX") == "1"
-        assert run_cmd._sandbox_refcount == 1
-
-        _release_sandbox()
-        # All released — env var should be gone
-        assert os.environ.get("CODEPROBE_SANDBOX") is None
-        assert run_cmd._sandbox_refcount == 0
-
-    def test_concurrent_acquire_release_no_race(self) -> None:
-        """Concurrent acquire/release does not corrupt refcount."""
         import codeprobe.cli.run_cmd as run_cmd
-        from codeprobe.cli.run_cmd import _acquire_sandbox, _release_sandbox
 
-        os.environ.pop("CODEPROBE_SANDBOX", None)
-        run_cmd._sandbox_refcount = 0
-
-        barrier = threading.Barrier(4)
-        errors: list[str] = []
-
-        def worker() -> None:
-            try:
-                barrier.wait(timeout=5)
-                _acquire_sandbox()
-                # Simulate work
-                _release_sandbox()
-            except Exception as e:
-                errors.append(str(e))
-
-        threads = [threading.Thread(target=worker) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert not errors, f"Thread errors: {errors}"
-        assert run_cmd._sandbox_refcount == 0
-        assert os.environ.get("CODEPROBE_SANDBOX") is None
+        for line in inspect.getsource(run_cmd).splitlines():
+            if "CODEPROBE_SANDBOX" not in line:
+                continue
+            assert 'environ["CODEPROBE_SANDBOX"]' not in line, line
+            assert "pop(" not in line, line
+            assert "setdefault(" not in line, line
+            assert "putenv(" not in line, line

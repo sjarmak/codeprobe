@@ -38,7 +38,7 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         "XDG_RUNTIME_DIR",
         "XDG_DATA_HOME",
         "XDG_CONFIG_HOME",
-        # Codeprobe sandbox signal (eval harness sets this)
+        # User-set containment consent signal (codeprobe never sets this)
         "CODEPROBE_SANDBOX",
         # Agent-specific API keys (required by the adapters)
         "ANTHROPIC_API_KEY",

@@ -352,7 +352,8 @@ class ClaudeAdapter(BaseAdapter):
         if config.permission_mode == "dangerously_skip" and not is_sandboxed():
             issues.append(
                 "permission_mode='dangerously_skip' requires a sandboxed environment "
-                "(Docker container or CODEPROBE_SANDBOX=1)"
+                "(container); run inside a container, or pass --uncontained to "
+                "'codeprobe run' to accept host execution"
             )
         return issues
 

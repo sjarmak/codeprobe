@@ -52,6 +52,22 @@ def fake_worktree_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _containment_consent_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the containment gate deterministic across test hosts.
+
+    ``codeprobe run`` hard-refuses outside a container unless the user
+    consents (codeprobe-f7rl.3, ``codeprobe.core.containment``). Without
+    this fixture, run-path tests would pass inside Docker CI and fail on a
+    bare developer host. Setting the documented USER-set consent signal
+    simulates a contained environment suite-wide; the containment gate
+    tests explicitly delete it and monkeypatch
+    ``codeprobe.core.sandbox.is_sandboxed`` to exercise both refusal and
+    consent branches.
+    """
+    monkeypatch.setenv("CODEPROBE_SANDBOX", "1")
+
+
+@pytest.fixture(autouse=True)
 def _reset_codeprobe_logger():
     """Ensure the codeprobe logger is clean before and after every test.
 

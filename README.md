@@ -98,6 +98,15 @@ code `DIRTY_CHECKOUT`): every trial executes in an isolated worktree created
 from HEAD, so uncommitted changes would be invisible to the agents. Commit or
 stash first, or pass `--allow-dirty` to accept that agents only see HEAD.
 
+`codeprobe run` also refuses to start outside a container (error code
+`UNCONTAINED_REFUSED`): a run executes an autonomous agent with
+`--dangerously-skip-permissions` plus mined third-party test/verifier scripts
+directly on this machine, with the invoking user's full filesystem,
+credential, and network access. Run inside a container (auto-detected), set
+`CODEPROBE_SANDBOX=1` yourself if your containment is not auto-detected, or
+pass `--uncontained` to accept host execution. codeprobe never sets
+`CODEPROBE_SANDBOX` on its own.
+
 To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.

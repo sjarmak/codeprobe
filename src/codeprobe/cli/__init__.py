@@ -898,6 +898,19 @@ def mine(
     ),
 )
 @click.option(
+    "--uncontained",
+    is_flag=True,
+    default=False,
+    help=(
+        "Accept running the eval directly on this machine. Without a "
+        "detected container (or user-set CODEPROBE_SANDBOX=1), codeprobe "
+        "refuses to start (UNCONTAINED_REFUSED): a run executes an "
+        "autonomous agent with --dangerously-skip-permissions plus mined "
+        "third-party test/verifier scripts, with the invoking user's full "
+        "filesystem, credential, and network access."
+    ),
+)
+@click.option(
     "--force-plain",
     is_flag=True,
     default=False,
@@ -1015,6 +1028,7 @@ def run(
     config_parallel: int,
     dry_run: bool,
     allow_dirty: bool,
+    uncontained: bool,
     force_plain: bool,
     force_rich: bool,
     timeout: int | None,
@@ -1041,6 +1055,12 @@ def run(
     trial worktrees are created from HEAD, so uncommitted changes would be
     invisible to every agent. Commit or stash first, or pass --allow-dirty
     to run against HEAD anyway.
+
+    Also refuses to run outside a container (UNCONTAINED_REFUSED): a run
+    executes an autonomous agent with --dangerously-skip-permissions plus
+    mined third-party test/verifier scripts directly on this machine, with
+    the invoking user's full filesystem, credential, and network access.
+    Run inside a container, or pass --uncontained to accept this.
     """
     from pathlib import Path as _Path
 
@@ -1073,6 +1093,7 @@ def run(
         config_parallel=config_parallel,
         dry_run=dry_run,
         allow_dirty=allow_dirty,
+        uncontained=uncontained,
         log_format=log_format,
         quiet=quiet,
         force_plain=force_plain,

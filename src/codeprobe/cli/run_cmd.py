@@ -6,7 +6,6 @@ import logging
 import os
 import subprocess
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -35,6 +34,11 @@ from codeprobe.config.defaults import (
     use_v07_defaults,
 )
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.containment import (
+    DISCLOSURE,
+    resolve_containment,
+    set_active_plan,
+)
 from codeprobe.core.events import (
     BudgetWarning,
     EventDispatcher,
@@ -455,27 +459,6 @@ def _print_dry_run(estimate: DryRunEstimate) -> None:
     click.echo(f"  Estimated cost range:   ${cost_lo:.2f} - ${cost_hi:.2f}")
 
 
-_sandbox_lock = threading.Lock()
-_sandbox_refcount = 0
-
-
-def _acquire_sandbox() -> None:
-    """Increment sandbox ref-count and set env var (thread-safe)."""
-    global _sandbox_refcount  # noqa: PLW0603
-    with _sandbox_lock:
-        _sandbox_refcount += 1
-        os.environ["CODEPROBE_SANDBOX"] = "1"
-
-
-def _release_sandbox() -> None:
-    """Decrement sandbox ref-count; clear env var when last owner exits."""
-    global _sandbox_refcount  # noqa: PLW0603
-    with _sandbox_lock:
-        _sandbox_refcount = max(0, _sandbox_refcount - 1)
-        if _sandbox_refcount == 0:
-            os.environ.pop("CODEPROBE_SANDBOX", None)
-
-
 def show_prompt_and_exit(
     path: str,
     *,
@@ -617,6 +600,7 @@ def run_eval(
     repeats: int = 1,
     dry_run: bool = False,
     allow_dirty: bool = False,
+    uncontained: bool = False,
     log_format: str = "text",
     quiet: bool = False,
     force_plain: bool = False,
@@ -941,6 +925,17 @@ def run_eval(
             _print_dry_run(estimate)
             return
 
+        # Containment gate (codeprobe-f7rl.3): a real run launches an
+        # autonomous agent with --dangerously-skip-permissions plus mined
+        # third-party test/verifier scripts. Outside a container this needs
+        # explicit --uncontained consent; refuse hard before any config
+        # dispatch. --dry-run only estimates, so it returns above without
+        # reaching this gate.
+        containment_plan = resolve_containment(uncontained)
+        set_active_plan(containment_plan)
+        if containment_plan.mode == "host-consented":
+            click.echo(f"--uncontained accepted: {DISCLOSURE}", err=True)
+
         # Pre-create a shared Rich listener when running multiple configs in
         # parallel so a single Live context owns the terminal.
         shared_rich_listener: RichLiveListener | None = None
@@ -979,16 +974,14 @@ def run_eval(
             perm = exp_config.permission_mode
 
             # Eval runs need agents to operate autonomously (write files, run
-            # commands). When the user hasn't explicitly chosen a permission mode,
-            # upgrade to dangerously_skip with CODEPROBE_SANDBOX=1 so the agent
-            # can work without interactive approval.  Uses ref-counted
-            # acquire/release so parallel config threads don't race on
-            # os.environ.
-            owns_sandbox = False
+            # commands). When the user hasn't explicitly chosen a permission
+            # mode, upgrade to dangerously_skip. WHERE that is allowed to
+            # execute was already decided once per run by the containment
+            # gate in ``run_eval`` (codeprobe.core.containment) — codeprobe
+            # never sets CODEPROBE_SANDBOX itself; that env var is a
+            # user-set consent signal only.
             if perm == "default":
                 perm = "dangerously_skip"
-                _acquire_sandbox()
-                owns_sandbox = True
 
             if perm not in ALLOWED_PERMISSION_MODES:
                 raise PrescriptiveError(
@@ -1189,8 +1182,6 @@ def run_eval(
 
             if interrupted:
                 partial = checkpoint_store.load_ids()
-                if owns_sandbox:
-                    _release_sandbox()
                 raise DiagnosticError(
                     code="INTERRUPTED",
                     message=(
@@ -1205,9 +1196,6 @@ def run_eval(
                         "config_label": exp_config.label,
                     },
                 )
-
-            if owns_sandbox:
-                _release_sandbox()
 
             save_config_results(exp_dir, exp_config.label, results)
 
