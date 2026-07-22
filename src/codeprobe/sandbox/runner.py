@@ -27,6 +27,7 @@ import logging
 import shutil
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Final
 
@@ -154,16 +155,21 @@ def _build_run_command(
     workdir: str | None,
     env: dict[str, str] | None,
     network: str = "none",
+    container_name: str | None = None,
 ) -> list[str]:
     """Build the argv for ``<engine> run ...``.
 
     Exposed as a module-private helper so unit tests can assert the flags
     without spawning a container. ``network`` defaults to ``"none"`` — the
     mined-script posture; callers that need egress (the agent talks to the
-    model API) pass ``"bridge"`` explicitly.
+    model API) pass ``"bridge"`` explicitly. ``container_name`` emits
+    ``--name`` so a client-side timeout can ``<engine> rm -f`` the
+    container instead of orphaning it.
     """
     mode = "rw" if allow_writes else "ro"
     argv: list[str] = [engine, "run", "--rm", f"--network={network}"]
+    if container_name is not None:
+        argv += ["--name", container_name]
 
     if workdir is not None:
         argv += ["-w", workdir]
@@ -199,6 +205,64 @@ def _looks_like_ro_write_failure(stderr: str) -> bool:
     return any(needle in haystack for needle in _RO_WRITE_STDERR_PATTERNS)
 
 
+# Removal after a client-side kill can race the daemon: killing the engine
+# CLI mid-``run`` may leave the create request in flight, so an immediate
+# ``rm -f`` finds nothing and the container lands afterwards (Created,
+# never started) — observed live; it pins the image until force-removed.
+_REMOVE_ATTEMPTS: Final[int] = 3
+_REMOVE_RETRY_DELAY_SECONDS: Final[float] = 1.0
+
+
+def _container_exists(engine: str, name: str) -> bool:
+    """Return True when a container named *name* exists in any state."""
+    try:
+        completed = subprocess.run(  # noqa: S603 — argv list, no shell=True
+            [engine, "container", "inspect", name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _force_remove_container(engine: str, name: str) -> None:
+    """Best-effort ``<engine> rm -f <name>`` after a client-side timeout.
+
+    ``subprocess.run(timeout=...)`` kills the engine CLI, not the
+    container; without this a hung sandbox command (mined third-party
+    test.sh, untrusted by definition) leaves its container running
+    indefinitely. Removal is retried a bounded number of times because the
+    kill can race the daemon's create (see ``_REMOVE_ATTEMPTS`` above).
+    Failures are logged, never raised — the caller is already translating
+    the timeout into :class:`SandboxError`.
+    """
+    for _ in range(_REMOVE_ATTEMPTS):
+        try:
+            subprocess.run(  # noqa: S603 — argv list, no shell=True
+                [engine, "rm", "-f", name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.warning(
+                "failed to remove timed-out sandbox container %s", name
+            )
+            return
+        time.sleep(_REMOVE_RETRY_DELAY_SECONDS)
+        if not _container_exists(engine, name):
+            return
+    logger.warning(
+        "sandbox container %s still present after %d removal attempts",
+        name,
+        _REMOVE_ATTEMPTS,
+    )
+
+
 def run_in_sandbox(
     cmd: list[str] | str,
     mounts: dict[str, str],
@@ -228,8 +292,9 @@ def run_in_sandbox(
         Container image tag. Defaults to ``codeprobe-sandbox:sg-only``
         (built from ``src/codeprobe/sandbox/Dockerfile.sg_only``).
     timeout:
-        Wall-clock timeout in seconds. Exceeding it raises
-        :class:`SandboxError`.
+        Wall-clock timeout in seconds. Exceeding it force-removes the
+        container (the subprocess timeout only kills the engine CLI) and
+        raises :class:`SandboxError`.
     workdir:
         Optional ``-w`` working directory inside the container.
     env:
@@ -253,6 +318,7 @@ def run_in_sandbox(
         read-only mount.
     """
     engine = _detect_engine()
+    container_name = f"codeprobe-sb-{uuid.uuid4().hex}"
     argv = _build_run_command(
         engine,
         cmd,
@@ -262,6 +328,7 @@ def run_in_sandbox(
         workdir=workdir,
         env=env,
         network=network,
+        container_name=container_name,
     )
 
     logger.debug("sandbox run: %s", argv)
@@ -276,6 +343,9 @@ def run_in_sandbox(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        # The timeout killed the engine client, not the container — force-
+        # remove it so a hung mined script cannot outlive the run.
+        _force_remove_container(engine, container_name)
         raise SandboxError(
             f"sandbox command timed out after {timeout:.1f}s: {argv!r}"
         ) from exc

@@ -16,7 +16,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -148,10 +148,13 @@ class _SandboxRun:
 
     ``execution_mode`` records HOW the script process ran: ``"container"``
     (docker/podman with ``--network=none`` via
-    :func:`codeprobe.sandbox.runner.run_in_sandbox`) or ``"host"`` (plain
-    ``bash`` subprocess on the invoking machine). Scorers surface it as
-    ``scoring_details["sandbox_execution"]`` so every summary can disclose
-    the containment level of the verifier run.
+    :func:`codeprobe.sandbox.runner.run_in_sandbox`), ``"host"`` (plain
+    ``bash`` subprocess on the invoking machine), or ``"none"`` (refused
+    or failed before any script executed — nothing ran anywhere). Scorers
+    surface it as ``scoring_details["sandbox_execution"]`` so every
+    summary can disclose the containment level of the verifier run. The
+    field is required (keyword-only, no default) so no construction site
+    can silently claim host execution for a trial that never executed.
     """
 
     returncode: int
@@ -161,7 +164,7 @@ class _SandboxRun:
     error: str | None = None
     materialized_via: str = "in_place"
     verifier_error: bool = False
-    execution_mode: str = "host"
+    execution_mode: str = field(kw_only=True)
 
     @property
     def sandbox_task(self) -> Path | None:
@@ -312,6 +315,7 @@ def _run_in_sandbox(
                     error=err,
                     materialized_via="git_apply",
                     verifier_error=True,
+                    execution_mode="none",
                 )
             # The (checkout, err) contract of ``_materialize_workspace``
             # is: exactly one of them is set. Defensive raise here
@@ -367,6 +371,7 @@ def _run_in_sandbox(
                     error=refusal,
                     materialized_via=materialized_via,
                     verifier_error=True,
+                    execution_mode="none",
                 )
             execution_mode = "host"
             result = subprocess.run(
@@ -397,8 +402,21 @@ def _run_in_sandbox(
         if sandbox_dir is not None:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
         if isinstance(exc, subprocess.TimeoutExpired):
+            # Only the host bash path raises TimeoutExpired here — the
+            # container path translates timeouts into SandboxError inside
+            # _container_exec (and force-removes the container).
             error = "Scoring timed out"
+            execution_mode = "host"
         else:
+            # OSError is sandbox setup (mkdtemp/copytree/write) or a
+            # failed exec — nothing ran.
             error = str(exc)
+            execution_mode = "none"
             logger.warning("Sandbox setup failed (OSError): %s", error)
-        return _SandboxRun(returncode=-1, stdout="", stderr="", error=error)
+        return _SandboxRun(
+            returncode=-1,
+            stdout="",
+            stderr="",
+            error=error,
+            execution_mode=execution_mode,
+        )

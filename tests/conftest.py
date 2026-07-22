@@ -85,6 +85,25 @@ def _reset_containment_plan(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_container_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin public engine detection to "absent" so the suite is host-agnostic.
+
+    ``_run_in_sandbox`` (codeprobe-f7rl.4) and ``resolve_containment``
+    (codeprobe-f7rl.5) branch on
+    ``codeprobe.sandbox.runner.detect_engine``; without this pin the same
+    test run selects host or container execution depending on whether the
+    machine happens to have docker plus the scoring/agent images built
+    (verified failure: three tests/test_scoring.py assertions flipped once
+    ``codeprobe-scoring:0.12`` existed locally). Tests that exercise the
+    container branches monkeypatch ``detect_engine`` / ``image_available``
+    themselves, which overrides this pin; the docker-gated integration
+    tests in tests/sandbox/test_runner.py go through the private
+    ``_detect_engine`` and real subprocesses, so they are unaffected.
+    """
+    monkeypatch.setattr("codeprobe.sandbox.runner.detect_engine", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_codeprobe_logger():
     """Ensure the codeprobe logger is clean before and after every test.
 

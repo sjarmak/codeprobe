@@ -239,6 +239,59 @@ class TestMissingImageRefusal:
             "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
             "-t codeprobe-scoring:0.12 ." in run.error
         )
+        # Nothing executed — the disclosure must not claim host execution.
+        assert run.execution_mode == "none"
+
+
+class TestNothingExecutedDisclosure:
+    """Paths where no script process ran must disclose ``"none"``."""
+
+    def test_materialization_failure_reports_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from codeprobe.core import scoring as scoring_pkg
+        from codeprobe.core.scoring.materialize import AgentState
+
+        task_dir = tmp_path / "task"
+        script = _make_test_sh(task_dir)
+        monkeypatch.setattr(scoring_pkg, "_is_git_repo", lambda p: True)
+        monkeypatch.setattr(
+            scoring_pkg,
+            "_materialize_workspace",
+            lambda ws, sd: (None, "git apply failed"),
+        )
+
+        run = _run_in_sandbox(
+            script,
+            "output",
+            task_dir,
+            agent_state=AgentState(base_commit="a" * 40, workspace=tmp_path),
+        )
+
+        assert run.verifier_error is True
+        assert run.execution_mode == "none"
+
+    def test_binary_scorer_reports_none_on_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The refusal trial never ran anything; details must say so."""
+        task_dir = tmp_path / "task"
+        _make_test_sh(task_dir)
+        monkeypatch.setattr(
+            container_runner, "detect_engine", lambda: "/usr/bin/docker"
+        )
+        monkeypatch.setattr(
+            container_runner, "image_available", lambda engine, image: False
+        )
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="sandboxed")
+        )
+
+        result = BinaryScorer().score("output", task_dir)
+
+        assert result.passed is False
+        assert result.verdict == "verifier_error"
+        assert result.details["sandbox_execution"] == "none"
 
 
 class TestScorerDisclosure:

@@ -596,7 +596,8 @@ class CheckpointScorer:
         """Run a single checkpoint verifier.
 
         Returns ``(score, execution_mode)`` where score is 0.0-1.0 and
-        execution_mode is the sandbox's ``"container"`` / ``"host"``.
+        execution_mode is the sandbox's ``"container"`` / ``"host"`` /
+        ``"none"`` (nothing executed — refusal or setup failure).
         """
         run = _run_in_sandbox(verifier_path, agent_output, task_dir)
         if run.error is not None:

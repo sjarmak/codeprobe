@@ -193,6 +193,33 @@ def test_build_run_command_accepts_valid_env_keys() -> None:
     assert "BAZ123=q" in argv
 
 
+def test_build_run_command_includes_container_name() -> None:
+    argv = _build_run_command(
+        "docker",
+        ["true"],
+        {},
+        allow_writes=False,
+        image="img",
+        workdir=None,
+        env=None,
+        container_name="codeprobe-sb-test",
+    )
+    assert argv[argv.index("--name") + 1] == "codeprobe-sb-test"
+
+
+def test_build_run_command_omits_name_when_none() -> None:
+    argv = _build_run_command(
+        "docker",
+        ["true"],
+        {},
+        allow_writes=False,
+        image="img",
+        workdir=None,
+        env=None,
+    )
+    assert "--name" not in argv
+
+
 def test_build_run_command_includes_multiple_mounts() -> None:
     argv = _build_run_command(
         "docker",
@@ -306,6 +333,101 @@ def test_run_in_sandbox_timeout_translated_to_sandbox_error() -> None:
                 {"/tmp": "/workspace"},
                 timeout=0.1,
             )
+
+
+def test_run_in_sandbox_timeout_force_removes_container() -> None:
+    """A client-side timeout kills the engine CLI only — the runner must
+    ``rm -f`` the named container so a hung mined script cannot orphan it.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
+        calls.append(list(argv))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=0.1)
+        if "inspect" in argv:
+            # Container gone after removal.
+            return _make_completed(stdout="", stderr="no such container", returncode=1)
+        return _make_completed(stdout="", stderr="", returncode=0)
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch(
+        "codeprobe.sandbox.runner.subprocess.run", side_effect=fake_run
+    ), patch("codeprobe.sandbox.runner.time.sleep", lambda _s: None):
+        with pytest.raises(SandboxError, match="timed out"):
+            run_in_sandbox(
+                ["sleep", "10"],
+                {"/tmp": "/workspace"},
+                timeout=0.1,
+            )
+
+    assert len(calls) == 3
+    run_argv, rm_argv, inspect_argv = calls
+    name = run_argv[run_argv.index("--name") + 1]
+    assert name.startswith("codeprobe-sb-")
+    assert rm_argv == ["/usr/bin/docker", "rm", "-f", name]
+    assert inspect_argv == ["/usr/bin/docker", "container", "inspect", name]
+
+
+def test_run_in_sandbox_timeout_rm_retries_create_race() -> None:
+    """Killing the CLI mid-``run`` can race the daemon's create: the first
+    ``rm -f`` finds nothing, then the container lands (Created, never
+    started) and pins the image. Removal must retry until it is gone.
+    """
+    calls: list[list[str]] = []
+    inspect_results = iter([0, 1])  # first: still exists; second: gone
+
+    def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
+        calls.append(list(argv))
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=0.1)
+        if "inspect" in argv:
+            return _make_completed(
+                stdout="", stderr="", returncode=next(inspect_results)
+            )
+        return _make_completed(stdout="", stderr="", returncode=0)
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch(
+        "codeprobe.sandbox.runner.subprocess.run", side_effect=fake_run
+    ), patch("codeprobe.sandbox.runner.time.sleep", lambda _s: None):
+        with pytest.raises(SandboxError, match="timed out"):
+            run_in_sandbox(
+                ["sleep", "10"],
+                {"/tmp": "/workspace"},
+                timeout=0.1,
+            )
+
+    # run, rm, inspect (exists), rm, inspect (gone)
+    rm_calls = [argv for argv in calls if argv[1:3] == ["rm", "-f"]]
+    assert len(rm_calls) == 2
+    assert len(calls) == 5
+
+
+def test_run_in_sandbox_timeout_rm_failure_still_raises_timeout() -> None:
+    """A failing ``rm -f`` must not mask the original timeout error."""
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):  # noqa: ANN001, ANN003
+        calls.append(list(argv))
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=0.1)
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch(
+        "codeprobe.sandbox.runner.subprocess.run", side_effect=fake_run
+    ), patch("codeprobe.sandbox.runner.time.sleep", lambda _s: None):
+        with pytest.raises(SandboxError, match="timed out"):
+            run_in_sandbox(
+                ["sleep", "10"],
+                {"/tmp": "/workspace"},
+                timeout=0.1,
+            )
+
+    # Both the run and the rm attempt happened; the rm timeout was absorbed.
+    assert len(calls) == 2
 
 
 def test_run_in_sandbox_missing_engine_raises() -> None:
