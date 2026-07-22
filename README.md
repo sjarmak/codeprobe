@@ -145,6 +145,11 @@ To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.
 
+Prefer driving codeprobe through a coding agent instead? `codeprobe skills install`
+puts the packaged skills (`codeprobe-mine`, `codeprobe-run`, `codeprobe-interpret`,
+`codeprobe-calibrate`, `codeprobe-check-infra`) into `.claude/skills/`; see
+[docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the workflow.
+
 Prerequisites: Python 3.11+, git, and one coding agent.
 
 | Agent          | Install                                          | Auth                            |
