@@ -617,3 +617,48 @@ class TestQuotaExclusion:
         assert len(consumed) == 5
         # ...but only the 3 real trials land in the paired-score sink.
         assert set(sink) == {"r1", "r2", "r3"}
+
+
+class TestDistinctTaskCount:
+    """distinct_task_count is the repeat-safe N (codeprobe-f7rl.9)."""
+
+    def test_summarize_config_counts_unique_task_ids(self) -> None:
+        tasks = [_task("t1", 1.0), _task("t1", 0.0), _task("t2", 1.0)]
+        s = summarize_config(ConfigResults(config="cfg", completed=tasks))
+        assert s.distinct_task_count == 2
+
+    def test_streaming_counts_unique_task_ids(self) -> None:
+        tasks = [_task("t1", 1.0), _task("t1", 0.0), _task("t2", 1.0)]
+        s = summarize_completed_tasks("cfg", iter(tasks))
+        assert s.distinct_task_count == 2
+
+    def test_empty_input_distinct_zero(self) -> None:
+        batch = summarize_config(ConfigResults(config="cfg", completed=[]))
+        stream = summarize_completed_tasks("cfg", iter([]))
+        assert batch.distinct_task_count == 0
+        assert stream.distinct_task_count == 0
+
+    def test_repeats_do_not_fake_completeness(self) -> None:
+        """6 trials over 2 of 4 expected tasks → partial in BOTH summarizers.
+
+        The old trial-count check saw 6 > 4 and reported complete.
+        """
+        trials = [_task(f"t{i}", 1.0) for i in range(2) for _ in range(3)]
+        batch = summarize_config(
+            ConfigResults(config="cfg", completed=trials), total_tasks=4
+        )
+        stream = summarize_completed_tasks("cfg", iter(trials), total_tasks=4)
+        for s in (batch, stream):
+            assert s.distinct_task_count == 2
+            assert s.is_partial is True
+
+    def test_repeats_do_not_fake_partiality(self) -> None:
+        """All expected tasks covered by repeats → NOT partial."""
+        trials = [_task(f"t{i}", 1.0) for i in range(2) for _ in range(3)]
+        batch = summarize_config(
+            ConfigResults(config="cfg", completed=trials), total_tasks=2
+        )
+        stream = summarize_completed_tasks("cfg", iter(trials), total_tasks=2)
+        for s in (batch, stream):
+            assert s.distinct_task_count == 2
+            assert s.is_partial is False

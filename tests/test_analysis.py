@@ -974,6 +974,135 @@ class TestPartialJsonReport:
 
 
 # ---------------------------------------------------------------------------
+# Partial results: per-arm N + worst-arm semantics (codeprobe-f7rl.9)
+# ---------------------------------------------------------------------------
+
+
+class TestPerArmPartial:
+    """One complete arm must never mask a crashed one (codeprobe-f7rl.9)."""
+
+    def _two_arm_report(self) -> Report:
+        arm_a = ConfigResults(
+            config="arm-A",
+            completed=[_task(f"t{i}", 1.0) for i in range(10)],
+        )
+        arm_b = ConfigResults(
+            config="arm-B",
+            completed=[_task(f"t{i}", 1.0) for i in range(2)],
+        )
+        return generate_report("uneven", [arm_a, arm_b], total_tasks=10)
+
+    def test_complete_arm_does_not_mask_partial_arm(self) -> None:
+        """Regression: max() across arms hid the 2/10 arm behind the 10/10 one."""
+        report = self._two_arm_report()
+        assert report.is_partial is True
+        assert report.completion_ratio == pytest.approx(0.2)
+
+    def test_text_report_names_worst_arm(self) -> None:
+        text = format_text_report(self._two_arm_report())
+        assert "PARTIAL" in text
+        assert "worst arm arm-B" in text
+        assert "2/10 tasks (20%)" in text
+
+    def test_text_rankings_show_per_arm_n(self) -> None:
+        text = format_text_report(self._two_arm_report())
+        assert "N=10/10" in text
+        assert "N=2/10" in text
+
+    def test_text_partial_suffix_only_on_incomplete_arm(self) -> None:
+        text = format_text_report(self._two_arm_report())
+        ranking_lines = [
+            line for line in text.splitlines() if line.startswith(("1.", "2."))
+        ]
+        a_line = next(line for line in ranking_lines if "arm-A" in line)
+        b_line = next(line for line in ranking_lines if "arm-B" in line)
+        assert "PARTIAL" not in a_line
+        assert "⚠ PARTIAL (2/10 tasks)" in b_line
+
+    def test_html_n_column_and_partial_badge(self) -> None:
+        html = format_html_report(self._two_arm_report())
+        assert "<th>N</th>" in html
+        assert "<td>10/10</td>" in html
+        assert "<td>2/10</td>" in html
+        assert "PARTIAL (2/10 tasks)" in html
+        # The complete arm carries no partial badge.
+        assert "PARTIAL (10/10 tasks)" not in html
+
+    def test_html_banner_mirrors_worst_arm_wording(self) -> None:
+        html = format_html_report(self._two_arm_report())
+        assert "worst arm arm-B: 2/10 tasks (20%)" in html
+
+    def test_ranking_still_lists_partial_arm(self) -> None:
+        """Partial is disclosed, not hidden — the arm stays in the ranking."""
+        report = self._two_arm_report()
+        assert {rc.label for rc in report.rankings} == {"arm-A", "arm-B"}
+
+    def test_no_expectation_renders_no_n_suffix(self) -> None:
+        """Without total_tasks the rankings render exactly as before."""
+        arm = ConfigResults(config="solo", completed=[_task("t1", 1.0)])
+        report = generate_report("plain", [arm])
+        text = format_text_report(report)
+        html = format_html_report(report)
+        assert "N=" not in text
+        assert "PARTIAL" not in text
+        assert "<td>—</td>" in html  # N column shows an em dash
+
+
+def test_repeats_do_not_mask_partial() -> None:
+    """6 trials over 2 of 4 expected tasks is partial (codeprobe-f7rl.9).
+
+    The old trial-count check saw 6 > 4 and reported complete.
+    """
+    trials = [_task(f"t{i}", 1.0) for i in range(2) for _ in range(3)]
+    results = ConfigResults(config="rep", completed=trials)
+    s = summarize_config(results, total_tasks=4)
+    assert s.distinct_task_count == 2
+    assert s.is_partial is True
+
+    report = generate_report("rep-exp", [results], total_tasks=4)
+    assert report.is_partial is True
+    assert report.completion_ratio == pytest.approx(0.5)
+
+
+def test_repeats_do_not_fake_partiality() -> None:
+    """All expected tasks covered by repeats → NOT partial."""
+    trials = [_task(f"t{i}", 1.0) for i in range(2) for _ in range(3)]
+    s = summarize_config(ConfigResults(config="rep", completed=trials), total_tasks=2)
+    assert s.distinct_task_count == 2
+    assert s.is_partial is False
+
+
+def test_streaming_batch_partial_parity() -> None:
+    """Streaming and batch reports agree on all partial metadata."""
+    a_tasks = [_task(f"t{i}", 1.0) for i in range(10)]
+    b_tasks = [_task(f"t{i}", 1.0) for i in range(2)]
+    batch = generate_report(
+        "parity",
+        [
+            ConfigResults(config="A", completed=a_tasks),
+            ConfigResults(config="B", completed=b_tasks),
+        ],
+        total_tasks=10,
+    )
+
+    def stream() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+        yield ("A", iter(a_tasks))
+        yield ("B", iter(b_tasks))
+
+    streamed = generate_report_streaming("parity", stream(), total_tasks=10)
+
+    assert batch.is_partial is True
+    assert streamed.is_partial is True
+    assert streamed.completion_ratio == pytest.approx(batch.completion_ratio)
+    assert [s.distinct_task_count for s in streamed.summaries] == [
+        s.distinct_task_count for s in batch.summaries
+    ]
+    assert [s.is_partial for s in streamed.summaries] == [
+        s.is_partial for s in batch.summaries
+    ]
+
+
+# ---------------------------------------------------------------------------
 # interpret_cmd: incomplete sweep detection
 # ---------------------------------------------------------------------------
 

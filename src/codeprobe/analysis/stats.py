@@ -341,6 +341,11 @@ class ConfigSummary:
     total_tokens: int | None
     is_partial: bool = False
     tasks_expected: int | None = None
+    # Number of unique task_ids observed — the repeat-safe N. With --repeats
+    # the trial count (``total_tasks``) exceeds the task count, so partial
+    # detection and the rendered "N=x/y" compare THIS against
+    # ``tasks_expected``, never the trial count (codeprobe-f7rl.9).
+    distinct_task_count: int = 0
     # ``ci_lower`` / ``ci_upper`` bound the *primary metric* for this summary.
     # For binary scorers the primary metric is ``pass_rate`` (Wilson CI);
     # for continuous scorers it's ``mean_score`` (normal-approximation CI
@@ -438,15 +443,21 @@ def summarize_config(
 ) -> ConfigSummary:
     """Compute summary statistics for a single config's results.
 
-    When *total_tasks* is provided and exceeds the number of completed tasks,
-    the summary is flagged as partial. When *config* is provided, the
+    When *total_tasks* is provided and exceeds the number of DISTINCT task
+    ids observed (repeat-safe — trials do not count twice), the summary is
+    flagged as partial. When *config* is provided, the
     tool-surface audit (codeprobe-1gg) runs and ``abandoned_surface_count``
     counts trials that ignored an enabled surface.
     """
     tasks = results.completed
     total = len(tasks)
 
-    is_partial = total_tasks is not None and total < total_tasks
+    # Repeat-safe partial detection: compare unique task_ids to the expected
+    # task count. Comparing the trial count would break both ways under
+    # --repeats — 12 trials on 10 tasks looks complete at 6/10 tasks
+    # (codeprobe-f7rl.9).
+    distinct = len({t.task_id for t in tasks})
+    is_partial = total_tasks is not None and distinct < total_tasks
 
     if total == 0:
         return ConfigSummary(
@@ -463,6 +474,7 @@ def summarize_config(
             total_tokens=None,
             is_partial=is_partial,
             tasks_expected=total_tasks,
+            distinct_task_count=0,
         )
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
@@ -534,6 +546,7 @@ def summarize_config(
         total_tokens=total_tokens,
         is_partial=is_partial,
         tasks_expected=total_tasks,
+        distinct_task_count=distinct,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
         score_type=score_type,
@@ -563,8 +576,9 @@ def summarize_completed_tasks(
     buffering all tasks in memory. Produces identical output to
     summarize_config() for the same data.
 
-    When *total_tasks* is provided and exceeds the number of consumed tasks,
-    the summary is flagged as partial.
+    When *total_tasks* is provided and exceeds the number of DISTINCT task
+    ids consumed (repeat-safe — trials do not count twice), the summary is
+    flagged as partial.
     """
     total = 0
     completed_count = 0
@@ -572,6 +586,9 @@ def summarize_completed_tasks(
     passed = 0
     token_sum = 0
     has_tokens = False
+    # Repeat-safe N — mirrors summarize_config()'s distinct-task counting so
+    # the two summarizers stay identical (codeprobe-f7rl.9).
+    seen_task_ids: set[str] = set()
 
     scores: list[float] = []
     durations: list[float] = []
@@ -590,6 +607,7 @@ def summarize_completed_tasks(
 
     for task in tasks:
         total += 1
+        seen_task_ids.add(task.task_id)
         if task.status == "completed":
             completed_count += 1
         else:
@@ -634,7 +652,9 @@ def summarize_completed_tasks(
             if artifact_pass:
                 artifact_passes += 1
 
-    is_partial = total_tasks is not None and total < total_tasks
+    # Repeat-safe partial detection — see summarize_config() (codeprobe-f7rl.9).
+    distinct = len(seen_task_ids)
+    is_partial = total_tasks is not None and distinct < total_tasks
 
     if total == 0:
         return ConfigSummary(
@@ -651,6 +671,7 @@ def summarize_completed_tasks(
             total_tokens=None,
             is_partial=is_partial,
             tasks_expected=total_tasks,
+            distinct_task_count=0,
         )
 
     # Number of real (executed, non-casualty) trials — the reward population size.
@@ -689,6 +710,7 @@ def summarize_completed_tasks(
         total_tokens=token_sum if has_tokens else None,
         is_partial=is_partial,
         tasks_expected=total_tasks,
+        distinct_task_count=distinct,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
         score_type=score_type,
