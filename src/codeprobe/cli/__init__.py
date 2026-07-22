@@ -561,6 +561,13 @@ def mine(
     a full git URL (https:// or git@), or github:owner/repo to clone from
     GitHub. Bare owner/repo without the github: prefix is rejected.
 
+    \b
+    Supported languages:
+      Python, Go, and JavaScript/TypeScript. Comprehension mining
+      (--goal navigation / --task-type architecture_comprehension) is
+      Python-only; use --goal quality for Go and JS/TS repos. Any other
+      primary language fails fast with UNSUPPORTED_LANGUAGE.
+
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics. Use --goal to pick a use case:
 

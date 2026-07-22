@@ -82,6 +82,7 @@ EXPECTED_CODES: list[tuple[str, str]] = [
     ("LLM_UNAVAILABLE", "diagnostic"),
     ("DIRTY_CHECKOUT", "prescriptive"),
     ("NOT_A_GIT_REPO", "diagnostic"),
+    ("UNSUPPORTED_LANGUAGE", "diagnostic"),
 ]
 
 

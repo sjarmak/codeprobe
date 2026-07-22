@@ -424,6 +424,14 @@
       "since": "0.11.0",
       "description": "`codeprobe experiment aggregate` needs at least one configuration with results to aggregate.",
       "remediation_pattern": "Add a configuration with `codeprobe experiment add-config <path> --label <label>`, run it, then re-aggregate."
+    },
+    {
+      "code": "UNSUPPORTED_LANGUAGE",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.12.0",
+      "description": "The repository's primary language is outside the supported mining matrix — Python, Go, and JavaScript/TypeScript — or comprehension mining (Python-only import-graph analysis) was requested on a non-Python repository. Other languages produce zero tasks because test-command generation exists only for the supported matrix.",
+      "remediation_pattern": "Mine a Python, Go, or JavaScript/TypeScript repository. For comprehension mining on a Go or JS/TS repo, use --goal quality instead."
     }
   ]
 }

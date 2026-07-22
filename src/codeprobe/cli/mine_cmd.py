@@ -20,6 +20,10 @@ from pathlib import Path
 import click
 
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
+from codeprobe.mining._lang import (
+    SUPPORTED_MINING_LANGUAGES,
+    detect_repo_language,
+)
 from codeprobe.mining.extractor import MineResult, RejectionBreakdown
 from codeprobe.mining.org_scale import OrgScaleMineResult
 from codeprobe.mining.org_scale_families import TaskFamily
@@ -1048,6 +1052,54 @@ def _comprehension_generator_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _check_language_supported(language: str, task_type: str) -> None:
+    """Fail fast when *language* is outside the Py/Go/JS-TS mining matrix.
+
+    ``"unknown"`` never hard-fails: empty or docs-only repos are handled by
+    the existing zero-task paths. Comprehension mining is stricter — its
+    import-graph static analysis exists only for Python.
+
+    Raises :class:`DiagnosticError` (UNSUPPORTED_LANGUAGE); there is no
+    deterministic flag remedy, so PrescriptiveError does not apply.
+    """
+    if language == "unknown":
+        return
+    if language not in SUPPORTED_MINING_LANGUAGES:
+        raise DiagnosticError(
+            code="UNSUPPORTED_LANGUAGE",
+            message=(
+                "codeprobe mine supports Python, Go, and JavaScript/TypeScript "
+                f"repositories. Detected primary language: {language}. "
+                "Other languages produce zero tasks because test-command "
+                "generation exists only for the supported matrix."
+            ),
+            terminal=True,
+            diagnose_cmd="git ls-files | head",
+            detail={
+                "detected_language": language,
+                "supported": sorted(SUPPORTED_MINING_LANGUAGES),
+            },
+        )
+    if task_type == "architecture_comprehension" and language != "python":
+        raise DiagnosticError(
+            code="UNSUPPORTED_LANGUAGE",
+            message=(
+                "Comprehension mining is Python-only: it builds tasks from "
+                "import-graph static analysis of Python modules. Detected "
+                f"primary language: {language}. For Go or "
+                "JavaScript/TypeScript repositories use --goal quality "
+                "instead."
+            ),
+            terminal=True,
+            diagnose_cmd="git ls-files | head",
+            detail={
+                "detected_language": language,
+                "supported": ["python"],
+                "alternative": "--goal quality",
+            },
+        )
 
 
 def _suitability_warnings(
@@ -2752,6 +2804,13 @@ def run_mine(
 
         repo_path = _resolve_repo_path(path)
 
+        # Language gate (locked decision 5): the mining matrix is
+        # Python/Go/JS-TS, comprehension is Python-only. Fail fast before
+        # any PR scanning; "unknown" (empty/docs-only repos) stays with the
+        # existing zero-task paths.
+        repo_language = detect_repo_language(repo_path)
+        _check_language_supported(repo_language, task_type)
+
         # Non-blocking suitability check applies to every dispatch path
         # (cross-repo, org-scale, and the single-repo pipelines below).
         # Runs once here, before any mining happens.
@@ -2781,8 +2840,15 @@ def run_mine(
             if org_scale:
                 # Build repo_paths list: primary path + any --repos entries
                 # (existing path wins; cloning needs an explicit form).
+                # Every secondary repo passes the same language gate as the
+                # primary so an unsupported --repos entry fails fast too.
                 repo_paths = [repo_path]
-                repo_paths.extend(_resolve_repo_path(r) for r in repos)
+                for extra in repos:
+                    extra_path = _resolve_repo_path(extra)
+                    _check_language_supported(
+                        detect_repo_language(extra_path), task_type
+                    )
+                    repo_paths.append(extra_path)
                 _run_org_scale_mine(
                     repo_paths,
                     count=count,
@@ -2816,6 +2882,10 @@ def run_mine(
                 ) = _interactive_config(
                     count, source, min_files, subsystems, discover_subsystems, repo_path
                 )
+                # The interactive flow may have switched task_type (e.g. to
+                # comprehension); re-check it against the detected language
+                # BEFORE _resolve_task_type's fallbacks can mask the request.
+                _check_language_supported(repo_language, task_type)
 
             # Apply cold-start and comprehension-availability fallbacks
             task_type = _resolve_task_type(task_type, repo_path, source)

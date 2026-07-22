@@ -46,6 +46,16 @@ based narrative source explicitly:
 codeprobe mine <repo_path> --json --no-interactive --narrative-source commits
 ```
 
+## Supported language matrix
+
+`codeprobe mine` supports Python, Go, and JavaScript/TypeScript repositories
+only — test-command generation exists solely for this matrix. Comprehension
+mining (`--goal navigation` / `--task-type architecture_comprehension`) is
+Python-only (import-graph static analysis). Any other primary language fails
+fast with UNSUPPORTED_LANGUAGE before PR scanning starts. Do not retry the
+same repo; pick a supported repository, or for comprehension on a Go/JS-TS
+repo re-run with `--goal quality`.
+
 ## JSON fields to parse
 
 `--json` emits a single terminal envelope on stdout with this shape:
@@ -84,6 +94,7 @@ remediation pattern.
 | OFFLINE_PREFLIGHT_FAILED | diagnostic | no | Resolve preflight output from pre-loaded `check-infra offline` envelope; do not retry blindly. |
 | METADATA_MISSING | diagnostic | no | Structural problem in the target repo or cached fixture; stop and surface to caller. |
 | LLM_UNAVAILABLE | diagnostic | yes (bounded) | Treat as transient provider outage; retry once. |
+| UNSUPPORTED_LANGUAGE | diagnostic | no | Repo's primary language is outside the Python/Go/JavaScript-TypeScript matrix (or comprehension mining on a non-Python repo). Pick a supported repository; for comprehension use a Python repo or `--goal quality`. |
 | INTERRUPTED | diagnostic | **TERMINAL — do not retry** | User/signal halted the run. Preserve partial output; exit. |
 
 ## Retry policy
