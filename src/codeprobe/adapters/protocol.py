@@ -29,6 +29,17 @@ class AdapterExecutionError(AdapterError):
     """Unrecoverable failure during agent execution."""
 
 
+class AdapterQuotaError(AdapterError):
+    """Provider quota / rate-limit exhaustion — unrecoverable within this run.
+
+    Raised by API-based adapters when the provider rejects the call for
+    quota or rate-limit reasons. The executor classifies it as
+    ``error_category='quota'`` and halts dispatch of the remaining trials
+    instead of burning wall clock on guaranteed-failing work
+    (codeprobe-f7rl.29).
+    """
+
+
 @dataclass(frozen=True)
 class AdapterCapabilities:
     """Which :class:`AgentConfig` knobs an adapter actually honors.

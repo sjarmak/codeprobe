@@ -12,9 +12,34 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.adapters.quota import detect_quota_error
 from codeprobe.adapters.telemetry import NdjsonStreamCollector
 
 logger = logging.getLogger(__name__)
+
+
+def _literal_stdout_text(raw: str) -> str:
+    """Return only the CLI's own literal (non-NDJSON-event) stdout lines.
+
+    A quota/rate-limit stub is printed as bare text, while agent I/O is
+    always emitted as NDJSON objects with a ``type`` field. Scanning the
+    whole stdout would false-positive whenever the agent merely edits or
+    reasons about code mentioning rate limits (same pitfall the Claude
+    adapter's stream-json filter guards against, codeprobe-9tk).
+    """
+    literal: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except (ValueError, TypeError):
+            literal.append(line)
+            continue
+        if not isinstance(parsed, dict) or "type" not in parsed:
+            literal.append(line)
+    return "\n".join(literal)
 
 
 class CopilotAdapter(BaseAdapter):
@@ -107,6 +132,18 @@ class CopilotAdapter(BaseAdapter):
             fallback_msg = "ndjson_parse_fallback: raw stdout used as output"
             error = f"{error}; {fallback_msg}" if error else fallback_msg
 
+        # Quota / rate-limit exhaustion prints as a literal line instead of
+        # an NDJSON event. Stamp error_category='quota' so the executor
+        # halts dispatch instead of burning the remaining trials, and
+        # replace the telemetry error — a missing-outputTokens diagnosis is
+        # a symptom of the quota stub, not a CLI version problem
+        # (codeprobe-f7rl.29).
+        error_category: str | None = None
+        quota_line = detect_quota_error(_literal_stdout_text(raw), result.stderr)
+        if quota_line is not None:
+            error = f"quota/rate limit: {quota_line}"
+            error_category = "quota"
+
         return AgentOutput(
             stdout=stdout_text,
             stderr=result.stderr or None,
@@ -118,4 +155,5 @@ class CopilotAdapter(BaseAdapter):
             cost_model=usage.cost_model,
             cost_source=usage.cost_source,
             error=error,
+            error_category=error_category,
         )

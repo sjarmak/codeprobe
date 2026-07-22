@@ -14,6 +14,7 @@ import time
 from codeprobe.adapters.protocol import (
     AdapterCapabilities,
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentConfig,
     AgentOutput,
@@ -113,7 +114,7 @@ class OpenAICompatAdapter:
                 f"API key invalid ({self._api_key_env}): {exc}"
             ) from exc
         except openai.RateLimitError as exc:
-            raise AdapterExecutionError(f"Rate limited: {exc}") from exc
+            raise AdapterQuotaError(f"Rate limited: {exc}") from exc
         except openai.APIError as exc:
             raise AdapterExecutionError(f"OpenAI-compatible API error: {exc}") from exc
 

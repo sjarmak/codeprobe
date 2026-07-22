@@ -8,6 +8,7 @@ import pytest
 
 from codeprobe.adapters.protocol import (
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentAdapter,
     AgentConfig,
@@ -305,7 +306,7 @@ class TestRunErrors:
                 with pytest.raises(AdapterSetupError, match="API key"):
                     adapter.run("test", AgentConfig())
 
-    def test_rate_limit_raises_execution_error(self) -> None:
+    def test_rate_limit_raises_quota_error(self) -> None:
         from codeprobe.adapters.openai_compat import OpenAICompatAdapter
 
         mock_client = MagicMock()
@@ -319,7 +320,7 @@ class TestRunErrors:
                 adapter = OpenAICompatAdapter(
                     api_base="http://localhost:11434/v1", model="llama3"
                 )
-                with pytest.raises(AdapterExecutionError, match="Rate limited"):
+                with pytest.raises(AdapterQuotaError, match="Rate limited"):
                     adapter.run("test", AgentConfig())
 
     def test_api_error_raises_execution_error(self) -> None:

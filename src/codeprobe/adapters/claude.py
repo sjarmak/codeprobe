@@ -20,6 +20,7 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.adapters.quota import detect_quota_error
 from codeprobe.adapters.telemetry import (
     JsonStdoutCollector,
     parse_mcp_init_manifest,
@@ -30,27 +31,6 @@ from codeprobe.core.sandbox import is_sandboxed
 # (claude-sonnet-4-6) but NOT full API model IDs with date suffixes
 # (claude-sonnet-4-6-20250514). Strip the date suffix when present.
 _API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
-
-# Patterns that indicate an OAuth / API quota was exhausted. Detected
-# from raw stdout/stderr because the Claude CLI does not surface these
-# as JSON envelopes — it returns a short literal message and exits
-# successfully, which would otherwise be scored as a 0.0 task failure
-# and silently contaminate the run mean (codeprobe-9xrl).
-#
-# Robust to wording variants: monthly limits, rate limits, generic
-# "quota" terminology. Case-insensitive.
-_QUOTA_PATTERN = re.compile(
-    r"(?i)"
-    r"(monthly\s+usage\s+limit"
-    r"|rate\s+limit\s+(?:exceeded|reached)"
-    r"|quota\s+(?:exceeded|exhausted)"
-    r"|usage\s+limit\s+reached"
-    # 2026-06 OAuth wording: "You've hit your session limit · resets 1:10pm".
-    # Anchored on "hit your" because bare "session limit" appears in agent
-    # prose on session-management tasks and must not halt the run.
-    r"|hit\s+your\s+session\s+limit)"
-)
-
 
 def _cli_origin_text(stdout: str) -> str:
     """Return only the CLI's own literal lines of *stdout*.
@@ -92,21 +72,12 @@ def _detect_quota_error(stdout: str, stderr: str | None) -> str | None:
 
     Scans stderr (where the API/CLI transport surfaces rate-limit messages)
     and the CLI's literal stdout lines only — NOT the agent's stream-json
-    tool I/O (see :func:`_cli_origin_text`). Returns the triggering line so
-    the executor can include it in the task's error metadata.
+    tool I/O (see :func:`_cli_origin_text`). Delegates the pattern match to
+    the shared :mod:`codeprobe.adapters.quota` detector, which returns the
+    triggering line so the executor can include it in the task's error
+    metadata.
     """
-    for stream in (_cli_origin_text(stdout), stderr or ""):
-        if not stream:
-            continue
-        match = _QUOTA_PATTERN.search(stream)
-        if match:
-            # Find and return the line containing the match so the user
-            # sees the exact wording (helps Anthropic message rewording).
-            for line in stream.splitlines():
-                if _QUOTA_PATTERN.search(line):
-                    return line.strip()
-            return match.group(0)
-    return None
+    return detect_quota_error(_cli_origin_text(stdout), stderr)
 
 # Result-record subtypes that mark a TERMINAL agent outcome — the CLI ran
 # the agent to a protocol-defined stop condition, so a 0.0 reward is a

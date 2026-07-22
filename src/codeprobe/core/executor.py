@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from codeprobe.adapters.protocol import AdapterQuotaError
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
     BudgetChecker,
@@ -193,8 +194,10 @@ def _find_active_experiment_dir(
 def _classify_error(exc: BaseException) -> str:
     """Classify an exception into an error category.
 
-    Returns one of: 'timeout', 'system', 'agent'.
+    Returns one of: 'quota', 'timeout', 'system', 'agent'.
     """
+    if isinstance(exc, AdapterQuotaError):
+        return "quota"
     if isinstance(exc, subprocess.TimeoutExpired):
         return "timeout"
     if isinstance(exc, (OSError, MemoryError)):
@@ -797,13 +800,20 @@ def execute_task(
         # after writing it), fall through to scoring.
         has_answer = found_answer is not None or found_answer_json is not None
         if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
-            error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
+            # A bare timeout (or quota stub) lands here with empty stdout:
+            # honour the adapter-declared category and error text so the
+            # row is never miscounted as an agent failure.
+            error_msg = (
+                output.error
+                or output.stderr
+                or f"Agent exited with code {output.exit_code}"
+            )
             return TaskResult(
                 completed=CompletedTask(
                     task_id=task_id,
                     automated_score=0.0,
                     status="error",
-                    error_category="agent",
+                    error_category=output.error_category or "agent",
                     metadata={"error": sanitize_secrets(error_msg), **_turn_cap_meta},
                     **_output_fields(),
                 ),

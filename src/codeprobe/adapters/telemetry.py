@@ -502,8 +502,10 @@ class NdjsonStreamCollector:
             return UsageData(
                 error=(
                     "Copilot CLI returned JSON but no outputTokens field. "
-                    "Ensure Copilot CLI >= 1.0.4. "
-                    "Upgrade with: gh extension upgrade copilot"
+                    "Either the CLI is older than 1.0.4 (upgrade with: "
+                    "gh extension upgrade copilot) or the session failed "
+                    "before producing output (auth, quota, or rate-limit "
+                    "exhaustion)."
                 ),
             )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shutil
@@ -198,20 +199,18 @@ class BaseAdapter:
                     merged_error = timeout_error
                     if parsed.error:
                         merged_error = f"{timeout_error}; {parsed.error}"
-                    return AgentOutput(
-                        stdout=parsed.stdout,
-                        stderr=parsed.stderr,
+                    # Rebuild via replace() so every telemetry field the
+                    # partial parse recovered survives — dropping fields
+                    # here previously lost e.g. a quota stub's category
+                    # inside a timed-out trial (codeprobe-f7rl.29). An
+                    # adapter-declared category (quota) outranks the
+                    # generic timeout classification.
+                    return dataclasses.replace(
+                        parsed,
                         exit_code=-1,
                         duration_seconds=duration,
-                        input_tokens=parsed.input_tokens,
-                        output_tokens=parsed.output_tokens,
-                        cache_read_tokens=parsed.cache_read_tokens,
-                        cache_creation_tokens=parsed.cache_creation_tokens,
-                        cost_usd=parsed.cost_usd,
-                        cost_model=parsed.cost_model,
-                        cost_source=parsed.cost_source,
                         error=merged_error,
-                        tool_call_count=parsed.tool_call_count,
+                        error_category=parsed.error_category or "timeout",
                     )
                 except Exception as parse_exc:
                     timeout_error = f"{timeout_error}; parse_output failed: {parse_exc}"
@@ -222,6 +221,7 @@ class BaseAdapter:
                 exit_code=-1,
                 duration_seconds=duration,
                 error=timeout_error,
+                error_category="timeout",
             )
         except FileNotFoundError as exc:
             raise AdapterSetupError(f"Binary not found at runtime: {exc}") from exc

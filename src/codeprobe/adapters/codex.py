@@ -9,6 +9,7 @@ import time
 from codeprobe.adapters.protocol import (
     AdapterCapabilities,
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentConfig,
     AgentOutput,
@@ -130,7 +131,7 @@ class CodexAdapter:
         except openai.AuthenticationError as exc:
             raise AdapterSetupError(f"OPENAI_API_KEY invalid: {exc}") from exc
         except openai.RateLimitError as exc:
-            raise AdapterExecutionError(f"Rate limited: {exc}") from exc
+            raise AdapterQuotaError(f"Rate limited: {exc}") from exc
         except openai.APIError as exc:
             raise AdapterExecutionError(f"OpenAI API error: {exc}") from exc
 

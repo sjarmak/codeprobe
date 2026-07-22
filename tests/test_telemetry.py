@@ -222,6 +222,11 @@ class TestNdjsonStreamCollector:
         usage = self.collector.collect(raw)
         assert usage.error is not None
         assert "outputTokens" in usage.error
+        # Both causes are named: an outdated CLI is only one explanation —
+        # a session that died before producing output (auth / quota / rate
+        # limit) yields the same shape (codeprobe-f7rl.29).
+        assert "1.0.4" in usage.error
+        assert "quota" in usage.error
 
     def test_plain_text(self):
         raw = (FIXTURES / "copilot_plain.txt").read_text()

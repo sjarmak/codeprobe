@@ -15,6 +15,7 @@ from codeprobe.adapters.protocol import (
     ALLOWED_COST_SOURCES,
     AdapterError,
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentAdapter,
     AgentConfig,
@@ -500,6 +501,103 @@ class TestTimeoutTelemetryExtraction:
         assert output.input_tokens == 100
         assert output.output_tokens == 50
         assert output.cost_usd == pytest.approx(0.001)
+
+    def test_timeout_bare_stamps_timeout_category(self) -> None:
+        """A timeout with no stdout carries error_category='timeout' so the
+        executor never counts it as an agent failure (codeprobe-f7rl.29)."""
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
+        exc.stdout = None
+        exc.stderr = None
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test", config)
+        assert output.error_category == "timeout"
+
+    def test_timeout_partial_parse_stamps_timeout_category(self) -> None:
+        """A timeout with parseable partial stdout (no quota stub) also
+        carries error_category='timeout'."""
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
+        exc.stdout = "partial out"
+        exc.stderr = ""
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test", config)
+        assert output.error_category == "timeout"
+
+    def test_claude_timeout_with_quota_stub_classifies_quota(self) -> None:
+        """A quota stub inside a timed-out trial still classifies as quota,
+        and the merged error keeps both messages (codeprobe-f7rl.29)."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = "You've hit your session limit · resets 1:10pm"
+        exc.stderr = ""
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert output.error_category == "quota"
+        assert "timed out" in output.error
+        assert "hit your session limit" in output.error
+
+    def test_claude_timeout_partial_stream_preserves_result_fields(self) -> None:
+        """The rebuilt timeout AgentOutput keeps num_turns, result_subtype,
+        tool_use_by_name, duration_api_ms, and mcp_init from the partial
+        parse — previously all dropped (codeprobe-f7rl.29)."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "tools": ["Read", "mcp__sg__search"],
+                        "mcp_servers": [{"name": "sg", "status": "connected"}],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "tool_use", "name": "Read"}]
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "result": "partial",
+                        "is_error": False,
+                        "usage": {"input_tokens": 10, "output_tokens": 20},
+                        "total_cost_usd": 0.01,
+                        "num_turns": 7,
+                        "duration_api_ms": 1234,
+                    }
+                ),
+            ]
+        )
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = stream
+        exc.stderr = ""
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert output.error_category == "timeout"
+        assert "timed out" in output.error
+        assert output.num_turns == 7
+        assert output.result_subtype == "success"
+        assert output.duration_api_ms == 1234
+        assert output.tool_use_by_name == {"Read": 1}
+        assert output.mcp_init is not None
+        assert output.mcp_init.captured is True
+        assert "mcp__sg__search" in output.mcp_init.offered_tools
 
     def test_timeout_parse_output_failure_still_returns_timeout_error(self) -> None:
         """If parse_output itself raises on timeout path, we still get a valid AgentOutput."""
@@ -987,7 +1085,7 @@ class TestCodexAdapter:
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
             config = AgentConfig()
-            with pytest.raises(AdapterExecutionError, match="Rate limited"):
+            with pytest.raises(AdapterQuotaError, match="Rate limited"):
                 adapter.run("test", config)
 
     def test_run_api_error(self) -> None:
@@ -1114,7 +1212,7 @@ class TestCodexAdapter:
                 adapter.run("test", config)
 
     def test_run_chat_completions_rate_limit_error(self) -> None:
-        """Rate limit errors from the chat completions fallback raise AdapterExecutionError."""
+        """Rate limit errors from the chat completions fallback raise AdapterQuotaError."""
         from codeprobe.adapters.codex import CodexAdapter
 
         mock_client_instance = MagicMock()
@@ -1125,7 +1223,7 @@ class TestCodexAdapter:
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
             config = AgentConfig()
-            with pytest.raises(AdapterExecutionError, match="Rate limited"):
+            with pytest.raises(AdapterQuotaError, match="Rate limited"):
                 adapter.run("test", config)
 
     def test_run_double_not_found_error(self) -> None:
