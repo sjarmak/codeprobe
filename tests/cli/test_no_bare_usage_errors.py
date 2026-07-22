@@ -56,10 +56,11 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.27: +3 by the codex-quarantine note above
         # _AGENT_NAMES → 1167.
         # codeprobe-f7rl.1: --allow-dirty option block + run docstring
-        # disclosure, and codeprobe-f7rl.3: --uncontained option block + run()
-        # param + containment docstring disclosure + pass-through, both
-        # merged on top of f7rl.24/.27: line renumbered below to match the
-        # merged file.
+        # disclosure, codeprobe-f7rl.3: --uncontained option block + run()
+        # param + containment docstring disclosure + pass-through, and
+        # codeprobe-f7rl.33: --max-cost-usd help text now states experiment
+        # scope (all arms), all merged on top of f7rl.24/.27: line
+        # renumbered below to match the merged file.
         ("src/codeprobe/cli/__init__.py", 1167),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),

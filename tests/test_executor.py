@@ -824,6 +824,75 @@ def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
     assert len(results) == 3
 
 
+def test_budget_shared_across_configs(tmp_path: Path):
+    """One BudgetChecker passed to several execute_config calls caps the
+    WHOLE experiment: arm B halts once cross-arm spend reaches the budget
+    (codeprobe-f7rl.33)."""
+    from codeprobe.core.events import BudgetChecker
+
+    tasks_a = [_make_task(tmp_path / "a" / "task-000", passing=True)]
+    tasks_b = [
+        _make_task(tmp_path / "b" / f"task-{i:03d}", passing=True) for i in range(3)
+    ]
+    adapter_a = FakeAdapter(stdout="output", cost_usd=0.5, cost_model="per_token")
+    adapter_b = FakeAdapter(stdout="output", cost_usd=0.5, cost_model="per_token")
+    agent_config = AgentConfig()
+    checker = BudgetChecker(budget=1.0)
+
+    results_a = execute_config(
+        adapter=adapter_a,
+        task_dirs=tasks_a,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="arm-a"),
+        agent_config=agent_config,
+        max_cost_usd=1.0,
+        budget_checker=checker,
+    )
+    results_b = execute_config(
+        adapter=adapter_b,
+        task_dirs=tasks_b,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="arm-b"),
+        agent_config=agent_config,
+        max_cost_usd=1.0,
+        budget_checker=checker,
+    )
+
+    # Arm A completes under budget ($0.50 of $1.00).
+    assert len(results_a) == 1
+    # Arm B crosses the cap on its first trial ($1.00 >= $1.00) and halts;
+    # overshoot is bounded by the single in-flight trial.
+    assert len(results_b) == 1
+    assert len(adapter_b.run_calls) == 1
+    assert checker.is_exceeded
+    assert checker.cumulative_cost == pytest.approx(1.0)
+
+
+def test_budget_local_when_not_shared(tmp_path: Path):
+    """Without a shared checker each execute_config call keeps its own
+    per-config budget — regression guard for api.execute_config callers."""
+    agent_config = AgentConfig()
+    run_counts = []
+    for arm in ("arm-a", "arm-b"):
+        tasks = [
+            _make_task(tmp_path / arm / f"task-{i:03d}", passing=True)
+            for i in range(5)
+        ]
+        adapter = FakeAdapter(stdout="output", cost_usd=1.0, cost_model="per_token")
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=ExperimentConfig(label=arm),
+            agent_config=agent_config,
+            max_cost_usd=2.50,
+        )
+        run_counts.append(len(results))
+    # Same per-arm halt point as test_execute_config_halts_at_budget —
+    # the second arm is NOT throttled by the first arm's spend.
+    assert run_counts == [3, 3]
+
+
 # --- Sequential runs execute inside worktree slots (codeprobe-f7rl.2) ---
 
 

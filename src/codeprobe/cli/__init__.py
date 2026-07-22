@@ -858,7 +858,10 @@ def mine(
     default=None,
     type=float,
     envvar="CODEPROBE_MAX_COST_USD",
-    help="Maximum cumulative cost in USD before halting. Env: CODEPROBE_MAX_COST_USD.",
+    help=(
+        "Maximum cumulative cost in USD across the whole experiment "
+        "(all arms) before halting. Env: CODEPROBE_MAX_COST_USD."
+    ),
 )
 @click.option(
     "--parallel",

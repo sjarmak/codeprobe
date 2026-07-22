@@ -1046,6 +1046,7 @@ def execute_config(
     isolation: IsolationStrategy | None = None,
     repeats: int = 1,
     event_dispatcher: EventDispatcher | None = None,
+    budget_checker: BudgetChecker | None = None,
     trace_recorder: TraceRecorder | None = None,
     config_max_turns_source: str = "",
     pristine_config: bool = False,
@@ -1063,16 +1064,20 @@ def execute_config(
     subprocess runs in its own process so threads are IO-bound (waiting for
     the subprocess to finish).
 
-    If *max_cost_usd* is set, the executor accumulates ``cost_usd`` from
-    completed tasks whose ``cost_model`` is billable (currently ``per_token``).
-    Once cumulative cost exceeds the budget, execution halts and partial
-    results are returned.  Tasks with ``unknown`` or ``subscription``
-    cost models are skipped in accumulation.
+    If *max_cost_usd* is set, ``cost_usd`` from completed tasks whose
+    ``cost_model`` is billable (currently ``per_token``) accumulates in a
+    :class:`BudgetChecker`; once the budget is reached, execution halts
+    and partial results are returned.  Tasks with ``unknown`` or
+    ``subscription`` cost models are skipped in accumulation.  Pass a
+    shared *budget_checker* to scope the budget across several
+    ``execute_config`` calls — one ledger for the whole experiment
+    (codeprobe-f7rl.33); when omitted, a local checker preserves the
+    per-config scoping single-config callers rely on.
 
     When *event_dispatcher* is provided, lifecycle events (RunStarted,
-    TaskStarted, TaskScored, RunFinished) are emitted.  If *max_cost_usd*
-    is also set, a :class:`BudgetChecker` is registered to handle budget
-    warnings and halt checks via the event system.
+    TaskStarted, TaskScored, RunFinished) are emitted and the budget
+    checker (shared or local) is registered on the dispatcher, so it
+    accumulates from TaskScored events and routes budget warnings.
 
     When *pristine_config* is True, adapters whose ``isolate_session``
     accepts a ``pristine`` kwarg exclude operator personalization
@@ -1105,13 +1110,22 @@ def execute_config(
     if not pending_work:
         return results
 
-    # --- Event system setup ---
-    budget_checker: BudgetChecker | None = None
-    if event_dispatcher is not None and max_cost_usd is not None:
+    # --- Budget ledger setup (codeprobe-f7rl.33) ---
+    # A caller-supplied *budget_checker* scopes max_cost_usd to the whole
+    # experiment: every config's billable spend lands in one shared ledger.
+    # Without one, a local checker preserves the old per-config scoping
+    # (api.execute_config single-config callers).
+    if budget_checker is None and max_cost_usd is not None:
         budget_checker = BudgetChecker(
             budget=max_cost_usd,
             warning_threshold=_BUDGET_WARNING_THRESHOLD,
         )
+    if budget_checker is not None and event_dispatcher is not None:
+        # The checker holds a single dispatcher back-reference. With
+        # config_parallel > 1 several concurrent configs (each with its own
+        # dispatcher) share one checker, so last-wins is acceptable for
+        # warning ROUTING; the halt signal is the checker's threading.Event
+        # and is dispatcher-independent.
         budget_checker.set_dispatcher(event_dispatcher)
         event_dispatcher.register(budget_checker)
 
@@ -1123,8 +1137,6 @@ def execute_config(
                 timestamp=time.time(),
             )
         )
-
-    cumulative_cost = 0.0
 
     def _run_one(
         task_dir: Path,
@@ -1228,7 +1240,7 @@ def execute_config(
     quota_message: str | None = None
 
     def _handle_result(task_result: TaskResult) -> None:
-        nonlocal cumulative_cost, budget_warning_emitted
+        nonlocal budget_warning_emitted
         nonlocal quota_exhausted, quota_message
         result = task_result.completed
         results.append(result)
@@ -1280,31 +1292,47 @@ def execute_config(
                 )
             )
 
-        if result.cost_model in _BILLABLE_COST_MODELS and result.cost_usd is not None:
-            cumulative_cost += result.cost_usd
+        # Budget accounting: with a dispatcher the checker is registered as
+        # a listener and accumulates via the TaskScored event above; without
+        # one it must be fed directly.
+        if (
+            event_dispatcher is None
+            and budget_checker is not None
+            and result.cost_model in _BILLABLE_COST_MODELS
+            and result.cost_usd is not None
+        ):
+            budget_checker.add_cost(result.cost_usd)
 
         # Emit 80% budget warning once (legacy path — no dispatcher)
         if (
             event_dispatcher is None
-            and max_cost_usd is not None
+            and budget_checker is not None
             and not budget_warning_emitted
-            and cumulative_cost >= max_cost_usd * _BUDGET_WARNING_THRESHOLD
-            and cumulative_cost <= max_cost_usd
         ):
-            budget_warning_emitted = True
-            pct = int(cumulative_cost / max_cost_usd * 100)
-            _budget_msg(
-                f"Cost warning: ${cumulative_cost:.2f} of "
-                f"${max_cost_usd:.2f} budget used ({pct}%)"
-            )
+            current = budget_checker.cumulative_cost
+            budget = budget_checker.budget
+            if budget * _BUDGET_WARNING_THRESHOLD <= current <= budget:
+                budget_warning_emitted = True
+                pct = int(current / budget * 100)
+                _budget_msg(
+                    f"Cost warning: ${current:.2f} of "
+                    f"${budget:.2f} budget used ({pct}%)"
+                )
 
     workers = min(parallel, len(pending_work))
 
     def _budget_exceeded() -> bool:
         """Check whether the cost budget has been exceeded."""
-        if budget_checker is not None:
-            return budget_checker.is_exceeded
-        return max_cost_usd is not None and cumulative_cost > max_cost_usd
+        return budget_checker is not None and budget_checker.is_exceeded
+
+    def _budget_halt_message() -> str:
+        """Render the budget-halt line; callers gate on _budget_exceeded()."""
+        if budget_checker is None:  # pragma: no cover — guarded by callers
+            return "Cost budget exceeded — halting"
+        return (
+            f"Cost budget exceeded: ${budget_checker.cumulative_cost:.2f} "
+            f">= ${budget_checker.budget:.2f} — halting"
+        )
 
     def _should_halt() -> bool:
         """Stop dispatching new trials when budget is exhausted OR a
@@ -1407,10 +1435,7 @@ def execute_config(
                             )
                             break
                         if _budget_exceeded():
-                            _budget_msg(
-                                f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                                f"${max_cost_usd:.2f} — halting"
-                            )
+                            _budget_msg(_budget_halt_message())
                             break
                         try:
                             task_result = _run_in_slot(
@@ -1470,11 +1495,7 @@ def execute_config(
                                         "pending trials"
                                     )
                                 else:
-                                    _budget_msg(
-                                        f"Cost budget exceeded: "
-                                        f"${cumulative_cost:.2f} > "
-                                        f"${max_cost_usd:.2f} — halting"
-                                    )
+                                    _budget_msg(_budget_halt_message())
                                 for f in future_to_work:
                                     f.cancel()
                                 break

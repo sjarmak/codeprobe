@@ -40,6 +40,7 @@ from codeprobe.core.containment import (
     set_active_plan,
 )
 from codeprobe.core.events import (
+    BudgetChecker,
     BudgetWarning,
     EventDispatcher,
     RunEvent,
@@ -980,6 +981,16 @@ def run_eval(
             content_policy=trace_content_policy,
         )
 
+        # One budget ledger for the WHOLE experiment (codeprobe-f7rl.33):
+        # every config's billable spend lands in the same BudgetChecker, so
+        # --max-cost-usd caps the experiment, not each arm. execute_config
+        # registers it on each config's dispatcher (last-wins back-reference
+        # for warning routing; the halt signal is the checker's
+        # threading.Event and is dispatcher-independent).
+        experiment_budget_checker: BudgetChecker | None = None
+        if max_cost_usd is not None:
+            experiment_budget_checker = BudgetChecker(budget=max_cost_usd)
+
         def _run_config(exp_config: ExperimentConfig) -> tuple[str, list[CompletedTask]]:
             """Run a single config (called from thread pool or sequentially)."""
             perm = exp_config.permission_mode
@@ -1180,6 +1191,7 @@ def run_eval(
                     parallel=parallel,
                     repeats=repeats,
                     event_dispatcher=dispatcher,
+                    budget_checker=experiment_budget_checker,
                     preamble_resolver=preamble_resolver,
                     trace_recorder=trace_recorder,
                     config_max_turns_source=config_max_turns_source,
