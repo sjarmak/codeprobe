@@ -166,8 +166,11 @@ class BaseAdapter:
                 idx = cmd.index(flag)
                 if idx + 1 < len(cmd):
                     path = cmd[idx + 1]
-                    if path.startswith(tempfile.gettempdir()):
-                        mcp_tmpfile = path
+                    # Copilot's --additional-mcp-config takes an @-prefixed
+                    # file reference; strip it so cleanup still tracks the file.
+                    candidate = path[1:] if path.startswith("@") else path
+                    if candidate.startswith(tempfile.gettempdir()):
+                        mcp_tmpfile = candidate
 
         start = time.monotonic()
 
