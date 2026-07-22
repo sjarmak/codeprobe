@@ -453,6 +453,11 @@ class PairwiseComparison:
     ci_upper: float = 0.0
     comparable: bool = True
     refusal_reason: str = ""
+    # Structured verdict phrase from _derive_verdict — the same string that
+    # closes ``summary`` ("X wins", "effectively tied", "X nominally ahead
+    # (…)"). Renderers gate the Winner badge on this field instead of
+    # string-parsing ``summary``; empty for REFUSED pairs (codeprobe-f7rl.31).
+    verdict: str = ""
     # Multiple-comparison correction (codeprobe-f7rl.10). For k=2 experiments
     # no correction runs: ``p_value_adjusted`` equals the raw ``p_value`` and
     # ``correction`` stays "none". For k>2 the report layer Holm-corrects the
@@ -923,6 +928,7 @@ def compare_configs(
         speed_diff=speed_diff,
         winner=winner,
         summary=summary,
+        verdict=verdict,
         p_value=p_val,
         effect_size=eff_size,
         effect_size_method=eff_method,

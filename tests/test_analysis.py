@@ -1038,12 +1038,16 @@ class TestPerArmPartial:
         assert {rc.label for rc in report.rankings} == {"arm-A", "arm-B"}
 
     def test_no_expectation_renders_no_n_suffix(self) -> None:
-        """Without total_tasks the rankings render exactly as before."""
+        """Without total_tasks the rankings carry no N=x/y coverage suffix.
+
+        The small-sample caution ("Small sample size (N=1)",
+        codeprobe-f7rl.31) is independent of coverage and still renders.
+        """
         arm = ConfigResults(config="solo", completed=[_task("t1", 1.0)])
         report = generate_report("plain", [arm])
         text = format_text_report(report)
         html = format_html_report(report)
-        assert "N=" not in text
+        assert "N=1/" not in text  # no distinct/expected coverage suffix
         assert "PARTIAL" not in text
         assert "<td>—</td>" in html  # N column shows an em dash
 
@@ -1604,7 +1608,7 @@ class TestFormatCsvReport:
         assert rows[1]["cost_usd"] == ""
 
     def test_csv_warning_comment_small_sample(self) -> None:
-        """CSV includes warning comment when sample size is small."""
+        """CSV includes an accurate small-sample comment, not 'SINGLE RUN'."""
         results = ConfigResults(
             config="tiny",
             completed=[_task("t1", 1.0, duration=5.0)],
@@ -1612,8 +1616,9 @@ class TestFormatCsvReport:
         report = generate_report("warn-exp", [results])
         text = format_csv_report(report)
 
-        assert text.startswith("# SINGLE RUN")
-        assert "no statistical confidence" in text
+        assert text.startswith("# SMALL SAMPLE")
+        assert "interpret confidence intervals with caution" in text
+        assert "SINGLE RUN" not in text
 
     def test_csv_no_warning_large_sample(self) -> None:
         """CSV has no warning when sample is large enough."""
@@ -1744,22 +1749,24 @@ class TestFormatHtmlReport:
         assert "task-b" in html
 
     def test_pairwise_comparison_cards(self) -> None:
-        """HTML contains pairwise comparison cards (>= 3 shared tasks so the
-        pair clears the paired-comparison floor and gets a winner badge)."""
+        """HTML contains pairwise comparison cards (6 clearly separated
+        shared tasks so the win is significant and gets a Winner badge —
+        a softened verdict renders a warning badge instead,
+        codeprobe-f7rl.31)."""
+        a_scores = [1.0, 0.9, 0.95, 0.85, 0.8, 0.75]
+        b_scores = [0.4, 0.35, 0.3, 0.25, 0.2, 0.15]
         results_a = ConfigResults(
             config="alpha",
             completed=[
-                _task("t1", 1.0, duration=10.0, cost=0.20),
-                _task("t2", 0.9, duration=11.0, cost=0.21),
-                _task("t3", 0.8, duration=12.0, cost=0.19),
+                _task(f"t{i}", s, duration=10.0, cost=0.20)
+                for i, s in enumerate(a_scores)
             ],
         )
         results_b = ConfigResults(
             config="beta",
             completed=[
-                _task("t1", 0.5, duration=20.0, cost=0.10),
-                _task("t2", 0.4, duration=21.0, cost=0.11),
-                _task("t3", 0.3, duration=22.0, cost=0.09),
+                _task(f"t{i}", s, duration=20.0, cost=0.10)
+                for i, s in enumerate(b_scores)
             ],
         )
         report = generate_report("pair-exp", [results_a, results_b])
@@ -1791,8 +1798,10 @@ class TestFormatHtmlReport:
         assert "Per-Token Billing" in html
         assert "Subscription Billing" in html
 
-    def test_single_run_banner_no_ci(self) -> None:
-        """When repeats=1 (small sample), show single-run banner and no CI bars."""
+    def test_small_sample_banner_keeps_ci(self) -> None:
+        """Small samples get the accurate stats-layer warning — never the
+        false 'Single run' wording — and CI bars stay rendered
+        (codeprobe-f7rl.31)."""
         results = ConfigResults(
             config="single",
             completed=[_task("t1", 1.0, duration=5.0)],
@@ -1800,12 +1809,14 @@ class TestFormatHtmlReport:
         report = generate_report("single-exp", [results])
         html = format_html_report(report)
 
-        assert "Single run" in html
-        assert "single-run-banner" in html
-        assert "single-run-badge" in html
+        assert "Single run" not in html
+        assert "Small sample size (N=1)" in html
+        assert "small-sample-banner" in html
+        assert "small-sample-badge" in html
+        assert "ci-bar" in html
 
-    def test_no_single_run_banner_large_sample(self) -> None:
-        """Large sample does not show single-run banner or badge text."""
+    def test_no_small_sample_banner_large_sample(self) -> None:
+        """Large sample does not show the small-sample banner or badge."""
         results = ConfigResults(
             config="large",
             completed=[_task(f"t{i}", 1.0, duration=5.0) for i in range(10)],
@@ -1813,9 +1824,10 @@ class TestFormatHtmlReport:
         report = generate_report("large-exp", [results])
         html = format_html_report(report)
 
-        # Banner text and badge text should not appear in body
-        assert "Single run — no confidence intervals" not in html
-        assert ">Single run<" not in html
+        # CSS classes are always in <style>; assert no rendered elements.
+        assert '<div class="small-sample-banner">' not in html
+        assert '<span class="small-sample-badge">' not in html
+        assert "Small sample size" not in html
 
     def test_partial_report_banner(self) -> None:
         """Partial report shows completion info in HTML."""

@@ -246,6 +246,7 @@ def _apply_multiple_comparison_correction(
             replace(
                 c,
                 summary=summary,
+                verdict=verdict,
                 p_value_adjusted=adj_p,
                 correction="holm",
                 n_comparisons=m,
@@ -432,10 +433,19 @@ def format_text_report(report: Report) -> str:
                 partial_suffix = (
                     f" ⚠ PARTIAL ({s.distinct_task_count}/{s.tasks_expected} tasks)"
                 )
+        # codeprobe-f7rl.31: surface the stats-layer small-sample warning
+        # verbatim so text mode carries the same caution as HTML/CSV. The CIs
+        # above stay rendered — small N softens them, it does not erase them.
+        small_n_suffix = ""
+        if s.sample_size_warning:
+            small_n_suffix = (
+                f" ⚠ {s.sample_size_warning} — interpret CIs with caution"
+            )
         lines.append(
             f"{rc.rank}. {rc.label} — {headline}{dual_suffix}{n_suffix}, "
             f"{cost_str}{quota_suffix}{infra_suffix}{errored_suffix}"
-            f"{abandoned_suffix}{partial_suffix} — {rc.recommendation}"
+            f"{abandoned_suffix}{partial_suffix}{small_n_suffix} — "
+            f"{rc.recommendation}"
         )
     if any(rc.summary.quota_error_count > 0 for rc in report.rankings):
         lines.append("")
@@ -823,7 +833,7 @@ def format_html_report(report: Report) -> str:
     scorable_rankings = [rc for rc in report.rankings if rc.summary.scored_count > 0]
     best_label = scorable_rankings[0].label if scorable_rankings else "N/A"
     best_rec = scorable_rankings[0].recommendation if scorable_rankings else ""
-    has_single_run = any(s.sample_size_warning for s in report.summaries)
+    small_sample_arms = [s for s in report.summaries if s.sample_size_warning]
 
     # --- Helpers ---
     def _esc(text: str) -> str:
@@ -876,18 +886,36 @@ def format_html_report(report: Report) -> str:
         return " ".join(f'<span class="warn-badge">{_esc(b)}</span>' for b in badges)
 
     def _ci_bar_html(s: ConfigSummary) -> str:
-        """Render CI bar or single-run banner for a summary."""
-        if s.sample_size_warning:
-            return '<span class="single-run-badge">Single run</span>'
+        """Render the CI bar for a summary, with a small-N badge when needed.
+
+        Per the ConfigSummary contract, ``ci_lower``/``ci_upper`` bound the
+        PRIMARY metric: ``mean_score`` for continuous scorers, ``pass_rate``
+        for binary ones — so the point marker must read ``score_type`` or it
+        renders outside its own interval (codeprobe-f7rl.31). Small samples
+        keep their computed CIs; the accurate stats-layer warning is rendered
+        alongside the bar, never instead of it.
+        """
         lo = s.ci_lower * 100
         hi = s.ci_upper * 100
-        mid = s.pass_rate * 100
-        return (
-            f'<div class="ci-bar">'
+        if s.score_type == "continuous":
+            mid = s.mean_score * 100
+            metric = "mean score"
+        else:
+            mid = s.pass_rate * 100
+            metric = "pass rate"
+        bar = (
+            f'<div class="ci-bar" title="95% CI on {metric}">'
             f'<div class="ci-range" style="left:{lo:.1f}%;width:{hi - lo:.1f}%"></div>'
             f'<div class="ci-point" style="left:{mid:.1f}%"></div>'
             f"</div>"
+            f'<span class="ci-metric-label">{metric}</span>'
         )
+        if s.sample_size_warning:
+            bar += (
+                f' <span class="small-sample-badge">'
+                f"{_esc(s.sample_size_warning)}</span>"
+            )
+        return bar
 
     # --- HTML start ---
     parts.append("""<!DOCTYPE html>
@@ -910,10 +938,11 @@ h3{font-size:1.1rem;margin:1.5rem 0 .5rem}
 .subtitle{color:var(--muted);margin-bottom:1.5rem}
 .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.2rem;margin-bottom:1rem}
 .executive{border-left:4px solid var(--accent)}
-.single-run-banner{background:var(--warning);color:#000;padding:.5rem 1rem;
+.small-sample-banner{background:var(--warning);color:#000;padding:.5rem 1rem;
 border-radius:4px;margin-bottom:1rem;font-weight:600}
-.single-run-badge{background:var(--warning);color:#000;padding:2px 8px;
+.small-sample-badge{background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600}
+.ci-metric-label{color:var(--muted);font-size:.75rem}
 .warn-badge{display:inline-block;background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600;margin:1px 0}
 .validity-fail{background:#f8d7da;border:1px solid var(--danger);color:#842029;
@@ -957,10 +986,16 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
             "</div>\n"
         )
 
-    if has_single_run:
+    if small_sample_arms:
+        # codeprobe-f7rl.31: render the accurate stats-layer warning per arm.
+        # The old "Single run — no confidence intervals available" wording was
+        # false for 2 <= N < 10: CIs exist and are rendered below.
+        per_arm = "; ".join(
+            f"{s.label}: {s.sample_size_warning}" for s in small_sample_arms
+        )
         parts.append(
-            '<div class="single-run-banner">'
-            "Single run — no confidence intervals available</div>\n"
+            '<div class="small-sample-banner">'
+            f"{_esc(per_arm)} — interpret confidence intervals with caution</div>\n"
         )
 
     # --- Executive Summary ---
@@ -1135,13 +1170,17 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
         for c in report.comparisons:
             parts.append('<div class="pairwise-card">\n')
             # REFUSED pairs (locked decision 6, epic codeprobe-f7rl) get a
-            # danger badge instead of a winner; comparable pairs additionally
-            # render the verdict sentence so softened verdicts ("nominally
-            # ahead") reach the HTML artifact, not just the text report.
-            if c.comparable:
+            # danger badge instead of a winner. Comparable pairs get the green
+            # Winner badge ONLY on a clean "X wins" verdict — a softened
+            # verdict ("effectively tied", "nominally ahead (…)") renders as a
+            # warning badge instead, so noise is never upgraded to a badged
+            # winner in the forwarded artifact (codeprobe-f7rl.31).
+            if not c.comparable:
+                badge = '<span class="refused-badge">NOT COMPARABLE</span>'
+            elif c.verdict == f"{c.winner} wins":
                 badge = f'<span class="winner-badge">Winner: {_esc(c.winner)}</span>'
             else:
-                badge = '<span class="refused-badge">NOT COMPARABLE</span>'
+                badge = f'<span class="warn-badge">{_esc(c.verdict)}</span>'
             parts.append(
                 f"<h4>{_esc(c.config_a)} vs {_esc(c.config_b)} {badge}</h4>\n"
             )
@@ -1177,11 +1216,14 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                         f'<div class="stat-row"><span class="stat-label">p-value</span>'
                         f'<span class="stat-value">{c.p_value:.4f}</span></div>\n'
                     )
-            if not has_single_run:
-                parts.append(
-                    f'<div class="stat-row"><span class="stat-label">CI</span>'
-                    f'<span class="stat-value">[{c.ci_lower:.3f}, {c.ci_upper:.3f}]</span></div>\n'
-                )
+            # Always rendered — small samples soften CIs, they don't erase
+            # them (codeprobe-f7rl.31). The interval bounds the paired score
+            # difference computed in compare_configs.
+            parts.append(
+                f'<div class="stat-row"><span class="stat-label">'
+                f"CI (score diff)</span>"
+                f'<span class="stat-value">[{c.ci_lower:.3f}, {c.ci_upper:.3f}]</span></div>\n'
+            )
             parts.append("</div>\n")
         parts.append("</div>\n")
 
@@ -1257,9 +1299,12 @@ def format_csv_report(report: Report) -> str:
     """Format report as CSV with per-task rows."""
     buf = io.StringIO()
 
+    # codeprobe-f7rl.31: accurate small-N wording — CIs are computed and
+    # present for 2 <= N < 10, they just deserve caution, so the old
+    # "SINGLE RUN — no statistical confidence" comment was false.
     has_warning = any(s.sample_size_warning for s in report.summaries)
     if has_warning:
-        buf.write("# SINGLE RUN — no statistical confidence\n")
+        buf.write("# SMALL SAMPLE (N<10) — interpret confidence intervals with caution\n")
 
     writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()
