@@ -124,10 +124,14 @@ the build command above.
 
 The agent process is containerized the same way. With an engine on PATH and
 the agent image built, `codeprobe run` proceeds on a bare host with no
-`--uncontained` flag: each agent runs inside a `--network=bridge` container
-(the agent needs the model API) where only the task worktree and the session
-config dir are writable, and stderr discloses container mode. Build the agent
-image once from the repository root:
+`--uncontained` flag, and stderr discloses container mode. Each agent runs
+inside a `--network=bridge` container (the agent needs the model API) whose
+writable mounts are exactly the per-task worktree slot and, when parallel
+session isolation is active, that slot's session config dir. The primary
+checkout and the user's global config dir are never mounted; credentials
+reach the container through the environment whitelist (`ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, and similar). Build the agent image once from the
+repository root:
 
 ```bash
 docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .

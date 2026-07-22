@@ -592,6 +592,16 @@ def execute_task(
     # Effective worktree: caller-provided > owned worktree > None.
     _effective_wt: Path | None = worktree_path or _owned_wt
 
+    # The agent subprocess runs IN the effective worktree, not in the
+    # configured cwd (the primary checkout root). The prompt already names
+    # _effective_wt as the workspace; re-pointing config.cwd makes the
+    # adapter — and, under a container plan, the container's single rw
+    # mount and -w workdir — target the slot worktree instead of the whole
+    # primary checkout (codeprobe-f7rl.5 verification fix). Library callers
+    # that pass no worktree keep their configured cwd.
+    if _effective_wt is not None:
+        agent_config = dataclasses.replace(agent_config, cwd=str(_effective_wt))
+
     try:
         try:
             instruction = load_instruction(

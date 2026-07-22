@@ -188,6 +188,54 @@ class TestRunContainerization:
         assert "/cfg/slot3:/cfg/slot3:rw" in argv
         assert "CLAUDE_CONFIG_DIR" in argv  # -e passthrough from session env
 
+    def test_host_global_config_dir_never_mounted(
+        self,
+        capture_run: list[list[str]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without a session config dir the container gets NO config-dir
+        mount and no -e CLAUDE_CONFIG_DIR, even when the host-global env
+        var is set — mounting the user's real config dir rw would hand the
+        agent live credential/settings state (verification fix)."""
+        host_cfg = tmp_path / "host-claude"
+        host_cfg.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(host_cfg))
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine=ENGINE)
+        )
+
+        _FakeAdapter().run("hello", AgentConfig(cwd=str(tmp_path)))
+
+        (argv,) = capture_run
+        mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
+        assert mounts == [f"{tmp_path}:{tmp_path}:rw"]
+        assert "CLAUDE_CONFIG_DIR" not in argv
+
+    def test_session_env_without_config_dir_omits_mount(
+        self,
+        capture_run: list[list[str]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A session env that carries no CLAUDE_CONFIG_DIR must not fall
+        back to the host-global one."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "host-claude"))
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine=ENGINE)
+        )
+
+        _FakeAdapter().run(
+            "hello",
+            AgentConfig(cwd=str(tmp_path)),
+            session_env={"ANTHROPIC_API_KEY": "sk-session"},
+        )
+
+        (argv,) = capture_run
+        mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
+        assert mounts == [f"{tmp_path}:{tmp_path}:rw"]
+        assert "CLAUDE_CONFIG_DIR" not in argv
+
     @pytest.mark.parametrize(
         "plan",
         [

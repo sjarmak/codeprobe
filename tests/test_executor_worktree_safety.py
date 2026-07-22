@@ -135,6 +135,64 @@ def test_execute_task_pins_in_owned_worktree(tmp_path: Path) -> None:
     assert f"repository at {repo}. Follow" not in prompt
 
 
+def test_agent_cwd_repointed_at_slot_worktree(tmp_path: Path) -> None:
+    """The adapter receives config.cwd == the slot worktree, never the
+    primary checkout root (codeprobe-f7rl.5 verification fix).
+
+    config.cwd is what the adapter uses as the subprocess cwd and, under a
+    container plan, as the container's single rw mount and -w workdir — so
+    a repo-root cwd would mount the whole primary checkout (including its
+    .git) writable into the agent container.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    task = _make_task(tmp_path / "task-cwd")
+    adapter = FakeAdapter(stdout="output")
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=[task],
+        repo_path=repo,
+        experiment_config=ExperimentConfig(label="baseline"),
+        agent_config=AgentConfig(cwd=str(repo)),
+        parallel=1,
+    )
+
+    assert len(results) == 1
+    assert results[0].status == "completed", results[0].metadata
+    prompt, config = adapter.run_calls[0]
+    assert config.cwd is not None
+    cwd = Path(config.cwd)
+    assert cwd != repo
+    assert cwd.name.startswith("slot-")
+    assert cwd.is_relative_to(repo / ".codeprobe-worktrees-baseline")
+    # The subprocess cwd and the prompt's workspace are the same path.
+    assert f"repository at {cwd}. Follow" in prompt
+
+
+def test_execute_task_without_worktree_keeps_configured_cwd(
+    tmp_path: Path,
+) -> None:
+    """Library callers that pass no worktree keep their configured cwd —
+    the re-point only fires when an effective worktree exists."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    task = _make_task(tmp_path / "task-lib")
+    adapter = FakeAdapter(stdout="output")
+
+    result = execute_task(
+        adapter=adapter,
+        task_dir=task,
+        repo_path=repo,
+        agent_config=AgentConfig(cwd=str(repo)),
+        worktree_path=None,
+    )
+
+    assert result.completed.status == "completed", result.completed.metadata
+    _, config = adapter.run_calls[0]
+    assert config.cwd == str(repo)
+
+
 def test_worktree_release_removes_multi_repo_layout(tmp_path: Path) -> None:
     """Slot reset removes workspace/repos/ (nested git clones survive a
     plain ``git clean -fd``) so multi-repo layouts can't leak across tasks."""

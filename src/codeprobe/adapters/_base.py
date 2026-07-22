@@ -244,16 +244,26 @@ class BaseAdapter:
         if plan is not None and plan.mode == "container" and plan.engine:
             container_engine = plan.engine
             container_name = f"codeprobe-agent-{uuid.uuid4().hex}"
-            raw_config_dir = (session_env or {}).get(
-                "CLAUDE_CONFIG_DIR"
-            ) or os.environ.get("CLAUDE_CONFIG_DIR")
+            # Only a per-slot session config dir (adapter.isolate_session)
+            # is ever mounted. The host-global CLAUDE_CONFIG_DIR is
+            # deliberately NOT a fallback: mounting the user's real config
+            # dir rw would hand the agent live credential/settings state.
+            # Without a session dir, credentials reach the container solely
+            # via the -e whitelist (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_
+            # TOKEN, ...), and CLAUDE_CONFIG_DIR is withheld from the -e
+            # passthrough so the container never receives a host path that
+            # is not mounted.
+            raw_config_dir = (session_env or {}).get("CLAUDE_CONFIG_DIR")
+            container_env_keys = set(_CONTAINER_ENV_KEYS)
+            if raw_config_dir is None:
+                container_env_keys.discard("CLAUDE_CONFIG_DIR")
             cmd = containerize_argv(
                 cmd,
                 engine=container_engine,
                 workspace=Path(config.cwd) if config.cwd else Path.cwd(),
                 config_dir=Path(raw_config_dir) if raw_config_dir else None,
                 mcp_tmpfile=mcp_tmpfile,
-                env_keys=sorted(_CONTAINER_ENV_KEYS),
+                env_keys=sorted(container_env_keys),
                 image=DEFAULT_AGENT_IMAGE,
                 name=container_name,
                 env=run_env,
