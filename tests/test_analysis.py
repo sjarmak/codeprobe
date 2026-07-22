@@ -185,6 +185,10 @@ class TestSummarizeConfig:
 
 
 class TestCompareConfigs:
+    # Every comparison passes >= 3 paired scores: compare_configs REFUSES the
+    # verdict below the _MIN_PAIRED_TASKS floor (codeprobe-f7rl.8), and these
+    # tests exercise the winner/tiebreak chain, not the refusal path.
+
     def test_clear_winner(self) -> None:
         """One config clearly better in all dimensions."""
         a = ConfigSummary(
@@ -213,10 +217,13 @@ class TestCompareConfigs:
             total_cost_usd=0.50,
             total_tokens=2500,
         )
-        cmp = compare_configs(a, b)
+        cmp = compare_configs(
+            a, b, a_scores=[0.9, 0.95, 0.85], b_scores=[0.4, 0.45, 0.35]
+        )
 
         assert cmp.config_a == "good"
         assert cmp.config_b == "bad"
+        assert cmp.comparable is True
         assert cmp.score_diff == pytest.approx(0.5)
         assert cmp.cost_diff == pytest.approx(-0.20)
         assert cmp.speed_diff == pytest.approx(-10.0)
@@ -252,7 +259,9 @@ class TestCompareConfigs:
             total_cost_usd=0.20,
             total_tokens=1000,
         )
-        cmp = compare_configs(a, b)
+        cmp = compare_configs(
+            a, b, a_scores=[0.85, 0.9, 0.8], b_scores=[0.7, 0.75, 0.65]
+        )
 
         # Score wins: accurate is the winner
         assert cmp.winner == "accurate"
@@ -274,7 +283,8 @@ class TestCompareConfigs:
         )
         a = ConfigSummary(label="a", total_cost_usd=0.50, **base)
         b = ConfigSummary(label="b", total_cost_usd=0.30, **base)
-        cmp = compare_configs(a, b)
+        tied = [0.8, 0.8, 0.8]
+        cmp = compare_configs(a, b, a_scores=tied, b_scores=tied)
 
         assert cmp.winner == "b"
 
@@ -297,8 +307,9 @@ class TestCompareConfigs:
             label="fast", total_duration_sec=30.0, mean_duration_sec=10.0, **base
         )
         # Order-independent: the faster config wins regardless of arg order.
-        assert compare_configs(slow, fast).winner == "fast"
-        assert compare_configs(fast, slow).winner == "fast"
+        tied = [0.8, 0.8, 0.8]
+        assert compare_configs(slow, fast, a_scores=tied, b_scores=tied).winner == "fast"
+        assert compare_configs(fast, slow, a_scores=tied, b_scores=tied).winner == "fast"
 
     def test_total_tie_defaults_to_first(self) -> None:
         """codeprobe-b9c #9: a full tie (score+cost+speed) falls back to the
@@ -317,8 +328,9 @@ class TestCompareConfigs:
         )
         a = ConfigSummary(label="a", **base)
         b = ConfigSummary(label="b", **base)
-        assert compare_configs(a, b).winner == "a"
-        assert compare_configs(b, a).winner == "b"
+        tied = [0.8, 0.8, 0.8]
+        assert compare_configs(a, b, a_scores=tied, b_scores=tied).winner == "a"
+        assert compare_configs(b, a, a_scores=tied, b_scores=tied).winner == "b"
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +542,7 @@ class TestGenerateReport:
             completed=[
                 _task("t1", 1.0, duration=10.0, cost=0.10, input_tokens=500),
                 _task("t2", 0.7, duration=15.0, cost=0.12, input_tokens=600),
+                _task("t3", 0.9, duration=12.0, cost=0.11, input_tokens=550),
             ],
         )
         results_b = ConfigResults(
@@ -537,6 +550,7 @@ class TestGenerateReport:
             completed=[
                 _task("t1", 0.5, duration=8.0, cost=0.05, input_tokens=300),
                 _task("t2", 0.3, duration=12.0, cost=0.09, input_tokens=400),
+                _task("t3", 0.2, duration=10.0, cost=0.07, input_tokens=350),
             ],
         )
 
@@ -1273,6 +1287,85 @@ class TestCompareConfigsStatistical:
 
 
 # ---------------------------------------------------------------------------
+# Refused (NOT COMPARABLE) pairs across report surfaces (codeprobe-f7rl.8)
+# ---------------------------------------------------------------------------
+
+
+class TestRefusedComparisonSurfaces:
+    """Disjoint arms are refused on every surface: text, HTML, and JSON."""
+
+    def _disjoint_report(self) -> Report:
+        results_a = ConfigResults(
+            config="arm-a",
+            completed=[
+                _task("a1", 1.0, duration=10.0, cost=0.10),
+                _task("a2", 0.9, duration=11.0, cost=0.12),
+                _task("a3", 0.8, duration=12.0, cost=0.11),
+            ],
+        )
+        results_b = ConfigResults(
+            config="arm-b",
+            completed=[
+                _task("b1", 0.5, duration=20.0, cost=0.05),
+                _task("b2", 0.4, duration=21.0, cost=0.06),
+                _task("b3", 0.3, duration=22.0, cost=0.07),
+            ],
+        )
+        return generate_report("disjoint-exp", [results_a, results_b])
+
+    def test_disjoint_arms_comparison_refused(self) -> None:
+        report = self._disjoint_report()
+        assert len(report.comparisons) == 1
+        c = report.comparisons[0]
+        assert c.comparable is False
+        assert c.winner == ""
+        assert "disjoint task sets" in c.refusal_reason
+
+    def test_text_report_contains_refusal(self) -> None:
+        text = format_text_report(self._disjoint_report())
+        assert "NOT COMPARABLE" in text
+
+    def test_html_report_refuses_winner_badge(self) -> None:
+        html = format_html_report(self._disjoint_report())
+        assert "NOT COMPARABLE" in html
+        assert "Winner:" not in html
+        assert "disjoint task sets" in html
+
+    def test_json_report_carries_refusal_fields(self) -> None:
+        data = json.loads(format_json_report(self._disjoint_report()))
+        (c,) = data["comparisons"]
+        assert c["comparable"] is False
+        assert "disjoint task sets" in c["refusal_reason"]
+        assert c["winner"] == ""
+
+    def test_html_renders_softened_verdict(self) -> None:
+        """Comparable but not-significant pair: the softened verdict sentence
+        reaches the HTML card, not just the text report (same numbers as
+        tests/test_stats.py test_small_effect_softens_verdict)."""
+        a_scores = [0.95, 0.10, 0.85, 0.20, 0.75, 0.30]
+        b_scores = [0.93, 0.08, 0.83, 0.18, 0.72, 0.28]
+        results_a = ConfigResults(
+            config="arm-a",
+            completed=[
+                _task(f"t{i}", s, duration=10.0) for i, s in enumerate(a_scores)
+            ],
+        )
+        results_b = ConfigResults(
+            config="arm-b",
+            completed=[
+                _task(f"t{i}", s, duration=10.0) for i, s in enumerate(b_scores)
+            ],
+        )
+        report = generate_report("soft-exp", [results_a, results_b])
+        c = report.comparisons[0]
+        assert c.comparable is True
+        assert "nominally ahead" in c.summary
+
+        html = format_html_report(report)
+        assert "nominally ahead" in html
+
+
+# ---------------------------------------------------------------------------
 # format_csv_report
 # ---------------------------------------------------------------------------
 
@@ -1522,14 +1615,23 @@ class TestFormatHtmlReport:
         assert "task-b" in html
 
     def test_pairwise_comparison_cards(self) -> None:
-        """HTML contains pairwise comparison cards."""
+        """HTML contains pairwise comparison cards (>= 3 shared tasks so the
+        pair clears the paired-comparison floor and gets a winner badge)."""
         results_a = ConfigResults(
             config="alpha",
-            completed=[_task("t1", 1.0, duration=10.0, cost=0.20)],
+            completed=[
+                _task("t1", 1.0, duration=10.0, cost=0.20),
+                _task("t2", 0.9, duration=11.0, cost=0.21),
+                _task("t3", 0.8, duration=12.0, cost=0.19),
+            ],
         )
         results_b = ConfigResults(
             config="beta",
-            completed=[_task("t1", 0.5, duration=20.0, cost=0.10)],
+            completed=[
+                _task("t1", 0.5, duration=20.0, cost=0.10),
+                _task("t2", 0.4, duration=21.0, cost=0.11),
+                _task("t3", 0.3, duration=22.0, cost=0.09),
+            ],
         )
         report = generate_report("pair-exp", [results_a, results_b])
         html = format_html_report(report)
@@ -1778,19 +1880,20 @@ class TestFormatJsonReportPerTask:
 class TestRepeatsPerTaskMean:
     """Repeat trials must not overwrite each other in pairwise stats.
 
-    Fixture: 2 configs x 2 tasks x 3 repeats where the LAST repeat per
+    Fixture: 2 configs x 3 tasks x 3 repeats where the LAST repeat per
     task is equal across arms (0.5), so code that keys trials by task_id
     alone collapses to a 0.5-vs-0.5 tie (p=None / effect=0.0). Per-task
-    means differ strongly (A ~0.82 vs B ~0.18). The two tasks' means
-    differ slightly so the paired diffs have nonzero variance — cohens_d
+    means differ strongly (A ~0.8 vs B ~0.2). The tasks' means differ
+    slightly so the paired diffs have nonzero variance — cohens_d
     returns 0.0 for zero pooled variance, so an identical-means fixture
     cannot distinguish the fix (drift from the bead's exact fixture,
-    same collapse property).
+    same collapse property). Three tasks, not two, so the pair clears
+    the _MIN_PAIRED_TASKS refusal floor (codeprobe-f7rl.8).
     """
 
     # Per-task repeat scores, in repeat order (repeat_index 0, 1, 2).
-    _A = {"t1": [1.0, 1.0, 0.5], "t2": [1.0, 0.9, 0.5]}
-    _B = {"t1": [0.0, 0.0, 0.5], "t2": [0.0, 0.1, 0.5]}
+    _A = {"t1": [1.0, 1.0, 0.5], "t2": [1.0, 0.9, 0.5], "t3": [1.0, 0.8, 0.5]}
+    _B = {"t1": [0.0, 0.0, 0.5], "t2": [0.0, 0.1, 0.5], "t3": [0.0, 0.2, 0.5]}
 
     @staticmethod
     def _repeat_tasks(scores: dict[str, list[float]]) -> list[CompletedTask]:

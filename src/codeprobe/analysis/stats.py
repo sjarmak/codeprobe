@@ -25,6 +25,12 @@ PASS_THRESHOLD = 0.5
 
 _SMALL_SAMPLE_THRESHOLD = 10
 
+# Minimum shared (paired) tasks for a pairwise verdict. Below 3 shared tasks
+# no paired test in this module has meaningful power (wilcoxon_test already
+# returns None for n < 2), so compare_configs REFUSES the verdict instead of
+# caveating it (locked decision 6, epic codeprobe-f7rl).
+_MIN_PAIRED_TASKS = 3
+
 # Import AFTER PASS_THRESHOLD is defined: dual.py defers its own stats
 # import to function bodies, so this direction is the only safe one.
 from codeprobe.analysis.dual import (  # noqa: E402
@@ -400,7 +406,13 @@ class ConfigSummary:
 
 @dataclass(frozen=True)
 class PairwiseComparison:
-    """Statistical comparison between two configurations."""
+    """Statistical comparison between two configurations.
+
+    When ``comparable`` is False the pair was REFUSED (disjoint task sets or
+    below the paired-comparison floor): ``winner`` is empty, ``refusal_reason``
+    says why, and the diff fields are reference-only data, not a verdict
+    (locked decision 6, epic codeprobe-f7rl).
+    """
 
     config_a: str
     config_b: str
@@ -414,6 +426,8 @@ class PairwiseComparison:
     effect_size_method: str = ""
     ci_lower: float = 0.0
     ci_upper: float = 0.0
+    comparable: bool = True
+    refusal_reason: str = ""
 
 
 def summarize_config(
@@ -720,7 +734,10 @@ def compare_configs(
     """Compare two configurations and determine which is better.
 
     When *a_scores* and *b_scores* are provided (paired per-task scores),
-    statistical hypothesis tests and effect sizes are computed.
+    statistical hypothesis tests and effect sizes are computed. With no
+    paired scores (disjoint task sets) or fewer than ``_MIN_PAIRED_TASKS``
+    shared tasks the comparison is REFUSED: ``comparable=False``, no winner,
+    and the diff fields are reference-only (locked decision 6).
     """
     score_diff = a.mean_score - b.mean_score
 
@@ -729,6 +746,37 @@ def compare_configs(
         cost_diff = a.total_cost_usd - b.total_cost_usd
 
     speed_diff = a.mean_duration_sec - b.mean_duration_sec
+
+    # REFUSED verdicts on incomparable arms (locked decision 6, epic
+    # codeprobe-f7rl). Without this gate the disjoint case fell through every
+    # verdict guard (p_value and effect_size both None) straight to
+    # "{winner} wins" — the pair with the LEAST statistical basis made the
+    # STRONGEST claim. Refuse before any winner or test is computed; the
+    # diffs above stay populated as reference-only data.
+    refusal_reason = ""
+    if a_scores is None or b_scores is None:
+        refusal_reason = "no shared tasks between arms (disjoint task sets)"
+    elif len(a_scores) < _MIN_PAIRED_TASKS:
+        refusal_reason = (
+            f"only {len(a_scores)} shared task(s), below the "
+            f"{_MIN_PAIRED_TASKS}-task paired-comparison floor"
+        )
+    if refusal_reason:
+        return PairwiseComparison(
+            config_a=a.label,
+            config_b=b.label,
+            score_diff=score_diff,
+            cost_diff=cost_diff,
+            speed_diff=speed_diff,
+            winner="",
+            summary=(
+                f"{a.label} vs {b.label}: NOT COMPARABLE — {refusal_reason}; "
+                "no verdict (per-arm means are reference only)"
+            ),
+            comparable=False,
+            refusal_reason=refusal_reason,
+        )
+
     winner = _determine_winner(a, b)
 
     # Statistical tests when raw scores are available

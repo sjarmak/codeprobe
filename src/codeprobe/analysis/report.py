@@ -817,6 +817,8 @@ tr:hover{background:#f1f3f5}
 .pass{color:var(--success);font-weight:600}
 .fail{color:var(--danger);font-weight:600}
 .winner-badge{background:var(--success);color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem}
+.refused-badge{background:var(--danger);color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem}
+.verdict-line{color:var(--muted);font-size:.9rem;margin:.25rem 0 .5rem}
 .pairwise-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(350px,1fr));gap:1rem}
 .pairwise-card{border:1px solid var(--border);border-radius:8px;padding:1rem;background:var(--card)}
 .pairwise-card h4{margin-bottom:.5rem}
@@ -1015,14 +1017,27 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
         parts.append('<div class="pairwise-grid">\n')
         for c in report.comparisons:
             parts.append('<div class="pairwise-card">\n')
+            # REFUSED pairs (locked decision 6, epic codeprobe-f7rl) get a
+            # danger badge instead of a winner; comparable pairs additionally
+            # render the verdict sentence so softened verdicts ("nominally
+            # ahead") reach the HTML artifact, not just the text report.
+            if c.comparable:
+                badge = f'<span class="winner-badge">Winner: {_esc(c.winner)}</span>'
+            else:
+                badge = '<span class="refused-badge">NOT COMPARABLE</span>'
             parts.append(
-                f"<h4>{_esc(c.config_a)} vs {_esc(c.config_b)} "
-                f'<span class="winner-badge">Winner: {_esc(c.winner)}</span></h4>\n'
+                f"<h4>{_esc(c.config_a)} vs {_esc(c.config_b)} {badge}</h4>\n"
             )
+            parts.append(f'<p class="verdict-line">{_esc(c.summary)}</p>\n')
             parts.append(
                 f'<div class="stat-row"><span class="stat-label">Score diff</span>'
                 f'<span class="stat-value">{c.score_diff:+.3f}</span></div>\n'
             )
+            if not c.comparable:
+                # Reference-only card: the refusal already carries the reason;
+                # effect/p/CI are suppressed (never computed for refused pairs).
+                parts.append("</div>\n")
+                continue
             if c.effect_size is not None:
                 parts.append(
                     f'<div class="stat-row"><span class="stat-label">'

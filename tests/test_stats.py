@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from codeprobe.analysis.stats import (
     is_scorable_run,
     partition_reward_population,
@@ -140,13 +142,20 @@ class TestMcNemarConsistencyWithTaskPassed:
         from codeprobe.analysis.report import generate_report
         from codeprobe.models.experiment import ConfigResults
 
+        # t3/t4 are concordant filler pairs: they keep both pass rates at 0.5
+        # and lift the shared-task count past the _MIN_PAIRED_TASKS floor so
+        # the comparison is not refused (codeprobe-f7rl.8).
         tasks_a = [
             _task("t1", 1.0, scoring_details={"passed": False}),
             _task("t2", 1.0),
+            _task("t3", 1.0),
+            _task("t4", 0.0),
         ]
         tasks_b = [
             _task("t1", 1.0),
             _task("t2", 0.0),
+            _task("t3", 1.0),
+            _task("t4", 0.0),
         ]
         cr_a = ConfigResults(config="cfg-a", completed=tasks_a)
         cr_b = ConfigResults(config="cfg-b", completed=tasks_b)
@@ -307,7 +316,9 @@ class TestVerdictSoftening:
         assert " b wins" not in cmp.summary
 
     def test_tied_scores_report_tied(self) -> None:
-        cmp = self._run_compare([0.5, 0.5], [0.5, 0.5])
+        # 3 paired scores: at the _MIN_PAIRED_TASKS floor so the pair is
+        # comparable and the tied verdict (not a refusal) is exercised.
+        cmp = self._run_compare([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         assert "effectively tied" in cmp.summary
 
     def test_real_experiment_numbers_produce_softened_verdict(self) -> None:
@@ -317,6 +328,78 @@ class TestVerdictSoftening:
         cmp = self._run_compare(baseline, with_mcp)
         # score_diff ~0.02, small cohen's d, high p → softened verdict
         assert "nominally ahead" in cmp.summary
+
+
+class TestRefusedVerdicts:
+    """compare_configs REFUSES incomparable arms instead of picking a winner
+    (locked decision 6, epic codeprobe-f7rl): disjoint task sets or fewer than
+    _MIN_PAIRED_TASKS shared tasks produce comparable=False and no verdict."""
+
+    def _summaries(self, a_scores, b_scores):
+        a_cr = ConfigResults(
+            config="a",
+            completed=[_task(f"a{i}", s) for i, s in enumerate(a_scores)],
+        )
+        b_cr = ConfigResults(
+            config="b",
+            completed=[_task(f"b{i}", s) for i, s in enumerate(b_scores)],
+        )
+        return summarize_config(a_cr), summarize_config(b_cr)
+
+    def test_disjoint_arms_refused(self) -> None:
+        """No shared tasks (a_scores=None) → refusal, never '+65% → A wins'."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8, 0.85], [0.2, 0.3, 0.25])
+        cmp = compare_configs(a_sum, b_sum, a_scores=None, b_scores=None)
+        assert cmp.comparable is False
+        assert cmp.winner == ""
+        assert "NOT COMPARABLE" in cmp.summary
+        assert "disjoint task sets" in cmp.refusal_reason
+        assert "wins" not in cmp.summary
+        assert cmp.p_value is None
+        assert cmp.effect_size is None
+
+    def test_below_floor_refused(self) -> None:
+        """2 paired scores → refused with the floor reason."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8], [0.2, 0.3])
+        cmp = compare_configs(
+            a_sum, b_sum, a_scores=[0.9, 0.8], b_scores=[0.2, 0.3]
+        )
+        assert cmp.comparable is False
+        assert cmp.winner == ""
+        assert "below the 3-task paired-comparison floor" in cmp.refusal_reason
+        assert "NOT COMPARABLE" in cmp.summary
+
+    def test_at_floor_comparable(self) -> None:
+        """3 paired scores → comparable, normal verdict chain."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8, 0.85], [0.2, 0.3, 0.25])
+        cmp = compare_configs(
+            a_sum, b_sum, a_scores=[0.9, 0.8, 0.85], b_scores=[0.2, 0.3, 0.25]
+        )
+        assert cmp.comparable is True
+        assert cmp.refusal_reason == ""
+        assert cmp.winner == "a"
+        assert "NOT COMPARABLE" not in cmp.summary
+
+    def test_refused_keeps_reference_diffs(self) -> None:
+        """Refusal keeps score/cost/speed diffs as reference-only data."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8, 0.85], [0.2, 0.3, 0.25])
+        cmp = compare_configs(a_sum, b_sum, a_scores=None, b_scores=None)
+        assert cmp.comparable is False
+        assert cmp.score_diff == pytest.approx(
+            a_sum.mean_score - b_sum.mean_score
+        )
+        assert cmp.cost_diff is not None
+        assert cmp.speed_diff == pytest.approx(
+            a_sum.mean_duration_sec - b_sum.mean_duration_sec
+        )
 
 
 def _quota_task(task_id: str, *, duration: float = 99.0) -> CompletedTask:
