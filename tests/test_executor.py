@@ -9,12 +9,13 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from codeprobe.adapters.protocol import AdapterQuotaError, AgentConfig, AgentOutput
 from codeprobe.core.executor import (
     DryRunEstimate,
     TaskResult,
     _classify_error,
-    _git_reset_workdir,
     dry_run_estimate,
     execute_config,
     execute_task,
@@ -30,6 +31,14 @@ from codeprobe.core.isolation import (
 from codeprobe.core.preamble import DefaultPreambleResolver, _base_prompt
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
+
+# execute_config/execute_task route every run through a worktree slot
+# (codeprobe-f7rl.2), which needs a real git checkout at repo_path. These
+# unit tests were written against nonexistent repo paths (``Path("/repo")``),
+# so they get the passthrough fake (see tests/conftest.py). Real-worktree
+# behavior is covered by tests/test_executor_worktree_safety.py and
+# tests/test_executor_dual_isolation.py.
+pytestmark = pytest.mark.usefixtures("fake_worktree_isolation")
 
 
 def _make_task(
@@ -814,63 +823,22 @@ def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
     assert len(results) == 3
 
 
-# --- Git reset between sequential tasks ---
+# --- Sequential runs execute inside worktree slots (codeprobe-f7rl.2) ---
 
 
-def test_execute_config_resets_workdir_between_sequential_tasks(tmp_path: Path):
-    """Git reset runs between tasks and once after the last task."""
-    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
-    adapter = FakeAdapter(stdout="output")
-    exp_config = ExperimentConfig(label="baseline")
-    agent_config = AgentConfig()
-
-    with patch("codeprobe.core.executor._git_reset_workdir") as mock_reset:
-        execute_config(
-            adapter=adapter,
-            task_dirs=tasks,
-            repo_path=Path("/repo"),
-            experiment_config=exp_config,
-            agent_config=agent_config,
-            parallel=1,
-        )
-        # Reset between tasks (2) + final cleanup (1) = 3
-        assert mock_reset.call_count == 3
-        # First positional arg should be repo_path
-        assert mock_reset.call_args_list[0][0][0] == Path("/repo")
-
-
-def test_execute_config_no_reset_in_parallel_mode(tmp_path: Path):
-    """Git reset does NOT run between tasks in parallel mode (parallel>1)."""
+def test_execute_config_sequential_acquires_and_releases_slot(tmp_path: Path):
+    """Sequential mode acquires/releases a worktree slot per task, then
+    cleans up the owned pool — the primary checkout is never the workspace."""
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
     adapter = FakeAdapter(stdout="output")
     exp_config = ExperimentConfig(label="baseline")
     agent_config = AgentConfig()
 
     fake_iso = MagicMock()
-    fake_iso.acquire.return_value = tmp_path
-    with (
-        patch("codeprobe.core.executor._git_reset_workdir") as mock_reset,
-        patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso),
-    ):
-        execute_config(
-            adapter=adapter,
-            task_dirs=tasks,
-            repo_path=tmp_path,
-            experiment_config=exp_config,
-            agent_config=agent_config,
-            parallel=3,
-        )
-        mock_reset.assert_not_called()
-
-
-def test_execute_config_final_reset_for_single_task(tmp_path: Path):
-    """Even with one task, final cleanup reset runs to restore original HEAD."""
-    tasks = [_make_task(tmp_path / "task-000", passing=True)]
-    adapter = FakeAdapter(stdout="output")
-    exp_config = ExperimentConfig(label="baseline")
-    agent_config = AgentConfig()
-
-    with patch("codeprobe.core.executor._git_reset_workdir") as mock_reset:
+    fake_iso.acquire.return_value = tmp_path / "slot-0"
+    with patch(
+        "codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso
+    ) as mock_cls:
         execute_config(
             adapter=adapter,
             task_dirs=tasks,
@@ -879,8 +847,110 @@ def test_execute_config_final_reset_for_single_task(tmp_path: Path):
             agent_config=agent_config,
             parallel=1,
         )
-        # Final cleanup reset after the single task
-        assert mock_reset.call_count == 1
+    mock_cls.assert_called_once_with(
+        Path("/repo"), pool_size=1, namespace="baseline"
+    )
+    assert fake_iso.acquire.call_count == 3
+    assert fake_iso.release.call_count == 3
+    fake_iso.cleanup.assert_called_once()
+
+
+def test_execute_config_sequential_runs_task_in_slot(tmp_path: Path):
+    """The agent prompt references the acquired slot, not the primary repo."""
+    tasks = [_make_task(tmp_path / "task-000", passing=True)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    fake_iso = MagicMock()
+    slot = tmp_path / "slot-0"
+    fake_iso.acquire.return_value = slot
+    with patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso):
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=1,
+        )
+    assert len(adapter.run_calls) == 1
+    prompt = adapter.run_calls[0][0]
+    assert str(slot) in prompt
+    assert "/repo" not in prompt
+
+
+def test_execute_config_single_task_uses_slot(tmp_path: Path):
+    """Even a single-task run executes inside a worktree slot."""
+    tasks = [_make_task(tmp_path / "task-000", passing=True)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    fake_iso = MagicMock()
+    fake_iso.acquire.return_value = tmp_path / "slot-0"
+    with patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso):
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=1,
+        )
+    assert fake_iso.acquire.call_count == 1
+    assert fake_iso.release.call_count == 1
+    fake_iso.cleanup.assert_called_once()
+
+
+def test_execute_config_sequential_uses_caller_isolation(tmp_path: Path):
+    """A caller-provided isolation strategy is used in sequential mode and
+    NOT cleaned up (the caller owns it)."""
+    tasks = [_make_task(tmp_path / "task-000", passing=True)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    caller_iso = MagicMock()
+    caller_iso.acquire.return_value = tmp_path / "slot-0"
+    execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+        parallel=1,
+        isolation=caller_iso,
+    )
+    assert caller_iso.acquire.call_count == 1
+    assert caller_iso.release.call_count == 1
+    caller_iso.cleanup.assert_not_called()
+
+
+def test_execute_config_sequential_releases_slot_on_crash(tmp_path: Path):
+    """A crashing trial still releases its slot back to the pool."""
+    tasks = [_make_task(tmp_path / "task-000", passing=True)]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+    agent_config = AgentConfig()
+
+    fake_iso = MagicMock()
+    fake_iso.acquire.return_value = tmp_path / "slot-0"
+    with (
+        patch("codeprobe.core.executor.get_scorer", return_value=_RaisingScorer()),
+        patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso),
+    ):
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=exp_config,
+            agent_config=agent_config,
+            parallel=1,
+        )
+    assert fake_iso.release.call_count == 1
+    assert len(results) == 1
+    assert results[0].status == "error"
 
 
 # --- Worktree isolation tests ---
@@ -1165,16 +1235,15 @@ class TestConcurrencySemaphore:
 
         adapter = TrackingAdapter(stdout="output")
 
-        with patch("codeprobe.core.executor._git_reset_workdir"):
-            execute_config(
-                adapter=adapter,
-                task_dirs=tasks,
-                repo_path=tmp_path,
-                experiment_config=ExperimentConfig(label="baseline"),
-                agent_config=AgentConfig(),
-                parallel=1,
-                pristine_config=True,
-            )
+        execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=tmp_path,
+            experiment_config=ExperimentConfig(label="baseline"),
+            agent_config=AgentConfig(),
+            parallel=1,
+            pristine_config=True,
+        )
 
         # One isolate_session call for the whole serial config run.
         assert len(isolate_calls) == 1
@@ -1199,16 +1268,15 @@ class TestConcurrencySemaphore:
         tasks = [_make_task(tmp_path / "task-000", passing=True)]
         adapter = FakeAdapter(stdout="output")
 
-        with patch("codeprobe.core.executor._git_reset_workdir"):
-            results = execute_config(
-                adapter=adapter,
-                task_dirs=tasks,
-                repo_path=tmp_path,
-                experiment_config=ExperimentConfig(label="baseline"),
-                agent_config=AgentConfig(),
-                parallel=1,
-                pristine_config=True,
-            )
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=tmp_path,
+            experiment_config=ExperimentConfig(label="baseline"),
+            agent_config=AgentConfig(),
+            parallel=1,
+            pristine_config=True,
+        )
 
         assert len(results) == 1
         assert results[0].status != "error"
@@ -1958,8 +2026,8 @@ class TestCommitPinning:
             execute_task(adapter, task_dir, Path("/repo"), config, worktree_path=wt)
             mock_pin.assert_called_once_with(wt, "abc123def456^")
 
-    def test_sequential_restore_ref_passed_to_reset(self, tmp_path: Path) -> None:
-        """In sequential mode, _git_reset_workdir receives restore_ref."""
+    def test_sequential_pin_targets_slot_not_repo_path(self, tmp_path: Path) -> None:
+        """Sequential pinning tasks pin the acquired slot, never repo_path."""
         import json
 
         tasks = []
@@ -1981,10 +2049,14 @@ class TestCommitPinning:
         exp_config = ExperimentConfig(label="baseline")
         agent_config = AgentConfig()
 
+        fake_iso = MagicMock()
+        slot = tmp_path / "slot-0"
+        fake_iso.acquire.return_value = slot
         with (
-            patch("codeprobe.core.executor._git_reset_workdir") as mock_reset,
-            patch("codeprobe.core.executor.git_pin_commit"),
-            patch("codeprobe.core.executor._get_head_ref", return_value="main"),
+            patch("codeprobe.core.executor.git_pin_commit") as mock_pin,
+            patch(
+                "codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso
+            ),
         ):
             execute_config(
                 adapter=adapter,
@@ -1994,11 +2066,9 @@ class TestCommitPinning:
                 agent_config=agent_config,
                 parallel=1,
             )
-            # Between-task reset + final cleanup = 2 calls
-            assert mock_reset.call_count == 2
-            # All calls should pass restore_ref="main"
-            for c in mock_reset.call_args_list:
-                assert c[1]["restore_ref"] == "main"
+            assert mock_pin.call_count == 2
+            for c in mock_pin.call_args_list:
+                assert c[0][0] == slot
 
 
 class TestExecuteTaskMultiRepo:
@@ -2090,37 +2160,6 @@ class TestExecuteTaskMultiRepo:
         with patch("codeprobe.core.executor.setup_multi_repo_workspace") as mock_setup:
             execute_task(adapter, task_dir, Path("/repo"), config, worktree_path=wt)
             mock_setup.assert_called_once_with(wt, additional)
-
-
-class TestGitResetWorkdirMultiRepo:
-    """_git_reset_workdir also cleans workspace/repos/ between tasks."""
-
-    def test_removes_repos_dir(self, tmp_path: Path) -> None:
-
-        # Fake git repo
-        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
-        subprocess.run(
-            ["git", "config", "commit.gpgsign", "false"],
-            cwd=tmp_path,
-            check=True,
-        )
-        (tmp_path / "a.txt").write_text("a")
-        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-        subprocess.run(
-            ["git", "commit", "-q", "-m", "init"],
-            cwd=tmp_path,
-            check=True,
-            capture_output=True,
-        )
-
-        # Simulate leftover multi-repo layout
-        (tmp_path / "repos" / "repoB").mkdir(parents=True)
-        (tmp_path / "repos" / "repoB" / "file.txt").write_text("leftover")
-
-        _git_reset_workdir(tmp_path)
-        assert not (tmp_path / "repos").exists()
 
 
 # ---------------------------------------------------------------------------

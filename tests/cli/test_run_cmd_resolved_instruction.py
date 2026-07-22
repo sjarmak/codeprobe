@@ -1,14 +1,17 @@
 """R6: persist resolved instruction alongside each task run.
 
 Verifies that ``codeprobe run`` writes
-``runs/{config}/{task_id}/instruction.resolved.md`` containing the byte-exact
-prompt passed to the agent, and that an IO failure during that write aborts
-the run (fail-loud per INV1 — no silent skip).
+``runs/{config}/{task_id}/instruction.resolved.md`` containing the prompt
+passed to the agent — byte-exact up to the workspace path (the resolved file
+is written pre-run and names the primary repo; the runtime prompt names the
+per-trial worktree slot, codeprobe-f7rl.2) — and that an IO failure during
+that write aborts the run (fail-loud per INV1 — no silent skip).
 """
 
 from __future__ import annotations
 
 import json
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -17,6 +20,13 @@ from unittest.mock import patch
 import pytest
 
 from tests.conftest import FakeAdapter
+
+_WORKSPACE_RE = re.compile(r"(You are working on the repository at ).+?(\. Follow)")
+
+
+def _normalize_workspace(prompt: str) -> str:
+    """Mask the workspace path — the only run-specific part of the prompt."""
+    return _WORKSPACE_RE.sub(r"\1<WORKSPACE>\2", prompt, count=1)
 
 
 def _init_git_repo(repo: Path) -> None:
@@ -145,11 +155,18 @@ def test_resolved_instruction_written_and_matches_agent_prompt(
     resolved = exp_dir / "runs" / "baseline" / task_id / "instruction.resolved.md"
     assert resolved.is_file(), f"expected {resolved} to exist"
 
-    # Adapter must have been called with exactly the content of the file.
+    # Adapter must have been called with the content of the file, modulo the
+    # workspace path: the agent works in a worktree slot, never the primary
+    # checkout (codeprobe-f7rl.2).
     assert adapter.run_calls, "FakeAdapter.run was never invoked"
     prompt_passed = adapter.run_calls[0][0]
-    assert resolved.read_text(encoding="utf-8") == prompt_passed, (
-        "instruction.resolved.md content must byte-exactly match prompt"
+    assert _normalize_workspace(
+        resolved.read_text(encoding="utf-8")
+    ) == _normalize_workspace(prompt_passed), (
+        "instruction.resolved.md must match the prompt up to the workspace path"
+    )
+    assert f"repository at {repo}. Follow" not in prompt_passed, (
+        "runtime prompt references the primary checkout instead of a worktree"
     )
     # Sanity: the instruction body is embedded in the resolved prompt.
     assert instruction_text in prompt_passed
@@ -201,7 +218,9 @@ def test_mcp_config_derives_instruction_mcp_variant_for_legacy_experiments(
 
     assert adapter.run_calls, "FakeAdapter.run was never invoked"
     prompt_passed = adapter.run_calls[0][0]
-    assert resolved.read_text(encoding="utf-8") == prompt_passed
+    assert _normalize_workspace(
+        resolved.read_text(encoding="utf-8")
+    ) == _normalize_workspace(prompt_passed)
     assert "MCP-VARIANT-INSTRUCTION" in prompt_passed
     assert "DEFAULT-ONLY-INSTRUCTION" not in prompt_passed
 
@@ -291,7 +310,9 @@ def test_resolved_instruction_renders_task_preamble_context(
     prompt_text = resolved.read_text(encoding="utf-8")
 
     assert adapter.run_calls, "FakeAdapter.run was never invoked"
-    assert prompt_text == adapter.run_calls[0][0]
+    assert _normalize_workspace(prompt_text) == _normalize_workspace(
+        adapter.run_calls[0][0]
+    )
     assert "github.com/acme/widgets" in prompt_text
     # jf28: sg_repo flows through repo_scope; the literal {{sg_repo}}
     # token no longer appears in the v2 sourcegraph preamble.

@@ -524,8 +524,14 @@ def _make_task_dir(base: Path, name: str, *, passing: bool = True) -> Path:
     return task_dir
 
 
+@pytest.mark.usefixtures("fake_worktree_isolation")
 class TestBudgetWarningVisibility:
-    """Budget warnings must go to stderr and be visible without -v flag."""
+    """Budget warnings must go to stderr and be visible without -v flag.
+
+    Uses the passthrough isolation fake (tests/conftest.py) because these
+    tests run execute_config against a nonexistent repo path and every run
+    path now requires a worktree slot (codeprobe-f7rl.2).
+    """
 
     def test_budget_exceeded_message_on_stderr_sequential(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

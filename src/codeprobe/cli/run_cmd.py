@@ -1085,17 +1085,6 @@ def run_eval(
 
             click.echo(f"\nRunning config: {exp_config.label} ({len(task_dirs)} tasks)")
 
-            # Compute directories to exclude from git clean between sequential
-            # tasks so the experiment dir (untracked) isn't deleted.
-            _clean_excludes: tuple[str, ...] = ()
-            try:
-                rel = exp_dir.resolve().relative_to(repo_root)
-                top_dir = str(rel).split("/")[0]
-                if top_dir and top_dir != ".":
-                    _clean_excludes = (top_dir,)
-            except ValueError:
-                pass  # experiment dir is outside the repo
-
             dispatcher = EventDispatcher()
             if out_mode.mode == "ndjson":
                 # NDJSON mode: stream one ``record_type="event"`` per task to
@@ -1186,7 +1175,6 @@ def run_eval(
                     max_cost_usd=max_cost_usd,
                     parallel=parallel,
                     repeats=repeats,
-                    clean_excludes=_clean_excludes,
                     event_dispatcher=dispatcher,
                     preamble_resolver=preamble_resolver,
                     trace_recorder=trace_recorder,

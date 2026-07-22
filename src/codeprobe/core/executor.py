@@ -33,9 +33,7 @@ from codeprobe.core.events import (
 from codeprobe.core.isolation import (
     IsolationStrategy,
     WorktreeIsolation,
-    cleanup_multi_repo_workspace,
     git_pin_commit,
-    git_restore_clean,
     quarantine_local_source,
     quarantine_sibling_experiments,
     setup_multi_repo_workspace,
@@ -553,40 +551,46 @@ def execute_task(
             ),
         )
 
-    # Per-run worktree for dual-mode tasks. Mined test.sh scripts hardcode
-    # ``cd {repo_path}`` to the original repo, so two parallel runs of the
-    # same dual task would trample each other's workspace state. Bind a
-    # dedicated worktree slot from the isolation pool when the caller
-    # didn't already supply one.
-    _owned_dual_iso: IsolationStrategy | None = None
-    _owned_dual_wt: Path | None = None
-    if reward_type == "dual" and worktree_path is None:
+    # Per-run worktree for tasks that mutate the workspace: dual mode
+    # (mined test.sh scripts hardcode ``cd {repo_path}``, so two parallel
+    # runs of the same dual task would trample each other), commit pinning,
+    # and multi-repo layout. Bind a dedicated worktree slot when the caller
+    # didn't already supply one, so git checkout/restore/clean can never
+    # target the caller's primary checkout (codeprobe-f7rl.2).
+    pin_commit = _meta_block.get("ground_truth_commit", "")
+    additional_repos = _meta_block.get("additional_repos", [])
+    _owned_iso: IsolationStrategy | None = None
+    _owned_wt: Path | None = None
+    _mutates_workspace = (
+        reward_type == "dual" or bool(pin_commit) or bool(additional_repos)
+    )
+    if _mutates_workspace and worktree_path is None:
         try:
             if dual_worktree_factory is not None:
-                _owned_dual_iso = dual_worktree_factory(
-                    repo_path, f"dual-{task_id}-{uuid.uuid4().hex[:8]}"
+                _owned_iso = dual_worktree_factory(
+                    repo_path, f"task-{task_id}-{uuid.uuid4().hex[:8]}"
                 )
             else:
-                _owned_dual_iso = WorktreeIsolation(
+                _owned_iso = WorktreeIsolation(
                     repo_path,
                     pool_size=1,
-                    namespace=f"dual-{task_id}-{uuid.uuid4().hex[:8]}",
+                    namespace=f"task-{task_id}-{uuid.uuid4().hex[:8]}",
                 )
-            _owned_dual_wt = _owned_dual_iso.acquire()
+            _owned_wt = _owned_iso.acquire()
         except (subprocess.CalledProcessError, OSError, ValueError) as exc:
             # Roll back a half-built isolation before bailing.
-            if _owned_dual_iso is not None:
+            if _owned_iso is not None:
                 try:
-                    _owned_dual_iso.cleanup()
+                    _owned_iso.cleanup()
                 except Exception:  # pragma: no cover — defensive
                     pass
             return _error_result(
-                f"Failed to acquire dual-mode worktree: {exc}",
+                f"Failed to acquire task worktree: {exc}",
                 error_category="system",
             )
 
-    # Effective worktree: caller-provided > owned dual worktree > None.
-    _effective_wt: Path | None = worktree_path or _owned_dual_wt
+    # Effective worktree: caller-provided > owned worktree > None.
+    _effective_wt: Path | None = worktree_path or _owned_wt
 
     try:
         try:
@@ -631,8 +635,9 @@ def execute_task(
 
         # Pin workspace to pre-merge commit when task has a ground_truth_commit.
         # The agent starts from the parent of the merge commit (the state before
-        # the PR landed) and must reproduce the changes.
-        pin_commit = (_task_meta.get("metadata") or {}).get("ground_truth_commit", "")
+        # the PR landed) and must reproduce the changes. When a pin applies,
+        # _effective_wt is always set (owned or caller-supplied), so the pin
+        # never targets repo_path.
         effective_workspace = _effective_wt or repo_path
         if pin_commit:
             try:
@@ -650,11 +655,8 @@ def execute_task(
                 )
 
         # Cross-repo tasks: lay out additional repos as workspace/repos/<name>
-        # and pin each to its own ground_truth_commit^.  Primary repo keeps
-        # its existing location so single-repo tasks are unaffected.
-        additional_repos = (_task_meta.get("metadata") or {}).get(
-            "additional_repos", []
-        )
+        # and pin each to its own ground_truth_commit^.  Like commit pinning,
+        # this only ever runs against a worktree, never repo_path.
         if additional_repos:
             try:
                 setup_multi_repo_workspace(effective_workspace, additional_repos)
@@ -885,19 +887,19 @@ def execute_task(
             resolved_preambles=resolved_preambles,
         )
     finally:
-        if _owned_dual_iso is not None:
-            if _owned_dual_wt is not None:
+        if _owned_iso is not None:
+            if _owned_wt is not None:
                 try:
-                    _owned_dual_iso.release(_owned_dual_wt)
+                    _owned_iso.release(_owned_wt)
                 except Exception:  # pragma: no cover — defensive
                     logger.debug(
-                        "[%s] dual-worktree release failed", task_id, exc_info=True
+                        "[%s] owned-worktree release failed", task_id, exc_info=True
                     )
             try:
-                _owned_dual_iso.cleanup()
+                _owned_iso.cleanup()
             except Exception:  # pragma: no cover — defensive
                 logger.debug(
-                    "[%s] dual-worktree cleanup failed", task_id, exc_info=True
+                    "[%s] owned-worktree cleanup failed", task_id, exc_info=True
                 )
 
 
@@ -913,77 +915,6 @@ def _budget_msg(msg: str) -> None:
     """
     sys.stderr.write(f"{msg}\n")
     sys.stderr.flush()
-
-
-def _get_head_ref(repo_path: Path) -> str:
-    """Return the current branch name or commit SHA.
-
-    If on a branch, returns the branch name (e.g. ``main``).
-    If detached, returns the full commit SHA.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "symbolic-ref", "--short", "HEAD"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    # Detached HEAD — return commit SHA
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    return "HEAD"
-
-
-def _git_reset_workdir(
-    repo_path: Path,
-    *,
-    extra_excludes: tuple[str, ...] = (),
-    restore_ref: str = "",
-) -> None:
-    """Reset the working directory to a clean state between sequential tasks.
-
-    Runs ``git restore .`` and ``git clean -fd`` to discard modifications
-    and remove untracked files so task N's leftovers don't corrupt task N+1.
-
-    When *restore_ref* is set, also checks out that ref to undo any commit
-    pinning from the previous task.
-
-    Also removes ``repo_path/repos/`` if present so multi-repo layouts
-    from the previous task don't leak into the next one.
-    """
-    cleanup_multi_repo_workspace(repo_path)
-    try:
-        if restore_ref:
-            subprocess.run(
-                ["git", "checkout", restore_ref],
-                cwd=repo_path,
-                check=True,
-                capture_output=True,
-            )
-        git_restore_clean(repo_path, extra_excludes=extra_excludes)
-    except subprocess.CalledProcessError as exc:
-        logger.warning(
-            "Git reset failed (exit %d): %s",
-            exc.returncode,
-            exc.stderr.decode(errors="replace") if exc.stderr else "",
-        )
-    except OSError as exc:
-        logger.warning("Git reset failed: %s", exc)
 
 
 def _save_task_artifacts(
@@ -1107,7 +1038,6 @@ def execute_config(
     parallel: int = 1,
     isolation: IsolationStrategy | None = None,
     repeats: int = 1,
-    clean_excludes: tuple[str, ...] = (),
     event_dispatcher: EventDispatcher | None = None,
     trace_recorder: TraceRecorder | None = None,
     config_max_turns_source: str = "",
@@ -1119,6 +1049,9 @@ def execute_config(
     Saves per-task artifacts (agent_output.txt, scoring.json) alongside the
     checkpoint file.
 
+    Every trial executes inside a worktree slot acquired from *isolation*
+    (auto-created when None) — the primary checkout at *repo_path* is never
+    an agent workspace and never the target of git restore/clean/checkout.
     When *parallel* > 1, tasks are dispatched to a thread pool.  Each agent
     subprocess runs in its own process so threads are IO-bound (waiting for
     the subprocess to finish).
@@ -1372,9 +1305,6 @@ def execute_config(
         """
         return _budget_exceeded() or quota_exhausted
 
-    # Capture original HEAD so we can restore it after commit pinning.
-    original_ref = _get_head_ref(repo_path)
-
     # Quarantine sibling experiment dirs at the repo root for the duration of
     # the dispatch.  Without this, an agent in a slot worktree can ``cd ../..``
     # to the repo root and read another experiment's ground_truth.json.
@@ -1385,163 +1315,167 @@ def execute_config(
         else contextlib.nullcontext()
     )
 
-    with quarantine_cm:
-        if workers <= 1:
-            # Sequential — preserves original behavior and budget checks.
-            # Session isolation mirrors the parallel branch: one namespaced
-            # slot env for the whole config, cleaned up in the finally.
-            # Without it, serial runs used the real ~/.claude wholesale and
-            # serial vs parallel arms saw different config state.
-            session_namespace = _build_session_namespace(experiment_config.label)
-            try:
+    # Every run path executes inside a worktree slot — sequential runs use a
+    # pool of one (codeprobe-f7rl.2, locked decision 3). The primary checkout
+    # at repo_path is never an agent workspace and never the target of git
+    # restore/clean/checkout; release() resets the SLOT between tasks so
+    # task N's leftovers can't corrupt task N+1.
+    owns_isolation = False
+    active_isolation = isolation
+    if active_isolation is None:
+        active_isolation = WorktreeIsolation(
+            repo_path,
+            pool_size=max(workers, 1),
+            namespace=experiment_config.label,
+        )
+        owns_isolation = True
+
+    def _run_in_slot(
+        task_dir: Path,
+        repeat_index: int,
+        session_namespace: str | None = None,
+        precomputed_session_env: dict[str, str] | None = None,
+    ) -> TaskResult:
+        """Run one trial inside an acquired worktree slot.
+
+        Shared by the sequential and parallel dispatch paths. Parallel
+        passes *session_namespace* and lets each dispatch derive its own
+        slot-scoped env (different tasks may land in different slots).
+        Sequential passes a *precomputed_session_env* instead — there is
+        only ever one slot, so isolate_session is resolved once for the
+        whole config run rather than once per task (codeprobe-f7rl.24).
+        """
+        if event_dispatcher is not None:
+            event_dispatcher.emit(
+                TaskStarted(
+                    task_id=task_dir.name,
+                    config_label=experiment_config.label,
+                    timestamp=time.time(),
+                )
+            )
+        wt = active_isolation.acquire()
+        try:
+            sess_env = precomputed_session_env
+            if sess_env is None and session_namespace is not None:
+                # Extract slot index from worktree path name (e.g. "slot-0" → 0)
+                try:
+                    slot_id = int(wt.name.rsplit("-", 1)[-1])
+                except (ValueError, IndexError):
+                    slot_id = 0
                 sess_env = _call_isolate_session(
                     adapter,
-                    0,
+                    slot_id,
                     namespace=session_namespace,
                     pristine=pristine_config,
                 )
-                for idx, (task_dir, repeat_index) in enumerate(pending_work):
-                    if quota_exhausted:
-                        _budget_msg(
-                            "OAuth quota exhausted — halting remaining "
-                            f"{len(pending_work) - idx} trials"
-                        )
-                        break
-                    if _budget_exceeded():
-                        _budget_msg(
-                            f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                            f"${max_cost_usd:.2f} — halting"
-                        )
-                        break
-                    # Emit TaskStarted event
-                    if event_dispatcher is not None:
-                        event_dispatcher.emit(
-                            TaskStarted(
-                                task_id=task_dir.name,
-                                config_label=experiment_config.label,
-                                timestamp=time.time(),
-                            )
-                        )
-                    # Reset working directory between tasks so leftovers from
-                    # task N don't corrupt task N+1's results.  Also restores
-                    # the original branch/HEAD in case the previous task pinned
-                    # to a specific commit.
-                    if idx > 0:
-                        _git_reset_workdir(
-                            repo_path,
-                            extra_excludes=clean_excludes,
-                            restore_ref=original_ref,
-                        )
-                    try:
-                        task_result = _run_one(
-                            task_dir,
-                            repeat_index=repeat_index,
-                            session_env=sess_env,
-                        )
-                    except Exception as exc:  # noqa: BLE001 — preserve, don't drop
-                        # Mirror the parallel path: a per-task crash becomes one
-                        # error result and the rest of the config still runs
-                        # (codeprobe-s6o). Without this, an uncaught scorer
-                        # exception aborted execute_config and dropped every
-                        # already-collected result for this config.
-                        task_result = _crash_result(task_dir, repeat_index, exc)
-                    _handle_result(task_result)
-                # Restore original HEAD after all sequential tasks complete so
-                # the repo isn't left on a detached commit from the last task.
-                _git_reset_workdir(
-                    repo_path, extra_excludes=clean_excludes, restore_ref=original_ref
-                )
-            finally:
-                _cleanup_session_namespace(adapter, session_namespace)
-        else:
-            # Parallel — dispatch all pending tasks to thread pool
-            logger.info(
-                "[%s] Dispatching %d work items with %d workers",
-                experiment_config.label,
-                len(pending_work),
-                workers,
+            return _run_one(
+                task_dir,
+                repeat_index=repeat_index,
+                worktree_path=wt,
+                session_env=sess_env,
             )
-            session_namespace = _build_session_namespace(experiment_config.label)
-            # Auto-create isolation when parallel > 1 and none provided
-            owns_isolation = False
-            active_isolation = isolation
-            if active_isolation is None:
-                active_isolation = WorktreeIsolation(
-                    repo_path, pool_size=workers, namespace=experiment_config.label
-                )
-                owns_isolation = True
+        finally:
+            active_isolation.release(wt)
 
-            def _run_isolated(task_dir: Path, repeat_index: int) -> TaskResult:
-                # Emit TaskStarted event
-                if event_dispatcher is not None:
-                    event_dispatcher.emit(
-                        TaskStarted(
-                            task_id=task_dir.name,
-                            config_label=experiment_config.label,
-                            timestamp=time.time(),
-                        )
-                    )
-                wt = active_isolation.acquire()
+    with quarantine_cm:
+        try:
+            if workers <= 1:
+                # Sequential — one namespaced slot env for the whole config,
+                # resolved once up front and reused for every task. Without
+                # this, serial runs used the real ~/.claude wholesale and
+                # serial vs parallel arms saw different config state.
+                session_namespace = _build_session_namespace(experiment_config.label)
                 try:
-                    # Extract slot index from worktree path name (e.g. "slot-0" → 0)
-                    slot_name = wt.name
-                    try:
-                        slot_id = int(slot_name.rsplit("-", 1)[-1])
-                    except (ValueError, IndexError):
-                        slot_id = 0
                     sess_env = _call_isolate_session(
                         adapter,
-                        slot_id,
+                        0,
                         namespace=session_namespace,
                         pristine=pristine_config,
                     )
-                    return _run_one(
-                        task_dir,
-                        repeat_index=repeat_index,
-                        worktree_path=wt,
-                        session_env=sess_env,
-                    )
-                finally:
-                    active_isolation.release(wt)
-
-            try:
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    future_to_work = {
-                        pool.submit(_run_isolated, td, ri): (td, ri)
-                        for td, ri in pending_work
-                    }
-                    for future in as_completed(future_to_work):
-                        task_dir, repeat_index = future_to_work[future]
+                    for idx, (task_dir, repeat_index) in enumerate(pending_work):
+                        if quota_exhausted:
+                            _budget_msg(
+                                "OAuth quota exhausted — halting remaining "
+                                f"{len(pending_work) - idx} trials"
+                            )
+                            break
+                        if _budget_exceeded():
+                            _budget_msg(
+                                f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                                f"${max_cost_usd:.2f} — halting"
+                            )
+                            break
                         try:
-                            task_result = future.result()
+                            task_result = _run_in_slot(
+                                task_dir,
+                                repeat_index,
+                                precomputed_session_env=sess_env,
+                            )
                         except Exception as exc:  # noqa: BLE001 — preserve, don't drop
+                            # Mirror the parallel path: a per-task crash becomes
+                            # one error result and the rest of the config still
+                            # runs (codeprobe-s6o). Without this, an uncaught
+                            # scorer exception aborted execute_config and
+                            # dropped every already-collected result.
                             task_result = _crash_result(task_dir, repeat_index, exc)
                         _handle_result(task_result)
+                finally:
+                    _cleanup_session_namespace(adapter, session_namespace)
+            else:
+                # Parallel — dispatch all pending tasks to thread pool
+                logger.info(
+                    "[%s] Dispatching %d work items with %d workers",
+                    experiment_config.label,
+                    len(pending_work),
+                    workers,
+                )
+                session_namespace = _build_session_namespace(experiment_config.label)
+                try:
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        future_to_work = {
+                            pool.submit(
+                                _run_in_slot, td, ri, session_namespace
+                            ): (td, ri)
+                            for td, ri in pending_work
+                        }
+                        for future in as_completed(future_to_work):
+                            task_dir, repeat_index = future_to_work[future]
+                            try:
+                                task_result = future.result()
+                            except (
+                                Exception
+                            ) as exc:  # noqa: BLE001 — preserve, don't drop
+                                task_result = _crash_result(
+                                    task_dir, repeat_index, exc
+                                )
+                            _handle_result(task_result)
 
-                        # Halt on either budget exhaustion or quota
-                        # detection (codeprobe-9xrl). Both are
-                        # unrecoverable within this run; only
-                        # not-yet-started futures are cancellable, but
-                        # that's still cheaper than letting them all
-                        # run to a guaranteed failure.
-                        if _should_halt():
-                            if quota_exhausted:
-                                _budget_msg(
-                                    "OAuth quota exhausted — cancelling "
-                                    "pending trials"
-                                )
-                            else:
-                                _budget_msg(
-                                    f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                                    f"${max_cost_usd:.2f} — halting"
-                                )
-                            for f in future_to_work:
-                                f.cancel()
-                            break
-            finally:
-                _cleanup_session_namespace(adapter, session_namespace)
-                if owns_isolation:
-                    active_isolation.cleanup()
+                            # Halt on either budget exhaustion or quota
+                            # detection (codeprobe-9xrl). Both are
+                            # unrecoverable within this run; only
+                            # not-yet-started futures are cancellable, but
+                            # that's still cheaper than letting them all
+                            # run to a guaranteed failure.
+                            if _should_halt():
+                                if quota_exhausted:
+                                    _budget_msg(
+                                        "OAuth quota exhausted — cancelling "
+                                        "pending trials"
+                                    )
+                                else:
+                                    _budget_msg(
+                                        f"Cost budget exceeded: "
+                                        f"${cumulative_cost:.2f} > "
+                                        f"${max_cost_usd:.2f} — halting"
+                                    )
+                                for f in future_to_work:
+                                    f.cancel()
+                                break
+                finally:
+                    _cleanup_session_namespace(adapter, session_namespace)
+        finally:
+            if owns_isolation:
+                active_isolation.cleanup()
 
     # Warn if >30% of tasks have system errors (capacity issues)
     if results:

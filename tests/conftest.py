@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,43 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+
+
+class PassthroughIsolation:
+    """WorktreeIsolation stand-in whose slot IS the repo path.
+
+    execute_config/execute_task route every run through a worktree slot
+    (codeprobe-f7rl.2), which requires a real git checkout at repo_path.
+    Legacy tests built around a nonexistent repo path (``Path("/repo")``)
+    opt into this fake via the ``fake_worktree_isolation`` fixture: acquire()
+    hands back repo_path itself, reproducing the exact pre-worktree
+    semantics those tests were written against. The never-mutate-the-primary-
+    checkout property is proven separately with real repos in
+    tests/test_executor_worktree_safety.py.
+    """
+
+    def __init__(self, repo_path: Path, pool_size: int, namespace: str = "") -> None:
+        self._repo_path = repo_path
+
+    def acquire(self) -> Path:
+        return self._repo_path
+
+    def reset(self, workspace: Path) -> None:
+        pass
+
+    def release(self, workspace: Path) -> None:
+        pass
+
+    def cleanup(self) -> None:
+        pass
+
+
+@pytest.fixture
+def fake_worktree_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the executor's WorktreeIsolation with PassthroughIsolation."""
+    monkeypatch.setattr(
+        "codeprobe.core.executor.WorktreeIsolation", PassthroughIsolation
+    )
 
 
 @pytest.fixture(autouse=True)

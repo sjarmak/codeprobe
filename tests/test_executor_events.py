@@ -23,6 +23,11 @@ from codeprobe.core.executor import execute_config
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
+# These tests run execute_config against a nonexistent repo path; every run
+# path now requires a worktree slot (codeprobe-f7rl.2), so use the
+# passthrough isolation fake from tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("fake_worktree_isolation")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
