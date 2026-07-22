@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import statistics
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 
@@ -96,17 +97,19 @@ def generate_report(
     # auto-detects binary vs continuous via _is_binary and picks the right
     # statistical test (McNemar + Cliff's delta for binary, Wilcoxon +
     # Cohen's d for continuous).
-    config_scores: dict[str, dict[str, float]] = {}
+    config_scores: dict[str, dict[str, list[float]]] = {}
     for cr in all_results:
         # Restrict to scorable runs so the paired hypothesis tests and effect
         # sizes in compare_configs match the reward population the summaries
         # report — non-executed runs (quota, invalid-model, crash) are excluded
         # (codeprobe-a8r; broadened to all status=="error" in codeprobe-h3j4).
-        config_scores[cr.config] = {
-            t.task_id: float(t.automated_score)
-            for t in cr.completed
-            if is_scorable_run(t)
-        }
+        # Every scorable repeat is accumulated per task_id so repeat trials
+        # don't overwrite each other (codeprobe-f7rl.7).
+        per_task: dict[str, list[float]] = {}
+        for t in cr.completed:
+            if is_scorable_run(t):
+                per_task.setdefault(t.task_id, []).append(float(t.automated_score))
+        config_scores[cr.config] = per_task
 
     comparisons: list[PairwiseComparison] = []
     for i, a in enumerate(summaries):
@@ -139,7 +142,7 @@ def generate_report(
 
 def _tee_task_scores(
     tasks: Iterator[CompletedTask],
-    sink: dict[str, float],
+    sink: dict[str, list[float]],
     triage: ValidityTriage | None = None,
 ) -> Iterator[CompletedTask]:
     """Yield tasks unchanged while recording real trials' raw scores into *sink*.
@@ -147,11 +150,13 @@ def _tee_task_scores(
     Stores ``automated_score`` (continuous) rather than a binarized pass/fail
     indicator so pairwise statistical tests can operate on the true score
     distribution and choose Wilcoxon + Cohen's d for continuous scorers
-    vs McNemar + Cliff's delta for binary ones. Non-executed runs and infra
-    casualties are yielded but omitted from *sink* so the paired tests match the
-    reward population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z). When
-    *triage* is supplied every trial is also fed to it, so the streaming path
-    gets the same validity gate as the batch one without buffering the trials.
+    vs McNemar + Cliff's delta for binary ones. Every scorable repeat is
+    appended to the task's score list so repeat trials don't overwrite each
+    other (codeprobe-f7rl.7). Non-executed runs and infra casualties are
+    yielded but omitted from *sink* so the paired tests match the reward
+    population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z). When *triage*
+    is supplied every trial is also fed to it, so the streaming path gets the
+    same validity gate as the batch one without buffering the trials.
     """
     for t in tasks:
         if triage is not None:
@@ -161,12 +166,12 @@ def _tee_task_scores(
         # of the paired-score sink so compare_configs's statistical tests match
         # the reward population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z).
         if is_scorable_run(t):
-            sink[t.task_id] = float(t.automated_score)
+            sink.setdefault(t.task_id, []).append(float(t.automated_score))
         yield t
 
 
 def _paired_task_scores(
-    config_scores: dict[str, dict[str, float]],
+    config_scores: dict[str, dict[str, list[float]]],
     label_a: str,
     label_b: str,
 ) -> tuple[list[float] | None, list[float] | None]:
@@ -174,8 +179,13 @@ def _paired_task_scores(
 
     Returns ``(a_scores, b_scores)`` containing only tasks present in both
     configs (paired by task_id), or ``(None, None)`` when there are no
-    shared tasks. Scores are raw ``automated_score`` values; callers
-    downstream decide binary vs continuous handling.
+    shared tasks. Each emitted value is the mean over that task's scorable
+    repeats — the per-task mean is the statistical unit for ``--repeats``
+    (locked decision 6, epic codeprobe-f7rl). Means of binary repeats become
+    continuous, so compare_configs' _is_binary auto-routes to Wilcoxon +
+    Cohen's d, which is correct for aggregated units. When repeats are
+    unbalanced (some repeats excluded as casualties) the mean is over the
+    scorable repeats available.
     """
     a_by_id = config_scores.get(label_a, {})
     b_by_id = config_scores.get(label_b, {})
@@ -183,8 +193,8 @@ def _paired_task_scores(
     if not shared_ids:
         return None, None
     return (
-        [a_by_id[tid] for tid in shared_ids],
-        [b_by_id[tid] for tid in shared_ids],
+        [statistics.mean(a_by_id[tid]) for tid in shared_ids],
+        [statistics.mean(b_by_id[tid]) for tid in shared_ids],
     )
 
 
@@ -204,13 +214,13 @@ def generate_report_streaming(
     When *total_tasks* is provided and exceeds completed tasks, the report
     is flagged as partial with a completion ratio.
     """
-    config_scores: dict[str, dict[str, float]] = {}
+    config_scores: dict[str, dict[str, list[float]]] = {}
     summaries: list[ConfigSummary] = []
     # The gate runs over the streamed trials of every config (codeprobe-77z) —
     # accumulated in the tee so no trial has to be buffered.
     triage = ValidityTriage()
     for label, tasks in config_task_pairs:
-        sink: dict[str, float] = {}
+        sink: dict[str, list[float]] = {}
         config_scores[label] = sink
         summaries.append(
             summarize_completed_tasks(
@@ -561,7 +571,9 @@ def _build_task_rows(report: Report) -> list[dict]:
                 {
                     "config": cr.config,
                     "task_id": task.task_id,
-                    "repeat": 1,
+                    # 1-based repeat number; repeat_index is 0-based so
+                    # single-repeat runs keep emitting repeat=1 unchanged.
+                    "repeat": task.repeat_index + 1,
                     "score": task.automated_score,
                     "pass": 1 if task_passed(task) else 0,
                     "duration_sec": task.duration_seconds,

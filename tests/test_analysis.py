@@ -1768,3 +1768,106 @@ class TestFormatJsonReportPerTask:
         report = generate_report_streaming("solo-exp", stream())
         data = json.loads(format_json_report(report))
         assert data["tasks"] == []
+
+
+# ---------------------------------------------------------------------------
+# Repeats: per-task means as the statistical unit (codeprobe-f7rl.7)
+# ---------------------------------------------------------------------------
+
+
+class TestRepeatsPerTaskMean:
+    """Repeat trials must not overwrite each other in pairwise stats.
+
+    Fixture: 2 configs x 2 tasks x 3 repeats where the LAST repeat per
+    task is equal across arms (0.5), so code that keys trials by task_id
+    alone collapses to a 0.5-vs-0.5 tie (p=None / effect=0.0). Per-task
+    means differ strongly (A ~0.82 vs B ~0.18). The two tasks' means
+    differ slightly so the paired diffs have nonzero variance — cohens_d
+    returns 0.0 for zero pooled variance, so an identical-means fixture
+    cannot distinguish the fix (drift from the bead's exact fixture,
+    same collapse property).
+    """
+
+    # Per-task repeat scores, in repeat order (repeat_index 0, 1, 2).
+    _A = {"t1": [1.0, 1.0, 0.5], "t2": [1.0, 0.9, 0.5]}
+    _B = {"t1": [0.0, 0.0, 0.5], "t2": [0.0, 0.1, 0.5]}
+
+    @staticmethod
+    def _repeat_tasks(scores: dict[str, list[float]]) -> list[CompletedTask]:
+        return [
+            CompletedTask(
+                task_id=tid,
+                automated_score=score,
+                repeat_index=idx,
+                duration_seconds=10.0,
+            )
+            for tid, repeats in scores.items()
+            for idx, score in enumerate(repeats)
+        ]
+
+    def _results(self) -> list[ConfigResults]:
+        return [
+            ConfigResults(config="arm-a", completed=self._repeat_tasks(self._A)),
+            ConfigResults(config="arm-b", completed=self._repeat_tasks(self._B)),
+        ]
+
+    def test_comparison_uses_all_repeats(self) -> None:
+        report = generate_report("repeats-exp", self._results())
+        assert len(report.comparisons) == 1
+        comp = report.comparisons[0]
+
+        # Old code collapsed both arms to the last repeat (0.5 vs 0.5):
+        # p_value=None and effect_size=0.0. Per-task means (A ~0.82 vs
+        # B ~0.18) give a real effect.
+        assert comp.effect_size is not None
+        assert comp.effect_size != 0.0
+        assert comp.p_value is not None
+
+    def test_direction_agrees_with_summary_means(self) -> None:
+        report = generate_report("repeats-exp", self._results())
+        comp = report.comparisons[0]
+        by_label = {s.label: s for s in report.summaries}
+
+        # Summary means run over all trials: arm-a is clearly ahead.
+        assert by_label["arm-a"].mean_score > by_label["arm-b"].mean_score
+        # The comparison must point the same way (a minus b positive).
+        assert comp.score_diff > 0
+        assert comp.effect_size is not None and comp.effect_size > 0
+
+    def test_streaming_matches_batch(self) -> None:
+        batch = generate_report("repeats-exp", self._results())
+
+        def stream() -> Iterator[tuple[str, Iterator[CompletedTask]]]:
+            yield ("arm-a", iter(self._repeat_tasks(self._A)))
+            yield ("arm-b", iter(self._repeat_tasks(self._B)))
+
+        streaming = generate_report_streaming("repeats-exp", stream())
+
+        assert len(streaming.comparisons) == 1
+        b_comp, s_comp = batch.comparisons[0], streaming.comparisons[0]
+        assert s_comp.p_value == b_comp.p_value
+        assert s_comp.effect_size == b_comp.effect_size
+        assert s_comp.score_diff == pytest.approx(b_comp.score_diff)
+
+    def test_json_rows_carry_real_repeat_numbers(self) -> None:
+        report = generate_report("repeats-exp", self._results())
+        data = json.loads(format_json_report(report))
+
+        t1_repeats = {
+            row["repeat"]
+            for row in data["tasks"]
+            if row["config"] == "arm-a" and row["task_id"] == "t1"
+        }
+        assert t1_repeats == {1, 2, 3}
+
+    def test_csv_rows_carry_real_repeat_numbers(self) -> None:
+        report = generate_report("repeats-exp", self._results())
+        text = format_csv_report(report)
+
+        rows = list(csv.DictReader(io.StringIO(_csv_strip_comments(text))))
+        t1_repeats = {
+            row["repeat"]
+            for row in rows
+            if row["config"] == "arm-a" and row["task_id"] == "t1"
+        }
+        assert t1_repeats == {"1", "2", "3"}

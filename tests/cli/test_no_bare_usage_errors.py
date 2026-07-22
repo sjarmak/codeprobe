@@ -87,6 +87,10 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.27: +18 for entries below the add-config
         # quarantine refusal block (+2 imports, +16 block; the block's
         # own SystemExit(1) carries a lint-exempt pragma, not an entry).
+        # codeprobe-f7rl.7: entries below experiment_status further shifted
+        # (repeat-aware completion counts distinct task_ids and appends the
+        # trial count to the progress column). Real line numbers below,
+        # confirmed by running the lint test against the merged file.
         ("src/codeprobe/cli/experiment_cmd.py", 185),
         ("src/codeprobe/cli/experiment_cmd.py", 194),
         ("src/codeprobe/cli/experiment_cmd.py", 210),
