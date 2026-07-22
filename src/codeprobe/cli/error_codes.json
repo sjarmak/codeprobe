@@ -360,6 +360,62 @@
       "since": "0.11.0",
       "description": "codeprobe run was invoked outside a detected container without explicit consent. A run executes an autonomous agent with --dangerously-skip-permissions plus mined third-party test/verifier scripts directly on this machine, with the invoking user's full filesystem, credential, and network access.",
       "remediation_pattern": "Run inside a container (or set CODEPROBE_SANDBOX=1 yourself if your containment is not auto-detected), or re-run with `--uncontained` to accept host execution."
+    },
+    {
+      "code": "UNSAFE_NAME",
+      "kind": "prescriptive",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "The provided experiment name or config label is not a safe path component (must start with a letter or digit and contain only letters, digits, hyphens, underscores, and dots).",
+      "remediation_pattern": "Re-run with --name=<safe-name> (or --label=<safe-label>) using only letters, digits, hyphens, underscores, and dots."
+    },
+    {
+      "code": "EXPERIMENT_EXISTS",
+      "kind": "diagnostic",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "`codeprobe experiment init` found an existing experiment at the target location and refuses to overwrite it.",
+      "remediation_pattern": "Run `codeprobe experiment status <path>` to inspect the existing experiment, or init with a different --name or target path."
+    },
+    {
+      "code": "EXPERIMENT_INVALID",
+      "kind": "diagnostic",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "experiment.json exists at the resolved location but could not be loaded (corrupt JSON or schema violation).",
+      "remediation_pattern": "Inspect <experiment_dir>/experiment.json and repair it, or re-run `codeprobe experiment init` in a fresh location."
+    },
+    {
+      "code": "DUPLICATE_CONFIG_LABEL",
+      "kind": "prescriptive",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "`codeprobe experiment add-config` was given a --label that already exists in the experiment.",
+      "remediation_pattern": "Re-run with a distinct --label=<new-label>."
+    },
+    {
+      "code": "INVALID_MCP_CONFIG",
+      "kind": "prescriptive",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "--mcp-config was neither an inline JSON object string nor a path to a readable JSON file.",
+      "remediation_pattern": "Pass --mcp-config=<path-to-mcp.json> or an inline JSON object string."
+    },
+    {
+      "code": "MISSING_EXPERIMENT_NAME",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "`codeprobe experiment init` requires --name in interactive mode.",
+      "remediation_pattern": "Pass --name=<experiment-name>, or --non-interactive to use the default name."
+    },
+    {
+      "code": "NO_CONFIGS",
+      "kind": "diagnostic",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "`codeprobe experiment aggregate` needs at least one configuration with results to aggregate.",
+      "remediation_pattern": "Add a configuration with `codeprobe experiment add-config <path> --label <label>`, run it, then re-aggregate."
     }
   ]
 }

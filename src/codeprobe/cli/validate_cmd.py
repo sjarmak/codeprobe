@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import math
 import stat
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import click
 
+from codeprobe.cli._output_helpers import (
+    add_json_flags,
+    emit_envelope,
+    resolve_explicit_mode,
+)
+from codeprobe.cli.envelope import WarningEntry
 from codeprobe.models.task import TASK_TYPES, VERIFICATION_MODES
 
 
@@ -852,6 +858,7 @@ def _list_child_task_dirs(path: Path) -> list[Path]:
 
 
 @click.command("validate")
+@add_json_flags
 @click.argument("task_dir", type=click.Path(exists=True))
 @click.option(
     "--strict",
@@ -868,7 +875,14 @@ def _list_child_task_dirs(path: Path) -> list[Path]:
         "honesty, aux-file leakage)."
     ),
 )
-def validate(task_dir: str, strict: bool, qa: bool) -> None:
+def validate(
+    task_dir: str,
+    strict: bool,
+    qa: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Validate structural correctness of a task directory.
 
     Checks that instruction.md, metadata, test scripts, and ground truth
@@ -878,11 +892,28 @@ def validate(task_dir: str, strict: bool, qa: bool) -> None:
     contains many task subdirectories (e.g. the ``.codeprobe/tasks``
     output of ``codeprobe mine``). When passed a parent, each child task
     is validated and a per-task summary plus overall totals is printed.
+
+    With ``--json``, emits a single machine-readable envelope on stdout
+    instead of the pretty report; the exit code is unchanged (non-zero
+    iff any check failed).
     """
+    mode = resolve_explicit_mode(
+        "validate", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode in ("single_envelope", "ndjson")
     path = Path(task_dir).resolve()
 
+    warnings: list[WarningEntry] = []
     if strict:
-        click.echo("NOTE: --strict: LLM spot-check not yet implemented")
+        if emit_json:
+            warnings.append(
+                WarningEntry(
+                    code="STRICT_NOT_IMPLEMENTED",
+                    message="--strict: LLM spot-check not yet implemented",
+                )
+            )
+        else:
+            click.echo("NOTE: --strict: LLM spot-check not yet implemented")
 
     # Parent-of-tasks mode: only trigger when the arg itself is not a task
     # but its children look like tasks. Keeps legacy single-task semantics
@@ -892,35 +923,78 @@ def validate(task_dir: str, strict: bool, qa: bool) -> None:
         if children:
             total = len(children)
             passed_count = 0
+            task_rows: list[dict[str, object]] = []
             for child in children:
                 child_results = run_validate(child, strict=strict, qa=qa)
                 child_ok = all(r.passed for r in child_results)
+                if child_ok:
+                    passed_count += 1
+                if emit_json:
+                    task_rows.append(
+                        {
+                            "task_id": child.name,
+                            "passed": child_ok,
+                            "failed_checks": [
+                                asdict(r)
+                                for r in child_results
+                                if not r.passed
+                            ],
+                        }
+                    )
+                    continue
                 marker = "PASS" if child_ok else "FAIL"
                 click.echo(f"{marker}  {child.name}")
                 if not child_ok:
                     for r in child_results:
                         if not r.passed:
                             click.echo(f"       FAIL  {r.name} ({r.detail})")
-                if child_ok:
-                    passed_count += 1
-            click.echo()
-            click.echo(
-                f"Validated {total} task(s): {passed_count} passed, "
-                f"{total - passed_count} failed."
-            )
-            if passed_count < total:
+            failed_count = total - passed_count
+            if emit_json:
+                emit_envelope(
+                    command="validate",
+                    ok=failed_count == 0,
+                    exit_code=1 if failed_count else 0,
+                    data={
+                        "task_dir": str(path),
+                        "tasks": task_rows,
+                        "total": total,
+                        "passed_count": passed_count,
+                        "failed_count": failed_count,
+                    },
+                    warnings=warnings,
+                )
+            else:
+                click.echo()
+                click.echo(
+                    f"Validated {total} task(s): {passed_count} passed, "
+                    f"{failed_count} failed."
+                )
+            if failed_count:
+                # lint-exempt: report/envelope already rendered; exit code only.
                 raise SystemExit(1)
             return
 
     results = run_validate(path, strict=strict, qa=qa)
+    failed_count = sum(1 for r in results if not r.passed)
 
-    any_failed = False
-    for r in results:
-        if r.passed:
-            click.echo(f"  PASS  {r.name} ({r.detail})")
-        else:
-            any_failed = True
-            click.echo(f"  FAIL  {r.name} ({r.detail})")
+    if emit_json:
+        emit_envelope(
+            command="validate",
+            ok=failed_count == 0,
+            exit_code=1 if failed_count else 0,
+            data={
+                "task_dir": str(path),
+                "checks": [asdict(r) for r in results],
+                "passed_count": len(results) - failed_count,
+                "failed_count": failed_count,
+            },
+            warnings=warnings,
+        )
+    else:
+        for r in results:
+            marker = "PASS" if r.passed else "FAIL"
+            click.echo(f"  {marker}  {r.name} ({r.detail})")
 
-    if any_failed:
+    if failed_count:
+        # lint-exempt: report/envelope already rendered; exit code only.
         raise SystemExit(1)

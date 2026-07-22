@@ -126,6 +126,28 @@ def resolve_mode(
     return mode
 
 
+def resolve_explicit_mode(
+    command: str,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> OutputMode:
+    """Resolve the output mode for commands where JSON is opt-in.
+
+    ``validate`` and the ``experiment`` subcommands predate the Big-5
+    envelope contract and are scraped by existing scripts that expect
+    pretty text even on non-TTY stdout. For them an explicit flag routes
+    through :func:`resolve_mode` (keeping the mutex check and the
+    error-handler stash); with no flag, pretty output wins regardless of
+    TTY state. The no-flag path deliberately does NOT stash a mode, so
+    typed errors raised later still render per the error handler's own
+    TTY/env defaults (envelope on non-TTY stdout).
+    """
+    if json_flag or no_json_flag or json_lines_flag:
+        return resolve_mode(command, json_flag, no_json_flag, json_lines_flag)
+    return OutputMode(mode="pretty", use_rich=sys.stdout.isatty())
+
+
 def _normalise_data(data: dict[str, Any] | None) -> dict[str, Any]:
     """Ensure the envelope ``data`` payload carries ``command_schema_version``.
 
@@ -184,5 +206,6 @@ __all__ = [
     "add_json_flags",
     "emit_envelope",
     "emit_event",
+    "resolve_explicit_mode",
     "resolve_mode",
 ]
