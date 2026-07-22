@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli import main
@@ -714,3 +715,99 @@ class TestMineShortfallEnvelope:
         assert envelope["next_steps"] == []
         warning_codes = [w["code"] for w in envelope["warnings"]]
         assert "MINE_SHORTFALL" not in warning_codes
+
+
+# ---------------------------------------------------------------------------
+# LLM spend metering — summary line + envelope field (codeprobe-f7rl.37)
+# ---------------------------------------------------------------------------
+
+
+class TestMineLLMSpendReporting:
+    """Every mine run reports metered LLM spend; --no-llm provably reports 0."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_ledger(self):
+        from codeprobe.core.llm import reset_llm_spend
+
+        reset_llm_spend()
+        yield
+        reset_llm_spend()
+
+    def test_no_llm_summary_reports_zero_calls(self, tmp_path):
+        """--no-llm: pretty summary says 'LLM calls: 0', envelope agrees."""
+        repo = _make_probe_repo(tmp_path)
+
+        pretty = _mine_probes(repo)
+        assert pretty.exit_code == 0, pretty.output
+        assert "LLM calls:       0" in pretty.output
+
+        enveloped = _mine_probes(repo, "--json")
+        assert enveloped.exit_code == 0, enveloped.output
+        envelope = json.loads(
+            [ln for ln in enveloped.output.splitlines() if ln.strip()][-1]
+        )
+        spend = envelope["data"]["llm_spend"]
+        assert spend["calls"] == 0
+        assert spend["input_tokens"] == 0
+        assert spend["output_tokens"] == 0
+        assert spend["cost_usd"] == 0.0
+        assert spend["cost_unknown_calls"] == 0
+        assert spend["cost_source"] == "calculated"
+
+    def test_mine_summary_and_envelope_carry_llm_spend(self, tmp_path, monkeypatch):
+        """Calls made during mining land in the summary line and envelope."""
+        import codeprobe.core.llm as core_llm
+        import codeprobe.probe.generator as probe_generator
+
+        stub_response = core_llm.LLMResponse(
+            text="ok",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cost_usd=None,  # forces tokens x CLAUDE_PRICING (haiku: $6.00/call)
+            model="claude-haiku-4-5-20251001",
+            backend="stub",
+        )
+
+        class _Stub:
+            name = "stub"
+
+            def available(self) -> bool:
+                return True
+
+            def call(self, request):
+                return stub_response
+
+        monkeypatch.setattr(core_llm, "_resolve_backend", lambda: _Stub())
+
+        real_generate = probe_generator.generate_probes
+
+        def metered_generate(repo_root, count=5, **kwargs):
+            for _ in range(3):
+                core_llm.call_llm(core_llm.LLMRequest(prompt="meter me"))
+            return real_generate(repo_root, count=count, **kwargs)
+
+        monkeypatch.setattr(probe_generator, "generate_probes", metered_generate)
+
+        repo = _make_probe_repo(tmp_path)
+        args = ["mine", str(repo), "--task-type", "micro_probe", "--no-interactive"]
+
+        pretty = CliRunner().invoke(main, args)
+        assert pretty.exit_code == 0, pretty.output
+        assert (
+            "LLM calls:       3 (in=3000000 out=3000000 tokens, "
+            "~$18.0000 calculated)" in pretty.output
+        )
+
+        enveloped = CliRunner().invoke(main, [*args, "--json"])
+        assert enveloped.exit_code == 0, enveloped.output
+        envelope = json.loads(
+            [ln for ln in enveloped.output.splitlines() if ln.strip()][-1]
+        )
+        assert envelope["data"]["llm_spend"] == {
+            "calls": 3,
+            "input_tokens": 3_000_000,
+            "output_tokens": 3_000_000,
+            "cost_usd": 18.0,
+            "cost_unknown_calls": 0,
+            "cost_source": "calculated",
+        }

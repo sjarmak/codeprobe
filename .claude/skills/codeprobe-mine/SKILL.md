@@ -79,6 +79,7 @@ exactly the `Envelope` dataclass fields in `src/codeprobe/cli/envelope.py`:
     "comprehension_consensus": null,
     "experiment_created": true,
     "experiment_dir": "<abs-path or null>",
+    "llm_spend": { "calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "cost_unknown_calls": 0, "cost_source": "calculated" },
     "rejections": { "quality": 0, "min_files": 0, "subsystem": 0, "extraction": 0, "total": 0 }
   },
   "error": null,

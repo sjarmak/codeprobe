@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass, replace
 from typing import Protocol
 
@@ -116,6 +117,93 @@ class LLMResponse:
     model: str | None = None
     duration_ms: int | None = None
     backend: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Spend ledger — deterministic accounting for every internal model call
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LLMSpend:
+    """Accumulated spend across all ``call_llm`` invocations since last reset.
+
+    ``cost_usd`` is always *calculated* provenance: backend-reported cost
+    when the response carries one (claude-cli ``total_cost_usd``), else
+    tokens x the Claude pricing table. Calls whose cost cannot be derived
+    either way are counted in ``cost_unknown_calls`` (their tokens are
+    still summed when present). Failed calls count toward ``calls`` only.
+    """
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    cost_unknown_calls: int = 0
+
+
+_spend_lock = threading.Lock()
+_spend = LLMSpend()
+
+
+def get_llm_spend() -> LLMSpend:
+    """Return an immutable snapshot of the accumulated spend."""
+    with _spend_lock:
+        return _spend
+
+
+def reset_llm_spend() -> None:
+    """Zero the spend ledger (call at the start of a metered run)."""
+    global _spend
+    with _spend_lock:
+        _spend = LLMSpend()
+
+
+def _calculated_cost(
+    model: str | None, input_tokens: int | None, output_tokens: int | None
+) -> float | None:
+    """Derive cost from tokens x the Claude pricing table, if possible.
+
+    Matches the resolved model against pricing-table slugs by exact name or
+    dated-variant prefix (``claude-haiku-4-5-20251001`` matches
+    ``claude-haiku-4-5``). Returns None when the model or tokens are
+    unknown — the caller records that as a cost-unknown call.
+    """
+    if model is None or input_tokens is None or output_tokens is None:
+        return None
+    from codeprobe.adapters.pricing import CLAUDE_PRICING
+
+    for slug, rates in CLAUDE_PRICING.rates.items():
+        if model == slug or model.startswith(slug + "-"):
+            return (input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000
+    return None
+
+
+def _record_llm_success(response: LLMResponse) -> None:
+    """Fold a successful response into the ledger."""
+    cost = response.cost_usd
+    if cost is None:
+        cost = _calculated_cost(
+            response.model, response.input_tokens, response.output_tokens
+        )
+    global _spend
+    with _spend_lock:
+        _spend = replace(
+            _spend,
+            calls=_spend.calls + 1,
+            input_tokens=_spend.input_tokens + (response.input_tokens or 0),
+            output_tokens=_spend.output_tokens + (response.output_tokens or 0),
+            cost_usd=_spend.cost_usd + (cost if cost is not None else 0.0),
+            cost_unknown_calls=_spend.cost_unknown_calls
+            + (1 if cost is None else 0),
+        )
+
+
+def _record_llm_failure() -> None:
+    """Count a failed backend call — no tokens, no cost."""
+    global _spend
+    with _spend_lock:
+        _spend = replace(_spend, calls=_spend.calls + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +496,10 @@ claude_available = llm_available
 def call_llm(request: LLMRequest) -> LLMResponse:
     """Route to the best available backend and return a response.
 
+    Every attempted backend call is recorded in the spend ledger (see
+    :func:`get_llm_spend`): successes with tokens and calculated cost,
+    failures as a bare call count.
+
     Raises:
         LLMUnavailableError: No backend available, or no-LLM mode is active.
         LLMExecutionError: Backend call failed.
@@ -419,7 +511,13 @@ def call_llm(request: LLMRequest) -> LLMResponse:
         )
     backend = _resolve_backend()
     logger.debug("Using LLM backend: %s", backend.name)
-    return backend.call(request)
+    try:
+        response = backend.call(request)
+    except LLMError:
+        _record_llm_failure()
+        raise
+    _record_llm_success(response)
+    return response
 
 
 # Keep old name for backward compatibility

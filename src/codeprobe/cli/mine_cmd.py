@@ -371,6 +371,23 @@ def _ask_source() -> str:
     return source
 
 
+def _llm_plan_line(no_llm: bool) -> str:
+    """Disclose LLM usage and backend for the mining plan (decision 6).
+
+    No upfront dollar estimate is fabricated — the plan discloses that
+    calls will be metered; the summary reports actuals.
+    """
+    if no_llm:
+        return "disabled (--no-llm) — zero model calls"
+    from codeprobe.core.llm import LLMUnavailableError, _resolve_backend
+
+    try:
+        backend_name = _resolve_backend().name
+    except LLMUnavailableError:
+        return "no backend available — deterministic fallbacks, zero model calls"
+    return f"enabled (backend: {backend_name}) — calls metered, totals in summary"
+
+
 def _show_preflight(
     repo_path: Path,
     goal_name: str,
@@ -379,6 +396,7 @@ def _show_preflight(
     min_files: int,
     bias: str,
     subsystems: tuple[str, ...],
+    no_llm: bool,
 ) -> bool:
     """Phase 2: Show pre-flight summary and confirm."""
     click.echo()
@@ -392,6 +410,7 @@ def _show_preflight(
     click.echo(f"  Min files:   {min_files} (biasing toward {bias} tasks)")
     if subsystems:
         click.echo(f"  Subsystems: {', '.join(subsystems)}")
+    click.echo(f"  LLM:         {_llm_plan_line(no_llm)}")
     click.echo("=" * 50)
     click.echo()
 
@@ -1220,6 +1239,28 @@ def _enrichment_status(tasks: list[Task], *, llm_attempted: bool) -> str:
     )
 
 
+def _format_llm_spend_line() -> str:
+    """Render the metered LLM spend for the summary block.
+
+    Figures are labeled ``calculated`` — this is computed spend, never
+    ``api_reported`` (cost_source vocabulary, adapters/protocol.py). A run
+    with zero calls (e.g. --no-llm) reads ``0``, making the zero-model-call
+    guarantee observable.
+    """
+    from codeprobe.core.llm import get_llm_spend
+
+    spend = get_llm_spend()
+    if spend.calls == 0:
+        return "0"
+    line = (
+        f"{spend.calls} (in={spend.input_tokens} out={spend.output_tokens} "
+        f"tokens, ~${spend.cost_usd:.4f} calculated"
+    )
+    if spend.cost_unknown_calls > 0:
+        line += f", {spend.cost_unknown_calls} call(s) with unknown cost"
+    return line + ")"
+
+
 def _print_summary_block(
     *,
     task_count: int,
@@ -1248,6 +1289,7 @@ def _print_summary_block(
         click.echo(f"  Time elapsed:    {_format_elapsed(elapsed)}")
     if enrichment_status is not None:
         click.echo(f"  Instructions:    {enrichment_status}")
+    click.echo(f"  LLM calls:       {_format_llm_spend_line()}")
     click.echo(f"  Output:          {tasks_dir}")
     if suite_path is not None:
         click.echo(f"  Suite manifest:  {suite_path}")
@@ -2945,6 +2987,13 @@ def run_mine(
     _lock_cm = acquire_tenant_lock(tenant or "local", "mine")
     _lock_cm.__enter__()
     try:
+        # Zero the LLM spend ledger so the end-of-run summary and terminal
+        # envelope report exactly this invocation's metered calls (decision
+        # 6: cost provenance on every summary surface).
+        from codeprobe.core.llm import reset_llm_spend
+
+        reset_llm_spend()
+
         # --no-llm hard guarantee: flip the process-wide gate so ANY code
         # path that reaches call_llm fails loudly instead of spending quota,
         # and llm_available() steers callers onto deterministic fallbacks.
@@ -3297,7 +3346,8 @@ def run_mine(
             subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
 
             if interactive and not _show_preflight(
-                repo_path, goal_name, count, source, min_files, bias, subsystems
+                repo_path, goal_name, count, source, min_files, bias, subsystems,
+                no_llm,
             ):
                 click.echo("Aborted.")
                 return
@@ -3359,6 +3409,9 @@ def run_mine(
                         for c in tasks_dir.iterdir()
                         if c.is_dir() and (c / "instruction.md").is_file()
                     )
+            from codeprobe.core.llm import get_llm_spend
+
+            _spend = get_llm_spend()
             data: dict[str, Any] = {
                 "tasks_dir": tasks_dir_str,
                 "task_count": task_count,
@@ -3368,6 +3421,17 @@ def run_mine(
                 "comprehension_consensus": _COMPREHENSION_CONSENSUS,
                 "experiment_created": _EXPERIMENT_CREATED,
                 "experiment_dir": _EXPERIMENT_DIR,
+                # Metered internal-judgment spend for this invocation.
+                # cost_source is always "calculated": backend-reported or
+                # tokens x pricing table, never api_reported provenance.
+                "llm_spend": {
+                    "calls": _spend.calls,
+                    "input_tokens": _spend.input_tokens,
+                    "output_tokens": _spend.output_tokens,
+                    "cost_usd": _spend.cost_usd,
+                    "cost_unknown_calls": _spend.cost_unknown_calls,
+                    "cost_source": "calculated",
+                },
             }
             # Zero-yield / shortfall honesty: mining executed correctly, so
             # ok stays true and exit stays 0 (emptiness is data) — but the
