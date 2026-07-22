@@ -12,6 +12,7 @@ from typing import Any, Literal, cast
 
 import click
 
+from codeprobe.adapters.protocol import quarantine_message
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.core.experiment import (
@@ -20,6 +21,7 @@ from codeprobe.core.experiment import (
     load_experiment,
     save_experiment,
 )
+from codeprobe.core.registry import resolve as resolve_agent
 from codeprobe.models.experiment import (
     Experiment,
     ExperimentConfig,
@@ -158,6 +160,22 @@ def experiment_add_config(
     through to the persisted experiment.json; the loader handles
     legacy boolean values for back-compat on subsequent reads.
     """
+    # A config that can never run must not be persisted: run preflight
+    # refuses quarantined adapters (codeprobe-f7rl.27), so adding such an
+    # arm would only store a guaranteed-refusal config. Unknown agent
+    # names pass through unchanged here — backend validation is a
+    # separate concern (codeprobe-f7rl.25).
+    try:
+        candidate_adapter: object | None = resolve_agent(agent)
+    except KeyError:
+        candidate_adapter = None
+    if candidate_adapter is not None and getattr(
+        candidate_adapter, "quarantined", False
+    ):
+        click.echo(f"Error: {quarantine_message(agent)}", err=True)
+        # lint-exempt: f7rl.27 pins SystemExit(1), the add-config echo+exit style
+        raise SystemExit(1)
+
     exp_dir = Path(path)
 
     try:

@@ -28,7 +28,10 @@ from codeprobe.mining.task_types import (
 _TASK_TYPE_CHOICES = _task_type_names()
 # Sourced from the agent registry so the --agent help can never drift from the
 # set of agents `run` actually accepts (codeprobe-n6ij / codeprobe-fvfo Gap 12).
-_AGENT_NAMES = ", ".join(_available_agents())
+# codex stays registered (prescriptive refusal beats a raw KeyError) but is
+# quarantined at run preflight (codeprobe-f7rl.27) — the help must not
+# advertise it as a working comparison adapter.
+_AGENT_NAMES = ", ".join(_available_agents()) + " (codex quarantined)"
 
 
 class MineCommand(click.Command):

@@ -328,8 +328,20 @@ class MyApiAdapter:
 
 | Adapter               | File                                      | Notes                                                                                                                                  |
 | --------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `CodexAdapter`        | `src/codeprobe/adapters/codex.py`         | Tries Responses API, falls back to Chat Completions                                                                                    |
 | `OpenAICompatAdapter` | `src/codeprobe/adapters/openai_compat.py` | Generic adapter for any OpenAI-compatible endpoint (Ollama, Together, vLLM, Groq, etc.) with configurable `base_url` and pricing table |
+
+### Quarantined: `CodexAdapter`
+
+`CodexAdapter` (`src/codeprobe/adapters/codex.py`, `quarantined = True`) is
+**not** a working comparison adapter. Its `run()` is a single-shot completion
+call (Responses API, Chat Completions fallback): the model never sees the
+workspace and cannot edit files, yet its `exit_code=0` outputs would read as
+valid 0.0 measurements. `codeprobe run` refuses any codex arm upfront with
+`ADAPTER_QUARANTINED` — before any arm runs or spends — and
+`experiment add-config --agent codex` is rejected. The name stays registered
+so the refusal is prescriptive rather than a raw `KeyError`. The quarantine
+lifts when the adapter is rewritten around the real OpenAI Codex CLI agent
+(workspace access, file edits, honest telemetry).
 
 ## Registration
 

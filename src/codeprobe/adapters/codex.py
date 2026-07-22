@@ -33,7 +33,19 @@ class CodexAdapter:
     Tries the Responses API (responses.create) first. If the model is not
     available on that endpoint (NotFoundError), falls back to the Chat
     Completions API (chat.completions.create).
+
+    QUARANTINED (codeprobe-f7rl decision 4): ``run()`` is a single-shot
+    completion call — the model never sees the workspace and cannot edit
+    files, yet its ``exit_code=0`` outputs flow into ``CompletedTask``
+    ``status='completed'`` and read as genuine 0.0 measurements. Run
+    preflight refuses every codex arm (``ADAPTER_QUARANTINED``) and
+    ``experiment add-config --agent codex`` is rejected. The adapter stays
+    registered so the refusal is prescriptive rather than a raw KeyError.
+    Exit condition: rewrite this adapter around the real OpenAI Codex CLI
+    agent (workspace access, file edits, honest telemetry).
     """
+
+    quarantined: bool = True
 
     def __init__(self) -> None:
         self._collector = ApiResponseCollector()

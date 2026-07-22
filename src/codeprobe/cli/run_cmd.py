@@ -13,7 +13,11 @@ from pathlib import Path
 import click
 
 from codeprobe.adapters.models import validate_model
-from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
+from codeprobe.adapters.protocol import (
+    ALLOWED_PERMISSION_MODES,
+    AgentConfig,
+    quarantine_message,
+)
 from codeprobe.analysis.dual import format_dual_suffix
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
@@ -692,6 +696,27 @@ def run_eval(
                         "requested": cfg.agent or agent,
                     },
                 ) from exc
+            # Quarantined adapters (codeprobe-f7rl decision 4, currently
+            # codex) are registered — so the failure is prescriptive, not
+            # a raw KeyError — but must never dispatch: their all-zero
+            # arms would enter means as valid measurements. Refuse the
+            # whole run upfront, before any arm spends.
+            if getattr(arm_adapter, "quarantined", False):
+                arm_agent = cfg.agent or agent
+                raise PrescriptiveError(
+                    code="ADAPTER_QUARANTINED",
+                    message=quarantine_message(arm_agent),
+                    terminal=True,
+                    next_try_flag="--agent",
+                    next_try_value="claude",
+                    detail={
+                        "config_label": cfg.label,
+                        "adapter": getattr(
+                            arm_adapter, "name", type(arm_adapter).__name__
+                        ),
+                        "requested": arm_agent,
+                    },
+                )
             check_arm_capabilities(cfg, arm_adapter, cli_max_turns=max_turns)
 
         # Resolve to the git repo root — `path` may be an experiment subdir.

@@ -332,6 +332,102 @@ class TestArmCapabilityPreflight:
         self._check(ExperimentConfig(label="plain", agent="stub"), StubAdapter())
 
 
+class TestQuarantinedAdapterRefusal:
+    """codeprobe-f7rl.27: quarantined adapters (codex) never dispatch.
+
+    The refusal fires in the upfront per-arm preflight — before task
+    discovery, before any arm runs or spends — for single-arm runs and
+    multi-arm experiments alike, and is prescriptive (code, message,
+    alternatives), not a traceback.
+    """
+
+    def _spy_adapters(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        """Replace claude/codex run() with recorders that must stay uncalled."""
+        from codeprobe.adapters.claude import ClaudeAdapter
+        from codeprobe.adapters.codex import CodexAdapter
+
+        calls: list[str] = []
+
+        def _make_run(adapter_name: str):
+            def _run(self, prompt, config, session_env=None):  # noqa: ANN001
+                calls.append(adapter_name)
+                raise AssertionError(f"{adapter_name}.run must not be called")
+
+            return _run
+
+        monkeypatch.setattr(ClaudeAdapter, "run", _make_run("claude"))
+        monkeypatch.setattr(CodexAdapter, "run", _make_run("codex"))
+        return calls
+
+    def _experiment(self, tmp_path: Path, configs: list[dict]) -> Path:
+        import json
+
+        exp_dir = tmp_path / "experiment"
+        exp_dir.mkdir()
+        _make_task_dir(exp_dir / "tasks", "task-001")
+        (exp_dir / "experiment.json").write_text(
+            json.dumps(
+                {
+                    "name": "quarantine-exp",
+                    "description": "test",
+                    "tasks_dir": "tasks",
+                    "task_ids": ["task-001"],
+                    "configs": configs,
+                }
+            )
+        )
+        return exp_dir
+
+    def test_single_arm_codex_run_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """run --agent codex → exit 2, ADAPTER_QUARANTINED, zero run() calls."""
+        from click.testing import CliRunner
+
+        from codeprobe.cli import main
+
+        calls = self._spy_adapters(monkeypatch)
+        exp_dir = self._experiment(tmp_path, configs=[])
+
+        result = CliRunner().invoke(
+            main, ["run", str(exp_dir), "--agent", "codex"]
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "ADAPTER_QUARANTINED" in result.output
+        assert "quarantined" in result.output
+        assert "cannot edit files" in result.output
+        assert "claude" in result.output  # the alternative is named
+        assert calls == []
+
+    def test_mixed_experiment_refused_with_no_trials_on_either_arm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """claude arm + codex arm → refused upfront; NO trials for either arm.
+
+        No half-run comparison, no spend: the claude arm must not execute
+        just because it precedes the quarantined arm in the config list.
+        """
+        from click.testing import CliRunner
+
+        from codeprobe.cli import main
+
+        calls = self._spy_adapters(monkeypatch)
+        exp_dir = self._experiment(
+            tmp_path,
+            configs=[
+                {"label": "baseline", "agent": "claude"},
+                {"label": "codex-arm", "agent": "codex"},
+            ],
+        )
+
+        result = CliRunner().invoke(main, ["run", str(exp_dir)])
+
+        assert result.exit_code == 2, result.output
+        assert "ADAPTER_QUARANTINED" in result.output
+        assert calls == []
+
+
 class TestCliRepeatsPassthrough:
     """Test that --repeats is passed through to execute_config."""
 

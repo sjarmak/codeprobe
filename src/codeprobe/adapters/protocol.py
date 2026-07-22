@@ -67,6 +67,25 @@ def capabilities_of(adapter: object) -> AdapterCapabilities:
     return AdapterCapabilities()
 
 
+def quarantine_message(agent_name: str) -> str:
+    """The user-facing refusal for a quarantined adapter.
+
+    codeprobe-f7rl decision 4: the codex adapter is a single-shot
+    completion API, not a coding agent — it never sees the repository,
+    cannot edit files, and its exit_code=0 outputs read as valid 0.0
+    measurements. Every refusal site (``codeprobe run`` preflight,
+    ``experiment add-config``, the library ``run_experiment``) uses this
+    one message so they can never drift apart. An adapter opts in by
+    setting a truthy ``quarantined`` class attribute.
+    """
+    return (
+        f"--agent {agent_name} is quarantined: the current adapter is a "
+        "single-shot completion API that never sees your repository and "
+        "cannot edit files, so its scores are not comparable. Use "
+        "--agent claude (first-class) or copilot."
+    )
+
+
 @dataclass(frozen=True)
 class McpServerStatus:
     """Attach status of a single MCP server, verbatim from the CLI init event.
