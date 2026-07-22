@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
+import threading
 
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import (
@@ -52,6 +53,13 @@ class CopilotAdapter(BaseAdapter):
 
     def __init__(self) -> None:
         self._collector = NdjsonStreamCollector()
+        # Thread-local model context: the adapter instance is shared across
+        # parallel slots, and build_command/parse_output for one task run on
+        # the same worker thread inside BaseAdapter.run. build_command
+        # records the selected model here so parse_output can price the
+        # session with the matching rate card (mirrors ClaudeAdapter's
+        # thread-local trace context).
+        self._model_ctx: threading.local = threading.local()
 
     @property
     def capabilities(self) -> AdapterCapabilities:
@@ -76,6 +84,9 @@ class CopilotAdapter(BaseAdapter):
         # Non-interactive mode requires --allow-all-tools for tool auto-approval
         cmd.append("--allow-all-tools")
 
+        # Record the model unconditionally: None must overwrite a stale
+        # value left by a previous task on this worker thread.
+        self._model_ctx.model = config.model
         if config.model:
             cmd.extend(["--model", config.model])
 
@@ -97,7 +108,9 @@ class CopilotAdapter(BaseAdapter):
         falling back to Copilot process log parsing.
         """
         raw = result.stdout or ""
-        usage = self._collector.collect(raw)
+        usage = self._collector.collect(
+            raw, model=getattr(self._model_ctx, "model", None)
+        )
 
         # Extract content text from NDJSON events.
         # On JSON parse failure, the except clause resets to empty,

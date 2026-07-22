@@ -967,6 +967,31 @@ class TestCopilotInputTokens:
         assert output.cost_usd == pytest.approx(800 * 2.50 / 1_000_000 + 200 * 10.0 / 1_000_000)
 
 
+def test_copilot_adapter_threads_model_to_collector() -> None:
+    """build_command records config.model; parse_output prices with it (codeprobe-f7rl.36).
+
+    build_command and parse_output run on the same worker thread inside
+    BaseAdapter.run, so the thread-local set by build_command must reach
+    the collector's rate lookup.
+    """
+    adapter = CopilotAdapter()
+    config = AgentConfig(model="gpt-4o-mini")
+    with patch.object(CopilotAdapter, "_require_binary", return_value="copilot"):
+        cmd = adapter.build_command("fix the bug", config)
+    assert "--model" in cmd and "gpt-4o-mini" in cmd
+
+    # copilot_with_usage.txt: native inputTokens=1234, outputTokens=87
+    stdout = (FIXTURE_DIR / "copilot_with_usage.txt").read_text()
+    result = subprocess.CompletedProcess(
+        args=["copilot"], returncode=0, stdout=stdout, stderr=""
+    )
+    output = adapter.parse_output(result, duration=1.0)
+
+    mini_cost = 1234 * 0.15 / 1_000_000 + 87 * 0.60 / 1_000_000
+    assert output.cost_usd == pytest.approx(mini_cost, abs=1e-10)
+    assert output.cost_source == "calculated"
+
+
 # -- CodexAdapter --------------------------------------------------------------
 
 
