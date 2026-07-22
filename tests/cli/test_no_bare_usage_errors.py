@@ -52,7 +52,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # 2026-07-04 mine-help docstring reword (drop literal --no-llm): +1 → 1148.
         # codeprobe-b31f: --dual-verify help text corrected (it advertised the
         # exact task types the flag is rejected for): +3 → 1151.
-        ("src/codeprobe/cli/__init__.py", 1151),
+        # codeprobe-f7rl.24: +13 by the --pristine-config option block → 1164.
+        ("src/codeprobe/cli/__init__.py", 1164),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),

@@ -142,6 +142,27 @@ _MUTABLE_DIR_NAMES: frozenset[str] = frozenset(
     }
 )
 _MUTABLE_FILE_NAMES: frozenset[str] = frozenset({"history.jsonl"})
+
+# Operator personalization that biases eval arms when mirrored into a
+# slot config dir (global memory, settings, skills, hooks, ...). Excluded
+# from the mirror when ``pristine=True`` so two operators produce the
+# same effective agent config on the same repo. Credential files and
+# ``.claude.json`` (auth + project-trust state) stay mirrored; the
+# user-level MCP servers inside ``.claude.json`` are neutralized by the
+# unconditional ``--strict-mcp-config`` in ``build_command``.
+_PERSONALIZATION_NAMES: frozenset[str] = frozenset(
+    {
+        "CLAUDE.md",
+        "settings.json",
+        "settings.local.json",
+        "skills",
+        "agents",
+        "hooks",
+        "plugins",
+        "commands",
+        "rules",
+    }
+)
 _SAFE_NAMESPACE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -214,6 +235,7 @@ def _build_mirror_slot_env(
     real_config: Path,
     slot_id: int,
     namespace: str | None = None,
+    pristine: bool = False,
 ) -> dict[str, str]:
     """Build a per-slot ``CLAUDE_CONFIG_DIR`` that mirrors ``real_config``.
 
@@ -223,6 +245,11 @@ def _build_mirror_slot_env(
     slots.  Mutable per-session state (``_MUTABLE_DIR_NAMES`` and
     ``_MUTABLE_FILE_NAMES``) is recreated as fresh empty dirs/files inside
     the slot to prevent parallel-worker races.
+
+    When ``pristine`` is True, ``_PERSONALIZATION_NAMES`` entries are not
+    mirrored — and are deliberately kept out of ``seen`` so the stale-entry
+    sweep below purges leftovers from a slot dir previously built
+    non-pristine. Credentials and ``.claude.json`` remain mirrored.
 
     Stale symlinks from earlier isolation runs are refreshed so that
     additions, removals, or changes in ``real_config`` propagate to every
@@ -239,6 +266,8 @@ def _build_mirror_slot_env(
 
     seen: set[str] = set()
     for entry in real_config.iterdir():
+        if pristine and entry.name in _PERSONALIZATION_NAMES:
+            continue
         seen.add(entry.name)
         target = slot_dir / entry.name
         is_mutable = entry.name in _MUTABLE_DIR_NAMES or entry.name in _MUTABLE_FILE_NAMES
@@ -419,9 +448,17 @@ class ClaudeAdapter(BaseAdapter):
                 )
             cmd.extend(["--permission-mode", config.permission_mode])
 
+        # Pin the MCP tool surface unconditionally. Without a bare
+        # --strict-mcp-config, an arm that declares no mcp_config silently
+        # inherits the operator's ambient MCP servers (user-level
+        # ~/.claude.json and repo-level .mcp.json), so an "MCP off"
+        # baseline is not actually off and two operators get different
+        # numbers on the same repo. With the flag, only servers named via
+        # --mcp-config are loaded — none when the flag stands alone.
         mcp_path = self._write_mcp_config(config)
         if mcp_path:
-            cmd.extend(["--mcp-config", mcp_path, "--strict-mcp-config"])
+            cmd.extend(["--mcp-config", mcp_path])
+        cmd.append("--strict-mcp-config")
 
         # Tool restrictions. Claude CLI has three related flags:
         #   --tools A,B           restricts the *built-in* tool allowlist
@@ -468,6 +505,7 @@ class ClaudeAdapter(BaseAdapter):
         self,
         slot_id: int,
         namespace: str | None = None,
+        pristine: bool = False,
     ) -> dict[str, str]:
         """Return a per-slot ``CLAUDE_CONFIG_DIR`` for session isolation.
 
@@ -481,6 +519,11 @@ class ClaudeAdapter(BaseAdapter):
         parallel workers from racing on shared state — which under real
         load manifested as API 401 errors (codeprobe-nac).
 
+        When ``pristine`` is True, operator personalization
+        (``_PERSONALIZATION_NAMES``: CLAUDE.md, settings, skills, agents,
+        hooks, plugins, commands, rules) is excluded from the mirror so
+        eval arms are reproducible across operators.
+
         When no credential file is found the CLI is presumed to use the OS
         keychain; in that case this returns an empty dict so the agent
         uses the default config dir and keychain reads continue to work.
@@ -493,6 +536,7 @@ class ClaudeAdapter(BaseAdapter):
                 real_config,
                 slot_id,
                 namespace=namespace,
+                pristine=pristine,
             )
 
         return {}

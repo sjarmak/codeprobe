@@ -1517,6 +1517,120 @@ class TestIsolateSession:
             assert '"v": 3' in (slot0 / "settings.json").read_text()
 
 
+class TestPristineMirror:
+    """pristine=True excludes operator personalization from slot dirs
+    (codeprobe-f7rl.24) so eval arms are reproducible across operators.
+    """
+
+    _PERSONALIZATION = (
+        "CLAUDE.md",
+        "settings.json",
+        "settings.local.json",
+        "skills",
+        "hooks",
+    )
+
+    def _make_real_config(self, tmp_path: Path) -> Path:
+        real_config = tmp_path / "home" / ".claude"
+        real_config.mkdir(parents=True)
+        (real_config / "credentials.json").write_text('{"token": "t"}')
+        (real_config / ".claude.json").write_text('{"projects": {}}')
+        (real_config / "CLAUDE.md").write_text("# operator memory")
+        (real_config / "settings.json").write_text('{"theme": "dark"}')
+        (real_config / "settings.local.json").write_text("{}")
+        (real_config / "skills").mkdir()
+        (real_config / "skills" / "s.md").write_text("# skill")
+        (real_config / "hooks").mkdir()
+        (real_config / "hooks" / "h.sh").write_text("#!/bin/sh\n")
+        return real_config
+
+    def test_pristine_keeps_creds_and_claude_json_only(
+        self, tmp_path: Path
+    ) -> None:
+        from codeprobe.adapters.claude import _build_mirror_slot_env
+
+        real_config = self._make_real_config(tmp_path)
+        with patch(
+            "codeprobe.adapters.claude.tempfile.gettempdir",
+            return_value=str(tmp_path / "tmp"),
+        ):
+            env = _build_mirror_slot_env(real_config, 0, pristine=True)
+
+        slot = Path(env["CLAUDE_CONFIG_DIR"])
+        assert (slot / "credentials.json").is_symlink()
+        assert (slot / ".claude.json").is_symlink()
+        for name in self._PERSONALIZATION:
+            assert not (slot / name).exists(), (
+                f"pristine slot must not contain personalization entry {name}"
+            )
+
+    def test_non_pristine_preserves_current_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        from codeprobe.adapters.claude import _build_mirror_slot_env
+
+        real_config = self._make_real_config(tmp_path)
+        with patch(
+            "codeprobe.adapters.claude.tempfile.gettempdir",
+            return_value=str(tmp_path / "tmp"),
+        ):
+            env = _build_mirror_slot_env(real_config, 0, pristine=False)
+
+        slot = Path(env["CLAUDE_CONFIG_DIR"])
+        assert (slot / "credentials.json").is_symlink()
+        for name in self._PERSONALIZATION:
+            assert (slot / name).is_symlink()
+
+    def test_pristine_rebuild_purges_prior_personalization(
+        self, tmp_path: Path
+    ) -> None:
+        """A slot previously built non-pristine loses personalization
+        entries when rebuilt pristine — the stale-entry sweep purges the
+        now-unmirrored symlinks."""
+        from codeprobe.adapters.claude import _build_mirror_slot_env
+
+        real_config = self._make_real_config(tmp_path)
+        with patch(
+            "codeprobe.adapters.claude.tempfile.gettempdir",
+            return_value=str(tmp_path / "tmp"),
+        ):
+            env = _build_mirror_slot_env(real_config, 0, pristine=False)
+            slot = Path(env["CLAUDE_CONFIG_DIR"])
+            for name in self._PERSONALIZATION:
+                assert (slot / name).is_symlink()
+
+            env2 = _build_mirror_slot_env(real_config, 0, pristine=True)
+
+        assert Path(env2["CLAUDE_CONFIG_DIR"]) == slot
+        for name in self._PERSONALIZATION:
+            assert not (slot / name).exists(), (
+                f"stale personalization entry {name} survived pristine rebuild"
+            )
+        assert (slot / "credentials.json").is_symlink()
+        assert (slot / ".claude.json").is_symlink()
+
+    def test_isolate_session_forwards_pristine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = ClaudeAdapter()
+        fake_home = tmp_path / "home"
+        self._make_real_config(tmp_path)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            env = adapter.isolate_session(0, pristine=True)
+
+        slot = Path(env["CLAUDE_CONFIG_DIR"])
+        assert (slot / "credentials.json").is_symlink()
+        for name in self._PERSONALIZATION:
+            assert not (slot / name).exists()
+
+
 class TestCheckParallelAuth:
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:

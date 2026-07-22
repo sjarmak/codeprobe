@@ -957,6 +957,17 @@ def mine(
     ),
 )
 @click.option(
+    "--pristine-config",
+    "pristine_config",
+    is_flag=True,
+    default=False,
+    help=(
+        "Exclude the operator's CLAUDE.md/settings/skills/agents/hooks/"
+        "plugins/commands/rules from the agent's config dir for "
+        "reproducible arms."
+    ),
+)
+@click.option(
     "--offline",
     is_flag=True,
     default=False,
@@ -998,6 +1009,7 @@ def run(
     suite_path: str | None,
     trace_overflow: str,
     trace_deny: tuple[str, ...],
+    pristine_config: bool,
     offline: bool,
     offline_expected_run_duration: str,
     tenant_id: str | None,
@@ -1050,6 +1062,7 @@ def run(
         suite_path=suite_path,
         trace_overflow=trace_overflow,
         trace_deny=tuple(trace_deny),
+        pristine_config=pristine_config,
         offline=offline,
         offline_expected_run_duration=offline_expected_run_duration,
         tenant=run_tenant,

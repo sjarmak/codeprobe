@@ -505,6 +505,7 @@ def run_eval(
     suite_path: str | None = None,
     trace_overflow: str = "fail",
     trace_deny: tuple[str, ...] = (),
+    pristine_config: bool = False,
     offline: bool = False,
     offline_expected_run_duration: str = "1h",
     tenant: str | None = None,
@@ -1016,6 +1017,7 @@ def run_eval(
                     preamble_resolver=preamble_resolver,
                     trace_recorder=trace_recorder,
                     config_max_turns_source=config_max_turns_source,
+                    pristine_config=pristine_config,
                 )
             except KeyboardInterrupt:
                 interrupted = True
@@ -1159,6 +1161,7 @@ def run_eval(
                 "configs": summary_configs,
                 "total_tasks": total_tasks,
                 "total_cost_usd": total_cost,
+                "pristine_config": pristine_config,
                 "tenant": tenant,
                 "tenant_source": tenant_source,
             },
