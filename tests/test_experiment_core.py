@@ -366,6 +366,27 @@ def test_record_task_ids_in_experiment(tmp_path: Path):
     assert loaded.task_ids == ("aaa111", "bbb222", "ccc333")  # sorted
 
 
+def test_record_task_ids_unions_and_persists(tmp_path: Path):
+    """core record_task_ids unions new ids with existing ones and saves."""
+    from codeprobe.core.experiment import record_task_ids
+
+    exp_dir = tmp_path / ".codeprobe"
+    exp_dir.mkdir()
+    save_experiment(exp_dir, Experiment(name="default", task_ids=("old-1",)))
+
+    updated = record_task_ids(exp_dir, ["new-2", "new-1", "old-1"])
+
+    assert updated.task_ids == ("new-1", "new-2", "old-1")
+    assert load_experiment(exp_dir).task_ids == ("new-1", "new-2", "old-1")
+
+
+def test_record_task_ids_missing_experiment_raises(tmp_path: Path):
+    from codeprobe.core.experiment import record_task_ids
+
+    with pytest.raises(FileNotFoundError):
+        record_task_ids(tmp_path, ["t-1"])
+
+
 def test_record_task_ids_skips_multiple_experiments(tmp_path: Path):
     """No update when multiple experiments exist (ambiguous)."""
     from codeprobe.cli.mine_cmd import _record_task_ids_in_experiment

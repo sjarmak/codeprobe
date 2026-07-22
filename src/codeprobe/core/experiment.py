@@ -126,6 +126,30 @@ def ensure_default_experiment(
     return codeprobe_dir
 
 
+def record_task_ids(exp_dir: Path, task_ids: Sequence[str]) -> Experiment:
+    """Union *task_ids* into the experiment's ``task_ids`` and persist it.
+
+    ``run`` scopes task discovery to ``experiment.task_ids`` whenever the
+    tuple is non-empty, so any command that writes task directories must
+    record their ids here or the tasks are silently excluded. Union (not
+    replace) so probe output coexists with previously mined tasks.
+
+    Returns the updated (immutable) Experiment. Raises FileNotFoundError
+    when *exp_dir* holds no experiment.json.
+    """
+    experiment = load_experiment(exp_dir)
+    merged = tuple(sorted(set(experiment.task_ids) | set(task_ids)))
+    updated = Experiment(
+        name=experiment.name,
+        description=experiment.description,
+        configs=experiment.configs,
+        tasks_dir=experiment.tasks_dir,
+        task_ids=merged,
+    )
+    save_experiment(exp_dir, updated)
+    return updated
+
+
 def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
     """Write experiment.json to the experiment directory."""
     serialized_configs = []

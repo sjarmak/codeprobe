@@ -752,7 +752,9 @@ class TestProbeCLI:
         assert "Scanning" in result.output
         assert "Probe generation complete" in result.output
 
-    def test_probe_no_symbols_logs_warning(self, tmp_path: Path) -> None:
+    def test_probe_no_symbols_raises_diagnostic_error(
+        self, tmp_path: Path
+    ) -> None:
         runner = CliRunner()
         empty_repo = tmp_path / "empty"
         empty_repo.mkdir()
@@ -761,8 +763,10 @@ class TestProbeCLI:
             ["probe", str(empty_repo), "--output", str(tmp_path / "out")],
         )
         assert result.exit_code == 1
-        # The warning is emitted via the logging StreamHandler to stderr,
-        # captured in result.output by CliRunner.
+        # The bare SystemExit(1) migrated to DiagnosticError
+        # NO_PROBE_SYMBOLS (codeprobe-f7rl.18); both the pretty banner
+        # and the JSON envelope carry the code and message.
+        assert "NO_PROBE_SYMBOLS" in result.output
         assert "no suitable symbols" in result.output
 
     def test_probe_final_summary_on_stdout(self, py_repo: Path, tmp_path: Path) -> None:
@@ -786,3 +790,156 @@ class TestProbeCLI:
         # It should be in the output.
         assert "Created" in result.output
         assert "probe tasks in" in result.output
+
+
+# ---------------------------------------------------------------------------
+# --emit-tasks discovery contract (codeprobe-f7rl.18)
+# ---------------------------------------------------------------------------
+
+
+class TestProbeEmitTasksDiscovery:
+    """probe --emit-tasks must write where ``codeprobe run`` discovers tasks."""
+
+    def _extract_json(self, output: str) -> dict:
+        return json.loads(output[output.index("{"):])
+
+    def test_emit_tasks_defaults_to_codeprobe_tasks(self, py_repo: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["probe", str(py_repo), "-n", "3", "-s", "42", "--emit-tasks", "--json"],
+        )
+        assert result.exit_code == 0, result.output
+        tasks_dir = py_repo.resolve() / ".codeprobe" / "tasks"
+        task_dirs = [d for d in tasks_dir.iterdir() if d.is_dir()]
+        assert task_dirs, "no task dirs written under .codeprobe/tasks"
+        data = self._extract_json(result.output)
+        assert Path(data["output_dir"]) == tasks_dir
+        assert data["warnings"] == []
+
+    def test_emit_tasks_explicit_output_honored_with_warning(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        custom = tmp_path / "custom-tasks"
+        result = runner.invoke(
+            main,
+            [
+                "probe",
+                str(py_repo),
+                "-n",
+                "3",
+                "-s",
+                "42",
+                "--emit-tasks",
+                "-o",
+                str(custom),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert any(custom.iterdir()), "explicit -o was not honored"
+        data = self._extract_json(result.output)
+        assert len(data["warnings"]) == 1
+        assert "only discovers tasks under" in data["warnings"][0]
+
+    def test_emit_tasks_explicit_output_warning_pretty(
+        self, py_repo: Path, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        custom = tmp_path / "custom-tasks"
+        result = runner.invoke(
+            main,
+            [
+                "probe",
+                str(py_repo),
+                "-n",
+                "3",
+                "-s",
+                "42",
+                "--emit-tasks",
+                "-o",
+                str(custom),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Warning:" in result.output
+        assert "only discovers tasks under" in result.output
+
+    def test_without_emit_tasks_defaults_to_repo_probes(self, py_repo: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["probe", str(py_repo), "-n", "3", "-s", "42"])
+        assert result.exit_code == 0, result.output
+        assert (py_repo / "probes").is_dir()
+        assert not (py_repo / ".codeprobe").exists()
+
+    def test_emit_tasks_records_ids_in_new_default_experiment(
+        self, py_repo: Path
+    ) -> None:
+        from codeprobe.core.experiment import load_experiment
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["probe", str(py_repo), "-n", "3", "-s", "42", "--emit-tasks"]
+        )
+        assert result.exit_code == 0, result.output
+        codeprobe_dir = py_repo / ".codeprobe"
+        assert (codeprobe_dir / "experiment.json").is_file()
+        experiment = load_experiment(codeprobe_dir)
+        written = sorted(
+            d.name for d in (codeprobe_dir / "tasks").iterdir() if d.is_dir()
+        )
+        assert list(experiment.task_ids) == written
+
+    def test_emit_tasks_unions_ids_with_existing_experiment(
+        self, py_repo: Path
+    ) -> None:
+        from codeprobe.core.experiment import load_experiment, save_experiment
+        from codeprobe.models.experiment import Experiment
+
+        codeprobe_dir = py_repo / ".codeprobe"
+        codeprobe_dir.mkdir()
+        save_experiment(
+            codeprobe_dir,
+            Experiment(name="default", task_ids=("pre-existing-task",)),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["probe", str(py_repo), "-n", "3", "-s", "42", "--emit-tasks"]
+        )
+        assert result.exit_code == 0, result.output
+        experiment = load_experiment(codeprobe_dir)
+        assert "pre-existing-task" in experiment.task_ids
+        written = {
+            d.name for d in (codeprobe_dir / "tasks").iterdir() if d.is_dir()
+        }
+        assert written <= set(experiment.task_ids)
+
+    def test_cold_start_journey_probe_then_run_dry_run(
+        self, py_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The documented Option B sequence: probe --emit-tasks -> run --dry-run."""
+        monkeypatch.setenv("CODEPROBE_DISABLE_TENANT_LOCK", "1")
+        runner = CliRunner()
+        probe_result = runner.invoke(
+            main, ["probe", str(py_repo), "-n", "3", "-s", "42", "--emit-tasks"]
+        )
+        assert probe_result.exit_code == 0, probe_result.output
+
+        run_result = runner.invoke(main, ["run", str(py_repo), "--dry-run"])
+        assert run_result.exit_code == 0, run_result.output
+        assert "NO_TASKS" not in run_result.output
+        assert "Total tasks" in run_result.output
+
+    def test_cold_start_doc_matches_behavior(self) -> None:
+        doc = (
+            Path(__file__).resolve().parents[1]
+            / "docs"
+            / "workflows"
+            / "cold-start.md"
+        )
+        text = doc.read_text(encoding="utf-8")
+        assert "-o /path/to/repo/probes" not in text
+        assert "/path/to/repo/probes/<task-id>" not in text
+        assert ".codeprobe/tasks" in text

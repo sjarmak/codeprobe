@@ -76,11 +76,12 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # exits) migrated to typed PrescriptiveError/DiagnosticError, so
         # their entries come off; only the quarantine refusal's SystemExit
         # remains and it already carries its own `# lint-exempt` pragma.
+        # codeprobe-f7rl.18: the probe_cmd.py no-symbols SystemExit(1)
+        # migrated to DiagnosticError NO_PROBE_SYMBOLS, so its entry came off.
         # codeprobe-f7rl.12: init_cmd.py shifted (non-TTY default
         # experiment creation replaces the no-op). Real line number below,
         # confirmed by running the lint test against the merged file.
         ("src/codeprobe/cli/init_cmd.py", 56),
-        ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),
         ("src/codeprobe/cli/ratings_cmd.py", 118),
         ("src/codeprobe/cli/scaffold_cmd.py", 74),

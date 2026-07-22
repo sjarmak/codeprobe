@@ -410,6 +410,14 @@
       "remediation_pattern": "Pass --name=<experiment-name>, or --non-interactive to use the default name."
     },
     {
+      "code": "NO_PROBE_SYMBOLS",
+      "kind": "diagnostic",
+      "exit_code": 1,
+      "since": "0.11.0",
+      "description": "`codeprobe probe` extracted no probeable symbols (functions, classes, methods) from the repository, so no probe tasks could be generated.",
+      "remediation_pattern": "Confirm the repo contains Python or TypeScript source; if --lang was passed, drop it to scan all supported languages."
+    },
+    {
       "code": "NO_CONFIGS",
       "kind": "diagnostic",
       "exit_code": 1,
