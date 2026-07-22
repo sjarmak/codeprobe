@@ -270,7 +270,9 @@ def init(
     "--source",
     default="auto",
     hidden=True,
-    help="Git host: github, gitlab, bitbucket, azure, gitea, local, auto.",
+    help="Git host: github, gitlab, bitbucket, azure, gitea, local, auto. "
+    "PR/MR narrative fetch is GitHub-only (gh CLI); other hosts mine "
+    "commit-message narratives via --narrative-source commits.",
 )
 @click.option(
     "--min-files",

@@ -240,7 +240,11 @@ Beyond the built-ins:
   `codeprobe.agents` entry-point group. See [docs/adapters.md](docs/adapters.md).
 
 Git hosts supported for mining: GitHub, GitLab, Bitbucket, Azure DevOps,
-Gitea/Forgejo, and local repositories.
+Gitea/Forgejo, and local repositories. PR/MR narrative fetch is GitHub-only
+(it shells the `gh` CLI): GitHub repos get full PR narratives (bodies, linked
+issues). GitLab, Bitbucket, Azure DevOps, Gitea/Forgejo, and self-hosted
+remotes mine merge commits with `--narrative-source commits` — lower
+narrative quality, since MR bodies and linked-issue context are not fetched.
 
 ## Methodology
 

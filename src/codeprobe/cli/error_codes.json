@@ -6,8 +6,8 @@
       "kind": "prescriptive",
       "exit_code": 2,
       "since": "0.7.0",
-      "description": "codeprobe could not auto-detect whether the repository's narrative source is GitHub PRs, GitLab MRs, or another backend.",
-      "remediation_pattern": "Pass --narrative-source=<github|gitlab|...> explicitly."
+      "description": "codeprobe could not resolve a narrative source: the repo has no merged PR narratives discoverable via gh, or the detected host is not GitHub (PR/MR narrative fetch is GitHub-only via the gh CLI).",
+      "remediation_pattern": "Pass --narrative-source explicitly. Accepted names: pr, commits, rfcs (e.g. --narrative-source commits)."
     },
     {
       "code": "MUTEX_FLAGS",

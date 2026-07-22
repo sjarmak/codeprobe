@@ -280,14 +280,29 @@ _COUNT_PRESETS = {
     "3": ("Thorough (10-20)", 15),
 }
 
+# PR/MR narrative fetch shells the gh CLI, so it only works on GitHub.
+# Every other host mines commit-message narratives (--narrative-source
+# commits) — the choice surfaces below disclose that asymmetry.
+_NON_GITHUB_NOTE = "commit-message narratives only — PR/MR fetch is GitHub-only"
+
 _SOURCE_OPTIONS = {
     "1": ("Auto-detect", "auto"),
     "2": ("GitHub", "github"),
-    "3": ("GitLab", "gitlab"),
-    "4": ("Bitbucket", "bitbucket"),
-    "5": ("Azure DevOps", "azure"),
-    "6": ("Gitea/Forgejo", "gitea"),
+    "3": (f"GitLab ({_NON_GITHUB_NOTE})", "gitlab"),
+    "4": (f"Bitbucket ({_NON_GITHUB_NOTE})", "bitbucket"),
+    "5": (f"Azure DevOps ({_NON_GITHUB_NOTE})", "azure"),
+    "6": (f"Gitea/Forgejo ({_NON_GITHUB_NOTE})", "gitea"),
     "7": ("Local only", "local"),
+}
+
+# Human-facing display names for detected host keys (see
+# ``codeprobe.mining.sources._HOST_MAP`` plus the "self-hosted" bucket).
+_HOST_DISPLAY_NAMES = {
+    "gitlab": "GitLab",
+    "bitbucket": "Bitbucket",
+    "azure": "Azure DevOps",
+    "gitea": "Gitea/Forgejo",
+    "self-hosted": "Self-hosted",
 }
 
 
@@ -345,13 +360,8 @@ def _ask_source() -> str:
     """Phase 1: Ask which git host."""
     click.echo()
     click.echo("Git host?")
-    click.echo("  [1] Auto-detect")
-    click.echo("  [2] GitHub")
-    click.echo("  [3] GitLab")
-    click.echo("  [4] Bitbucket")
-    click.echo("  [5] Azure DevOps")
-    click.echo("  [6] Gitea/Forgejo")
-    click.echo("  [7] Local only")
+    for key, (label, _) in _SOURCE_OPTIONS.items():
+        click.echo(f"  [{key}] {label}")
     click.echo()
 
     choice = click.prompt("Select host", default="1", show_default=True)
@@ -1910,6 +1920,12 @@ def _resolve_narrative_source(
     * If the user passed ``--narrative-source`` explicitly, validate each
       name and return the parsed tuple.
     * If omitted and ``tasks_mined`` is True:
+        * When the detected host is neither GitHub nor local, raise a
+          :class:`PrescriptiveError` naming the GitHub-only limitation —
+          PR/MR narrative fetch shells the ``gh`` CLI, so probing a
+          GitLab/Bitbucket/Azure/Gitea remote would always come back
+          empty and produce a misleading "squash-only" diagnosis. No
+          ``gh`` subprocess is spawned on this path.
         * When ``pr_bodies`` contains at least one non-empty body, OR the
           ``gh`` CLI reports at least one merged PR, default to
           ``("pr",)`` (backward compat).
@@ -1925,6 +1941,7 @@ def _resolve_narrative_source(
     patching gymnastics).
     """
     from codeprobe.mining.sources import (
+        detect_source,
         has_pr_narratives,
         parse_narrative_selection,
         select_narrative_adapters,
@@ -1965,8 +1982,32 @@ def _resolve_narrative_source(
     if pr_bodies and any(body.strip() for body in pr_bodies.values()):
         return ("pr",)
 
+    # Non-GitHub remotes: PR/MR narrative fetch is gh-CLI-only, so the gh
+    # probe below would always report "no PRs" and we would emit the
+    # factually wrong "squash-only" diagnosis. Refuse honestly instead,
+    # without spawning any gh subprocess.
+    source = detect_source(repo_path)
+    if source.host not in ("github", "local"):
+        host_display = _HOST_DISPLAY_NAMES.get(source.host, source.host)
+        raise PrescriptiveError(
+            code="NARRATIVE_SOURCE_UNDETECTABLE",
+            message=(
+                "PR/MR narrative fetch is GitHub-only (it uses the gh CLI). "
+                f"Detected host: {source.host}. {host_display} merge-request "
+                "narratives are not fetched. Pass --narrative-source commits "
+                "to mine from commit messages instead — lower narrative "
+                "quality: no MR bodies or linked-issue context. Accepted "
+                "names: pr, commits, rfcs."
+            ),
+            next_try_flag="--narrative-source",
+            next_try_value="commits",
+            detail={"host": source.host},
+        )
+
     # Slower fallback: probe gh to see if the repo has PRs at all. Needed
     # when mining yielded tasks but every PR body happened to be empty.
+    # Only reached for github/local hosts, where the "squash-only or
+    # no-remote history" diagnosis below is accurate.
     if has_pr_narratives(repo_path):
         return ("pr",)
 
