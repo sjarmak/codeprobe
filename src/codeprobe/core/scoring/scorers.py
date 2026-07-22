@@ -103,6 +103,9 @@ class BinaryScorer:
         run = _run_in_sandbox(
             test_sh, agent_output, task_dir, agent_state=agent_state
         )
+        # Containment disclosure: every scored trial reports whether the
+        # verifier ran in a container or on the host (codeprobe-f7rl.4).
+        exec_details = {"sandbox_execution": run.execution_mode}
         if run.verifier_error:
             # Materialisation pipeline rejected the diff; we never ran
             # test.sh. Surface distinctly from agent-failure so reviewers
@@ -111,6 +114,7 @@ class BinaryScorer:
                 score=0.0,
                 passed=False,
                 error=run.error,
+                details=exec_details,
                 scorer_family=self.SCORER_FAMILY,
                 verdict="verifier_error",
                 materialized_via=run.materialized_via,
@@ -120,6 +124,7 @@ class BinaryScorer:
                 score=0.0,
                 passed=False,
                 error=run.error,
+                details=exec_details,
                 scorer_family=self.SCORER_FAMILY,
                 materialized_via=run.materialized_via,
             )
@@ -127,6 +132,7 @@ class BinaryScorer:
             return ScoreResult(
                 score=1.0,
                 passed=True,
+                details=exec_details,
                 scorer_family=self.SCORER_FAMILY,
                 sub_scores={"exit_code": 0},
                 verdict="correct",
@@ -136,6 +142,7 @@ class BinaryScorer:
             score=0.0,
             passed=False,
             error=sanitize_secrets(run.stderr.strip()) if run.stderr else None,
+            details=exec_details,
             scorer_family=self.SCORER_FAMILY,
             sub_scores={"exit_code": run.returncode},
             verdict="incorrect",
@@ -198,12 +205,16 @@ class ContinuousScorer:
             )
 
         run = _run_in_sandbox(test_sh, agent_output, task_dir, cleanup=False)
+        # Containment disclosure: every scored trial reports whether the
+        # verifier ran in a container or on the host (codeprobe-f7rl.4).
+        exec_details = {"sandbox_execution": run.execution_mode}
         try:
             if run.error is not None:
                 return ScoreResult(
                     score=0.0,
                     passed=False,
                     error=run.error,
+                    details=exec_details,
                     scorer_family="continuous",
                 )
             if run.returncode != 0:
@@ -211,6 +222,7 @@ class ContinuousScorer:
                     score=0.0,
                     passed=False,
                     error=sanitize_secrets(run.stderr.strip()) if run.stderr else None,
+                    details=exec_details,
                     scorer_family="continuous",
                     sub_scores={"exit_code": run.returncode},
                 )
@@ -226,6 +238,7 @@ class ContinuousScorer:
                     score=0.0,
                     passed=False,
                     error="No valid score found in reward.txt or stdout",
+                    details=exec_details,
                     scorer_family="continuous",
                 )
 
@@ -250,7 +263,7 @@ class ContinuousScorer:
                 return ScoreResult(
                     score=reward,
                     passed=reward >= PASS_THRESHOLD,
-                    details=details,
+                    details={**details, **exec_details},
                     reward_score=reward,
                     ir_metrics=ir_metrics,
                     scorer_family=family,
@@ -266,6 +279,7 @@ class ContinuousScorer:
             return ScoreResult(
                 score=clamped,
                 passed=clamped > 0.0,
+                details=exec_details,
                 reward_score=clamped,
                 scorer_family="continuous",
                 sub_scores={"raw_score": clamped},
@@ -531,6 +545,7 @@ class CheckpointScorer:
         # report can show partial-credit columns (see R17).
         checkpoint_scores: dict[str, float] = {}
         checkpoint_weights: dict[str, float] = {}
+        sandbox_execution = ""
 
         for cp in checkpoints:
             weight = float(cp.get("weight", 0.0) or 0.0)  # type: ignore[arg-type]
@@ -546,7 +561,9 @@ class CheckpointScorer:
                     scorer_family="weighted_checkpoints",
                 )
 
-            cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
+            cp_score, sandbox_execution = self._run_verifier(
+                verifier_path, agent_output, task_dir
+            )
             weighted_score += cp_score * weight
             checkpoint_scores[name] = cp_score
             checkpoint_weights[name] = weight
@@ -558,6 +575,10 @@ class CheckpointScorer:
             details={
                 "checkpoint_scores": checkpoint_scores,
                 "checkpoint_weights": checkpoint_weights,
+                # Containment disclosure (codeprobe-f7rl.4). All verifiers
+                # in one trial run in the same environment; the last mode
+                # observed stands for the trial.
+                "sandbox_execution": sandbox_execution,
             },
             scorer_family="weighted_checkpoints",
             sub_scores={
@@ -571,8 +592,12 @@ class CheckpointScorer:
         verifier_path: Path,
         agent_output: str,
         task_dir: Path,
-    ) -> float:
-        """Run a single checkpoint verifier and return its score (0.0-1.0)."""
+    ) -> tuple[float, str]:
+        """Run a single checkpoint verifier.
+
+        Returns ``(score, execution_mode)`` where score is 0.0-1.0 and
+        execution_mode is the sandbox's ``"container"`` / ``"host"``.
+        """
         run = _run_in_sandbox(verifier_path, agent_output, task_dir)
         if run.error is not None:
             # R16: fail loud. Sandbox already logged the root cause at
@@ -583,7 +608,7 @@ class CheckpointScorer:
                 verifier_path.name,
                 run.error,
             )
-            return _ZERO_SCORE
+            return _ZERO_SCORE, run.execution_mode
 
         # Try to parse JSON from stdout
         stdout = run.stdout.strip()
@@ -591,15 +616,15 @@ class CheckpointScorer:
             try:
                 data = json.loads(stdout)
                 raw = float(data.get("score", 0.0))
-                return max(0.0, min(1.0, raw))
+                return max(0.0, min(1.0, raw)), run.execution_mode
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
 
         # Fallback: exit code. Non-zero is a legitimate "verifier failed"
         # signal (not a silent swallow); returncode is the loud channel.
         if run.returncode == 0:
-            return 1.0
-        return _ZERO_SCORE
+            return 1.0, run.execution_mode
+        return _ZERO_SCORE, run.execution_mode
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +775,7 @@ class OracleChecksScorer:
         criterion_scores: dict[str, float] = {}
         criterion_weights: dict[str, float] = {}
         weighted_sum = 0.0
+        sandbox_execution = ""
 
         for idx, (crit, weight) in enumerate(zip(criteria, weights, strict=True)):
             verifier_name = str(crit.get("verifier", "") or "")
@@ -772,7 +798,9 @@ class OracleChecksScorer:
                     scorer_family=self.SCORER_FAMILY,
                 )
 
-            cp_score = self._run_verifier(verifier_path, agent_output, task_dir)
+            cp_score, sandbox_execution = self._run_verifier(
+                verifier_path, agent_output, task_dir
+            )
             weighted_sum += cp_score * weight
             criterion_scores[name] = cp_score
             criterion_weights[name] = weight
@@ -793,6 +821,9 @@ class OracleChecksScorer:
                 "criterion_scores": criterion_scores,
                 "criterion_weights": criterion_weights,
                 "total_weight": total_weight,
+                # Containment disclosure (codeprobe-f7rl.4) — same
+                # convention as CheckpointScorer.
+                "sandbox_execution": sandbox_execution,
             },
             scorer_family=self.SCORER_FAMILY,
             sub_scores=sub_scores,
@@ -803,12 +834,13 @@ class OracleChecksScorer:
         verifier_path: Path,
         agent_output: str,
         task_dir: Path,
-    ) -> float:
-        """Run a single criterion verifier and return its score (0.0-1.0).
+    ) -> tuple[float, str]:
+        """Run a single criterion verifier.
 
-        Mirrors :meth:`CheckpointScorer._run_verifier` so both composite
-        scorers see the same sandbox semantics: JSON ``score`` field is
-        preferred, exit-code is the documented fallback.
+        Returns ``(score, execution_mode)`` with score in 0.0-1.0. Mirrors
+        :meth:`CheckpointScorer._run_verifier` so both composite scorers
+        see the same sandbox semantics: JSON ``score`` field is preferred,
+        exit-code is the documented fallback.
         """
         run = _run_in_sandbox(verifier_path, agent_output, task_dir)
         if run.error is not None:
@@ -817,20 +849,20 @@ class OracleChecksScorer:
                 verifier_path.name,
                 run.error,
             )
-            return _ZERO_SCORE
+            return _ZERO_SCORE, run.execution_mode
 
         stdout = run.stdout.strip()
         if stdout:
             try:
                 data = json.loads(stdout)
                 raw = float(data.get("score", 0.0))
-                return max(0.0, min(1.0, raw))
+                return max(0.0, min(1.0, raw)), run.execution_mode
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
 
         if run.returncode == 0:
-            return 1.0
-        return _ZERO_SCORE
+            return 1.0, run.execution_mode
+        return _ZERO_SCORE, run.execution_mode
 
 
 # ---------------------------------------------------------------------------

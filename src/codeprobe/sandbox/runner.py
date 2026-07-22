@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_IMAGE: Final[str] = "codeprobe-sandbox:sg-only"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 
+# Image used to execute mined test.sh / verifier scripts (codeprobe-f7rl.4).
+# Built from ``src/codeprobe/sandbox/Dockerfile.scoring``; the version tag
+# tracks the toolchain matrix, bump it when the Dockerfile changes.
+DEFAULT_SCORING_IMAGE: Final[str] = "codeprobe-scoring:0.12"
+
 # Lower-cased stderr fragments that indicate a write to a read-only mount.
 # Kept explicit because the exact wording varies between docker, podman, and
 # the underlying kernel, but these three substrings cover all observed cases.
@@ -100,6 +105,38 @@ def _detect_engine() -> str:
         "No container engine found on PATH. Install docker or podman to use "
         "the codeprobe sandbox."
     )
+
+
+def detect_engine() -> str | None:
+    """Return the path to docker or podman, or ``None`` when neither exists.
+
+    Non-raising wrapper around :func:`_detect_engine` for callers that
+    treat "no engine" as a branch condition rather than an error.
+    """
+    try:
+        return _detect_engine()
+    except SandboxError:
+        return None
+
+
+def image_available(engine: str, image: str) -> bool:
+    """Return True when *image* exists locally for *engine*.
+
+    Uses ``<engine> image inspect`` (supported by both docker and podman).
+    Any failure — nonzero exit, missing binary, timeout — reads as "image
+    not available"; callers fall through to their no-container branch.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603 — argv list, no shell=True
+            [engine, "image", "inspect", image],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
 
 
 def _build_run_command(

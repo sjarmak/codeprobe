@@ -1,0 +1,30 @@
+# Scoring image for mined test/verifier scripts (codeprobe-f7rl.4).
+#
+# Build from the repository root:
+#
+#   docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .
+#
+# Toolchain matches the committed mining matrix (Python / Go / JS-TS) plus
+# bash, git, and coreutils for the scripts themselves. Scoring containers
+# run with --network=none: nothing in this image may assume network egress
+# at runtime, and mined tests that need it fail closed by design.
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        coreutils \
+        git \
+        golang-go \
+        nodejs \
+        npm \
+        python3 \
+        python3-venv \
+ && rm -rf /var/lib/apt/lists/*
+
+CMD ["/bin/bash"]

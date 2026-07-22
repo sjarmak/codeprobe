@@ -68,6 +68,23 @@ def _containment_consent_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_containment_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the module-global containment plan between tests.
+
+    ``codeprobe run`` records its resolved plan via ``set_active_plan``
+    (codeprobe-f7rl.3) and scoring consults it when deciding whether host
+    execution needs consent (codeprobe-f7rl.4). Run-path tests would
+    otherwise leak a ``sandboxed`` plan into later scoring tests, flipping
+    them onto the missing-image refusal branch on hosts with a container
+    engine. monkeypatch restores the pre-test value even when a test sets
+    the plan through ``set_active_plan``.
+    """
+    from codeprobe.core import containment
+
+    monkeypatch.setattr(containment, "_active_plan", None)
+
+
+@pytest.fixture(autouse=True)
 def _reset_codeprobe_logger():
     """Ensure the codeprobe logger is clean before and after every test.
 

@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from codeprobe.sandbox import runner as container_runner
+
 if TYPE_CHECKING:
     from codeprobe.core.scoring.materialize import AgentState
 
@@ -142,7 +144,15 @@ def _safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class _SandboxRun:
-    """Result of running a script inside the sandbox."""
+    """Result of running a script inside the sandbox.
+
+    ``execution_mode`` records HOW the script process ran: ``"container"``
+    (docker/podman with ``--network=none`` via
+    :func:`codeprobe.sandbox.runner.run_in_sandbox`) or ``"host"`` (plain
+    ``bash`` subprocess on the invoking machine). Scorers surface it as
+    ``scoring_details["sandbox_execution"]`` so every summary can disclose
+    the containment level of the verifier run.
+    """
 
     returncode: int
     stdout: str
@@ -151,10 +161,76 @@ class _SandboxRun:
     error: str | None = None
     materialized_via: str = "in_place"
     verifier_error: bool = False
+    execution_mode: str = "host"
 
     @property
     def sandbox_task(self) -> Path | None:
         return self.sandbox_dir / "task" if self.sandbox_dir else None
+
+
+def _missing_image_refusal(engine: str | None) -> str | None:
+    """Refusal message when host fallback is not consented, else ``None``.
+
+    Called only when the container path is unavailable because the scoring
+    image is missing. Host execution stays allowed for a ``host-consented``
+    plan (the user passed ``--uncontained``) and for plan-less library/test
+    callers (programmatic use never set a plan — preserve their behavior).
+    An engine-less machine also falls through: a ``sandboxed`` plan there
+    means the environment itself is the containment (e.g. we are already
+    inside a container), so the bash path is the contained path.
+    """
+    if engine is None:
+        return None
+    from codeprobe.core.containment import active_plan
+
+    plan = active_plan()
+    if plan is None or plan.mode == "host-consented":
+        return None
+    return (
+        "Container engine found but scoring image "
+        f"{container_runner.DEFAULT_SCORING_IMAGE!r} is not built; refusing "
+        "to run mined test/verifier scripts on the host without "
+        "--uncontained consent. Build the image from the repo root with: "
+        "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
+        "-t codeprobe-scoring:0.12 ."
+    )
+
+
+def _container_exec(
+    sandbox_script: Path,
+    sandbox_dir: Path,
+    sandbox_task: Path,
+    env_extra: dict[str, str],
+    timeout: int,
+) -> tuple[int, str, str] | str:
+    """Run *sandbox_script* in the scoring container.
+
+    Returns ``(returncode, stdout, stderr)`` on completion, or an error
+    string when the engine itself failed (timeout, launch error, denied
+    write). The identity mount (host path == container path) keeps the
+    ``AGENT_OUTPUT`` / ``TASK_REPO_ROOT`` host paths in ``env_extra`` valid
+    inside the container with no translation. ``allow_writes=True`` is
+    required because scripts write reward.txt/answer artefacts into the
+    sandbox copy — the copy is a throwaway tempdir, so rw is safe. Only
+    ``env_extra`` is forwarded (not the full ``_safe_env``): the image
+    supplies its own PATH/HOME. Network stays ``--network=none``; mined
+    tests that need egress fail closed, which is the intended posture.
+    """
+    try:
+        result = container_runner.run_in_sandbox(
+            ["bash", str(sandbox_script)],
+            {str(sandbox_dir): str(sandbox_dir)},
+            allow_writes=True,
+            image=container_runner.DEFAULT_SCORING_IMAGE,
+            timeout=float(timeout),
+            workdir=str(sandbox_task),
+            env=env_extra,
+        )
+    except container_runner.SandboxError as exc:
+        # Covers SandboxWriteDeniedError (subclass) too. Mirror the host
+        # path's TimeoutExpired handling: error populated, no crash.
+        return str(exc)
+    return (result.exit_code, result.stdout, result.stderr)
 
 
 def _run_in_sandbox(
@@ -251,25 +327,71 @@ def _run_in_sandbox(
             # tasks do) now lands inside the materialised checkout.
             env_extra["TASK_REPO_ROOT"] = str(checkout)
 
-        env = _safe_env(env_extra)
-
-        result = subprocess.run(
-            ["bash", str(sandbox_script)],
-            env=env,
-            cwd=str(sandbox_task),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        # Containment branch (codeprobe-f7rl.4): mined scripts are untrusted
+        # third-party code. When a container engine and the scoring image
+        # are both available, execute inside the --network=none container;
+        # otherwise host execution needs consent (see _missing_image_refusal).
+        engine = container_runner.detect_engine()
+        if engine is not None and container_runner.image_available(
+            engine, container_runner.DEFAULT_SCORING_IMAGE
+        ):
+            execution_mode = "container"
+            outcome = _container_exec(
+                sandbox_script, sandbox_dir, sandbox_task, env_extra, timeout
+            )
+            if isinstance(outcome, str):
+                if cleanup:
+                    shutil.rmtree(sandbox_dir, ignore_errors=True)
+                    sandbox_dir = None
+                return _SandboxRun(
+                    returncode=-1,
+                    stdout="",
+                    stderr="",
+                    sandbox_dir=sandbox_dir,
+                    error=outcome,
+                    materialized_via=materialized_via,
+                    execution_mode="container",
+                )
+            returncode, stdout, stderr = outcome
+        else:
+            refusal = _missing_image_refusal(engine)
+            if refusal is not None:
+                if cleanup:
+                    shutil.rmtree(sandbox_dir, ignore_errors=True)
+                    sandbox_dir = None
+                return _SandboxRun(
+                    returncode=-1,
+                    stdout="",
+                    stderr=refusal,
+                    sandbox_dir=sandbox_dir,
+                    error=refusal,
+                    materialized_via=materialized_via,
+                    verifier_error=True,
+                )
+            execution_mode = "host"
+            result = subprocess.run(
+                ["bash", str(sandbox_script)],
+                env=_safe_env(env_extra),
+                cwd=str(sandbox_task),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            returncode, stdout, stderr = (
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
         if cleanup:
             shutil.rmtree(sandbox_dir, ignore_errors=True)
             sandbox_dir = None
         return _SandboxRun(
-            returncode=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
             sandbox_dir=sandbox_dir,
             materialized_via=materialized_via,
+            execution_mode=execution_mode,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         if sandbox_dir is not None:

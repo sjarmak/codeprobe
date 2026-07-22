@@ -107,6 +107,21 @@ credential, and network access. Run inside a container (auto-detected), set
 pass `--uncontained` to accept host execution. codeprobe never sets
 `CODEPROBE_SANDBOX` on its own.
 
+Mined test/verifier scripts are third-party code. When docker or podman is on
+PATH and the scoring image is built, codeprobe executes every mined `test.sh`
+and verifier inside a `--network=none` container automatically; each trial's
+`scoring_details.sandbox_execution` records whether the verifier ran in
+`container` or `host` mode. Build the scoring image once from the repository
+root:
+
+```bash
+docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .
+```
+
+With an engine present but the image missing, scoring refuses host execution
+unless the run was started with `--uncontained`, and the error message repeats
+the build command above.
+
 To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.
