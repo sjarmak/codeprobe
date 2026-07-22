@@ -341,9 +341,7 @@ uv run pytest tests/lint/test_scorer_honesty.py -q
 ```
 
 CI runs the same chain on Python 3.11, 3.12, and 3.13. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for commit conventions, the second-reviewer
-rule, and TDD expectations, and [AGENTS.md](AGENTS.md) for the scoring, adapter,
-and ZFC contracts.
+[AGENTS.md](AGENTS.md) for the scoring, adapter, and ZFC contracts.
 
 **Release.** Pushing a `v*` tag runs the test matrix, then builds and uploads to
 PyPI (`.github/workflows/publish.yml`).
