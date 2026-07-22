@@ -657,32 +657,65 @@ def _clear_tasks_dir(repo_path: Path) -> Path:
     return tasks_dir
 
 
+_EXPERIMENT_CREATED: bool = False
+_EXPERIMENT_DIR: str | None = None
+
+
+def _pretty_output_active() -> bool:
+    """Return True when the resolved CLI output mode is pretty.
+
+    Reads the mode :func:`resolve_mode` stashed on the root click context.
+    Defaults to True when no mode was resolved (direct function calls in
+    tests) — plain-text echo is only harmful in envelope/NDJSON streams,
+    and those always resolve a mode first.
+    """
+    ctx = click.get_current_context(silent=True)
+    root = ctx
+    while root is not None and root.parent is not None:
+        root = root.parent
+    if root is not None and isinstance(root.obj, dict):
+        mode = root.obj.get("codeprobe_output_mode")
+        if mode is not None:
+            return getattr(mode, "mode", "pretty") == "pretty"
+    return True
+
+
 def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None:
     """Update the experiment's task_ids so ``run`` only executes these tasks.
 
-    If exactly one experiment exists under ``<repo>/.codeprobe/``, its
-    ``experiment.json`` is updated with the new task ID list.  When zero
-    or multiple experiments exist, this is a no-op (the user must scope
-    manually via ``--config``).
+    Resolves the experiment with the same lookup order ``run`` uses: a
+    direct ``.codeprobe/experiment.json`` first, then a single named
+    subdirectory. When no experiment exists, a default one is auto-created
+    (``ensure_default_experiment``) so the Quick Start ``mine -> run``
+    sequence needs no manual init. When multiple experiments exist this is
+    a no-op — never guess; the user must scope via ``--config``.
     """
-    from codeprobe.core.experiment import load_experiment, save_experiment
-
-    codeprobe_dir = repo_path / ".codeprobe"
-    if not codeprobe_dir.is_dir():
-        return
-
-    candidates = sorted(
-        d
-        for d in codeprobe_dir.iterdir()
-        if d.is_dir() and (d / "experiment.json").is_file()
+    from codeprobe.core.experiment import (
+        ensure_default_experiment,
+        find_experiment_dirs,
+        load_experiment,
+        save_experiment,
     )
-    if len(candidates) != 1:
+
+    global _EXPERIMENT_CREATED, _EXPERIMENT_DIR
+
+    candidates = find_experiment_dirs(repo_path)
+    if len(candidates) > 1:
         return
 
-    exp_dir = candidates[0]
+    created = not candidates
+    exp_dir = candidates[0] if candidates else ensure_default_experiment(repo_path)
+    if exp_dir is None:  # defensive: only reachable on a concurrent write
+        return
+
     experiment = load_experiment(exp_dir)
     updated = replace(experiment, task_ids=tuple(sorted(task_ids)))
     save_experiment(exp_dir, updated)
+
+    _EXPERIMENT_CREATED = created
+    _EXPERIMENT_DIR = str(exp_dir)
+    if created and _pretty_output_active():
+        click.echo("Created default experiment at .codeprobe/experiment.json")
 
 
 def _suggest_path(missing: Path) -> str | None:
@@ -2466,8 +2499,10 @@ def run_mine(
     from codeprobe.cli.envelope import WarningEntry as _WarningEntry
     from codeprobe.tenant_lock import acquire_tenant_lock
 
-    global _MINE_START_TIME
+    global _MINE_START_TIME, _EXPERIMENT_CREATED, _EXPERIMENT_DIR
     _MINE_START_TIME = time.monotonic()
+    _EXPERIMENT_CREATED = False
+    _EXPERIMENT_DIR = None
 
     # Warnings that should ride along with the terminating envelope. The v0.7
     # defaults block below appends to this when the narrative-source resolver
@@ -2861,6 +2896,8 @@ def run_mine(
                     "tenant": tenant,
                     "tenant_source": tenant_source,
                     "comprehension_consensus": _COMPREHENSION_CONSENSUS,
+                    "experiment_created": _EXPERIMENT_CREATED,
+                    "experiment_dir": _EXPERIMENT_DIR,
                 },
                 warnings=_defaults_warnings or None,
             )

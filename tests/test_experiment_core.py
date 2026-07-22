@@ -10,6 +10,7 @@ import pytest
 from codeprobe.core.experiment import (
     append_checkpoint,
     create_experiment_dir,
+    ensure_default_experiment,
     load_checkpoint,
     load_config_results,
     load_experiment,
@@ -345,6 +346,57 @@ def test_task_ids_filters_ignores_missing(tmp_path: Path):
 
     filtered = _find_tasks(tasks_dir, task_ids=("aaa111", "missing999"))
     assert [d.name for d in filtered] == ["aaa111"]
+
+
+def test_ensure_default_experiment_prefers_direct_location(tmp_path: Path):
+    """A direct .codeprobe/experiment.json wins and is returned as-is."""
+    codeprobe_dir = tmp_path / ".codeprobe"
+    codeprobe_dir.mkdir()
+    save_experiment(codeprobe_dir, Experiment(name="mine-exp"))
+
+    result = ensure_default_experiment(tmp_path)
+
+    assert result == codeprobe_dir
+    # Existing experiment untouched — not overwritten by a "default" one.
+    assert load_experiment(codeprobe_dir).name == "mine-exp"
+
+
+def test_ensure_default_experiment_single_named_subdir(tmp_path: Path):
+    """Exactly one named subdir with experiment.json is resolved."""
+    codeprobe_dir = tmp_path / ".codeprobe"
+    exp_dir = create_experiment_dir(codeprobe_dir, Experiment(name="only-one"))
+
+    result = ensure_default_experiment(tmp_path)
+
+    assert result == exp_dir
+    assert load_experiment(exp_dir).name == "only-one"
+
+
+def test_ensure_default_experiment_ambiguous_returns_none(tmp_path: Path):
+    """Multiple named subdirs: return None, never create or modify."""
+    codeprobe_dir = tmp_path / ".codeprobe"
+    for name in ("exp-a", "exp-b"):
+        create_experiment_dir(codeprobe_dir, Experiment(name=name))
+
+    result = ensure_default_experiment(tmp_path)
+
+    assert result is None
+    assert not (codeprobe_dir / "experiment.json").exists()
+    for name in ("exp-a", "exp-b"):
+        assert load_experiment(codeprobe_dir / name).task_ids == ()
+
+
+def test_ensure_default_experiment_creates_default(tmp_path: Path):
+    """No experiment anywhere: create .codeprobe/experiment.json."""
+    result = ensure_default_experiment(tmp_path)
+
+    codeprobe_dir = tmp_path / ".codeprobe"
+    assert result == codeprobe_dir
+    experiment = load_experiment(codeprobe_dir)
+    assert experiment.name == "default"
+    assert experiment.description == "Auto-created by codeprobe mine"
+    assert experiment.configs == []
+    assert (codeprobe_dir / "tasks").is_dir()
 
 
 def test_record_task_ids_in_experiment(tmp_path: Path):
