@@ -93,15 +93,14 @@ where = ["src"]
 # Single-file program with no external deps; ships as plain text and is
 # compiled on-demand by the user's local go toolchain.
 "codeprobe.mining._go_ast_scanner" = ["*.go"]
-# Repo-committed agent skills live outside the src/ package tree at
-# .claude/skills/codeprobe-*/SKILL.md. They are the authoritative agent
-# contract (see PRD §7) and must ship in the sdist so downstream tooling
-# can consult them. Because package-data is scoped to files inside a
-# package, inclusion of the out-of-tree .claude/skills/*/SKILL.md files is
-# handled by the five explicit `include` lines in MANIFEST.in (NOT a graft or
-# recursive-include: those would sweep whatever machine-local agent skills the
-# build host happens to have in .claude/skills/ into a public sdist) plus
-# include-package-data below. Keep this comment in sync if the layout changes.
+# Shipped agent skills (see PRD §7). The canonical copies live in-tree at
+# src/codeprobe/skills_data/codeprobe-*/SKILL.md so this glob covers both the
+# wheel and the sdist; `codeprobe skills install` materializes them for
+# customers. The .claude/skills/codeprobe-*/SKILL.md files are byte-identical
+# mirrors for this repo's own agents and are NOT packaged — never add a graft
+# or recursive-include for .claude/, which would sweep whatever machine-local
+# agent skills the build host happens to have into a public sdist.
+"codeprobe.skills_data" = ["*/SKILL.md"]
 
 [tool.setuptools]
 include-package-data = true

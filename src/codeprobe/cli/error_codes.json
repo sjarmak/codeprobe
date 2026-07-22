@@ -440,6 +440,14 @@
       "since": "0.12.0",
       "description": "MCP-family mining could not derive the Sourcegraph repo identifier from the repository's origin remote (missing or not a parsable GitHub URL). An empty --sg-repo silently disables the Sourcegraph consensus leg and a wrong value corrupts the MCP-benefit comparison, so codeprobe refuses instead of degrading.",
       "remediation_pattern": "Pass --sg-repo github.com/{owner}/{repo} matching the repository's Sourcegraph identifier."
+    },
+    {
+      "code": "SKILL_INSTALL_CONFLICT",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.12.0",
+      "description": "`codeprobe skills install` found existing SKILL.md files at the destination that differ from the packaged versions. Nothing was written — overwriting local edits requires explicit consent. The conflicting skill names are listed in `error.detail.conflicts`.",
+      "remediation_pattern": "Re-run with --force to overwrite the listed skills, or move the locally edited copies aside first."
     }
   ]
 }

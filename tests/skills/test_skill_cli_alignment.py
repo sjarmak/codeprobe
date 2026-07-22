@@ -1,20 +1,22 @@
 """Alignment tests between repo-committed SKILL.md files and the CLI surface.
 
 These tests are the CI guardrail for the paired-skills contract: every
-repo-committed product skill must
+shipped product skill must
 
-1. be tracked by git (it ships in the sdist via MANIFEST.in),
+1. be tracked by git (it ships in the wheel/sdist as
+   ``codeprobe.skills_data`` package data),
 2. carry valid YAML frontmatter with required fields and length caps,
 3. reference only CLI flags that actually exist in ``<cmd> --help``, and
 4. reference only error codes present in ``src/codeprobe/cli/error_codes.json``.
 
 No skips, no xfails — this is the CI enforcement layer.
 
-Discovery is driven by ``SKILL_TO_PRIMARY_CMD`` rather than by globbing
-``.claude/skills/``. That directory is a *shared namespace*: a developer's
-machine-local agent skills (``codeprobe-orientation``, ``gc-city``, ...) live
-alongside the repo-committed product skills and would otherwise be swept into
-the alignment contract, turning the suite red on any machine that has them.
+The canonical copies live at ``src/codeprobe/skills_data/codeprobe-*/
+SKILL.md``; the ``.claude/skills/codeprobe-*/SKILL.md`` files are
+byte-identical mirrors kept so this repository's own agents resolve them
+(``test_repo_mirror_in_sync`` enforces the invariant). Discovery is driven
+by ``SKILL_TO_PRIMARY_CMD`` rather than by globbing so a stray directory
+under ``skills_data`` cannot silently join the alignment contract;
 ``test_skills_are_tracked_by_git`` keeps the registry honest in both
 directions, so the two sets cannot silently drift apart.
 """
@@ -33,7 +35,8 @@ from click.testing import CliRunner
 from codeprobe.cli import main as codeprobe_main
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILLS_DIR = REPO_ROOT / ".claude" / "skills"
+SKILLS_DIR = REPO_ROOT / "src" / "codeprobe" / "skills_data"
+MIRROR_DIR = REPO_ROOT / ".claude" / "skills"
 ERROR_CODES_PATH = REPO_ROOT / "src" / "codeprobe" / "cli" / "error_codes.json"
 
 DESCRIPTION_MAX_CHARS = 1536
@@ -365,11 +368,11 @@ def test_discovers_five_skills() -> None:
 def test_skills_are_tracked_by_git() -> None:
     """The product skills must be tracked by git, in both directions.
 
-    Regression guard for codeprobe-zg6a: ``.claude/`` was gitignored and the
-    five SKILL.md files dropped from the index, so this suite passed only on
-    checkouts holding untracked leftovers and failed on every fresh clone,
-    worktree, and CI run. Untracked skills also never reach the sdist that
-    MANIFEST.in declares they must ship in.
+    Regression guard for codeprobe-zg6a: the five SKILL.md files once
+    dropped from the index, so this suite passed only on checkouts holding
+    untracked leftovers and failed on every fresh clone, worktree, and CI
+    run. Untracked skills also never reach the wheel/sdist that
+    ``[tool.setuptools.package-data]`` declares they must ship in.
 
     The reverse direction keeps ``SKILL_TO_PRIMARY_CMD`` from going stale: a
     newly tracked skill nobody registered would skip every other check here.
@@ -378,7 +381,7 @@ def test_skills_are_tracked_by_git() -> None:
         pytest.skip("not a git checkout (e.g. running from an unpacked sdist)")
 
     result = subprocess.run(
-        ["git", "ls-files", "--", ".claude/skills/*/SKILL.md"],
+        ["git", "ls-files", "--", "src/codeprobe/skills_data/*/SKILL.md"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -390,8 +393,7 @@ def test_skills_are_tracked_by_git() -> None:
     untracked = registered - tracked
     assert not untracked, (
         f"registered skills not tracked by git: {sorted(untracked)} — "
-        f"`git add` them, and check .gitignore is not excluding "
-        f".claude/skills/"
+        f"`git add` them under src/codeprobe/skills_data/"
     )
 
     unregistered = tracked - registered
@@ -399,4 +401,31 @@ def test_skills_are_tracked_by_git() -> None:
         f"skills tracked by git but absent from SKILL_TO_PRIMARY_CMD: "
         f"{sorted(unregistered)} — register the CLI command each one wraps so "
         f"it is covered by the alignment checks"
+    )
+
+
+def test_repo_mirror_in_sync() -> None:
+    """Each ``.claude/skills/codeprobe-*/SKILL.md`` mirror is byte-identical
+    to its canonical ``src/codeprobe/skills_data`` counterpart.
+
+    The mirrors exist only so this repository's own agents resolve the
+    skills; the packaged copies are what customers get via ``codeprobe
+    skills install``. Any drift means one side was edited without the
+    other.
+    """
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout (e.g. running from an unpacked sdist)")
+
+    out_of_sync: list[str] = []
+    for name in SKILL_TO_PRIMARY_CMD:
+        canonical = SKILLS_DIR / name / "SKILL.md"
+        mirror = MIRROR_DIR / name / "SKILL.md"
+        if not mirror.is_file():
+            out_of_sync.append(f"{name}: mirror {mirror} is missing")
+        elif mirror.read_bytes() != canonical.read_bytes():
+            out_of_sync.append(f"{name}: mirror differs from {canonical}")
+
+    assert not out_of_sync, (
+        "repo mirrors out of sync with src/codeprobe/skills_data:\n  "
+        + "\n  ".join(out_of_sync)
     )
