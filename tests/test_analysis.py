@@ -16,6 +16,7 @@ from codeprobe.analysis import (
     cliffs_delta,
     cohens_d,
     compare_configs,
+    cost_comparable,
     format_csv_report,
     format_html_report,
     format_json_report,
@@ -43,6 +44,7 @@ def _task(
     status: str = "completed",
     duration: float = 10.0,
     cost: float | None = None,
+    cost_source: str = "unavailable",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
 ) -> CompletedTask:
@@ -52,6 +54,7 @@ def _task(
         status=status,
         duration_seconds=duration,
         cost_usd=cost,
+        cost_source=cost_source,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
@@ -269,7 +272,7 @@ class TestCompareConfigs:
         assert cmp.cost_diff == pytest.approx(0.40)
 
     def test_same_score_cost_wins(self) -> None:
-        """When scores are equal, lower cost wins."""
+        """When scores are equal and costs fully covered, lower cost wins."""
         base = dict(
             total_tasks=3,
             completed=3,
@@ -280,6 +283,7 @@ class TestCompareConfigs:
             total_duration_sec=30.0,
             mean_duration_sec=10.0,
             total_tokens=1000,
+            cost_coverage=1.0,
         )
         a = ConfigSummary(label="a", total_cost_usd=0.50, **base)
         b = ConfigSummary(label="b", total_cost_usd=0.30, **base)
@@ -433,6 +437,7 @@ class TestRankConfigs:
             mean_duration_sec=10.0,
             total_cost_usd=1.00,
             total_tokens=5000,
+            cost_coverage=1.0,
         )
         cheap = ConfigSummary(
             label="cheap",
@@ -446,6 +451,7 @@ class TestRankConfigs:
             mean_duration_sec=8.0,
             total_cost_usd=0.20,
             total_tokens=1000,
+            cost_coverage=1.0,
         )
         ranked = rank_configs([best, cheap])
 
@@ -2260,3 +2266,195 @@ class TestKArmCorrection:
             assert s_c.correction == b_c.correction == "holm"
             assert s_c.n_comparisons == b_c.n_comparisons == 3
             assert s_c.summary == b_c.summary
+
+
+# ---------------------------------------------------------------------------
+# Cost provenance and comparability (codeprobe-f7rl.35)
+# ---------------------------------------------------------------------------
+
+
+class TestCostProvenance:
+    """Coverage/provenance surfacing and comparability gating for costs."""
+
+    def _mixed_coverage_tasks(self) -> list[CompletedTask]:
+        """10 completed trials: cost captured on 2 (api_reported), 8 without."""
+        with_cost = [
+            _task(f"t{i}", 1.0, cost=0.10, cost_source="api_reported")
+            for i in range(2)
+        ]
+        without_cost = [_task(f"t{i}", 1.0) for i in range(2, 10)]
+        return with_cost + without_cost
+
+    def _summary(self, label: str, **overrides: object) -> ConfigSummary:
+        base: dict[str, object] = dict(
+            total_tasks=5,
+            completed=5,
+            errored=0,
+            pass_rate=1.0,
+            mean_score=0.8,
+            median_score=0.8,
+            total_duration_sec=50.0,
+            mean_duration_sec=10.0,
+            total_cost_usd=1.00,
+            total_tokens=1000,
+            cost_coverage=1.0,
+        )
+        base.update(overrides)
+        return ConfigSummary(label=label, **base)  # type: ignore[arg-type]
+
+    def test_summary_cost_coverage_and_source_counts(self) -> None:
+        """2/10 trials with cost -> coverage 0.2; streaming path agrees."""
+        tasks = self._mixed_coverage_tasks()
+        s = summarize_config(ConfigResults(config="partial", completed=tasks))
+
+        assert s.cost_coverage == pytest.approx(0.2)
+        assert s.cost_source_counts == {"api_reported": 2, "unavailable": 8}
+        assert s.total_cost_usd == pytest.approx(0.20)
+
+        stream = summarize_completed_tasks("partial", iter(tasks))
+        assert stream.cost_coverage == s.cost_coverage
+        assert stream.cost_source_counts == s.cost_source_counts
+
+    def test_full_coverage_summary(self) -> None:
+        """Every scorable trial costed -> coverage 1.0, single-source tally."""
+        tasks = [
+            _task(f"t{i}", 1.0, cost=0.10, cost_source="api_reported")
+            for i in range(4)
+        ]
+        s = summarize_config(ConfigResults(config="full", completed=tasks))
+        assert s.cost_coverage == 1.0
+        assert s.cost_source_counts == {"api_reported": 4}
+
+    def test_cost_comparable_predicate(self) -> None:
+        full_a = self._summary("a")
+        full_b = self._summary("b")
+        partial = self._summary("p", cost_coverage=0.2)
+        assert cost_comparable(full_a, full_b) is True
+        assert cost_comparable(full_a, partial) is False
+        assert cost_comparable(partial, full_a) is False
+
+    def test_winner_tiebreak_skips_incomparable_cost(self) -> None:
+        """Equal means, partial-coverage cheap arm -> speed decides, not cost."""
+        cheap_partial = self._summary(
+            "cheap-partial",
+            total_cost_usd=0.20,
+            cost_coverage=0.2,
+            mean_duration_sec=20.0,
+        )
+        full = self._summary(
+            "full", total_cost_usd=1.00, mean_duration_sec=10.0
+        )
+        tied = [0.8, 0.8, 0.8, 0.8, 0.8]
+        cmp = compare_configs(
+            cheap_partial, full, a_scores=tied, b_scores=tied
+        )
+        # The undercounted $0.20 total must not crown the partial arm; the
+        # tiebreak falls through to speed and the faster full arm wins.
+        assert cmp.winner == "full"
+
+        # Control: with full coverage on both, the cheaper arm wins on cost.
+        cheap_full = self._summary(
+            "cheap-full",
+            total_cost_usd=0.20,
+            mean_duration_sec=20.0,
+        )
+        cmp2 = compare_configs(cheap_full, full, a_scores=tied, b_scores=tied)
+        assert cmp2.winner == "cheap-full"
+
+    def test_best_cost_efficiency_requires_full_coverage(self) -> None:
+        """Partial-coverage lowest-cost arm gets ordinal, not cost-efficiency."""
+        best = self._summary("best", mean_score=0.90, total_cost_usd=1.00)
+        cheap_partial = self._summary(
+            "cheap",
+            mean_score=0.85,  # within 10% of best
+            total_cost_usd=0.20,
+            cost_coverage=0.2,
+        )
+        ranked = rank_configs([best, cheap_partial])
+        assert ranked[0].label == "best"
+        assert ranked[1].label == "cheap"
+        assert "cost-efficiency" not in ranked[1].recommendation.lower()
+        assert "2nd" in ranked[1].recommendation
+
+        # Control: the same arm with full coverage still earns the tag.
+        cheap_full = self._summary(
+            "cheap", mean_score=0.85, total_cost_usd=0.20
+        )
+        ranked_full = rank_configs([best, cheap_full])
+        assert "cost-efficiency" in ranked_full[1].recommendation.lower()
+
+    def test_text_and_html_show_cost_provenance(self) -> None:
+        """Text, HTML and JSON all carry coverage + provenance per arm."""
+        task_ids = [f"t{i}" for i in range(10)]
+        partial_arm = ConfigResults(
+            config="partial-arm",
+            completed=[
+                _task(
+                    tid,
+                    1.0,
+                    cost=0.10 if i < 2 else None,
+                    cost_source="api_reported" if i < 2 else "unavailable",
+                )
+                for i, tid in enumerate(task_ids)
+            ],
+        )
+        full_arm = ConfigResults(
+            config="full-arm",
+            completed=[
+                _task(tid, 1.0, cost=0.10, cost_source="api_reported")
+                for tid in task_ids
+            ],
+        )
+        report = generate_report("cost-prov", [partial_arm, full_arm])
+
+        text = format_text_report(report)
+        assert "on 2/10 trials" in text
+        assert "not comparable" in text
+        assert "$1.00 total (10/10 trials, api_reported)" in text
+        assert "Cost note:" in text
+        assert "EXCLUDED from winner tiebreaks" in text
+
+        html = format_html_report(report)
+        assert "cost on 2/10 trials — not comparable" in html
+        assert "(10/10 trials, api_reported)" in html
+
+        data = json.loads(format_json_report(report))
+        by_label = {s["label"]: s for s in data["summaries"]}
+        assert by_label["partial-arm"]["cost_coverage"] == pytest.approx(0.2)
+        assert by_label["partial-arm"]["cost_source_counts"] == {
+            "api_reported": 2,
+            "unavailable": 8,
+        }
+        assert by_label["full-arm"]["cost_coverage"] == 1.0
+
+    def test_no_cost_note_when_fully_covered(self) -> None:
+        """Identical full-coverage provenance on all arms -> no cost note."""
+        task_ids = [f"t{i}" for i in range(4)]
+        arms = [
+            ConfigResults(
+                config=label,
+                completed=[
+                    _task(tid, 1.0, cost=0.10, cost_source="api_reported")
+                    for tid in task_ids
+                ],
+            )
+            for label in ("arm-a", "arm-b")
+        ]
+        report = generate_report("clean-cost", arms)
+        text = format_text_report(report)
+        assert "Cost note:" not in text
+        assert "not comparable" not in text
+
+    def test_cost_table_errored_arm_shows_dash(self) -> None:
+        """All-errored arm renders em-dash in the cost table, not 0%."""
+        errored_arm = ConfigResults(
+            config="dead-arm",
+            completed=[
+                _task(f"t{i}", 0.0, status="error", cost=0.05) for i in range(3)
+            ],
+        )
+        report = generate_report("dead-exp", [errored_arm])
+        html = format_html_report(report)
+        cost_section = html.split('id="cost-efficiency"')[1]
+        assert "0%" not in cost_section
+        assert "—" in cost_section

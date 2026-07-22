@@ -6,7 +6,7 @@ import csv
 import io
 import json
 import statistics
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass, replace
 
 from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
@@ -345,6 +345,101 @@ def _worst_arm_partial_line(report: Report) -> str:
     )
 
 
+def _cost_covered_count(s: ConfigSummary) -> int:
+    """Number of scorable trials with captured cost, recovered from coverage.
+
+    ``cost_coverage`` is covered/scored exactly, so rounding the product
+    recovers the integer numerator without a separate stored field
+    (codeprobe-f7rl.35).
+    """
+    return round(s.cost_coverage * s.scored_count)
+
+
+def _cost_source_breakdown(s: ConfigSummary) -> str:
+    """Provenance summary: the single source name, or 'a 8, b 2' when mixed."""
+    sources = {
+        name: count
+        for name, count in s.cost_source_counts.items()
+        if name != "unavailable" and count > 0
+    }
+    if not sources:
+        return "unknown source"
+    if len(sources) == 1:
+        return next(iter(sources))
+    return ", ".join(
+        f"{name} {count}"
+        for name, count in sorted(sources.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+
+
+def _dominant_cost_source(s: ConfigSummary) -> str:
+    """Most common non-'unavailable' cost source, or '' when none."""
+    sources = [
+        (name, count)
+        for name, count in s.cost_source_counts.items()
+        if name != "unavailable" and count > 0
+    ]
+    if not sources:
+        return ""
+    return sorted(sources, key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+def _ranking_cost_str(s: ConfigSummary) -> str:
+    """Per-arm cost phrase with coverage and provenance (codeprobe-f7rl.35).
+
+    Full coverage: '$1.00 total (10/10 trials, api_reported)'. Partial
+    coverage is an undercount, so the phrase carries an explicit
+    not-comparable flag instead of masquerading as a total.
+    """
+    if s.total_cost_usd is None:
+        return "no cost data"
+    covered = _cost_covered_count(s)
+    if s.cost_coverage == 1.0:
+        return (
+            f"${s.total_cost_usd:.2f} total "
+            f"({covered}/{s.scored_count} trials, {_cost_source_breakdown(s)})"
+        )
+    return (
+        f"${s.total_cost_usd:.2f} on {covered}/{s.scored_count} trials "
+        f"— not comparable"
+    )
+
+
+def _cost_provenance_note(summaries: Iterable[ConfigSummary]) -> str | None:
+    """Report-level cost disclosure, or None when costs are comparable.
+
+    Fires when any rendered cost number is decision-unsafe: some arm's
+    coverage is below 1.0, or arms disagree on dominant provenance. Returns
+    None when no arm has cost data at all — there is no misleading number to
+    flag (codeprobe-f7rl.35).
+    """
+    all_summaries = list(summaries)
+    with_cost = [s for s in all_summaries if s.total_cost_usd is not None]
+    if not with_cost:
+        return None
+    partial = any(s.cost_coverage < 1.0 for s in all_summaries)
+    dominants = {d for s in with_cost if (d := _dominant_cost_source(s))}
+    mixed_provenance = len(dominants) > 1
+    if not partial and not mixed_provenance:
+        return None
+    reasons: list[str] = []
+    if partial:
+        reasons.append("cost was not captured on every trial of every arm")
+    if mixed_provenance:
+        reasons.append(
+            "arms differ in dominant cost provenance "
+            f"({', '.join(sorted(dominants))})"
+        )
+    return (
+        "**Cost note:** "
+        + "; ".join(reasons)
+        + ". Cost totals are shown with per-arm coverage/provenance but were "
+        "EXCLUDED from winner tiebreaks and 'Best cost-efficiency' "
+        "recommendations — partial or mixed-provenance costs must not drive "
+        "decisions (codeprobe-f7rl.35)."
+    )
+
+
 def format_text_report(report: Report) -> str:
     """Format report as human-readable text."""
     lines: list[str] = []
@@ -369,11 +464,9 @@ def format_text_report(report: Report) -> str:
     lines.append("### Rankings")
     for rc in report.rankings:
         s = rc.summary
-        cost_str = (
-            f"${s.total_cost_usd:.2f} total"
-            if s.total_cost_usd is not None
-            else "no cost data"
-        )
+        # codeprobe-f7rl.35: cost with coverage + provenance; partial coverage
+        # renders an explicit not-comparable flag instead of a bare total.
+        cost_str = _ranking_cost_str(s)
         dual_suffix = ""
         if s.direct_pass_rate is not None and s.artifact_pass_rate is not None:
             dual_suffix = (
@@ -465,6 +558,12 @@ def format_text_report(report: Report) -> str:
             "by non-use — treat the comparison as INVALID, not a null "
             "result, until the surface is exercised (codeprobe-1gg)."
         )
+    # codeprobe-f7rl.35: disclose when any arm's cost coverage is partial or
+    # arms differ in dominant provenance — mirrors the quota-note pattern.
+    cost_note = _cost_provenance_note(report.summaries)
+    if cost_note is not None:
+        lines.append("")
+        lines.append(f"> {cost_note}")
     lines.append("")
 
     # codeprobe-77z: infra-failure validity gate. A run holding an unresolved
@@ -854,6 +953,29 @@ def format_html_report(report: Report) -> str:
     def _fmt_score(val: float) -> str:
         return f"{val:.2f}"
 
+    def _cost_cell_html(s: ConfigSummary) -> str:
+        """Cost cell with coverage/provenance annotation (codeprobe-f7rl.35).
+
+        Full coverage gets a muted '(10/10 trials, api_reported)' note;
+        partial coverage gets a warn-badge with the not-comparable flag, the
+        same wording as the text ranking line.
+        """
+        if s.total_cost_usd is None:
+            return "—"
+        covered = _cost_covered_count(s)
+        if s.cost_coverage == 1.0:
+            return (
+                f"{_fmt_cost(s.total_cost_usd)} "
+                f'<span class="ci-metric-label">'
+                f"({covered}/{s.scored_count} trials, "
+                f"{_esc(_cost_source_breakdown(s))})</span>"
+            )
+        return (
+            f"{_fmt_cost(s.total_cost_usd)} "
+            f'<span class="warn-badge">⚠ cost on '
+            f"{covered}/{s.scored_count} trials — not comparable</span>"
+        )
+
     def _exclusion_badges_html(s: ConfigSummary) -> str:
         """Render this arm's reward-population exclusions as badges.
 
@@ -1003,7 +1125,9 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     parts.append('<div class="card executive">\n')
     if scorable_rankings:
         best_s = scorable_rankings[0].summary
-        cost_str = _fmt_cost(best_s.total_cost_usd)
+        # codeprobe-f7rl.35: the headline cost carries the same coverage /
+        # provenance annotation as the ranking table.
+        cost_str = _cost_cell_html(best_s)
         parts.append(
             f"<p><strong>Recommendation:</strong> {_esc(best_label)} — "
             f"{_esc(best_rec)}</p>\n"
@@ -1059,7 +1183,7 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
             f"<td>{n_cell}</td>"
             f"<td>{pass_cell}</td>"
             f"<td>{mean_cell}</td>"
-            f"<td>{_fmt_cost(s.total_cost_usd)}</td>"
+            f"<td>{_cost_cell_html(s)}</td>"
             f"<td>{_esc(s.billing_model)}</td>"
             f"<td>{_ci_bar_html(s)}</td>"
             f"<td>{_exclusion_badges_html(s)}</td></tr>\n"
@@ -1251,11 +1375,15 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                 if s.total_cost_usd is not None and s.total_tasks > 0
                 else "—"
             )
+            # codeprobe-h3j4 / codeprobe-f7rl.35: an arm with no scorable run
+            # has no pass rate — em dash, matching the ranking table, instead
+            # of a vacuous 0%.
+            pass_cell = "—" if s.scored_count == 0 else _fmt_pct(s.pass_rate)
             rows.append(
                 f"<tr><td>{_esc(s.label)}</td>"
-                f"<td>{_fmt_cost(s.total_cost_usd)}</td>"
+                f"<td>{_cost_cell_html(s)}</td>"
                 f"<td>{cost_per_task}</td>"
-                f"<td>{_fmt_pct(s.pass_rate)}</td></tr>\n"
+                f"<td>{pass_cell}</td></tr>\n"
             )
         rows.append("</tbody>\n</table>\n")
         return "".join(rows)

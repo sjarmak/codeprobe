@@ -7,7 +7,7 @@ import math
 import statistics
 from collections import Counter
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.models.experiment import (
@@ -415,6 +415,18 @@ class ConfigSummary:
     # comparison is INVALID, not a null result. Zero when no config was
     # supplied to the summarizer (the audit needs the declared surface).
     abandoned_surface_count: int = 0
+    # Cost provenance (codeprobe-f7rl.35, locked decision 6). Per-trial tally
+    # of ``CompletedTask.cost_source`` over ALL trials (api_reported /
+    # calculated / estimated / unavailable), so every summary surface can show
+    # where its cost number came from. Treated as immutable after construction.
+    cost_source_counts: dict[str, int] = field(default_factory=dict)
+    # Fraction of SCORABLE trials (the reward population, ``is_scorable_run``)
+    # that carry a non-None ``cost_usd``; 0.0 when no scorable trials exist.
+    # ``total_cost_usd`` sums whatever costs exist, so an arm covered on 2/10
+    # trials shows a total ~5x lower than a fully-captured arm — coverage < 1.0
+    # means that total must never break a tie, earn "Best cost-efficiency",
+    # or render without a not-comparable flag (codeprobe-f7rl.35).
+    cost_coverage: float = 0.0
 
     @property
     def scored_count(self) -> int:
@@ -427,6 +439,20 @@ class ConfigSummary:
         (codeprobe-h3j4).
         """
         return self.total_tasks - self.errored_count
+
+
+def cost_comparable(a: ConfigSummary, b: ConfigSummary) -> bool:
+    """Return whether two arms' cost totals may be compared head-to-head.
+
+    True iff BOTH arms captured cost on every scorable trial
+    (``cost_coverage == 1.0``). A partially-covered total is an undercount of
+    unknown size, so any decision built on it (winner tiebreak, ranking sort,
+    "Best cost-efficiency") compares apples to a fraction of oranges. This is
+    the ONE structural comparability predicate (deterministic policy
+    enforcement, ZFC) that the winner tiebreak and the ranking layer route
+    through (codeprobe-f7rl.35, locked decision 6).
+    """
+    return a.cost_coverage == 1.0 and b.cost_coverage == 1.0
 
 
 @dataclass(frozen=True)
@@ -549,6 +575,13 @@ def summarize_config(
     costs = [t.cost_usd for t in tasks if t.cost_usd is not None]
     total_cost: float | None = sum(costs) if costs else None
 
+    # Cost provenance (codeprobe-f7rl.35): tally cost_source over ALL trials;
+    # coverage counts only scorable trials so it matches the reward population
+    # the rest of the summary is quoted over.
+    cost_source_counts = dict(Counter(t.cost_source for t in tasks))
+    covered_scorable = sum(1 for t in reward_tasks if t.cost_usd is not None)
+    cost_coverage = covered_scorable / scored_total if scored_total else 0.0
+
     tokens = [
         (t.input_tokens or 0) + (t.output_tokens or 0)
         for t in tasks
@@ -592,6 +625,8 @@ def summarize_config(
         infra_failure_count=infra_count,
         errored_count=errored_count,
         abandoned_surface_count=abandoned_count,
+        cost_source_counts=cost_source_counts,
+        cost_coverage=cost_coverage,
     )
 
 
@@ -627,6 +662,10 @@ def summarize_completed_tasks(
     durations: list[float] = []
     costs: list[float] = []
     billing_models: list[str] = []
+    # Cost provenance accumulators — mirror summarize_config()'s tally over
+    # ALL trials and coverage over scorable trials (codeprobe-f7rl.35).
+    cost_source_counter: Counter[str] = Counter()
+    covered_scorable = 0
 
     dual_count = 0
     direct_passes = 0
@@ -666,7 +705,10 @@ def summarize_completed_tasks(
             if task_passed(task):
                 passed += 1
             durations.append(task.duration_seconds)
+            if task.cost_usd is not None:
+                covered_scorable += 1
 
+        cost_source_counter[task.cost_source] += 1
         if task.cost_usd is not None:
             costs.append(task.cost_usd)
 
@@ -756,18 +798,27 @@ def summarize_completed_tasks(
         infra_failure_count=infra_count,
         errored_count=total - scored_total,
         abandoned_surface_count=abandoned_count,
+        cost_source_counts=dict(cost_source_counter),
+        cost_coverage=covered_scorable / scored_total if scored_total else 0.0,
     )
 
 
 def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
-    """Determine the better config by score, then cost, then speed."""
+    """Determine the better config by score, then cost, then speed.
+
+    The cost tiebreak only runs when :func:`cost_comparable` holds — both arms
+    fully cost-covered. A partially-covered total is an undercount, so letting
+    it break a tie would crown the arm that merely lost more cost telemetry
+    (codeprobe-f7rl.35). Incomparable costs fall through to the speed tiebreak.
+    """
     if not math.isclose(a.mean_score, b.mean_score, rel_tol=1e-9):
         return a.label if a.mean_score > b.mean_score else b.label
 
     cost_a = a.total_cost_usd
     cost_b = b.total_cost_usd
     if (
-        cost_a is not None
+        cost_comparable(a, b)
+        and cost_a is not None
         and cost_b is not None
         and not math.isclose(cost_a, cost_b, rel_tol=1e-9)
     ):

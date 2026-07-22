@@ -17,6 +17,19 @@ class RankedConfig:
     recommendation: str
 
 
+def _rankable_cost(summary: ConfigSummary) -> float | None:
+    """Return a cost usable for ranking decisions, or None.
+
+    A total is only decision-grade when every scorable trial captured cost
+    (``cost_coverage == 1.0``). Partial coverage means the total is an
+    undercount of unknown size, so it must not order the ranking or earn
+    "Best cost-efficiency" (codeprobe-f7rl.35, locked decision 6).
+    """
+    if summary.total_cost_usd is None or summary.cost_coverage < 1.0:
+        return None
+    return summary.total_cost_usd
+
+
 def _ordinal(n: int) -> str:
     """Return ordinal string for an integer (1st, 2nd, 3rd, etc.)."""
     if 11 <= (n % 100) <= 13:
@@ -40,7 +53,9 @@ def rank_configs(summaries: list[ConfigSummary]) -> list[RankedConfig]:
     Recommendation string for each ranked (scorable) config:
     - Rank 1 with score > 0.7: "Best overall — high pass rate"
     - Rank 1 with score <= 0.7: "Best available — consider more tasks"
-    - Has lowest cost and score within 10% of best: "Best cost-efficiency"
+    - Has lowest FULLY-covered cost (``cost_coverage == 1.0``) and score
+      within 10% of best: "Best cost-efficiency" — partial cost coverage can
+      never earn this tag (codeprobe-f7rl.35)
     - Score == 0: "Not recommended — no tasks passed"
     - Otherwise: ordinal position summary
     """
@@ -50,24 +65,33 @@ def rank_configs(summaries: list[ConfigSummary]) -> list[RankedConfig]:
     scorable = [s for s in summaries if s.scored_count > 0]
     errored = [s for s in summaries if s.scored_count == 0]
 
-    # Sort scorable: higher score first, then lower cost, then lower duration
-    sorted_scorable = sorted(
-        scorable,
-        key=lambda s: (
+    # Sort scorable: higher score first, then lower cost, then lower duration.
+    # Only fully cost-covered totals participate in the cost tiebreak — a
+    # partially-covered arm sorts as if it had no cost data at all
+    # (codeprobe-f7rl.35).
+    def _sort_key(s: ConfigSummary) -> tuple[float, float, float]:
+        cost = _rankable_cost(s)
+        return (
             -s.mean_score,
-            s.total_cost_usd if s.total_cost_usd is not None else float("inf"),
+            cost if cost is not None else float("inf"),
             s.mean_duration_sec,
-        ),
-    )
+        )
+
+    sorted_scorable = sorted(scorable, key=_sort_key)
 
     best_score = sorted_scorable[0].mean_score if sorted_scorable else 0.0
 
-    # Find lowest-cost config among the scorable ones
-    configs_with_cost = [s for s in sorted_scorable if s.total_cost_usd is not None]
+    # Find the lowest-cost config among the scorable ones with decision-grade
+    # (fully covered) cost, so "Best cost-efficiency" can never be earned on a
+    # partial total (codeprobe-f7rl.35).
+    with_rankable_cost = [
+        (s, cost)
+        for s in sorted_scorable
+        if (cost := _rankable_cost(s)) is not None
+    ]
     lowest_cost_label: str | None = None
-    if configs_with_cost:
-        lowest_cost = min(configs_with_cost, key=lambda s: s.total_cost_usd or 0.0)
-        lowest_cost_label = lowest_cost.label
+    if with_rankable_cost:
+        lowest_cost_label = min(with_rankable_cost, key=lambda sc: sc[1])[0].label
 
     ranked: list[RankedConfig] = []
     rank = 1
