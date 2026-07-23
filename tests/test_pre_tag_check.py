@@ -41,6 +41,7 @@ def _write_verdict(
     status: str = "EVALUATED",
     all_pass: bool = True,
     eval_mode: str | None = "full",
+    producer_agent: str | None = "claude",
     no_handler_criteria: list[dict[str, str]] | None = None,
 ) -> Path:
     history.mkdir(parents=True, exist_ok=True)
@@ -52,6 +53,7 @@ def _write_verdict(
                 "status": status,
                 "all_pass": all_pass,
                 "eval_mode": eval_mode,
+                "producer_agent": producer_agent,
                 "pass_count": 5,
                 "fail_count": 0 if all_pass else 1,
                 "failures": [],
@@ -210,6 +212,80 @@ def test_reversed_full_then_default_pair_is_insufficient(repo: Path) -> None:
 def test_two_full_mode_verdicts_suffice(repo: Path) -> None:
     """Two consecutive full-mode greens (the default `repo` fixture) is the
     minimum sufficient evidence."""
+    assert _run(repo) == 0
+
+
+# ---------------------------------------------------------------------------
+# producer_agent must be a REAL agent (codeprobe-2s54, Finding 1)
+# ---------------------------------------------------------------------------
+
+
+def test_two_e2e_stub_full_greens_are_not_ready(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The exact silent-pass-through scenario: two EVALUATED + all_pass +
+    eval_mode=full verdicts whose producer_agent is the honest-but-fake
+    e2e-stub must NOT be READY to tag — this is proof for Finding 1."""
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(history, 1, producer_agent="e2e-stub")
+    _write_verdict(history, 2, producer_agent="e2e-stub")
+    assert _run(repo) == 1
+    err = capsys.readouterr().err
+    assert "producer_agent" in err
+    assert "e2e-stub" in err
+    assert "NOT READY" in err
+
+
+def test_two_real_agent_full_greens_pass_producer_agent_check(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two real-agent (claude) full-mode greens with everything else
+    satisfied clear the producer_agent gate specifically."""
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(history, 1, producer_agent="claude")
+    _write_verdict(history, 2, producer_agent="claude")
+    assert _run(repo) == 0
+    out = capsys.readouterr().out
+    assert "PASS: both of the last two verdicts record a real producer_agent" in out
+
+
+def test_producer_agent_missing_key_counts_as_not_real(repo: Path) -> None:
+    """Verdicts written before producer_agent was recorded must not slip
+    through as READY — missing is treated the same as e2e-stub."""
+    history = repo / "acceptance" / "verdict-history"
+    for index in (1, 2):
+        path = history / f"verdict-{index:04d}.json"
+        data = json.loads(path.read_text())
+        del data["producer_agent"]
+        path.write_text(json.dumps(data))
+    assert _run(repo) == 1
+
+
+def test_producer_agent_none_counts_as_not_real(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(history, 1, producer_agent=None)
+    _write_verdict(history, 2, producer_agent="claude")
+    assert _run(repo) == 1
+    assert "producer_agent" in capsys.readouterr().err
+
+
+def test_one_real_one_stub_producer_is_not_ready(repo: Path) -> None:
+    """Mixing a real producer with a stub producer must still fail — BOTH
+    of the two newest verdicts must be real, not just one."""
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(history, 1, producer_agent="claude")
+    _write_verdict(history, 2, producer_agent="e2e-stub")
+    assert _run(repo) == 1
+
+
+def test_other_real_agents_pass_producer_agent_check(repo: Path) -> None:
+    """codex and copilot are also registered real codeprobe.agents backends
+    and must not be misclassified as dry."""
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(history, 1, producer_agent="codex")
+    _write_verdict(history, 2, producer_agent="copilot")
     assert _run(repo) == 0
 
 

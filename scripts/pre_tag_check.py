@@ -19,7 +19,17 @@ BEFORE ``git tag v<version>``:
    rejects it (both newest verdicts must share ``eval_mode``, and that mode
    must be ``full``). Verdicts written before ``eval_mode`` was recorded
    count as not-full.
-3. **No critical/high-severity criterion is handler-less in either of the
+3. **Both of those two verdicts record a REAL ``producer_agent``.**
+   ``scripts/acceptance_loop.py`` stamps ``producer_agent`` into every
+   full-mode verdict. A stub producer (``e2e-stub``) emits honest-but-fake
+   telemetry (``cost_source="unavailable"``, ``cost_usd=0.0``) that
+   satisfies the ``TELEM-*`` / ``SILENT-RUN-RESULTS-002`` statistical
+   criteria without any genuine cost signal, so two ``e2e-stub`` full-mode
+   greens would otherwise clear check 2 above and reach an irreversible
+   PyPI tag having exercised nothing real (see ``docs/release.md``'s
+   "Producer agent" precondition). A verdict whose ``producer_agent`` is
+   missing, ``None``, or in the known dry/non-real set is rejected.
+4. **No critical/high-severity criterion is handler-less in either of the
    two newest verdicts.** A ``check_type`` with no registered handler in
    ``acceptance.verify.Verifier._handlers()`` is structurally unevaluable in
    EVERY eval mode (``skip_reason="no_handler"``), excluded from the
@@ -28,9 +38,9 @@ BEFORE ``git tag v<version>``:
    all_pass. Medium/low severity handler gaps are reported as a warning,
    not a failure (mirrors ``BLOCKING_SEVERITIES`` in
    ``acceptance/converge.py``).
-4. **CHANGELOG.md has a ``## <version>`` heading** for the version in
+5. **CHANGELOG.md has a ``## <version>`` heading** for the version in
    ``pyproject.toml``.
-5. **The version is not already tagged** — ``v<version>`` must not exist,
+6. **The version is not already tagged** — ``v<version>`` must not exist,
    i.e. the version bump landed.
 
 Every failed check prints the exact command that fixes it and the script
@@ -115,6 +125,26 @@ def _verdict_eval_mode(path: Path) -> str | None:
     return mode if isinstance(mode, str) else None
 
 
+#: Known non-real / dry producer_agent values. Narrow and explicit on
+#: purpose — this must reject the stub without ever misclassifying a real
+#: backend (the registered ``codeprobe.agents`` entry points: claude, codex,
+#: copilot). Extend deliberately if a new dry/stub producer is introduced.
+_DRY_PRODUCER_AGENTS = frozenset({"e2e-stub"})
+
+
+def _verdict_producer_agent(path: Path) -> str | None:
+    """Read ``producer_agent`` from a verdict file; None on any parse
+    problem, missing key, or if the verdict predates this field."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    agent = data.get("producer_agent")
+    return agent if isinstance(agent, str) else None
+
+
 #: Severities that must never be structurally unevaluable at tag time —
 #: mirrors acceptance/converge.py's BLOCKING_SEVERITIES for quarantine.
 _BLOCKING_NO_HANDLER_SEVERITIES = frozenset({"critical", "high"})
@@ -191,7 +221,40 @@ def run_checks(repo_root: Path, history_dir: Path) -> int:
         else:
             print("PASS: both of the last two verdicts are eval_mode=full")
 
-    # 3. No critical/high-severity criterion is structurally unevaluable in
+    # 3. Both of the two newest verdicts must record a REAL producer_agent —
+    #    never a known dry/non-real stand-in (e2e-stub) or missing/None. A
+    #    stub producer's honest-but-fake telemetry (cost_source=
+    #    "unavailable", cost_usd=0.0) satisfies the TELEM-* /
+    #    SILENT-RUN-RESULTS-002 statistical criteria without any genuine
+    #    cost signal, so two e2e-stub full-mode greens would otherwise clear
+    #    check 2 above and reach an irreversible PyPI tag having exercised
+    #    nothing real.
+    if len(verdict_paths) >= 2:
+        producer_agents = [_verdict_producer_agent(p) for p in verdict_paths]
+        bad_producers = {
+            path.name: agent
+            for path, agent in zip(verdict_paths, producer_agents, strict=True)
+            if agent is None or agent in _DRY_PRODUCER_AGENTS
+        }
+        if bad_producers:
+            failures.append(
+                "the two newest verdicts do not both record a real "
+                f"producer_agent (dry/missing: {bad_producers}). A verdict "
+                "produced by a non-real agent (or with no producer_agent "
+                "recorded) is NOT release evidence — its statistical "
+                "criteria may be satisfied by honest-but-fake telemetry "
+                "rather than a genuine agent run.\n"
+                f"  Fix: {_LOOP_CMD} --target-repo <a real repo> "
+                "--producer-agent claude (or another real registered "
+                "codeprobe.agents backend)"
+            )
+        else:
+            print(
+                "PASS: both of the last two verdicts record a real "
+                f"producer_agent ({producer_agents})"
+            )
+
+    # 4. No critical/high-severity criterion is structurally unevaluable in
     #    every mode (no registered Verifier handler for its check_type).
     #    These are excluded from evaluated_pct same as eval_mode skips, so a
     #    verdict can be EVALUATED + all_pass while a critical criterion was
