@@ -82,6 +82,12 @@ docs/prd/
 e2e-*/
 .codeprobe-worktrees-*/
 
+# Agent-orchestration session debris at repo root (per-session scratch dirs,
+# local run outputs, per-bead git worktrees) — never source, never tracked
+codeprobe-*/
+runs/
+worktrees/
+
 # GasCity infrastructure
 city.toml
 formulas/
