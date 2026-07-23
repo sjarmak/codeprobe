@@ -16,5 +16,5 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[all,dev]"
+      - run: pip install -e ".[dev]"
       - run: pytest --cov=src/codeprobe --cov-report=term-missing

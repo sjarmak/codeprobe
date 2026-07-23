@@ -1,5 +1,94 @@
 # Changelog
 
+## Unreleased
+
+Everything below is on `main` but not yet cut as a PyPI release. 0.12.0 is
+locked to land only once the E2E self-serve acceptance harness
+(codeprobe-f7rl.46) is green in CI — see `docs/release.md`.
+
+### Customer self-serve hardening (codeprobe-f7rl)
+
+A production-readiness audit found the run path, adapters, statistics, and
+mining could all be tricked into reporting something other than what
+actually happened. This epic closes those gaps:
+
+- **Host safety.** `codeprobe run` hard-refuses a dirty checkout
+  (`--allow-dirty` to override, with disclosure); every run path, including
+  single-task, now goes through worktree isolation; runs refuse to proceed
+  uncontained unless `--uncontained` is passed; the adapter subprocess env
+  is whitelist-filtered on every dispatch path; `--max-cost-usd` scopes to
+  the whole experiment (including recoverable timed-out spend), not per arm.
+- **Adapters.** Adapters declare capabilities and preflight hard-refuses
+  experiments whose knobs an adapter can't honor; the Claude MCP surface is
+  pinned (`--strict-mcp-config`, `--pristine-config`); the Codex adapter is
+  quarantined until it wraps the real CLI; quota/timeout error categories
+  are stamped consistently across adapters; Copilot cost is priced by the
+  selected model; secret-token redaction is unified on one canonical prefix
+  list.
+- **Statistics & reporting honesty.** `--repeats` is first-class (per-task
+  means, real repeat exports); pairwise verdicts on incomparable
+  (disjoint/below-floor) arms are refused rather than guessed; k-arm
+  pairwise tests are Holm-corrected and the test count is disclosed;
+  reports render honest verdict badges, metric-correct CI bars, and
+  small-N labels; cost provenance (measured vs. estimated) is surfaced per
+  arm and gates cost-based tiebreaks on comparability.
+- **Mining.** `mine` auto-creates a default experiment and records
+  `task_ids`; repo args resolve filesystem-first (shorthand clones require
+  a `github:` prefix); unsupported languages fail fast with
+  `UNSUPPORTED_LANGUAGE`, naming the Python/Go/JS-TS matrix; `--no-llm` is
+  now a hard zero-model-call guarantee; non-GitHub hosts get an honest
+  narrative error instead of a silent degrade; Ctrl-C recovery is real
+  (`mine --resume`); mining's own LLM spend is metered and reported.
+- **Experiment / CLI contract.** Experiment directory resolution is
+  unified; `validate` and the experiment subcommands gained `--json`
+  envelopes; `doctor` demotes `GITHUB_TOKEN` to advisory and consults `gh
+  auth` directly; every arm's agent backend is resolved and validated at
+  preflight, not at first use.
+- **Distribution.** Agent skills ship inside the wheel and
+  `codeprobe skills install` materializes them for customers; docs were
+  rewritten around the skills and adapters that actually exist;
+  `codeprobe purge` was added alongside disclosure of what's kept in
+  cleartext at rest.
+
+### Pricing & scoring integrity
+
+- Codex/Copilot pricing rates reconfirmed and the staleness tripwire
+  generalized to catch future drift.
+- Mining rejects checkpoints without a usable verifier script instead of
+  silently scoring against nothing.
+- `codeprobe run` rejects `artifact_eval`/`dual` tasks missing
+  `tests/ground_truth.json` rather than running them against an absent
+  oracle.
+- Quota-error trials are excluded from published means, rankings, and the
+  reward population instead of dragging them toward zero.
+- The verifier now runs against a clean checkout via diff materialization.
+
+### Other changes
+
+- Per-trial MCP init manifests are persisted; a tool-surface utilization
+  audit is available.
+- The sequential executor preserves per-task crash state instead of
+  losing it; the scoring stage was extracted from `execute_task`.
+- `--max-turns` is now task-category-aware.
+- `codeprobe init` supports factorial comparisons (models × prompts ×
+  tools) in one experiment.
+- Added a self-contained HTML run-data explorer and an arm-vs-arm
+  comparison trace viewer.
+- Published a LikeC4 architecture model with an auto-deploying docs site.
+
+## 0.11.0 (2026-05-11)
+
+Adds scaffold mode: an `sg`-only SDLC path that seeds a minimal workspace
+scaffold instead of exposing the full local checkout, with a typed
+`hide_local_source` enum on `codeprobe experiment` selecting between the
+`off`/`hide`/`scaffold` modes.
+
+**Known issue**: the published sdist for this release leaked 15 unrelated
+skill directories (`.claude/skills/*/SKILL.md`, including deprecated
+pre-v0.6.0 names) via an overly broad `MANIFEST.in` rule. The wheel was
+unaffected. See `docs/release.md` for the yank runbook; fixed going forward
+by `scripts/check_release_artifacts.py` gating every subsequent release.
+
 ## 0.10.1 (2026-05-08)
 
 Fix for codeprobe-9xrl: OAuth quota errors no longer silently
