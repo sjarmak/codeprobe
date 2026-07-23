@@ -24,6 +24,21 @@ jobs:
         env:
           CODEPROBE_TENANT: ci-${{ github.sha }}
 
+  # The self-serve acceptance exit gate (codeprobe-f7rl.46). Same job as
+  # ci.yml's e2e-self-serve, duplicated here rather than cross-referenced:
+  # GitHub Actions `needs:` can only depend on jobs within the same
+  # workflow file, so a release-blocking copy has to live in this
+  # workflow too. Locked decision 8: no release ships without this green.
+  e2e-self-serve:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: python scripts/e2e/self_serve_acceptance.py
+
   # Builds dist/ exactly once and checks its content/version/changelog
   # invariants, then immediately uploads those checked bytes as a workflow
   # artifact — before release_gate.py runs. release_gate.py's
@@ -36,7 +51,7 @@ jobs:
   # artifact rather than rebuilding, so the bytes twine uploads are the
   # exact bytes this job checked.
   gate:
-    needs: [test]
+    needs: [test, e2e-self-serve]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5

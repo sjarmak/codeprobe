@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codeprobe-e2e-stub-agent"
+version = "0.1.0"
+description = "Deterministic stub AgentAdapter for codeprobe's self-serve E2E acceptance harness. Test-only — never published, never a codeprobe runtime dependency."
+requires-python = ">=3.11"
+# No install_requires: codeprobe itself is a runtime import inside
+# e2e_stub_agent (for the AgentAdapter Protocol types), not a declared
+# dependency. The harness always installs the codeprobe wheel before this
+# package, so the import is satisfied without pip needing to resolve or
+# fetch anything for it — this package's own install stays fully offline.
+dependencies = []
+
+[project.entry-points."codeprobe.agents"]
+e2e-stub = "e2e_stub_agent:StubAdapter"
+
+[tool.setuptools]
+packages = ["e2e_stub_agent"]
