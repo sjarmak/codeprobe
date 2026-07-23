@@ -41,6 +41,14 @@ two-consecutive-green rule exists to prevent). Both :meth:`_detect_regression`
 and :meth:`is_release_ready` therefore only compare verdicts whose
 ``eval_mode`` matches.
 
+``_detect_regression`` therefore does not simply compare *adjacent* verdicts:
+an alternating history like ``full(8), default(5), full(3)`` has no adjacent
+pair sharing ``eval_mode`` (each pair straddles a mode boundary), so an
+adjacent-only comparison would never notice the genuine ``full``-mode
+regression from 8 to 3. Instead it walks the whole history in order and
+compares each verdict against the most recently recorded verdict *of the
+same eval_mode*, regardless of what other-mode verdicts sit in between.
+
 This module is ZFC-compliant: all decisions are deterministic arithmetic /
 state comparisons, not semantic judgments.
 """
@@ -400,25 +408,32 @@ class ConvergenceController:
     ) -> dict[str, Any] | None:
         """Return regression info if pass_count ever decreased, else None.
 
-        Only compares consecutive verdicts recorded under the same
-        ``eval_mode`` — ``default`` mode evaluates a strict subset of
-        criteria (mode-gated ones are excluded), so its ``pass_count`` is
-        not comparable to a ``full``-mode verdict's. Comparing across a mode
-        switch would blame a denominator change on a regression that never
-        happened (see the module docstring's "Mixed eval_mode history").
+        Compares each verdict against the most recently recorded verdict
+        *of the same eval_mode* — not necessarily the immediately preceding
+        verdict in the full history. ``default`` mode evaluates a strict
+        subset of criteria (mode-gated ones are excluded), so its
+        ``pass_count`` is not comparable to a ``full``-mode verdict's;
+        comparing across a mode switch would blame a denominator change on
+        a regression that never happened (see the module docstring's "Mixed
+        eval_mode history"). Restricting to strictly-adjacent pairs instead
+        of "most recent same-mode" would let an interleaved different-mode
+        verdict mask a real same-mode regression (e.g.
+        ``full(8), default(5), full(3)`` has no adjacent same-mode pair at
+        all, yet the two ``full`` verdicts are a genuine 8→3 regression).
         """
-        for prev, curr in zip(history, history[1:]):
-            if prev.get("eval_mode") != curr.get("eval_mode"):
-                continue
-            prev_pass = int(prev.get("pass_count", 0))
-            curr_pass = int(curr.get("pass_count", 0))
-            if curr_pass < prev_pass:
+        last_pass_by_mode: dict[str | None, int] = {}
+        for verdict in history:
+            mode = verdict.get("eval_mode")
+            curr_pass = int(verdict.get("pass_count", 0))
+            prev_pass = last_pass_by_mode.get(mode)
+            if prev_pass is not None and curr_pass < prev_pass:
                 return {
-                    "iteration": curr.get("iteration"),
+                    "iteration": verdict.get("iteration"),
                     "previous": prev_pass,
                     "current": curr_pass,
                     "delta": curr_pass - prev_pass,
                 }
+            last_pass_by_mode[mode] = curr_pass
         return None
 
     def _detect_three_strike(

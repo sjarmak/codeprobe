@@ -180,6 +180,39 @@ def test_regression_not_flagged_across_eval_mode_switch(tmp_path: Path) -> None:
     assert result.decision == Decision.CONTINUE
 
 
+def test_regression_flagged_across_non_adjacent_same_mode_verdicts(
+    tmp_path: Path,
+) -> None:
+    """A genuine same-mode regression must be caught even when a
+    different-mode verdict is interleaved between the two same-mode
+    verdicts, so neither pair is strictly adjacent. Comparing only adjacent
+    verdicts would skip both pairs here (each straddles a mode boundary)
+    and let a real full-mode 8→3 regression go completely undetected."""
+    cc = ConvergenceController(tmp_path / "db")
+    cc.record_verdict(
+        _verdict(1, pass_count=8, fail_count=0, all_pass=True, eval_mode="full")
+    )
+    cc.record_verdict(
+        _verdict(2, pass_count=5, fail_count=0, all_pass=True, eval_mode=None)
+    )
+    cc.record_verdict(
+        _verdict(
+            3,
+            pass_count=3,
+            fail_count=5,
+            all_pass=False,
+            failures=[_fail("X")],
+            eval_mode="full",
+        )
+    )
+
+    result = cc.decide()
+    assert result.decision == Decision.HALT_REGRESSION
+    assert result.context["previous"] == 8
+    assert result.context["current"] == 3
+    assert result.context["iteration"] == 3
+
+
 def test_regression_still_flagged_within_same_eval_mode(tmp_path: Path) -> None:
     """A real drop within the SAME eval_mode must still halt."""
     cc = ConvergenceController(tmp_path / "db")

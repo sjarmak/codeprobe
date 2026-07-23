@@ -304,6 +304,115 @@ def test_execute_action_kills_grandchild_process_group_on_timeout(
     assert not marker.exists()
 
 
+def test_producer_timeout_does_not_leak_stale_target_repo_state(
+    tmp_path: Path,
+) -> None:
+    """Reproduces the cross-iteration silent-pass-through: a full-mode
+    producer (simulating ``codeprobe mine``) writes 3 tasks into the shared,
+    persistent ``target_repo/.codeprobe/tasks`` on iteration 1, then hangs
+    past the action timeout on iteration 2 (simulating a stall before it
+    touches ``.codeprobe`` again). Without resetting ``target_repo/
+    .codeprobe`` before each full-mode iteration, the dependent's sync
+    action would re-copy iteration 1's stale 3 tasks into iteration 2's
+    fresh workspace and the statistical ``count_ge`` check would falsely
+    PASS on data iteration 2 never produced, even though the producer
+    itself was honestly skipped (poisoned artifacts on timeout).
+    """
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent('''
+            [[criterion]]
+            id = "PRODUCER"
+            description = "simulated codeprobe mine: writes 3 tasks once, then hangs"
+            tier = "behavioral"
+            check_type = "cli_exit_code"
+            severity = "critical"
+            prd_source = "fake.md#x"
+            eval_mode_required = "full"
+            [criterion.params]
+            command = """\\
+            if [ -f {repo}/.marker ]; then sleep 5; else \\
+            mkdir -p {repo}/.codeprobe/tasks && \\
+            touch {repo}/.codeprobe/tasks/task-{a,b,c} {repo}/.marker; fi\\
+            """
+            expected_exit = 0
+
+            [[criterion]]
+            id = "DEPENDENT"
+            description = "at least 3 tasks produced this iteration"
+            tier = "statistical"
+            check_type = "count_ge"
+            severity = "critical"
+            prd_source = "fake.md#x"
+            depends_on = ["PRODUCER"]
+            eval_mode_required = "full"
+            [criterion.params]
+            source = "{repo}/.codeprobe/tasks"
+            pattern = "task-*"
+            min_count = 3
+            ''').strip()
+    )
+    target_repo = tmp_path / "target"
+    target_repo.mkdir()
+
+    args = [
+        "--iterations", "1",
+        "--eval-mode", "full",
+        "--repo-root", str(Path(__file__).resolve().parent.parent),
+        "--criteria", str(manifest),
+        "--history-dir", str(tmp_path / "history"),
+        "--workspace-root", str(tmp_path / "workspaces"),
+        "--target-repo", str(target_repo),
+        "--action-timeout", "0.3",
+    ]
+
+    # Iteration 1: producer succeeds, populates target_repo/.codeprobe/tasks.
+    exit_code = acceptance_loop.main(args)
+    assert exit_code == 0
+    verdict_1 = _read_verdicts(tmp_path)[0]
+    assert verdict_1["pass_count"] == 2  # PRODUCER + DEPENDENT both pass
+    assert verdict_1["all_pass"] is True
+    assert (target_repo / ".codeprobe" / "tasks" / "task-a").exists()
+
+    # Iteration 2: producer hangs past the timeout (marker file survives the
+    # .codeprobe-scoped reset, so the simulated hang condition still fires).
+    exit_code = acceptance_loop.main(args)
+    verdicts = _read_verdicts(tmp_path)
+    assert len(verdicts) == 2
+    verdict_2 = verdicts[1]
+
+    # The producer was honestly skipped (timeout poisoned its artifacts) —
+    # it must never register as a pass.
+    assert verdict_2["pass_count"] == 0
+    assert verdict_2["all_pass"] is False
+    # target_repo/.codeprobe was reset before this iteration, so the
+    # dependent's sync action found nothing stale to copy and skipped
+    # honestly instead of falsely passing on iteration 1's 3 tasks.
+    workspace_2 = tmp_path / "workspaces" / "iter-0002"
+    assert not (workspace_2 / ".codeprobe" / "tasks").exists()
+    dependent_failures = [
+        f for f in verdict_2["failures"] if f["criterion_id"] == "DEPENDENT"
+    ]
+    assert dependent_failures == []  # skipped, not failed, and critically not passed
+
+
+def test_reset_target_repo_state_removes_codeprobe_dir(tmp_path: Path) -> None:
+    target_repo = tmp_path
+    codeprobe_dir = target_repo / ".codeprobe" / "tasks"
+    codeprobe_dir.mkdir(parents=True)
+    (codeprobe_dir / "task-a").write_text("stale")
+
+    acceptance_loop._reset_target_repo_state(target_repo)
+
+    assert not (target_repo / ".codeprobe").exists()
+
+
+def test_reset_target_repo_state_is_noop_when_absent(tmp_path: Path) -> None:
+    """Must not raise when there is nothing to reset."""
+    acceptance_loop._reset_target_repo_state(tmp_path)
+    assert not (tmp_path / ".codeprobe").exists()
+
+
 def test_history_appends_across_invocations(
     tmp_path: Path, passing_manifest: Path
 ) -> None:

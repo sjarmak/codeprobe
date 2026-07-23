@@ -8,12 +8,17 @@ BEFORE ``git tag v<version>``:
    in the history directory (written by ``scripts/acceptance_loop.py``) must
    both satisfy :meth:`acceptance.release.ReleaseGate.check_ready` —
    ``status == "EVALUATED"`` and ``all_pass is True``.
-2. **At least one of those two verdicts came from ``eval_mode=full``.**
+2. **Both of those two verdicts came from ``eval_mode=full``.**
    A default-mode green is NOT release evidence for mode-gated tiers: in
    default mode the mode-gated criteria are excluded from the evaluated
    denominator, so a tier can report 100% while evaluating nothing (see the
-   acceptance-loop doctrine skill). Verdicts written before ``eval_mode``
-   was recorded count as not-full.
+   acceptance-loop doctrine skill). A single full-mode green preceded (or
+   followed) by a default-mode green is exactly the "one green can be luck"
+   case the two-consecutive-green rule exists to prevent — it must be
+   rejected here the same way ``ConvergenceController.is_release_ready``
+   rejects it (both newest verdicts must share ``eval_mode``, and that mode
+   must be ``full``). Verdicts written before ``eval_mode`` was recorded
+   count as not-full.
 3. **No critical/high-severity criterion is handler-less in either of the
    two newest verdicts.** A ``check_type`` with no registered handler in
    ``acceptance.verify.Verifier._handlers()`` is structurally unevaluable in
@@ -162,19 +167,29 @@ def run_checks(repo_root: Path, history_dir: Path) -> int:
     else:
         print(f"PASS: last two verdicts EVALUATED + all_pass ({history_dir})")
 
-    # 2. At least one of the two newest verdicts from eval_mode=full.
+    # 2. Both of the two newest verdicts must be eval_mode=full — mirrors
+    #    ConvergenceController.is_release_ready's same-mode-and-full
+    #    requirement. A single full-mode green (mixed with a default-mode
+    #    green, in either order) is NOT sufficient: the mode-gated criteria
+    #    were only ever evaluated once, which is exactly the "one green can
+    #    be luck" case the two-consecutive-green rule exists to prevent.
     if len(verdict_paths) >= 2:
         modes = [_verdict_eval_mode(p) for p in verdict_paths]
-        if "full" not in modes:
+        if modes[0] != "full" or modes[1] != "full":
             failures.append(
-                f"neither of the two newest verdicts came from eval_mode=full "
+                f"the two newest verdicts are not both eval_mode=full "
                 f"(modes: {modes}). A default-mode green is NOT release "
                 "evidence for mode-gated tiers — their criteria are excluded "
-                "from the evaluated denominator in default mode.\n"
+                "from the evaluated denominator in default mode — and a "
+                "single full-mode green mixed with a default-mode green is "
+                "NOT release evidence either: the mode-gated criteria set "
+                "was only ever evaluated once, the exact 'one green can be "
+                "luck' case the two-consecutive-green rule exists to "
+                "prevent.\n"
                 f"  Fix: {_LOOP_CMD}"
             )
         else:
-            print("PASS: at least one of the last two verdicts is eval_mode=full")
+            print("PASS: both of the last two verdicts are eval_mode=full")
 
     # 3. No critical/high-severity criterion is structurally unevaluable in
     #    every mode (no registered Verifier handler for its check_type).

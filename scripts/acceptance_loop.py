@@ -32,7 +32,12 @@ Eval modes:
   NOT release evidence for mode-gated tiers.
 - ``full`` — every criterion compiles and executes, including real
   ``codeprobe mine``/``run`` invocations against ``--target-repo`` (real
-  agent spend).
+  agent spend). Because ``--target-repo`` is shared and persistent across
+  iterations (unlike the fresh-per-iteration workspace), ``target_repo/
+  .codeprobe`` is wiped at the start of every full-mode iteration — see
+  :func:`_reset_target_repo_state` — so a producer that times out or
+  crashes cannot leave stale prior-iteration output for a dependent
+  statistical check to silently pass on.
 
 History is append-only across invocations: the next iteration number is one
 past the highest existing ``verdict-NNNN.json``. To reset the loop, delete
@@ -140,6 +145,40 @@ def _poison_artifacts(workspace: Path, artifact_paths: tuple[str, ...]) -> None:
             pass
 
 
+def _reset_target_repo_state(target_repo: Path) -> None:
+    """Remove ``target_repo/.codeprobe`` before a full-mode iteration starts.
+
+    ``target_repo`` is shared and persistent across iterations — unlike the
+    fresh-per-iteration ``workspace`` — because the real ``codeprobe
+    mine``/``run`` invocations know nothing about this loop's workspaces and
+    always write to ``target_repo/.codeprobe``. Every criterion in the
+    manifest that writes to or reads from that directory carries
+    ``eval_mode_required = "full"``, so this reset is called only when
+    ``eval_mode == "full"``.
+
+    Without it, a producer (e.g. ``codeprobe mine``) that times out mid-
+    iteration leaves the *previous* iteration's ``.codeprobe/`` completely
+    untouched. ``_emit_sync_action`` then copies that stale directory into
+    the current iteration's fresh workspace, and a dependent statistical
+    check (e.g. ``count_ge`` over ``.codeprobe/tasks``) reports an honest-
+    looking PASS on data this iteration never produced — a false pass
+    through the exact silent-pass-through class this loop exists to catch.
+    Wiping the shared directory first forces an honest missing/empty result
+    whenever the producer does not run to completion this iteration.
+    """
+    codeprobe_dir = target_repo / ".codeprobe"
+    if not codeprobe_dir.exists():
+        return
+    try:
+        shutil.rmtree(codeprobe_dir)
+    except OSError as exc:
+        print(
+            f"WARNING: failed to reset {codeprobe_dir} before iteration "
+            f"(stale state may leak into this iteration's verdict): {exc}",
+            file=sys.stderr,
+        )
+
+
 def execute_action(
     action: TestAction,
     workspace: Path,
@@ -229,6 +268,9 @@ def run_loop(
         iteration = base_iteration + offset
         workspace = workspace_root / f"iter-{iteration:04d}"
         workspace.mkdir(parents=True, exist_ok=False)
+
+        if eval_mode == "full":
+            _reset_target_repo_state(target_repo)
 
         actions = compile_actions(
             active,

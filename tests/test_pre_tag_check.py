@@ -181,10 +181,35 @@ def test_legacy_verdict_without_eval_mode_key_counts_as_not_full(
     assert _run(repo) == 1
 
 
-def test_one_full_mode_verdict_suffices(repo: Path) -> None:
+def test_single_full_mode_verdict_is_insufficient(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A single full-mode green immediately following a default-mode green
+    must NOT be accepted as READY — it mirrors
+    ConvergenceController.is_release_ready's same-mode-and-full requirement.
+    The mode-gated criteria set was only ever evaluated once here, exactly
+    the 'one green can be luck' case the two-consecutive-green rule exists
+    to prevent."""
     history = repo / "acceptance" / "verdict-history"
     _write_verdict(history, 1, eval_mode=None)
     _write_verdict(history, 2, eval_mode="full")
+    assert _run(repo) == 1
+    err = capsys.readouterr().err
+    assert "not both eval_mode=full" in err
+
+
+def test_reversed_full_then_default_pair_is_insufficient(repo: Path) -> None:
+    """The reversed ordering — full then default — must also fail; a
+    default-mode subset green as the newest verdict is weaker still."""
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(history, 1, eval_mode="full")
+    _write_verdict(history, 2, eval_mode=None)
+    assert _run(repo) == 1
+
+
+def test_two_full_mode_verdicts_suffice(repo: Path) -> None:
+    """Two consecutive full-mode greens (the default `repo` fixture) is the
+    minimum sufficient evidence."""
     assert _run(repo) == 0
 
 
