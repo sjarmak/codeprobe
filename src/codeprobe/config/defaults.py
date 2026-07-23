@@ -557,8 +557,13 @@ def resolve_timeout(goal: str) -> tuple[int, str]:
 def resolve_experiment_config(cwd: Path) -> tuple[Path, str]:
     """Auto-discover a single experiment JSON under ``.codeprobe/``.
 
-    Raises ``PrescriptiveError(AMBIGUOUS_EXPERIMENT)`` on zero or
-    multiple candidates so the caller can render a prescriptive error.
+    Raises the typed CLI errors (rendered as envelope/pretty by
+    ``codeprobe.cli._error_handler.CodeprobeGroup``):
+
+    * ``DiagnosticError(NO_EXPERIMENT)`` when no experiment exists —
+      the fix is to initialize one, not to retry with a flag.
+    * ``PrescriptiveError(AMBIGUOUS_EXPERIMENT)`` when more than one
+      candidate exists and the caller must disambiguate via ``--config``.
     """
     root = Path(cwd).resolve()
     codeprobe_dir = root / ".codeprobe"
@@ -575,17 +580,31 @@ def resolve_experiment_config(cwd: Path) -> tuple[Path, str]:
     if len(candidates) == 1:
         return candidates[0], "config-file"
 
-    first = str(candidates[0]) if candidates else str(
-        codeprobe_dir / "experiment.json"
-    )
-    raise PrescriptiveError(
+    # Lazy import: these are the cli-layer error types so the raised
+    # errors render through CodeprobeGroup instead of escaping as raw
+    # tracebacks. Imported at raise time to keep the config package
+    # importable without pulling in the CLI stack.
+    from codeprobe.cli.errors import DiagnosticError as _CliDiagnosticError
+    from codeprobe.cli.errors import PrescriptiveError as _CliPrescriptiveError
+
+    if not candidates:
+        init_cmd = f"codeprobe experiment init {root} --non-interactive"
+        raise _CliDiagnosticError(
+            code="NO_EXPERIMENT",
+            message=f"No experiment found under {codeprobe_dir}.",
+            diagnose_cmd=init_cmd,
+            terminal=True,
+            next_steps=[("Initialize", init_cmd)],
+        )
+
+    raise _CliPrescriptiveError(
         code="AMBIGUOUS_EXPERIMENT",
         message=(
             f"Found {len(candidates)} experiment.json files under "
             f"{codeprobe_dir}; pass --config to select one."
         ),
         next_try_flag="--config",
-        next_try_value=first,
+        next_try_value=str(candidates[0]),
     )
 
 

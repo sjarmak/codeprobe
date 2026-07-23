@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import re
 import statistics
 import sys
 from collections import Counter
@@ -15,12 +17,16 @@ import click
 from codeprobe.adapters.protocol import quarantine_message
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
+from codeprobe.cli._output_helpers import emit_envelope, resolve_explicit_mode
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
+from codeprobe.config.defaults import resolve_experiment_config
 from codeprobe.core.experiment import (
     create_experiment_dir,
     load_config_results,
     load_experiment,
     save_experiment,
 )
+from codeprobe.core.registry import available
 from codeprobe.core.registry import resolve as resolve_agent
 from codeprobe.models.experiment import (
     Experiment,
@@ -32,11 +38,75 @@ def _now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_UNSAFE_COMPONENT_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_component_suggestion(value: str, fallback: str) -> str:
+    """Mechanically sanitize *value* into a safe path component.
+
+    Used as the ``next_try_value`` on unsafe-name PrescriptiveErrors so an
+    agent can retry without further reasoning. Falls back to *fallback*
+    when nothing usable survives sanitization.
+    """
+    cleaned = _UNSAFE_COMPONENT_CHARS.sub("-", value).strip("-.")
+    return cleaned or fallback
+
+
+def _unsafe_component_error(
+    exc: ValueError, flag: str, value: str, fallback: str
+) -> PrescriptiveError:
+    """Build the UNSAFE_NAME error for an invalid --name / --label value."""
+    return PrescriptiveError(
+        code="UNSAFE_NAME",
+        message=str(exc),
+        next_try_flag=flag,
+        next_try_value=_safe_component_suggestion(value, fallback),
+        exit_code=1,
+        detail={"value": value},
+    )
+
+
+def _experiment_load_error(exp_dir: Path, exc: Exception) -> DiagnosticError:
+    """Build the EXPERIMENT_INVALID error for an unloadable experiment.json."""
+    return DiagnosticError(
+        code="EXPERIMENT_INVALID",
+        message=f"failed to load experiment at {exp_dir}: {exc}",
+        diagnose_cmd=f"cat {exp_dir / 'experiment.json'}",
+        exit_code=1,
+        detail={"experiment_dir": str(exp_dir)},
+    )
+
+
+def _resolve_exp_dir(path: str) -> Path:
+    """Resolve a user-supplied path token to the experiment directory.
+
+    Accepts the same tokens as ``experiment init``: an explicit experiment
+    directory (one containing ``experiment.json``) is used as-is; any other
+    path is treated as a repo root and the shared resolver discovers the
+    experiment under ``<path>/.codeprobe/`` — both the direct
+    ``experiment.json`` layout written by ``experiment init
+    --non-interactive`` and the named-subdir layout.
+
+    On failure the typed CLI errors from
+    :func:`codeprobe.config.defaults.resolve_experiment_config`
+    (``NO_EXPERIMENT`` / ``AMBIGUOUS_EXPERIMENT``) propagate to
+    :class:`codeprobe.cli._error_handler.CodeprobeGroup` for rendering.
+    """
+    base_dir = Path(path)
+    if (base_dir / "experiment.json").is_file():
+        return base_dir
+    config_path, _ = resolve_experiment_config(base_dir)
+    return config_path.parent
+
+
 def experiment_init(
     path: str,
     name: str,
     description: str,
     non_interactive: bool = False,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
     """Create a new experiment directory.
 
@@ -44,6 +114,10 @@ def experiment_init(
     target's ``.codeprobe/`` directory so that ``.codeprobe/experiment.json``
     is the canonical default location, matching the documented golden path.
     """
+    mode = resolve_explicit_mode(
+        "experiment init", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
     base_dir = Path(path)
     if non_interactive:
         # Default location is <path>/.codeprobe/, with experiment.json
@@ -54,8 +128,7 @@ def experiment_init(
         try:
             _validate_path_component(name, "experiment name")
         except ValueError as exc:
-            click.echo(f"Error: {exc}", err=True)
-            raise SystemExit(1)
+            raise _unsafe_component_error(exc, "--name", name, "default") from exc
 
         codeprobe_dir = base_dir / ".codeprobe"
         codeprobe_dir.mkdir(exist_ok=True)
@@ -63,20 +136,31 @@ def experiment_init(
 
         exp_json = codeprobe_dir / "experiment.json"
         if exp_json.exists():
-            click.echo(
-                f"Error: experiment already exists at {exp_json}",
-                err=True,
+            raise DiagnosticError(
+                code="EXPERIMENT_EXISTS",
+                message=f"experiment already exists at {exp_json}",
+                diagnose_cmd=f"codeprobe experiment status {base_dir}",
+                exit_code=1,
+                detail={"experiment_path": str(exp_json)},
             )
-            raise SystemExit(1)
 
         experiment = Experiment(name=name, description=description)
         try:
             save_experiment(codeprobe_dir, experiment)
         except ValueError as exc:
-            click.echo(f"Error: {exc}", err=True)
-            raise SystemExit(1)
+            raise _unsafe_component_error(exc, "--name", name, "default") from exc
         (codeprobe_dir / "tasks").mkdir(exist_ok=True)
 
+        if emit_json:
+            emit_envelope(
+                command="experiment init",
+                data={
+                    "experiment_dir": str(codeprobe_dir),
+                    "name": name,
+                    "created": True,
+                },
+            )
+            return
         click.echo(f"Experiment '{name}' created at {codeprobe_dir}/")
         click.echo("  Tasks: 0 (add tasks to tasks/ directory)")
         click.echo(
@@ -88,8 +172,13 @@ def experiment_init(
     exp_dir = base_dir / name
 
     if exp_dir.exists():
-        click.echo(f"Error: experiment '{name}' already exists at {exp_dir}", err=True)
-        raise SystemExit(1)
+        raise DiagnosticError(
+            code="EXPERIMENT_EXISTS",
+            message=f"experiment '{name}' already exists at {exp_dir}",
+            diagnose_cmd=f"codeprobe experiment status {exp_dir}",
+            exit_code=1,
+            detail={"experiment_path": str(exp_dir)},
+        )
 
     experiment = Experiment(
         name=name,
@@ -99,9 +188,18 @@ def experiment_init(
     try:
         created = create_experiment_dir(base_dir, experiment)
     except ValueError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise _unsafe_component_error(exc, "--name", name, "default") from exc
 
+    if emit_json:
+        emit_envelope(
+            command="experiment init",
+            data={
+                "experiment_dir": str(created),
+                "name": name,
+                "created": True,
+            },
+        )
+        return
     click.echo(f"Experiment '{name}' created at {created}/")
     click.echo("  Tasks: 0 (add tasks to tasks/ directory)")
     click.echo(
@@ -139,6 +237,59 @@ def _interactive_mcp_selection() -> str | None:
     return None
 
 
+def _parse_mcp_config(raw: str) -> dict:
+    """Parse ``--mcp-config`` as inline JSON or a path to a JSON file.
+
+    Raises :class:`PrescriptiveError` (``INVALID_MCP_CONFIG``) when the
+    value is neither valid inline JSON nor a readable JSON file, or when
+    the decoded value is not a JSON object.
+    """
+    parsed: object
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        mcp_path = Path(raw).expanduser().resolve()
+        if not mcp_path.is_file():
+            raise PrescriptiveError(
+                code="INVALID_MCP_CONFIG",
+                message="--mcp-config is not valid JSON or a file path",
+                next_try_flag="--mcp-config",
+                next_try_value="<path-to-valid-mcp-config.json>",
+                exit_code=1,
+                detail={"mcp_config": raw},
+            ) from None
+        try:
+            parsed = json.loads(mcp_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise PrescriptiveError(
+                code="INVALID_MCP_CONFIG",
+                message=f"--mcp-config file {mcp_path} is not valid JSON: {exc}",
+                next_try_flag="--mcp-config",
+                next_try_value="<path-to-valid-mcp-config.json>",
+                exit_code=1,
+                detail={"mcp_config_path": str(mcp_path)},
+            ) from exc
+
+    if not isinstance(parsed, dict):
+        raise PrescriptiveError(
+            code="INVALID_MCP_CONFIG",
+            message="--mcp-config must decode to a JSON object",
+            next_try_flag="--mcp-config",
+            next_try_value="<path-to-valid-mcp-config.json>",
+            exit_code=1,
+            detail={"mcp_config": raw},
+        )
+    return parsed
+
+
+def _next_free_label(label: str, existing: list[str]) -> str:
+    """Return the first ``<label>-N`` (N >= 2) not already in *existing*."""
+    n = 2
+    while f"{label}-{n}" in existing:
+        n += 1
+    return f"{label}-{n}"
+
+
 def experiment_add_config(
     path: str,
     label: str,
@@ -152,6 +303,9 @@ def experiment_add_config(
     disallowed_tools: list[str] | None = None,
     mcp_mode: str = "strict",
     hide_local_source: str = "off",
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
     """Add a configuration to an existing experiment.
 
@@ -160,6 +314,11 @@ def experiment_add_config(
     through to the persisted experiment.json; the loader handles
     legacy boolean values for back-compat on subsequent reads.
     """
+    mode = resolve_explicit_mode(
+        "experiment add-config", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
+
     # A config that can never run must not be persisted: run preflight
     # refuses quarantined adapters (codeprobe-f7rl.27), so adding such an
     # arm would only store a guaranteed-refusal config. Unknown agent
@@ -176,38 +335,49 @@ def experiment_add_config(
         # lint-exempt: f7rl.27 pins SystemExit(1), the add-config echo+exit style
         raise SystemExit(1)
 
-    exp_dir = Path(path)
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
     except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise _experiment_load_error(exp_dir, exc) from exc
 
     # Check for duplicate label
     existing_labels = [c.label for c in experiment.configs]
     if label in existing_labels:
-        click.echo(
-            f"Error: configuration '{label}' already exists in experiment '{experiment.name}'",
-            err=True,
+        raise PrescriptiveError(
+            code="DUPLICATE_CONFIG_LABEL",
+            message=(
+                f"configuration '{label}' already exists in experiment "
+                f"'{experiment.name}'"
+            ),
+            next_try_flag="--label",
+            next_try_value=_next_free_label(label, existing_labels),
+            exit_code=1,
+            detail={"label": label, "existing_labels": existing_labels},
         )
-        raise SystemExit(1)
+
+    # Refuse unknown agent backends at authoring time — a typo here would
+    # otherwise persist to experiment.json (codeprobe-f7rl.25). available()
+    # merges builtins with entry-point-registered third-party adapters.
+    known_agents = available()
+    if agent not in known_agents:
+        raise PrescriptiveError(
+            code="UNKNOWN_BACKEND",
+            message=(
+                f"unknown agent backend {agent!r}. "
+                f"Available: {', '.join(known_agents)}"
+            ),
+            next_try_flag="--agent",
+            next_try_value="claude",
+            exit_code=1,
+            detail={"agent": agent, "available": known_agents},
+        )
 
     # Parse MCP config — offer interactive discovery when omitted in a TTY
     mcp_config: dict | None = None
     if mcp_config_str:
-        try:
-            mcp_config = json.loads(mcp_config_str)
-        except json.JSONDecodeError:
-            mcp_path = Path(mcp_config_str).expanduser().resolve()
-            if mcp_path.is_file():
-                mcp_config = json.loads(mcp_path.read_text(encoding="utf-8"))
-            else:
-                click.echo(
-                    "Error: --mcp-config is not valid JSON or a file path",
-                    err=True,
-                )
-                raise SystemExit(1)
+        mcp_config = _parse_mcp_config(mcp_config_str)
     elif sys.stderr.isatty():
         mcp_config_str = _interactive_mcp_selection()
         if mcp_config_str:
@@ -235,20 +405,30 @@ def experiment_add_config(
     try:
         _validate_path_component(label, "config label")
     except ValueError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise _unsafe_component_error(exc, "--label", label, "baseline") from exc
 
-    updated = Experiment(
-        name=experiment.name,
-        description=experiment.description,
-        configs=[*experiment.configs, new_config],
-        tasks_dir=experiment.tasks_dir,
+    # Field-generic copy: any future Experiment field (like task_ids, which
+    # scopes run to the mined task set) survives without this call site
+    # knowing about it.
+    updated = dataclasses.replace(
+        experiment, configs=[*experiment.configs, new_config]
     )
     save_experiment(exp_dir, updated)
 
     # Create runs directory for this config
     (exp_dir / "runs" / label).mkdir(parents=True, exist_ok=True)
 
+    if emit_json:
+        emit_envelope(
+            command="experiment add-config",
+            data={
+                "label": label,
+                "agent": agent,
+                "model": model,
+                "config_count": len(updated.configs),
+            },
+        )
+        return
     click.echo(f"Configuration '{label}' added to experiment '{experiment.name}'")
     click.echo(f"  Agent: {agent}")
     click.echo(f"  Model: {model or '(not specified)'}")
@@ -259,6 +439,9 @@ def experiment_validate(
     path: str,
     *,
     allow_low_confidence: bool = False,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
 ) -> None:
     """Validate experiment structure and readiness.
 
@@ -274,13 +457,16 @@ def experiment_validate(
         score_task_confidence,
     )
 
-    exp_dir = Path(path)
+    mode = resolve_explicit_mode(
+        "experiment validate", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
     except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise _experiment_load_error(exp_dir, exc) from exc
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -330,6 +516,34 @@ def experiment_validate(
     admitted_tasks = [t for t in task_ids if t not in quarantined]
     total_runs = len(admitted_tasks) * len(experiment.configs)
 
+    if errors:
+        status = "not_ready"
+    elif warnings:
+        status = "ready_with_warnings"
+    else:
+        status = "ready"
+
+    if emit_json:
+        emit_envelope(
+            command="experiment validate",
+            ok=not errors,
+            exit_code=1 if errors else 0,
+            data={
+                "experiment": experiment.name,
+                "task_count": len(task_ids),
+                "quarantined_count": len(quarantined),
+                "config_count": len(experiment.configs),
+                "total_runs": total_runs,
+                "errors": errors,
+                "warnings": warnings,
+                "status": status,
+            },
+        )
+        if errors:
+            # lint-exempt: envelope already emitted; exit code only.
+            raise SystemExit(1)
+        return
+
     click.echo(f"Experiment: {experiment.name}")
     click.echo(f"  Tasks: {len(task_ids)} ({len(quarantined)} quarantined)")
     click.echo(f"  Configurations: {len(experiment.configs)}")
@@ -350,10 +564,16 @@ def experiment_validate(
         click.echo(f"\n  Status: READY (with {len(warnings)} warnings)")
     else:
         click.echo(f"\n  Status: NOT READY ({len(errors)} errors)")
+        # lint-exempt: report already rendered; exit code only.
         raise SystemExit(1)
 
 
-def experiment_status(path: str) -> None:
+def experiment_status(
+    path: str,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
     """Report completion status per configuration."""
     from codeprobe.mining.confidence import (
         confidence_histogram,
@@ -361,13 +581,16 @@ def experiment_status(path: str) -> None:
         score_task_confidence,
     )
 
-    exp_dir = Path(path)
+    mode = resolve_explicit_mode(
+        "experiment status", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
     except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise _experiment_load_error(exp_dir, exc) from exc
 
     tasks_dir = exp_dir / experiment.tasks_dir
     task_ids: list[str] = []
@@ -380,35 +603,8 @@ def experiment_status(path: str) -> None:
 
     total_tasks = len(task_ids)
 
-    click.echo(f"Experiment: {experiment.name}")
-    click.echo(f"  Description: {experiment.description}")
-    click.echo(f"  Tasks: {total_tasks}")
-
-    # Confidence histogram across the task set
-    if task_ids:
-        scores = []
-        for tid in task_ids:
-            td = tasks_dir / tid
-            cached = load_confidence_file(td)
-            scores.append(cached if cached is not None else score_task_confidence(td))
-        hist = confidence_histogram(scores)
-        nonzero = {bucket: count for bucket, count in hist.items() if count}
-        if nonzero:
-            click.echo("  Confidence histogram:")
-            for bucket, count in hist.items():
-                bar = "#" * count
-                click.echo(f"    {bucket:<10} {count:>4} {bar}")
-    click.echo()
-
-    if not experiment.configs:
-        click.echo("  No configurations defined yet.")
-        return
-
-    click.echo(
-        f"  {'Configuration':<25} {'Completed':<12} {'Score (avg)':<12} {'Status'}"
-    )
-    click.echo(f"  {'-' * 25} {'-' * 12} {'-' * 12} {'-' * 10}")
-
+    # Per-config completion rows — computed once, rendered per mode.
+    config_rows: list[dict[str, Any]] = []
     for cfg in experiment.configs:
         completed = 0
         distinct_done = 0
@@ -431,19 +627,86 @@ def experiment_status(path: str) -> None:
         except FileNotFoundError:
             pass
 
-        score_str = f"{avg_score:.2f}" if avg_score is not None else "--"
-        status_str = (
-            "complete"
-            if distinct_done == total_tasks and total_tasks > 0
-            else "pending"
+        # `completed` counts trials (tasks x repeats); completion is judged
+        # on distinct task_ids so repeated runs can finish (codeprobe-f7rl.7).
+        config_rows.append(
+            {
+                "label": cfg.label,
+                "completed": completed,
+                "distinct_done": distinct_done,
+                "total": total_tasks,
+                "avg_score": avg_score,
+                "status": (
+                    "complete"
+                    if distinct_done == total_tasks and total_tasks > 0
+                    else "pending"
+                ),
+            }
         )
+
+    if emit_json:
+        emit_envelope(
+            command="experiment status",
+            data={
+                "experiment": experiment.name,
+                "description": experiment.description,
+                "total_tasks": total_tasks,
+                "configs": config_rows,
+            },
+        )
+        return
+
+    click.echo(f"Experiment: {experiment.name}")
+    click.echo(f"  Description: {experiment.description}")
+    click.echo(f"  Tasks: {total_tasks}")
+
+    # Confidence histogram across the task set
+    if task_ids:
+        conf_scores = []
+        for tid in task_ids:
+            td = tasks_dir / tid
+            cached = load_confidence_file(td)
+            conf_scores.append(
+                cached if cached is not None else score_task_confidence(td)
+            )
+        hist = confidence_histogram(conf_scores)
+        nonzero = {bucket: count for bucket, count in hist.items() if count}
+        if nonzero:
+            click.echo("  Confidence histogram:")
+            for bucket, count in hist.items():
+                bar = "#" * count
+                click.echo(f"    {bucket:<10} {count:>4} {bar}")
+    click.echo()
+
+    if not experiment.configs:
+        click.echo("  No configurations defined yet.")
+        return
+
+    click.echo(
+        f"  {'Configuration':<25} {'Completed':<12} {'Score (avg)':<12} {'Status'}"
+    )
+    click.echo(f"  {'-' * 25} {'-' * 12} {'-' * 12} {'-' * 10}")
+
+    for row in config_rows:
+        avg_score = row["avg_score"]
+        completed = row["completed"]
+        distinct_done = row["distinct_done"]
+        score_str = f"{avg_score:.2f}" if avg_score is not None else "--"
         progress = f"{distinct_done}/{total_tasks}"
         if completed > distinct_done:
             progress += f" ({completed} trials)"
-        click.echo(f"  {cfg.label:<25} {progress:<12} {score_str:<12} {status_str}")
+        click.echo(
+            f"  {row['label']:<25} {progress:<12} {score_str:<12} {row['status']}"
+        )
 
 
-def experiment_aggregate(path: str, no_warn: bool = False) -> None:
+def experiment_aggregate(
+    path: str,
+    no_warn: bool = False,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
     """Aggregate results across configurations into a comparison report.
 
     When ``no_warn`` is ``True``, bias warnings are suppressed in the
@@ -452,20 +715,31 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
     ``aggregate.json`` is always written so downstream tooling still
     sees the signal.
     """
-    exp_dir = Path(path)
+    mode = resolve_explicit_mode(
+        "experiment aggregate", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
+    exp_dir = _resolve_exp_dir(path)
 
     try:
         experiment = load_experiment(exp_dir)
     except (FileNotFoundError, ValueError) as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
+        raise _experiment_load_error(exp_dir, exc) from exc
 
     if len(experiment.configs) < 1:
-        click.echo(
-            "Error: need at least 1 configuration with results to aggregate",
-            err=True,
+        raise DiagnosticError(
+            code="NO_CONFIGS",
+            message="need at least 1 configuration with results to aggregate",
+            diagnose_cmd=f"codeprobe experiment status {path}",
+            exit_code=1,
+            next_steps=[
+                (
+                    "Add a configuration",
+                    f"codeprobe experiment add-config {path} --label <label>",
+                ),
+            ],
+            detail={"experiment_dir": str(exp_dir)},
         )
-        raise SystemExit(1)
 
     # Load results for each config
     config_results: dict[str, list[dict]] = {}
@@ -759,6 +1033,17 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
     out_path = reports_dir / "aggregate.json"
     out_path.write_text(json.dumps(aggregate, indent=2) + "\n", encoding="utf-8")
+
+    if emit_json:
+        # Embed the exact payload written to reports/aggregate.json so
+        # stdout carries it — agents don't need a second read round-trip.
+        # bias_warnings ride inside the payload, so nothing is lost by
+        # skipping the pretty warning panel.
+        emit_envelope(
+            command="experiment aggregate",
+            data={"aggregate": aggregate, "report_path": str(out_path)},
+        )
+        return
 
     # Print bias warnings prominently before the table so users see the
     # caveat in the same eyepath as the numbers. Severity-split (codeprobe-

@@ -77,18 +77,26 @@ Suite written to /path/to/repo/.codeprobe/suite.toml
 Probes are fast exact-match tasks (about 30s each) that test code navigation and comprehension. They need no git history at all.
 
 ```bash
-codeprobe probe /path/to/repo -n 10 -l python -s 42 -o /path/to/repo/probes --emit-tasks
+codeprobe probe /path/to/repo -n 10 -l python -s 42 --emit-tasks
 ```
+
+**Expected output:**
+
+```
+Created 10 probe tasks in /path/to/repo/.codeprobe/tasks
+```
+
+With `--emit-tasks`, probes are written to `.codeprobe/tasks/` — the directory `codeprobe run` discovers — and their task ids are recorded in the experiment (a default experiment is created if none exists). If you pass an explicit `-o <dir>`, `run` will not find the tasks unless you also point the experiment's `tasks_dir` at that directory.
 
 Flags:
 
-| Flag           | Purpose                                    |
-| -------------- | ------------------------------------------ |
-| `-n 10`        | Number of probes to generate               |
-| `-l python`    | Language to target                         |
-| `-s 42`        | Random seed for reproducibility            |
-| `-o <dir>`     | Output directory                           |
-| `--emit-tasks` | Write probes as task directories for `run` |
+| Flag           | Purpose                                                          |
+| -------------- | ---------------------------------------------------------------- |
+| `-n 10`        | Number of probes to generate                                     |
+| `-l python`    | Language to target                                               |
+| `-s 42`        | Random seed for reproducibility                                  |
+| `-o <dir>`     | Output directory (default with `--emit-tasks`: `.codeprobe/tasks/`) |
+| `--emit-tasks` | Write probes as task directories for `run`                       |
 
 Probe types generated: `find-function`, `count-callers`, `return-type`, `module-dependency`.
 
@@ -170,10 +178,10 @@ codeprobe interpret /path/to/repo
 codeprobe assess /path/to/repo
 
 # 2. Generate probes as task directories
-codeprobe probe /path/to/repo -n 10 -l python -s 42 -o /path/to/repo/probes --emit-tasks
+codeprobe probe /path/to/repo -n 10 -l python -s 42 --emit-tasks
 
 # 3. Validate
-codeprobe validate /path/to/repo/probes/<task-id>
+codeprobe validate /path/to/repo/.codeprobe/tasks/<task-id>
 
 # 4. Run agents
 codeprobe run /path/to/repo --agent claude --max-cost-usd 2.00

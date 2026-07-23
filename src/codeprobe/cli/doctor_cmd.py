@@ -55,6 +55,45 @@ def _check_env_key(key: str, fix: str, *, warn_only: bool = False) -> CheckResul
     )
 
 
+def _check_github_access() -> CheckResult:
+    """Advisory GitHub-auth check: GITHUB_TOKEN or an authenticated gh CLI.
+
+    Doctor is environment-readiness, not per-feature gating. GitHub is one
+    mining source among several (local paths are first-class), so missing
+    GitHub auth is always ``warn_only`` — rendered WARN, never exit 2.
+    GitHub-requiring flows (e.g. mine's GitHub source path) fail loud at
+    their own boundary.
+    """
+    fix = "Set GITHUB_TOKEN or run gh auth login. Only needed for mining GitHub PRs."
+    if len(os.environ.get("GITHUB_TOKEN", "")) > 0:
+        return CheckResult(
+            name="GitHub auth",
+            passed=True,
+            detail="GITHUB_TOKEN set",
+            fix=fix,
+            warn_only=True,
+        )
+    gh_ok = False
+    if shutil.which("gh") is not None:
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            gh_ok = result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            gh_ok = False
+    return CheckResult(
+        name="GitHub auth",
+        passed=gh_ok,
+        detail="gh auth ok (no GITHUB_TOKEN)" if gh_ok else "no GitHub auth",
+        fix=fix,
+        warn_only=True,
+    )
+
+
 def _check_git_repo() -> CheckResult:
     try:
         result = subprocess.run(
@@ -142,10 +181,10 @@ def run_checks() -> list[CheckResult]:
             "Set OPENAI_API_KEY, or sign in with the Codex CLI.",
             warn_only=codex.passed,
         ),
-        _check_env_key(
-            "GITHUB_TOKEN",
-            "Set GITHUB_TOKEN in your environment. See https://github.com/settings/tokens",
-        ),
+        # GitHub is optional (mining matrix treats local paths as
+        # first-class), so this check is always advisory — see
+        # _check_github_access.
+        _check_github_access(),
         _check_git_repo(),
         _check_python_version(),
         _check_user_home_skills(),
@@ -180,7 +219,7 @@ def _build_compact_envelope(results: list[CheckResult]) -> dict[str, object]:
     """Build a ≤2 KB JSON envelope for SKILL.md preflight substitution."""
     by_name = {r.name: r for r in results}
     gh_auth_ok = by_name.get(
-        "GITHUB_TOKEN", CheckResult("", False, "", "")
+        "GitHub auth", CheckResult("", False, "", "")
     ).passed
     sourcegraph_token_present = any(
         os.environ.get(k) for k in (

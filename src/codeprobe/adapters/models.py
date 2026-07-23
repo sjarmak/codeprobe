@@ -128,6 +128,8 @@ def validate_model(agent: str, token: str | None) -> None:
         return
     ms = _REGISTRY.get(agent)
     if ms is None or not ms.validated:
+        # Unknown backends are rejected by the run preflight (cli/run_cmd.py
+        # UNKNOWN_BACKEND) — this function only validates model tokens.
         return
     if ms.is_known(token):
         return

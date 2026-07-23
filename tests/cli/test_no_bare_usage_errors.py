@@ -62,54 +62,30 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # scope (all arms), all merged on top of f7rl.24/.27 → 1209.
         # codeprobe-f7rl.32: interpret --format help expanded (html writes
         # the report file in every output mode): +10 → 1219.
-        ("src/codeprobe/cli/__init__.py", 1219),
+        # codeprobe-f7rl.15: the __init__.py:1151 UsageError (experiment init
+        # --name check) migrated to a typed error, so this entry came off
+        # entirely — __init__.py has zero bare-usage violations now.
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
         ("src/codeprobe/cli/auth_cmd.py", 41),
-        # codeprobe-9jxx: all entries shifted +1 by the new
-        # `from codeprobe.analysis.stats import is_quota_casualty` import at
-        # the top of the module (quota-exclusion in the headline mean).
-        # codeprobe-77z: lines shifted +1 by the is_infra_failure import
-        # (infra-failure count surfaced on the experiment.json summary).
-        # codeprobe-f7rl.27: +2 by the quarantine_message and registry
-        # imports at the top of the module.
-        ("src/codeprobe/cli/experiment_cmd.py", 58),
-        ("src/codeprobe/cli/experiment_cmd.py", 70),
-        ("src/codeprobe/cli/experiment_cmd.py", 77),
-        ("src/codeprobe/cli/experiment_cmd.py", 92),
-        ("src/codeprobe/cli/experiment_cmd.py", 103),
-        # jf28: lines shifted +1 (signature gained `hide_local_source`)
-        # for entries above the ExperimentConfig() call; +2 for entries
-        # below (the ExperimentConfig() call also grew one line).
-        # codeprobe-2nw2.4: experiment_add_config docstring grew by 6
-        # lines when `hide_local_source` was widened from bool to a
-        # typed Literal["off","hide","scaffold"]; all entries shifted +6.
-        # codeprobe-f7rl.27: +18 for entries below the add-config
-        # quarantine refusal block (+2 imports, +16 block; the block's
-        # own SystemExit(1) carries a lint-exempt pragma, not an entry).
-        # codeprobe-f7rl.7: entries below experiment_status shifted +9
-        # (repeat-aware completion counts distinct task_ids and appends the
-        # trial count to the progress column).
-        ("src/codeprobe/cli/experiment_cmd.py", 185),
-        ("src/codeprobe/cli/experiment_cmd.py", 194),
-        ("src/codeprobe/cli/experiment_cmd.py", 210),
-        ("src/codeprobe/cli/experiment_cmd.py", 239),
-        ("src/codeprobe/cli/experiment_cmd.py", 283),
-        ("src/codeprobe/cli/experiment_cmd.py", 353),
-        ("src/codeprobe/cli/experiment_cmd.py", 370),
-        ("src/codeprobe/cli/experiment_cmd.py", 461),
-        ("src/codeprobe/cli/experiment_cmd.py", 468),
-        ("src/codeprobe/cli/init_cmd.py", 50),
-        ("src/codeprobe/cli/probe_cmd.py", 100),
+        # codeprobe-f7rl.15: every experiment_cmd.py free-text SystemExit
+        # path (experiment_init, experiment_add_config's non-quarantine
+        # exits) migrated to typed PrescriptiveError/DiagnosticError, so
+        # their entries come off; only the quarantine refusal's SystemExit
+        # remains and it already carries its own `# lint-exempt` pragma.
+        # codeprobe-f7rl.18: the probe_cmd.py no-symbols SystemExit(1)
+        # migrated to DiagnosticError NO_PROBE_SYMBOLS, so its entry came off.
+        # codeprobe-f7rl.12: init_cmd.py shifted (non-TTY default
+        # experiment creation replaces the no-op). Real line number below,
+        # confirmed by running the lint test against the merged file.
+        ("src/codeprobe/cli/init_cmd.py", 56),
         ("src/codeprobe/cli/ratings_cmd.py", 74),
         ("src/codeprobe/cli/ratings_cmd.py", 118),
         ("src/codeprobe/cli/scaffold_cmd.py", 74),
         ("src/codeprobe/cli/scaffold_cmd.py", 100),
         ("src/codeprobe/cli/scaffold_cmd.py", 123),
         ("src/codeprobe/cli/trace_cmd.py", 36),
-        ("src/codeprobe/cli/validate_cmd.py", 912),
-        ("src/codeprobe/cli/validate_cmd.py", 926),
     }
 )
 

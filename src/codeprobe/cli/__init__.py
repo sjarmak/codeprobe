@@ -1188,12 +1188,13 @@ def interpret(
     )
 
 
-@main.group()
+@main.group(cls=CodeprobeGroup)
 def experiment() -> None:
     """Manage eval experiments — init, configure, validate, and aggregate."""
 
 
 @experiment.command("init")
+@add_json_flags
 @click.argument("path", default=".", type=click.Path(exists=True))
 @click.option("--name", default=None, help="Experiment name (used as directory name).")
 @click.option("--description", default="", help="One-line experiment description.")
@@ -1211,13 +1212,30 @@ def init_experiment(
     name: str | None,
     description: str,
     non_interactive: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Create a new experiment directory."""
+    from codeprobe.cli._output_helpers import resolve_explicit_mode
+    from codeprobe.cli.errors import PrescriptiveError
     from codeprobe.cli.experiment_cmd import experiment_init
 
+    # Resolve (and stash) the output mode before any raise so a --json
+    # caller gets the missing-name error as an envelope, not a banner.
+    resolve_explicit_mode(
+        "experiment init", json_flag, no_json_flag, json_lines_flag
+    )
+
     if not non_interactive and not name:
-        raise click.UsageError(
-            "--name is required (or pass --non-interactive to use the default)."
+        raise PrescriptiveError(
+            code="MISSING_EXPERIMENT_NAME",
+            message=(
+                "--name is required (or pass --non-interactive to use "
+                "the default)."
+            ),
+            next_try_flag="--non-interactive",
+            next_try_value="",
         )
 
     experiment_init(
@@ -1225,11 +1243,15 @@ def init_experiment(
         name=name or "default",
         description=description,
         non_interactive=non_interactive,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
 # Use a hyphenated command name to match the reference CLI
 @experiment.command("add-config")
+@add_json_flags
 @click.argument("path", type=click.Path(exists=True))
 @click.option("--label", required=True, help="Human-readable config label.")
 @click.option("--agent", default="claude", help=f"Agent backend ({_AGENT_NAMES}).")
@@ -1313,6 +1335,9 @@ def add_config(
     disallowed_tools: str | None,
     mcp_mode: str,
     hide_local_source: str,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
 ) -> None:
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
@@ -1337,10 +1362,14 @@ def add_config(
         disallowed_tools=_parse_tools(disallowed_tools),
         mcp_mode=mcp_mode,
         hide_local_source=hide_local_source,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
     )
 
 
 @experiment.command("validate")
+@add_json_flags
 @click.argument("path", type=click.Path(exists=True))
 @click.option(
     "--allow-low-confidence",
@@ -1352,23 +1381,47 @@ def add_config(
         "quarantined and validate exits non-zero."
     ),
 )
-def validate_experiment(path: str, allow_low_confidence: bool) -> None:
+def validate_experiment(
+    path: str,
+    allow_low_confidence: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Validate experiment structure and readiness."""
     from codeprobe.cli.experiment_cmd import experiment_validate
 
-    experiment_validate(path, allow_low_confidence=allow_low_confidence)
+    experiment_validate(
+        path,
+        allow_low_confidence=allow_low_confidence,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
 
 
 @experiment.command("status")
+@add_json_flags
 @click.argument("path", type=click.Path(exists=True))
-def status_experiment(path: str) -> None:
+def status_experiment(
+    path: str,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Report completion status per configuration."""
     from codeprobe.cli.experiment_cmd import experiment_status
 
-    experiment_status(path)
+    experiment_status(
+        path,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
 
 
 @experiment.command("aggregate")
+@add_json_flags
 @click.argument("path", type=click.Path(exists=True))
 @click.option(
     "--no-warn",
@@ -1379,11 +1432,23 @@ def status_experiment(path: str) -> None:
         "The 'bias_warnings' array in aggregate.json is always written."
     ),
 )
-def aggregate_experiment(path: str, no_warn: bool) -> None:
+def aggregate_experiment(
+    path: str,
+    no_warn: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
     """Aggregate results across configurations into a comparison report."""
     from codeprobe.cli.experiment_cmd import experiment_aggregate
 
-    experiment_aggregate(path, no_warn=no_warn)
+    experiment_aggregate(
+        path,
+        no_warn=no_warn,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
 
 
 @main.command()

@@ -419,10 +419,34 @@ def test_resolve_experiment_config_single_match(tmp_path: Path) -> None:
 
 
 def test_resolve_experiment_config_zero_matches(tmp_path: Path) -> None:
-    with pytest.raises(PrescriptiveError) as exc_info:
+    from codeprobe.cli.errors import DiagnosticError as CliDiagnosticError
+
+    with pytest.raises(CliDiagnosticError) as exc_info:
+        resolve_experiment_config(tmp_path)
+    assert exc_info.value.code == "NO_EXPERIMENT"
+    assert exc_info.value.terminal is True
+    assert exc_info.value.diagnose_cmd == (
+        f"codeprobe experiment init {tmp_path.resolve()} --non-interactive"
+    )
+
+
+def test_resolve_experiment_config_multiple_matches(tmp_path: Path) -> None:
+    from codeprobe.cli.errors import PrescriptiveError as CliPrescriptiveError
+
+    codeprobe_dir = tmp_path / ".codeprobe"
+    codeprobe_dir.mkdir()
+    (codeprobe_dir / "experiment.json").write_text("{}")
+    named = codeprobe_dir / "exp-b"
+    named.mkdir()
+    (named / "experiment.json").write_text("{}")
+
+    with pytest.raises(CliPrescriptiveError) as exc_info:
         resolve_experiment_config(tmp_path)
     assert exc_info.value.code == "AMBIGUOUS_EXPERIMENT"
     assert exc_info.value.next_try_flag == "--config"
+    assert exc_info.value.next_try_value == str(
+        codeprobe_dir / "experiment.json"
+    )
 
 
 def test_resolve_suite_single_match(tmp_path: Path) -> None:

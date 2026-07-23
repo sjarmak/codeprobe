@@ -448,6 +448,93 @@ class TestQuarantinedAdapterRefusal:
         assert calls == []
 
 
+class TestPerArmBackendPreflight:
+    """Every arm's backend must resolve at preflight (codeprobe-f7rl.25).
+
+    A typo'd agent in ANY config previously survived until _run_config and
+    crashed with a raw KeyError after another arm had already spent money.
+    """
+
+    @staticmethod
+    def _setup_two_arm_experiment(tmp_path: Path) -> Path:
+        import json
+
+        # The typo'd-backend refusal must fire even before the dirty-checkout
+        # gate sees a real repo (codeprobe-f7rl.1) — a clean commit here
+        # proves this is an UNKNOWN_BACKEND refusal, not NOT_A_GIT_REPO.
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(tmp_path)], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "user.email", "t@t.test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True
+        )
+        (tmp_path / ".gitkeep").write_text("")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "init"], check=True
+        )
+
+        exp_dir = tmp_path / "experiment"
+        exp_dir.mkdir()
+        _make_task_dir(exp_dir / "tasks", "task-001")
+        experiment_json = {
+            "name": "test-exp",
+            "description": "test",
+            "tasks_dir": "tasks",
+            "task_ids": ["task-001"],
+            "configs": [
+                {"label": "baseline", "agent": "claude"},
+                {"label": "variant", "agent": "claud"},
+            ],
+        }
+        (exp_dir / "experiment.json").write_text(json.dumps(experiment_json))
+        return exp_dir
+
+    def test_typod_arm_backend_fails_before_any_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """agent='claud' in one arm → UNKNOWN_BACKEND naming the arm, zero runs."""
+        import codeprobe.cli.run_cmd as run_cmd_mod
+        from codeprobe.cli.errors import PrescriptiveError
+        from tests.conftest import FakeAdapter
+
+        exp_dir = self._setup_two_arm_experiment(tmp_path)
+        adapter = FakeAdapter()
+
+        def _resolve(name: str) -> FakeAdapter:
+            if name == "claude":
+                return adapter
+            raise KeyError(
+                f"Unknown agent adapter: {name!r}. "
+                "Available: claude, codex, copilot"
+            )
+
+        monkeypatch.setattr(run_cmd_mod, "resolve", _resolve)
+
+        with pytest.raises(PrescriptiveError) as excinfo:
+            run_cmd_mod.run_eval(
+                str(exp_dir),
+                agent="claude",
+                quiet=True,
+                force_plain=True,
+            )
+
+        err = excinfo.value
+        assert err.code == "UNKNOWN_BACKEND"
+        assert err.terminal is True
+        assert "'variant'" in err.message
+        assert "'claud'" in err.message
+        assert err.detail["config_label"] == "variant"
+        assert err.detail["requested"] == "claud"
+        assert adapter.run_calls == [], (
+            "no adapter may dispatch before every arm's backend resolves"
+        )
+
+
 class TestCliRepeatsPassthrough:
     """Test that --repeats is passed through to execute_config."""
 

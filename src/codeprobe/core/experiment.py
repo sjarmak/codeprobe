@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import asdict, fields
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 from codeprobe.analysis.stats import is_quota_casualty, is_scorable_run
@@ -63,6 +63,85 @@ def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
 
     save_experiment(exp_dir, experiment)
     return exp_dir
+
+
+def find_experiment_candidates(repo_path: Path) -> list[Path]:
+    """Return experiment directories discoverable under ``<repo>/.codeprobe``.
+
+    Mirrors the run/interpret resolution order: a direct
+    ``.codeprobe/experiment.json`` (the canonical location written by
+    ``experiment init --non-interactive``) wins outright; otherwise every
+    named subdirectory holding an ``experiment.json`` is a candidate,
+    sorted for deterministic output.
+    """
+    codeprobe_dir = Path(repo_path) / ".codeprobe"
+    if (codeprobe_dir / "experiment.json").is_file():
+        return [codeprobe_dir]
+    if not codeprobe_dir.is_dir():
+        return []
+    return sorted(
+        child
+        for child in codeprobe_dir.iterdir()
+        if child.is_dir() and (child / "experiment.json").is_file()
+    )
+
+
+def ensure_default_experiment(
+    repo_path: Path,
+    *,
+    description: str = "Auto-created by codeprobe",
+) -> Path:
+    """Return the repo's default experiment directory, creating it if absent.
+
+    Resolution follows :func:`find_experiment_candidates`. When no experiment
+    exists, a minimal ``default`` experiment is materialized at
+    ``<repo>/.codeprobe/`` in the exact shape produced by
+    ``codeprobe experiment init --non-interactive`` (experiment.json plus an
+    empty ``tasks/`` directory, with ``.codeprobe/`` git-excluded).
+
+    Raises ``ValueError`` when multiple named experiments exist — callers
+    decide whether ambiguity is fatal (init) or a no-op (mine); this helper
+    never guesses between experiments.
+    """
+    repo = Path(repo_path)
+    codeprobe_dir = repo / ".codeprobe"
+    candidates = find_experiment_candidates(repo)
+    if len(candidates) > 1:
+        raise ValueError(
+            f"Multiple experiments found under {codeprobe_dir}: "
+            + ", ".join(c.name for c in candidates)
+        )
+    if candidates:
+        return candidates[0]
+
+    from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
+
+    codeprobe_dir.mkdir(parents=True, exist_ok=True)
+    ensure_codeprobe_excluded(repo)
+    save_experiment(
+        codeprobe_dir,
+        Experiment(name="default", description=description),
+    )
+    (codeprobe_dir / "tasks").mkdir(exist_ok=True)
+    return codeprobe_dir
+
+
+def record_task_ids(exp_dir: Path, task_ids: Sequence[str]) -> Experiment:
+    """Union *task_ids* into the experiment's ``task_ids`` and persist it.
+
+    ``run`` scopes task discovery to ``experiment.task_ids`` whenever the
+    tuple is non-empty, so any command that writes task directories must
+    record their ids here or the tasks are silently excluded. Union (not
+    replace) so probe output coexists with previously mined tasks.
+
+    Returns the updated (immutable) Experiment. Raises FileNotFoundError
+    when *exp_dir* holds no experiment.json.
+    """
+    experiment = load_experiment(exp_dir)
+    merged = tuple(sorted(set(experiment.task_ids) | set(task_ids)))
+    updated = replace(experiment, task_ids=merged)
+    save_experiment(exp_dir, updated)
+    return updated
 
 
 def save_experiment(exp_dir: Path, experiment: Experiment) -> None:

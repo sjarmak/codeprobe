@@ -146,19 +146,33 @@ def run_interpret(
         try:
             resolved, _ = resolve_experiment_config(exp_dir)
             exp_dir = resolved.parent
-        except PrescriptiveError:
+        except (DiagnosticError, PrescriptiveError):
+            # NO_EXPERIMENT / AMBIGUOUS_EXPERIMENT from the resolver — let
+            # the classic loader below try (it handles explicit experiment
+            # dirs fine) and raise the typed error only when it fails too.
             pass
 
     try:
         experiment = load_experiment(exp_dir)
-    except (FileNotFoundError, ValueError):
+    except (FileNotFoundError, ValueError) as exc:
         # Try .codeprobe/ directory (experiment init puts it there)
         codeprobe_dir = exp_dir / ".codeprobe"
         if codeprobe_dir.is_dir() and (codeprobe_dir / "experiment.json").is_file():
             exp_dir = codeprobe_dir
             experiment = load_experiment(exp_dir)
         else:
-            raise
+            # One code for one condition across run/interpret/experiment:
+            # a missing experiment is NO_EXPERIMENT, never a raw traceback
+            # (codeprobe-f7rl.13).
+            init_cmd = f"codeprobe experiment init {path} --non-interactive"
+            raise DiagnosticError(
+                code="NO_EXPERIMENT",
+                message=f"No experiment found under {codeprobe_dir}.",
+                diagnose_cmd=init_cmd,
+                terminal=True,
+                next_steps=[("Initialize", init_cmd)],
+                detail={"path": str(path), "cause": str(exc)},
+            ) from exc
 
     all_results = []
     for config in experiment.configs:
