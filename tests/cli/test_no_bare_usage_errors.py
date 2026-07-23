@@ -59,9 +59,9 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # disclosure, codeprobe-f7rl.3: --uncontained option block + run()
         # param + containment docstring disclosure + pass-through, and
         # codeprobe-f7rl.33: --max-cost-usd help text now states experiment
-        # scope (all arms), all merged on top of f7rl.24/.27: line
-        # renumbered below to match the merged file.
-        ("src/codeprobe/cli/__init__.py", 1167),
+        # scope (all arms), all merged on top of f7rl.24/.27: net +42 lines
+        # over the 1167 baseline → 1209.
+        ("src/codeprobe/cli/__init__.py", 1209),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
