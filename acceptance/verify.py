@@ -284,6 +284,7 @@ class Verifier:
             "iteration": iteration,
             "workspace": str(workspace),
             "criteria_source": str(self.criteria_path),
+            "eval_mode": self.eval_mode,
             "pass_count": pass_count,
             "fail_count": fail_count,
             "skip_count": skip_count,

@@ -6,12 +6,35 @@ How a codeprobe release actually ships, and what gates it.
 
 Before tagging, confirm all three:
 
-1. **Acceptance verdicts are green.** `ReleaseGate.check_ready(verdict_paths)`
-   (`acceptance/release.py`) returns `True` only when the last two
-   `verdict.json` files from the acceptance loop are both `status ==
-   "EVALUATED"` and `all_pass is True`. This check is local-only — CI has no
-   view of acceptance-loop verdict history — so it runs as part of the
-   release skill, before anything is tagged.
+1. **Acceptance verdicts are green.** Produce the verdict history by running
+   the acceptance loop, then check it:
+
+   ```bash
+   uv run python scripts/acceptance_loop.py --eval-mode full --iterations 2
+   uv run python scripts/pre_tag_check.py
+   ```
+
+   `scripts/acceptance_loop.py` compiles the criteria manifest into Test
+   Agent actions, executes them in a fresh workspace, verifies, and writes
+   `verdict-NNNN.json` files into `acceptance/verdict-history/` (gitignored,
+   durable — to reset the loop, delete that whole directory including
+   `converge.db`). `scripts/pre_tag_check.py` runs
+   `ReleaseGate.check_ready(verdict_paths)` (`acceptance/release.py`) over
+   the two newest verdicts — both must be `status == "EVALUATED"` with
+   `all_pass is True` — plus preconditions 2 and 3 below, and exits nonzero
+   with the fixing command when anything is not ready. This check is
+   local-only — CI has no view of acceptance-loop verdict history — so it
+   runs before anything is tagged.
+
+   **Mode caveat (binding for 0.13.0 and later):** a default-mode green is
+   NOT release evidence for the mode-gated tiers. In `--eval-mode default`,
+   every criterion carrying `eval_mode_required = "full"` is excluded from
+   the evaluated denominator, so the behavioral and statistical tiers can
+   report 100% while evaluating little or nothing. At least one of the two
+   verdicts feeding the release decision must come from
+   `--eval-mode full` (real agent runs, real spend) before a tag is
+   created; `pre_tag_check.py` enforces this mechanically via the
+   `eval_mode` field recorded in each verdict.
 2. **`CHANGELOG.md` has an entry for the version being released.** A `##
    <version>` heading; see the `Unreleased` section for the running list of
    changes since the last release. `scripts/check_release_artifacts.py`

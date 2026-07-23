@@ -167,3 +167,35 @@ expected = true
     assert result.result == RESULT_SKIP
     assert "eval_mode" in result.evidence
     assert "full" in result.evidence
+
+
+def test_verdict_records_eval_mode(tmp_path: Path) -> None:
+    """The verdict must record which eval mode produced it.
+
+    scripts/pre_tag_check.py reads this field to enforce that at least one
+    of the release-feeding verdicts came from eval_mode='full' — a
+    default-mode green is not release evidence for mode-gated tiers.
+    """
+    toml = """
+[[criterion]]
+id = "STRUCT-001"
+description = "always evaluable"
+tier = "structural"
+check_type = "dataclass_has_fields"
+severity = "high"
+prd_source = "docs/prd/x.md"
+[criterion.params]
+module = "acceptance.loader"
+symbol = "Criterion"
+required_fields = ["id"]
+"""
+    manifest = _write_minimal_manifest(tmp_path, toml)
+    workspace = _make_workspace(tmp_path)
+
+    verdict_default = Verifier(manifest, project_root=tmp_path).run(workspace)
+    assert verdict_default["eval_mode"] is None
+
+    verdict_full = Verifier(manifest, project_root=tmp_path, eval_mode="full").run(
+        workspace
+    )
+    assert verdict_full["eval_mode"] == "full"
