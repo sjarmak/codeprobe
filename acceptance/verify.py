@@ -6,7 +6,11 @@ Test Agent workspace directory and produces a ``verdict.json`` summary.
 The verifier implements a three-tier evaluation model:
 
 - **structural** — Python introspection and source-file inspection. These
-  checks run without a workspace and are effectively instant.
+  checks run without a workspace and are effectively instant. The two
+  import-based check types (``import_equals``, ``dataclass_has_fields``)
+  import in the verifier's own interpreter by default; passing
+  ``Verifier(..., python_interpreter=...)`` makes them introspect via a
+  subprocess in that interpreter instead — see :class:`Verifier`.
 - **behavioral** — CLI commands and output inspection. These require a
   workspace directory where captured command outputs live.
 - **statistical** — aggregate assertions over workspace artifacts
@@ -51,6 +55,7 @@ import dataclasses
 import importlib
 import json
 import re
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -84,6 +89,66 @@ STATUS_INCOMPLETE: str = "INCOMPLETE"
 RESULT_PASS: str = "pass"
 RESULT_FAIL: str = "fail"
 RESULT_SKIP: str = "skip"
+
+#: Python source executed via ``<interpreter> -c <script> <module> <symbol>``
+#: to introspect a module/symbol inside a *different* interpreter than the
+#: one running the verifier (see ``Verifier.python_interpreter``). Emits a
+#: single JSON line to stdout and always exits 0 for handled outcomes
+#: (import error, missing symbol) so the parent can tell "expected
+#: introspection outcome" apart from a genuine subprocess crash.
+_SUBPROCESS_INTROSPECT_SCRIPT: str = """
+import dataclasses
+import importlib
+import json
+import sys
+
+module_name, symbol = sys.argv[1], sys.argv[2]
+try:
+    module = importlib.import_module(module_name)
+except ImportError as exc:
+    print(json.dumps({"status": "import_error", "detail": str(exc)}))
+    sys.exit(0)
+if not hasattr(module, symbol):
+    print(json.dumps({"status": "missing_symbol"}))
+    sys.exit(0)
+obj = getattr(module, symbol)
+try:
+    field_names = sorted(f.name for f in dataclasses.fields(obj))
+except TypeError:
+    field_names = sorted(getattr(obj, "__annotations__", {}) or {})
+try:
+    json.dumps(obj)
+    value, value_serializable = obj, True
+except TypeError:
+    value, value_serializable = repr(obj), False
+print(json.dumps({
+    "status": "ok",
+    "fields": field_names,
+    "value": value,
+    "value_serializable": value_serializable,
+}))
+"""
+
+
+def _canonicalize_for_import_equals(value: Any) -> Any:
+    """Coerce ``value`` to the shape it would have after a JSON round-trip.
+
+    Subprocess-mode ``import_equals`` (see :meth:`Verifier._introspect_via_subprocess`)
+    necessarily serializes the introspected value through ``json.dumps`` /
+    ``json.loads`` to cross the process boundary — this turns tuples into
+    lists and stringifies non-string dict keys. Without this normalization,
+    in-process mode compares the live Python object directly, so the same
+    ``import_equals`` criterion could pass or fail depending solely on
+    whether ``python_interpreter`` happens to be set (e.g. a tuple-valued
+    constant checked against a TOML array). Applying the same coercion here
+    keeps the two modes semantically equivalent, matching what the module
+    docstring promises.
+    """
+    if isinstance(value, (tuple, list)):
+        return [_canonicalize_for_import_equals(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _canonicalize_for_import_equals(v) for k, v in value.items()}
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +186,15 @@ class Verifier:
         project_root: Optional path to the codeprobe project root. Used by
             structural checks that read source files (e.g. ``regex_present``)
             without a workspace. Defaults to the parent of the criteria file.
+        python_interpreter: Optional path to a Python interpreter (e.g. a
+            staged release venv's ``bin/python``). When set, the
+            ``import_equals`` and ``dataclass_has_fields`` structural
+            handlers introspect the target module/symbol by running a
+            subprocess in *that* interpreter instead of importing in the
+            verifier's own (caller) interpreter — so the check reflects
+            what's actually installed in the staged environment. When
+            ``None`` (the default), behavior is unchanged: imports happen
+            in-process, in the caller's interpreter.
     """
 
     def __init__(
@@ -128,10 +202,14 @@ class Verifier:
         criteria_path: Path | str,
         project_root: Path | str | None = None,
         eval_mode: str | None = None,
+        python_interpreter: Path | str | None = None,
     ) -> None:
         self.criteria_path = Path(criteria_path).resolve()
         self.criteria: list[Criterion] = load_criteria(self.criteria_path)
         self.eval_mode: str | None = eval_mode
+        self.python_interpreter: Path | None = (
+            Path(python_interpreter) if python_interpreter is not None else None
+        )
         if project_root is not None:
             self.project_root = Path(project_root).resolve()
         else:
@@ -395,6 +473,32 @@ class Verifier:
         expected = params.get("expected")
         if not module_name or not symbol:
             return self._skip(criterion, "missing module/symbol params")
+
+        if self.python_interpreter is not None:
+            early, payload = self._introspect_via_subprocess(
+                criterion, module_name, symbol
+            )
+            if early is not None:
+                return early
+            assert payload is not None
+            if not payload["value_serializable"]:
+                return self._fail(
+                    criterion,
+                    f"{module_name}.{symbol} value is not JSON-serializable "
+                    "for staged-interpreter introspection",
+                )
+            actual = payload["value"]
+            if actual == expected:
+                return self._pass(
+                    criterion,
+                    f"{module_name}.{symbol} == {expected!r} (staged interpreter)",
+                )
+            return self._fail(
+                criterion,
+                f"{module_name}.{symbol} == {actual!r}, expected {expected!r} "
+                "(staged interpreter)",
+            )
+
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
@@ -402,7 +506,7 @@ class Verifier:
         if not hasattr(module, symbol):
             return self._fail(criterion, f"{module_name}.{symbol} not defined")
         actual = getattr(module, symbol)
-        if actual == expected:
+        if _canonicalize_for_import_equals(actual) == expected:
             return self._pass(criterion, f"{module_name}.{symbol} == {expected!r}")
         return self._fail(
             criterion,
@@ -418,6 +522,27 @@ class Verifier:
         required = params.get("required_fields") or []
         if not module_name or not symbol or not required:
             return self._skip(criterion, "missing module/symbol/required_fields params")
+
+        if self.python_interpreter is not None:
+            early, payload = self._introspect_via_subprocess(
+                criterion, module_name, symbol
+            )
+            if early is not None:
+                return early
+            assert payload is not None
+            present = set(payload["fields"])
+            missing = [f for f in required if f not in present]
+            if missing:
+                return self._fail(
+                    criterion,
+                    f"{module_name}.{symbol} missing fields: {missing} "
+                    "(staged interpreter)",
+                )
+            return self._pass(
+                criterion,
+                f"{module_name}.{symbol} has all required fields (staged interpreter)",
+            )
+
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
@@ -443,6 +568,120 @@ class Verifier:
             criterion,
             f"{module_name}.{symbol} has all required fields",
         )
+
+    def _introspect_via_subprocess(
+        self, criterion: Criterion, module_name: str, symbol: str
+    ) -> tuple[CheckResult | None, dict[str, Any] | None]:
+        """Introspect ``module_name.symbol`` inside :attr:`python_interpreter`.
+
+        Returns ``(result, None)`` when the subprocess path itself resolves
+        the criterion (crash, timeout, unparseable output, import error, or
+        missing symbol all map to a terminal skip/fail here) — the caller
+        should return ``result`` directly. Returns ``(None, payload)`` with
+        the parsed ``status: "ok"`` payload when the caller should continue
+        with its own pass/fail comparison.
+
+        Runs with ``-I`` (isolated mode) so the child genuinely resolves
+        ``module_name`` against :attr:`python_interpreter`'s own venv
+        site-packages: without it, the child inherits the caller's
+        ``PYTHONPATH`` (which is prepended ahead of venv site-packages) and
+        ``-c`` prepends the caller's cwd to ``sys.path``, so a module on
+        either could shadow the staged venv's install and produce a false
+        pass. ``-I`` does not affect resolution of the venv's own
+        site-packages, which lives under the interpreter's prefix.
+        """
+        assert self.python_interpreter is not None
+        cmd = [
+            str(self.python_interpreter),
+            "-I",  # isolated mode: ignore PYTHONPATH/cwd/user site so this
+            # genuinely probes python_interpreter's own venv site-packages,
+            # not whatever the caller's environment happens to leak in.
+            "-c",
+            _SUBPROCESS_INTROSPECT_SCRIPT,
+            module_name,
+            symbol,
+        ]
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed script, trusted args
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=DEFAULT_COMMAND_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return (
+                self._skip(
+                    criterion,
+                    "staged-interpreter introspection timed out after "
+                    f"{DEFAULT_COMMAND_TIMEOUT_S}s",
+                ),
+                None,
+            )
+        except OSError as exc:
+            return (
+                self._skip(
+                    criterion,
+                    f"staged-interpreter introspection failed to start: {exc}",
+                ),
+                None,
+            )
+        if completed.returncode != 0:
+            return (
+                self._skip(
+                    criterion,
+                    f"staged-interpreter introspection exited "
+                    f"{completed.returncode}: {completed.stderr.strip()[:500]}",
+                ),
+                None,
+            )
+        try:
+            payload = json.loads(completed.stdout.strip() or "{}")
+        except json.JSONDecodeError:
+            return (
+                self._skip(
+                    criterion,
+                    "staged-interpreter introspection emitted unparseable "
+                    f"output: {completed.stdout[:200]!r}",
+                ),
+                None,
+            )
+        if not isinstance(payload, dict):
+            return (
+                self._skip(
+                    criterion,
+                    "staged-interpreter introspection emitted a non-object "
+                    "JSON payload",
+                ),
+                None,
+            )
+        status = payload.get("status")
+        if status == "import_error":
+            return (
+                self._skip(
+                    criterion,
+                    f"cannot import {module_name} in staged interpreter: "
+                    f"{payload.get('detail')}",
+                ),
+                None,
+            )
+        if status == "missing_symbol":
+            return (
+                self._fail(
+                    criterion,
+                    f"{module_name}.{symbol} not defined (staged interpreter)",
+                ),
+                None,
+            )
+        if status != "ok":
+            return (
+                self._skip(
+                    criterion,
+                    f"staged-interpreter introspection returned unexpected "
+                    f"status: {status!r}",
+                ),
+                None,
+            )
+        return None, payload
 
     def _check_regex_present(
         self, criterion: Criterion, _workspace: Path

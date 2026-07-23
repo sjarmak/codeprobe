@@ -328,7 +328,7 @@ def test_build_and_stage_happy_path(
 ) -> None:
     calls = _install_fake_subprocess(gate)
     # Bypass the real structural smoke — we exercise it in its own test.
-    monkeypatch.setattr(gate, "_run_structural_smoke", lambda: True)
+    monkeypatch.setattr(gate, "_run_structural_smoke", lambda **_kw: True)
 
     result = gate.build_and_stage()
 
@@ -347,11 +347,33 @@ def test_build_and_stage_happy_path(
     assert any("--version" in j for j in joined)
 
 
+def test_build_and_stage_passes_staged_venv_python_to_smoke(
+    gate: ReleaseGate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for codeprobe-zqmr: the structural smoke must be
+    told which interpreter was just staged, not left to resolve imports in
+    whatever interpreter is running the release gate."""
+    _install_fake_subprocess(gate)
+    captured: dict[str, object] = {}
+
+    def fake_smoke(*, python_interpreter: Path | None = None) -> bool:
+        captured["python_interpreter"] = python_interpreter
+        return True
+
+    monkeypatch.setattr(gate, "_run_structural_smoke", fake_smoke)
+
+    result = gate.build_and_stage()
+
+    assert result.structural_criteria_passed is True
+    expected_venv_python = gate.stage_root / "venv" / "bin" / "python"
+    assert captured["python_interpreter"] == expected_venv_python
+
+
 def test_build_and_stage_version_mismatch(
     gate: ReleaseGate, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_subprocess(gate, version_output="codeprobe, version 9.9.9")
-    monkeypatch.setattr(gate, "_run_structural_smoke", lambda: True)
+    monkeypatch.setattr(gate, "_run_structural_smoke", lambda **_kw: True)
 
     result = gate.build_and_stage()
 
@@ -383,7 +405,7 @@ def test_build_and_stage_smoke_failure(
     gate: ReleaseGate, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _install_fake_subprocess(gate)
-    monkeypatch.setattr(gate, "_run_structural_smoke", lambda: False)
+    monkeypatch.setattr(gate, "_run_structural_smoke", lambda **_kw: False)
 
     result = gate.build_and_stage()
     assert result.built is True
@@ -442,6 +464,37 @@ def test_run_structural_smoke_with_missing_criteria(
     )
     assert not (tmp_repo / "acceptance" / "criteria.toml").exists()
     assert gate._run_structural_smoke() is False
+
+
+def test_run_structural_smoke_forwards_python_interpreter_to_verifier(
+    gate: ReleaseGate, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The staged interpreter path must reach ``Verifier`` unchanged, and
+    default to ``None`` (today's in-process behavior) when omitted."""
+    import acceptance.release as release_module
+
+    captured: dict[str, object] = {}
+    real_verifier_cls = release_module.Verifier
+
+    class RecordingVerifier(real_verifier_cls):  # type: ignore[misc, valid-type]
+        def __init__(self, **kwargs: object) -> None:
+            captured["python_interpreter"] = kwargs.get("python_interpreter")
+            super().__init__(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(release_module, "Verifier", RecordingVerifier)
+    gate.criteria_path.parent.mkdir(parents=True, exist_ok=True)
+    gate.criteria_path.write_text(
+        '[[criterion]]\nid = "X"\ndescription = "d"\ntier = "structural"\n'
+        'check_type = "regex_present"\nseverity = "low"\nprd_source = "x"\n'
+        '[criterion.params]\nfile = "pyproject.toml"\npattern = "project"\n'
+    )
+
+    gate._run_structural_smoke()
+    assert captured["python_interpreter"] is None
+
+    fake_interpreter = Path("/opt/staged/bin/python")
+    gate._run_structural_smoke(python_interpreter=fake_interpreter)
+    assert captured["python_interpreter"] == fake_interpreter
 
 
 # ---------------------------------------------------------------------------

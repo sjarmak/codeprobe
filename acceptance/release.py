@@ -11,7 +11,11 @@ Responsibilities:
 - :meth:`ReleaseGate.build_and_stage` — ``python -m build --wheel``, create a
   throw-away venv, ``pip install`` the wheel, run ``codeprobe --version``,
   assert the version matches ``pyproject.toml``, then run the first five
-  structural criteria against an empty workspace.
+  structural criteria against an empty workspace. The import-based criteria
+  among those five resolve imports inside the staged venv's interpreter (via
+  ``Verifier(..., python_interpreter=venv_python)``), so the smoke genuinely
+  exercises the fresh install rather than whatever ``codeprobe`` happens to
+  be importable in the calling process.
 - :meth:`ReleaseGate.bump_version` — increment the ``version = "X.Y.Z"``
   line in ``pyproject.toml``. Uses ``tomllib`` to read and line-level string
   replacement to write, avoiding a toml-writer dependency.
@@ -263,9 +267,12 @@ class ReleaseGate:
                 ),
             )
 
-        # Step 5: run five structural criteria against an empty workspace
+        # Step 5: run five structural criteria against an empty workspace,
+        # resolving imports inside the staged venv (not this interpreter).
         try:
-            criteria_passed = self._run_structural_smoke()
+            criteria_passed = self._run_structural_smoke(
+                python_interpreter=venv_python
+            )
         except Exception as exc:  # pragma: no cover - defensive
             return StagingResult(
                 built=True,
@@ -419,8 +426,19 @@ class ReleaseGate:
             capture_output=capture_output,
         )
 
-    def _run_structural_smoke(self) -> bool:
+    def _run_structural_smoke(self, python_interpreter: Path | None = None) -> bool:
         """Run :data:`STRUCTURAL_SMOKE_COUNT` structural criteria.
+
+        Args:
+            python_interpreter: Path to the staged venv's ``bin/python``. When
+                given, the import-based handlers (``import_equals``,
+                ``dataclass_has_fields``) introspect via a subprocess in that
+                interpreter, so the smoke reflects the freshly-installed
+                wheel rather than whatever ``codeprobe`` happens to be
+                importable in the caller's interpreter. ``None`` preserves
+                the historical in-process behavior (used by callers that
+                just want a self-contained structural sanity check, not a
+                fresh-install smoke).
 
         Returns ``True`` iff every selected criterion evaluated to pass. A
         single fail or skip returns ``False`` — the smoke test is
@@ -430,7 +448,9 @@ class ReleaseGate:
         if not self.criteria_path.is_file():
             return False
         verifier = Verifier(
-            criteria_path=self.criteria_path, project_root=self.repo_root
+            criteria_path=self.criteria_path,
+            project_root=self.repo_root,
+            python_interpreter=python_interpreter,
         )
         structural = filter_by_tier(verifier.criteria, "structural")
         selected = structural[:STRUCTURAL_SMOKE_COUNT]
