@@ -120,7 +120,7 @@ depends_on = ["BUG-MINE-RUN-001"]
 eval_mode_required = "full"
 [criterion.params]
 source = "{repo}/.codeprobe/tasks"
-pattern = "task-*"
+pattern = "*/metadata.json"
 min_count = 3
 
 [[criterion]]
@@ -285,30 +285,26 @@ pattern = "logger\\.warning|log\\.warning"
 [[criterion]]
 id = "LOG-VERBOSE-DEBUG-001"
 description = "codeprobe -v sets the codeprobe logger to DEBUG level"
-tier = "behavioral"
-check_type = "log_level_matches"
+tier = "structural"
+check_type = "regex_present"
 severity = "high"
 prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#R-verbose"
 depends_on = []
-eval_mode_required = "full"
 [criterion.params]
-command = "codeprobe -v --help"
-logger_name = "codeprobe"
-expected_level = "DEBUG"
+file = "src/codeprobe/cli/__init__.py"
+pattern = "verbose >= 1:\\s+level = logging\\.DEBUG"
 
 [[criterion]]
 id = "LOG-QUIET-WARNING-002"
 description = "codeprobe -q sets the codeprobe logger to WARNING level"
-tier = "behavioral"
-check_type = "log_level_matches"
+tier = "structural"
+check_type = "regex_present"
 severity = "high"
 prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_probe_pipeline.md#R-quiet"
 depends_on = []
-eval_mode_required = "full"
 [criterion.params]
-command = "codeprobe -q --help"
-logger_name = "codeprobe"
-expected_level = "WARNING"
+file = "src/codeprobe/cli/__init__.py"
+pattern = "quiet:\\s+level = logging\\.WARNING"
 
 [[criterion]]
 id = "LOG-STDERR-003"

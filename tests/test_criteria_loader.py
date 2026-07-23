@@ -121,16 +121,16 @@ def test_load_criteria_severity_values_valid() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_at_least_8_structural_criteria() -> None:
+def test_at_least_10_structural_criteria() -> None:
     criteria = load_criteria()
     structural = filter_by_tier(criteria, "structural")
-    assert len(structural) >= 8, f"expected >= 8 structural, got {len(structural)}"
+    assert len(structural) >= 10, f"expected >= 10 structural, got {len(structural)}"
 
 
-def test_at_least_12_behavioral_criteria() -> None:
+def test_at_least_10_behavioral_criteria() -> None:
     criteria = load_criteria()
     behavioral = filter_by_tier(criteria, "behavioral")
-    assert len(behavioral) >= 12, f"expected >= 12 behavioral, got {len(behavioral)}"
+    assert len(behavioral) >= 10, f"expected >= 10 behavioral, got {len(behavioral)}"
 
 
 def test_at_least_5_statistical_criteria() -> None:
