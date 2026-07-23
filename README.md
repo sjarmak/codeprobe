@@ -145,6 +145,11 @@ To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.
 
+Prefer driving codeprobe through a coding agent instead? `codeprobe skills install`
+puts the packaged skills (`codeprobe-mine`, `codeprobe-run`, `codeprobe-interpret`,
+`codeprobe-calibrate`, `codeprobe-check-infra`) into `.claude/skills/`; see
+[docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the workflow.
+
 Prerequisites: Python 3.11+, git, and one coding agent.
 
 | Agent          | Install                                          | Auth                            |
@@ -347,6 +352,7 @@ the diagrammed tour and [AGENTS.md](AGENTS.md) for the contributor contract.
 | `codeprobe validate`   | Validate a task directory (offline)                  |
 | `codeprobe snapshot`   | Create and verify shareable run snapshots            |
 | `codeprobe oracle-check` | Compare an agent answer against oracle ground truth |
+| `codeprobe purge`       | Delete cleartext run artifacts (retention lever)     |
 
 Run `codeprobe --help` for the full command set (calibration, trace inspection,
 ratings, preambles, and more), and see the
@@ -404,6 +410,27 @@ CI runs the same chain on Python 3.11, 3.12, and 3.13. See
 
 **Release.** Pushing a `v*` tag runs the test matrix, then builds and uploads to
 PyPI (`.github/workflows/publish.yml`).
+
+## Data at rest & retention
+
+Run artifacts are stored in cleartext on disk:
+
+- Agent transcripts land under `.codeprobe/<experiment>/runs/<config_label>/<task_id>/agent_output.txt` (and `agent_error.txt`) with **secret-token redaction only**. API keys and auth tokens are scrubbed; source code is not.
+- `.codeprobe/<experiment>/runs/trace.db` stores tool inputs and outputs with env-value and auth-pattern redaction only.
+- Any proprietary source the agent prints (file contents it read, diffs it wrote) lands on disk verbatim.
+
+Retention is operator-managed via `codeprobe purge`:
+
+```bash
+codeprobe purge .                       # dry run: list cleartext artifacts with sizes
+codeprobe purge . --yes                 # delete runs/ artifacts (transcripts + trace.db)
+codeprobe purge . --older-than 30 --yes # retention window: only artifacts >30 days old
+codeprobe purge . --all --yes           # remove whole experiment dirs, not just runs/
+```
+
+`purge` also sweeps stale `codeprobe-mcp-*.json` files from the system temp directory. It only ever deletes under `.codeprobe/` plus those temp files; it never touches your source tree and never runs git.
+
+Snapshot redaction ([docs/SNAPSHOT_REDACTION.md](docs/SNAPSHOT_REDACTION.md)) applies **only to exports**. The local experiment tree is not redacted or encrypted at rest.
 
 ## License
 

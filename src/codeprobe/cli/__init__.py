@@ -1822,3 +1822,8 @@ main.add_command(skills)
 from codeprobe.cli.models_cmd import models  # noqa: E402
 
 main.add_command(models)
+
+# Register the purge command (cleartext run-artifact retention lever).
+from codeprobe.cli.purge_cmd import purge  # noqa: E402
+
+main.add_command(purge)

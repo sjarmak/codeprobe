@@ -1,20 +1,25 @@
 # Adapter Authoring Guide
 
 This guide explains how to add support for a new AI coding agent to codeprobe.
+Every mechanically checkable claim in it is enforced by
+`tests/test_docs_adapters.py`: referenced paths must exist, the
+`MinimalAdapter` example must actually satisfy the Protocol, and documented
+defaults must match the code.
 
 ## Architecture Overview
 
 codeprobe uses a Protocol-based adapter system. Every agent integration
-implements the same three-method interface, which lets the eval runner treat
-all agents identically regardless of whether they run as a CLI subprocess or
-hit an HTTP API.
+implements the same five-member interface (`name`, `capabilities`,
+`preflight`, `run`, `isolate_session`), which lets the eval runner treat all
+agents identically regardless of whether they run as a CLI subprocess or hit
+an HTTP API.
 
 There are two common patterns:
 
-| Pattern         | Base class                         | When to use                                                              |
-| --------------- | ---------------------------------- | ------------------------------------------------------------------------ |
-| **CLI adapter** | `BaseAdapter`                      | Agent is invoked via a subprocess (e.g. `claude -p`, `aider --message`)  |
-| **API adapter** | None (implement Protocol directly) | Agent is called via a Python SDK (e.g. OpenAI `client.responses.create`) |
+| Pattern         | Base class                             | When to use                                                             |
+| --------------- | -------------------------------------- | ----------------------------------------------------------------------- |
+| **CLI adapter** | `BaseAdapter`                          | Agent is invoked via a subprocess (e.g. `claude -p`, `copilot --prompt`) |
+| **API adapter** | None (implement the Protocol directly) | Agent is called via a Python SDK (e.g. the OpenAI client)                |
 
 ## The AgentAdapter Protocol
 
@@ -27,23 +32,44 @@ from typing import Protocol, runtime_checkable
 class AgentAdapter(Protocol):
     @property
     def name(self) -> str:
-        """Human-readable agent name (e.g. 'claude', 'aider')."""
+        """Human-readable agent name (e.g. 'claude', 'copilot')."""
+        ...
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        """Which AgentConfig knobs this adapter honors. Fail-closed: a
+        missing declaration is treated as prompt+model only."""
         ...
 
     def preflight(self, config: AgentConfig) -> list[str]:
         """Validate readiness. Return a list of issues (empty = ready)."""
         ...
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         """Execute the agent and return results."""
+        ...
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        """Return per-slot env overrides for session isolation."""
         ...
 ```
 
 Because `AgentAdapter` is a `@runtime_checkable` Protocol, you never need to
-inherit from it. Any class with `name`, `capabilities`, `preflight`, and
-`run` satisfies the contract:
+inherit from it. Any class with all five members satisfies the contract:
 
 ```python
+from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
+    AgentAdapter,
+    AgentConfig,
+    AgentOutput,
+)
+
 class MinimalAdapter:
     @property
     def name(self) -> str:
@@ -56,11 +82,28 @@ class MinimalAdapter:
     def preflight(self, config: AgentConfig) -> list[str]:
         return []
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         return AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1)
+
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        return {}
 
 assert isinstance(MinimalAdapter(), AgentAdapter)  # passes
 ```
+
+`isinstance` only checks that the members exist, not their signatures. The
+executor really does call `run(prompt, config, session_env=...)` and
+`isolate_session(slot_id)` when running parallel slots (see
+`src/codeprobe/core/executor.py`), so implement the full signatures rather
+than the minimum that passes the check. Adapters whose agent keeps shared
+session state on disk should return real per-slot overrides from
+`isolate_session`; `ClaudeAdapter` mirrors the user config into a per-slot
+`CLAUDE_CONFIG_DIR` for exactly this reason. Stateless adapters return `{}`.
 
 ### Capabilities
 
@@ -93,42 +136,52 @@ what the code enforces today, not what the vendor CLI could support.
 
 ### AgentConfig
 
-Configuration passed to every adapter method:
+Configuration passed to every adapter method. All nine fields, in dataclass
+order (`src/codeprobe/adapters/protocol.py`):
 
-| Field             | Type           | Default     | Notes                                                      |
-| ----------------- | -------------- | ----------- | ---------------------------------------------------------- |
-| `model`           | `str \| None`  | `None`      | Model override (adapter picks its own default when `None`) |
-| `permission_mode` | `str`          | `"default"` | Values: `default`, `plan`, `auto`, `acceptEdits`           |
-| `timeout_seconds` | `int`          | `300`       | Maximum execution time                                     |
-| `mcp_config`      | `dict \| None` | `None`      | MCP tool configuration                                     |
-| `extra`           | `dict \| None` | `None`      | Adapter-specific options                                   |
-| `cwd`             | `str \| None`  | `None`      | Working directory for the agent                            |
-| `max_turns`       | `int \| None`  | `None`      | Hard cap on agent turns; `None` = uncapped. See [agent_config.md](agent_config.md). |
+| Field              | Type                  | Default     | Notes                                                                                 |
+| ------------------ | --------------------- | ----------- | ------------------------------------------------------------------------------------- |
+| `model`            | `str \| None`         | `None`      | Model override (adapter picks its own default when `None`)                            |
+| `permission_mode`  | `str`                 | `"default"` | One of `default`, `plan`, `auto`, `acceptEdits`, `dangerously_skip`                   |
+| `timeout_seconds`  | `int`                 | `3600`      | Maximum execution time                                                                 |
+| `mcp_config`       | `dict \| None`        | `None`      | MCP tool configuration (`BaseAdapter` writes it to a temp file, expanding `${VAR}`)   |
+| `allowed_tools`    | `list[str] \| None`   | `None`      | Restrict the agent to these tools; `[]` disables all built-in tools (MCP-only arms)   |
+| `disallowed_tools` | `list[str] \| None`   | `None`      | Tools the agent may not call                                                           |
+| `extra`            | `dict \| None`        | `None`      | Adapter-specific options                                                               |
+| `cwd`              | `str \| None`         | `None`      | Working directory for the agent                                                        |
+| `max_turns`        | `int \| None`         | `None`      | Hard cap on agent turns; `None` = uncapped. See [agent_config.md](agent_config.md).   |
+
+`allowed_tools` and `disallowed_tools` are the primary knobs for
+MCP/tool-config A/B experiments: when `allowed_tools` is an empty list the
+adapter disables every built-in tool while MCP tools from `mcp_config` remain
+available, so an arm can be measured on MCP tools alone.
 
 ### AgentOutput
 
-Immutable dataclass returned by `run()`:
+Immutable dataclass returned by `run()`. All fields, in dataclass order:
 
-| Field               | Type            | Default         | Notes                                               |
-| ------------------- | --------------- | --------------- | --------------------------------------------------- |
-| `stdout`            | `str`           | required        | Agent's primary output                              |
-| `stderr`            | `str \| None`   | required        | Standard error (or `None`)                          |
-| `exit_code`         | `int`           | required        | `0` = success, `-1` = timeout                       |
-| `duration_seconds`  | `float`         | required        | Wall-clock time                                     |
-| `cost_usd`          | `float \| None` | `None`          | Estimated cost in USD                               |
-| `input_tokens`      | `int \| None`   | `None`          | Input/prompt tokens                                 |
-| `output_tokens`     | `int \| None`   | `None`          | Output/completion tokens                            |
-| `cache_read_tokens` | `int \| None`   | `None`          | Prompt-cache hits                                   |
-| `cost_model`        | `str`           | `"unknown"`     | See [cost_model values](#cost_model-values)         |
-| `cost_source`       | `str`           | `"unavailable"` | See [cost_source values](#cost_source-values)       |
-| `tool_call_count`   | `int \| None`   | `None`          | Number of `tool_use` blocks in agent output         |
-| `tool_use_by_name`  | `dict[str, int] \| None` | `None` | Per-tool usage counts; `None` = not captured        |
-| `error`             | `str \| None`   | `None`          | Error description (partial results still preserved) |
-| `error_category`    | `str \| None`   | `None`          | Adapter-declared class (e.g. `"quota"`); `None` = executor default |
-| `error_terminal`    | `bool`          | `False`         | Adapter-declared: `error` is a terminal agent outcome (e.g. turn cap) — a genuine 0.0-reward measurement kept on checkpoint resume, not an infra casualty to retry. Only set for positively recognised stop conditions. |
-| `num_turns`         | `int \| None`   | `None`          | From the CLI result record, when one exists         |
-| `result_subtype`    | `str \| None`   | `None`          | Verbatim CLI result subtype (e.g. `"success"`, `"error_max_turns"`) |
-| `duration_api_ms`   | `int \| None`   | `None`          | API-side duration from the CLI result record        |
+| Field                   | Type                       | Default         | Notes                                                                                   |
+| ----------------------- | -------------------------- | --------------- | ---------------------------------------------------------------------------------------- |
+| `stdout`                | `str`                      | required        | Agent's primary output                                                                    |
+| `stderr`                | `str \| None`              | required        | Standard error (or `None`)                                                                |
+| `exit_code`             | `int`                      | required        | `0` = success, `-1` = timeout                                                             |
+| `duration_seconds`      | `float`                    | required        | Wall-clock time                                                                           |
+| `cost_usd`              | `float \| None`            | `None`          | Estimated cost in USD                                                                     |
+| `input_tokens`          | `int \| None`              | `None`          | Input/prompt tokens                                                                       |
+| `output_tokens`         | `int \| None`              | `None`          | Output/completion tokens                                                                  |
+| `cache_read_tokens`     | `int \| None`              | `None`          | Prompt-cache hits                                                                         |
+| `cache_creation_tokens` | `int \| None`              | `None`          | Prompt-cache writes                                                                       |
+| `cost_model`            | `str`                      | `"unknown"`     | See [cost_model values](#cost_model-values)                                               |
+| `error`                 | `str \| None`              | `None`          | Error description (partial results still preserved)                                       |
+| `error_category`        | `str \| None`              | `None`          | Adapter-declared class (e.g. `"quota"`); `None` = executor default classification         |
+| `error_terminal`        | `bool`                     | `False`         | Adapter-declared: `error` is a terminal agent outcome (e.g. turn cap), a genuine 0.0-reward measurement kept on checkpoint resume, not an infra casualty to retry. Only set for positively recognised stop conditions. |
+| `cost_source`           | `str`                      | `"unavailable"` | See [cost_source values](#cost_source-values)                                             |
+| `tool_call_count`       | `int \| None`              | `None`          | Number of `tool_use` blocks in agent output                                               |
+| `tool_use_by_name`      | `dict[str, int] \| None`   | `None`          | Per-tool usage counts; `None` = not captured                                              |
+| `num_turns`             | `int \| None`              | `None`          | From the CLI result record, when one exists                                               |
+| `result_subtype`        | `str \| None`              | `None`          | Verbatim CLI result subtype (e.g. `"success"`, `"error_max_turns"`)                       |
+| `duration_api_ms`       | `int \| None`              | `None`          | API-side duration from the CLI result record                                              |
+| `mcp_init`              | `McpInitManifest \| None`  | `None`          | Tool surface actually offered to the agent, parsed from the stream-json init event; `None` when the adapter has no streaming transcript |
 
 Validation rules enforced by `__post_init__`:
 
@@ -172,7 +225,8 @@ error and moves on.
 
 For agents invoked as a subprocess, extend `BaseAdapter` from
 `src/codeprobe/adapters/_base.py`. It provides default implementations of
-`preflight()` and `run()` -- you only need to implement `build_command()`.
+`preflight()`, `isolate_session()`, and `run()`; you only need to implement
+`build_command()`.
 
 ### Minimal example
 
@@ -194,27 +248,43 @@ class MyAgentAdapter(BaseAdapter):
 
 This gives you:
 
-- **`preflight()`**: checks that `_binary_name` is on `PATH` via `shutil.which`.
-- **`run()`**: calls `subprocess.run()` with timeout handling, catches
-  `TimeoutExpired` and `FileNotFoundError`, and calls `parse_output()`.
+- **`preflight()`**: checks that `_binary_name` is on `PATH` via `shutil.which`
+  and reports `_install_hint` when it is missing.
+- **`isolate_session()`**: returns `{}` (no per-slot isolation). Override if
+  your agent keeps shared session state.
+- **`run()`**: calls `subprocess.run()` with timeout handling, salvages partial
+  output through `parse_output()` on timeout, cleans up the MCP config temp
+  file, and catches `FileNotFoundError`. When `session_env` is provided, the
+  child environment is rebuilt from an allow-list (`_ADAPTER_ENV_WHITELIST` in
+  `src/codeprobe/adapters/_base.py`) so parent-process secrets never leak into
+  the agent subprocess.
 - **`parse_output()`**: default implementation maps stdout/stderr/exit_code
   into `AgentOutput` with no token or cost data.
 
 ### Extracting tokens and cost
 
-Override `parse_output()` to extract telemetry from the agent's output. Here
-is how `AiderAdapter` parses cost data from stderr:
+Override `parse_output()` to extract telemetry from the agent's output. The
+real reference implementation is `CopilotAdapter.parse_output` in
+`src/codeprobe/adapters/copilot.py`: it feeds NDJSON stdout through
+`NdjsonStreamCollector` (from `src/codeprobe/adapters/telemetry.py`), and when
+NDJSON parsing fails it falls back to raw stdout while declaring the degraded
+telemetry in the `error` field instead of hiding it.
+
+For an agent that only prints usage to its logs, the shape looks like this.
+This is a hypothetical example, not a real codeprobe adapter:
 
 ```python
 import re
 import subprocess
+
+from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import AgentOutput
 
-_TOKEN_RE = re.compile(r"Tokens:\s*([\d.]+k?)\s*sent,\s*([\d.]+k?)\s*received")
-_COST_RE = re.compile(r"Cost:\s*\$([\d.]+)\s*message")
+_USAGE_RE = re.compile(r"tokens:\s*(\d+)\s*in\s*/\s*(\d+)\s*out", re.IGNORECASE)
+_COST_RE = re.compile(r"cost:\s*\$([\d.]+)")
 
-class AiderAdapter(BaseAdapter):
-    # ... _binary_name, build_command ...
+class LogScrapingAdapter(BaseAdapter):
+    # ... _binary_name, _install_hint, build_command ...
 
     def parse_output(
         self, result: subprocess.CompletedProcess[str], duration: float
@@ -226,16 +296,16 @@ class AiderAdapter(BaseAdapter):
         cost_model = "unknown"
         cost_source = "unavailable"
 
-        token_match = _TOKEN_RE.search(combined)
-        if token_match:
-            input_tokens = _parse_token_value(token_match.group(1))
-            output_tokens = _parse_token_value(token_match.group(2))
+        usage_match = _USAGE_RE.search(combined)
+        if usage_match:
+            input_tokens = int(usage_match.group(1))
+            output_tokens = int(usage_match.group(2))
 
         cost_match = _COST_RE.search(combined)
         if cost_match:
             cost_usd = float(cost_match.group(1))
             cost_model = "per_token"
-            cost_source = "log_parsed"
+            cost_source = "log_parsed"  # honest: scraped from logs
 
         return AgentOutput(
             stdout=result.stdout,
@@ -250,17 +320,17 @@ class AiderAdapter(BaseAdapter):
         )
 ```
 
-For agents that output structured JSON (like Claude Code with `--output-format json`),
-use the `JsonStdoutCollector` or `ApiResponseCollector` from
-`src/codeprobe/adapters/telemetry.py` instead of raw regex.
+For agents that emit a structured JSON envelope (like Claude Code with
+`--output-format stream-json`), use `JsonStdoutCollector`; for direct API
+responses, use `ApiResponseCollector`. Both live in
+`src/codeprobe/adapters/telemetry.py`.
 
 ### Real CLI adapters
 
-| Adapter          | File                                | Telemetry approach                    |
-| ---------------- | ----------------------------------- | ------------------------------------- |
-| `ClaudeAdapter`  | `src/codeprobe/adapters/claude.py`  | JSON stdout via `JsonStdoutCollector` |
-| `CopilotAdapter` | `src/codeprobe/adapters/copilot.py` | NDJSON log parsing                    |
-| `AiderAdapter`   | `src/codeprobe/adapters/aider.py`   | Regex on stderr                       |
+| Adapter          | File                                | Telemetry approach                                                                                     |
+| ---------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `ClaudeAdapter`  | `src/codeprobe/adapters/claude.py`  | JSON envelope via `JsonStdoutCollector`; quota detection; per-slot `CLAUDE_CONFIG_DIR` session isolation |
+| `CopilotAdapter` | `src/codeprobe/adapters/copilot.py` | NDJSON parsing via `NdjsonStreamCollector`                                                              |
 
 ## Pattern 2: API Adapter (direct SDK)
 
@@ -272,8 +342,12 @@ For agents accessed via a Python SDK, implement the Protocol directly without
 ```python
 import os
 import time
+
 from codeprobe.adapters.protocol import (
-    AdapterSetupError, AdapterExecutionError, AgentConfig, AgentOutput,
+    AdapterExecutionError,
+    AdapterSetupError,
+    AgentConfig,
+    AgentOutput,
 )
 
 class MyApiAdapter:
@@ -292,7 +366,15 @@ class MyApiAdapter:
             issues.append("MY_API_KEY environment variable not set")
         return issues
 
-    def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+    def isolate_session(self, slot_id: int) -> dict[str, str]:
+        return {}  # stateless API client: no per-slot state to isolate
+
+    def run(
+        self,
+        prompt: str,
+        config: AgentConfig,
+        session_env: dict[str, str] | None = None,
+    ) -> AgentOutput:
         try:
             import my_sdk
         except ImportError:
@@ -328,7 +410,7 @@ class MyApiAdapter:
 
 | Adapter               | File                                      | Notes                                                                                                                                  |
 | --------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `OpenAICompatAdapter` | `src/codeprobe/adapters/openai_compat.py` | Generic adapter for any OpenAI-compatible endpoint (Ollama, Together, vLLM, Groq, etc.) with configurable `base_url` and pricing table |
+| `OpenAICompatAdapter` | `src/codeprobe/adapters/openai_compat.py` | Building block for OpenAI-compatible endpoints (Ollama, Together, vLLM, Groq, etc.) with configurable `base_url` and pricing table. NOT registered; needs a no-arg wrapper (see [Registration](#registration)) |
 
 ### Quarantined: `CodexAdapter`
 
@@ -345,46 +427,26 @@ lifts when the adapter is rewritten around the real OpenAI Codex CLI agent
 
 ## Registration
 
-Two places need to know about your adapter:
+The registry (`src/codeprobe/core/registry.py`) resolves `--agent <name>` in
+two steps:
 
-### 1. Entry points in pyproject.toml
+1. **`_BUILTINS`** in `src/codeprobe/core/registry.py`. This dict contains
+   exactly the adapters shipped with codeprobe: `claude`, `codex`, and
+   `copilot`. codeprobe's own `pyproject.toml` mirrors the same three names in
+   `[project.entry-points."codeprobe.agents"]`.
+2. **Entry points** in the `codeprobe.agents` group, discovered via
+   `importlib.metadata.entry_points` across all installed packages.
 
-Add your adapter to the `[project.entry-points."codeprobe.agents"]` table:
-
-```toml
-[project.entry-points."codeprobe.agents"]
-aider   = "codeprobe.adapters.aider:AiderAdapter"
-claude  = "codeprobe.adapters.claude:ClaudeAdapter"
-codex   = "codeprobe.adapters.codex:CodexAdapter"
-copilot = "codeprobe.adapters.copilot:CopilotAdapter"
-openai  = "codeprobe.adapters.openai_compat:OpenAICompatAdapter"
-myagent = "codeprobe.adapters.myagent:MyAgentAdapter"  # <-- add this
-```
-
-This lets the registry discover your adapter via `importlib.metadata.entry_points`.
-
-### 2. \_BUILTINS in registry.py
-
-For built-in adapters shipped with codeprobe, also add to the `_BUILTINS` dict
-in `src/codeprobe/core/registry.py`:
-
-```python
-_BUILTINS: dict[str, str] = {
-    "aider": "codeprobe.adapters.aider:AiderAdapter",
-    "claude": "codeprobe.adapters.claude:ClaudeAdapter",
-    "codex": "codeprobe.adapters.codex:CodexAdapter",
-    "copilot": "codeprobe.adapters.copilot:CopilotAdapter",
-    "myagent": "codeprobe.adapters.myagent:MyAgentAdapter",  # <-- add this
-}
-```
-
-The registry checks `_BUILTINS` first (no installed package needed), then falls
-back to entry points. This means third-party adapters only need the
-`pyproject.toml` entry point -- they do not modify `_BUILTINS`.
+In both cases the registry instantiates the class with a no-argument call,
+`cls()`. **Your adapter class must be constructible with no arguments.** Read
+endpoints, API keys, and default models from the environment or from
+`AgentConfig` inside `__init__`, `preflight()`, or `run()`; never require
+constructor parameters. An adapter whose constructor requires arguments will
+raise `TypeError` at resolve time even though registration itself succeeds.
 
 ### Third-party adapters
 
-External packages can register adapters by adding an entry point in their own
+External packages register adapters by adding an entry point in their own
 `pyproject.toml`:
 
 ```toml
@@ -393,11 +455,48 @@ myagent = "my_package.adapters:MyAgentAdapter"
 ```
 
 After `pip install my-package`, `codeprobe run --agent myagent` picks it up
-automatically.
+automatically. Do not edit codeprobe's `_BUILTINS` or `pyproject.toml`; those
+list only the adapters shipped in this repository.
+
+### Wrapping OpenAICompatAdapter
+
+`OpenAICompatAdapter` (`src/codeprobe/adapters/openai_compat.py`) speaks the
+OpenAI Chat Completions API and works with any compatible endpoint: Ollama,
+Together, vLLM, Groq, and others. It is an unregistered building block, not a
+usable `--agent` target: nothing references it in `_BUILTINS` or entry points,
+and its constructor requires keyword-only `api_base` and `model` arguments, so
+registering it directly would fail the registry's `cls()` call. Register a
+thin no-arg wrapper instead:
+
+```python
+from codeprobe.adapters.openai_compat import OpenAICompatAdapter
+
+class OllamaQwenAdapter(OpenAICompatAdapter):
+    """No-arg wrapper so the registry's cls() instantiation works."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            api_base="http://localhost:11434/v1",
+            model="qwen2.5-coder:32b",
+            api_key_env="OLLAMA_API_KEY",
+            adapter_name="ollama-qwen",
+        )
+```
+
+```toml
+[project.entry-points."codeprobe.agents"]
+ollama-qwen = "my_package.adapters:OllamaQwenAdapter"
+```
+
+The optional `pricing` constructor argument takes a per-model
+`{model: (input_per_1M, output_per_1M)}` table and enables per-token cost
+calculation with `cost_source="calculated"`.
 
 ## Testing
 
-Tests live in `tests/test_adapters.py`. Follow the existing patterns:
+Adapter tests in this repository live in `tests/test_adapters.py` (unit
+patterns) and `tests/test_adapter_contracts.py` (parse contracts against real
+transcripts). Follow the same patterns for a new adapter.
 
 ### Protocol conformance
 
@@ -409,7 +508,7 @@ from codeprobe.adapters.protocol import AgentAdapter
 def test_myagent_is_agent_adapter():
     adapter = MyAgentAdapter()
     assert isinstance(adapter, AgentAdapter)
-    assert adapter.name == "myagent"
+    assert adapter.name == "my-agent"
 ```
 
 ### Command building (CLI adapters)
@@ -466,31 +565,37 @@ def test_timeout_returns_error_output():
     assert output.exit_code == -1
 ```
 
-### AgentOutput validation
+### Parse contracts against real transcripts
 
-The framework enforces invariants at construction time. Test that your
-adapter produces valid outputs:
+`tests/test_adapter_contracts.py` pins each adapter's `parse_output()` to real
+agent transcripts stored under `tests/fixtures/` (e.g. `claude_normal.json`,
+`claude_max_turns.json`, `copilot_no_tokens.txt`). Follow the
+`Test<Agent>ParseContract` naming convention and cover at minimum:
 
-```python
-def test_myagent_output_valid_cost_model():
-    # Ensure your adapter never sets an invalid cost_model
-    output = MyAgentAdapter().run("test", AgentConfig())
-    assert output.cost_model in ALLOWED_COST_MODELS
-    assert output.cost_source in ALLOWED_COST_SOURCES
-```
+- the happy path: tokens, cost, `cost_model`, and `cost_source` extracted;
+- the telemetry-less transcript: `error` declared, `cost_usd=None`,
+  `cost_source="unavailable"` (never fabricate telemetry);
+- every terminal stop condition your adapter positively recognises
+  (`error_terminal=True`) and proof that unrecognised errors stay
+  `error_terminal=False`.
 
 ## Checklist
 
 Before submitting a new adapter:
 
-- [ ] Implements `name` (property), `preflight()`, and `run()`
+- [ ] Implements `name` (property), `preflight()`, `run(prompt, config, session_env=None)`, and `isolate_session(slot_id)`
+- [ ] Class is no-arg constructible (the registry instantiates via `cls()`)
 - [ ] Declares `capabilities` (`AdapterCapabilities`) matching actual `config.*` usage — undeclared knobs get the arm refused at preflight
 - [ ] `preflight()` checks for binary/SDK and credentials
 - [ ] `run()` extracts token counts and cost when available
 - [ ] `cost_model` and `cost_source` are set honestly (never claim `api_reported` when parsing logs)
+- [ ] If costs are computed from token counts (`cost_source="calculated"`), the rates come from a pricing table with a current `last_verified` date (see `src/codeprobe/adapters/pricing.py`)
+- [ ] Quota/auth exhaustion is detected and reported with `error_category="quota"` so the executor can route it as an infra casualty (see `_detect_quota_error` in `src/codeprobe/adapters/claude.py`)
+- [ ] `error_terminal=True` only for positively recognised terminal stop conditions (e.g. a turn cap); everything else stays `False` so it can be retried
+- [ ] `isolate_session()` returns real per-slot env overrides when the agent keeps shared session state; `{}` otherwise
 - [ ] Timeout is handled gracefully (BaseAdapter does this for CLI adapters)
 - [ ] Errors raise `AdapterSetupError` or `AdapterExecutionError` (not bare exceptions)
-- [ ] Added to `pyproject.toml` entry points
-- [ ] Added to `_BUILTINS` in `registry.py` (if built-in)
+- [ ] Entry point added in your package's `pyproject.toml` (`codeprobe.agents` group)
 - [ ] Tests: Protocol conformance, command building, preflight, output parsing
+- [ ] A `Test<Agent>ParseContract` class driven by real transcript fixtures under `tests/fixtures/`
 - [ ] Optional dependency added to `[project.optional-dependencies]` if needed

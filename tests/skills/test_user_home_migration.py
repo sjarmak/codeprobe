@@ -73,6 +73,16 @@ def test_stale_filter_returns_only_pending_entries(fake_home: Path) -> None:
     assert sorted(r.old_name for r in stale) == ["interpret", "mine-tasks"]
 
 
+def test_rendered_stub_points_at_skills_install() -> None:
+    """The stub must not repeat the old false claim that pip installs
+    materialize skills automatically; it points at ``codeprobe skills
+    install`` instead (bead codeprobe-f7rl.41)."""
+    for old_name, new_name in USER_HOME_SKILL_MAP.items():
+        stub = _render_stub(old_name, new_name)
+        assert "ships with the package" not in stub
+        assert "codeprobe skills install" in stub
+
+
 def test_is_deprecated_stub_detects_banner(tmp_path: Path) -> None:
     """``_is_deprecated_stub`` only matches the explicit DEPRECATED banner."""
     skill_md = tmp_path / "SKILL.md"

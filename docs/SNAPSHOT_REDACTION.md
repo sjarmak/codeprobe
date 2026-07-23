@@ -10,6 +10,16 @@ No LLM is invoked anywhere in the redaction path. All scanning is done by
 deterministic tools: `gitleaks`, `trufflehog`, or user-configurable regex
 patterns via the built-in `PatternScanner`.
 
+## Scope
+
+This document covers the **export boundary only** (`codeprobe snapshot
+create`). The local experiment tree is **not** redacted at rest: agent
+transcripts and `runs/trace.db` under `.codeprobe/<experiment>/runs/` are
+stored in cleartext with secret-token and auth-pattern redaction only, so
+proprietary source printed by the agent lands on disk verbatim. See the
+README section "Data at rest & retention" for the on-disk reality and
+`codeprobe purge` for the retention lever.
+
 ## Capability matrix
 
 | Mode | Bodies in snapshot? | Requires `--allow-source-in-export`? | Requires canary gate? | Public default? |

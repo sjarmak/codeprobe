@@ -1,51 +1,47 @@
 # Running codeprobe through a coding agent
 
-codeprobe ships a set of [Claude Code skills](https://docs.claude.com/en/docs/claude-code/skills) that let you drive the full benchmark workflow through conversation instead of the raw CLI. Ask an agent "benchmark this repo" and the skills guide it through mining, running, and interpreting — using the `codeprobe` CLI under the hood.
+codeprobe ships five [Claude Code skills](https://docs.claude.com/en/docs/claude-code/skills) inside the Python package. They let you drive the benchmark workflow through conversation instead of the raw CLI: ask the agent to "benchmark this repo" and it picks the matching skill, which shells out to the `codeprobe` CLI and interprets the output for you.
 
-If you prefer typing commands directly, see [standard.md](./standard.md) instead. The skills do not replace the CLI; they are a user-facing wrapper around it.
+If you prefer typing commands directly, see [standard.md](./standard.md) instead. The skills do not replace the CLI; they are an agent-facing wrapper around it.
 
 ## Installing the skills
 
-The skills live in `.claude/skills/` in this repo. Copy them into whichever `.claude/skills/` directory your agent reads from:
+The skills ship inside the `codeprobe` wheel, so `pip install codeprobe` is the only prerequisite; no repository checkout is involved.
 
 ```bash
-# Option A — install into the repo you want to benchmark (recommended)
-mkdir -p /path/to/your/repo/.claude/skills
-cp -r /path/to/codeprobe/.claude/skills/* /path/to/your/repo/.claude/skills/
+pip install codeprobe
 
-# Option B — install user-wide (available in every project)
-mkdir -p ~/.claude/skills
-cp -r /path/to/codeprobe/.claude/skills/* ~/.claude/skills/
+# Option A: install into the repo you want to benchmark (recommended)
+cd /path/to/your/repo
+codeprobe skills install
+
+# Option B: install user-wide (available in every project)
+codeprobe skills install --user
 ```
+
+`codeprobe skills install` writes the packaged `codeprobe-*` skills into `./.claude/skills/` (or `~/.claude/skills/` with `--user`). It never clobbers local edits: if an existing copy differs from the packaged version, the command refuses with `SKILL_INSTALL_CONFLICT` before writing anything, and `--force` overwrites deliberately.
 
 Start (or restart) Claude Code in the target repo. The skills are discovered on startup.
 
-## User-invocable skills
+## The five skills
 
-Four skills are meant to be invoked directly. Everything else is internal — `experiment` orchestrates them for you.
+Every skill is an autonomous agent contract (`user-invocable: false` in its frontmatter), so there is no slash command to type. Describe what you want in plain language, the agent selects the matching skill from your request, and the skill shells out to the corresponding `codeprobe` CLI command.
 
-| Skill              | When to use                                                                                         |
-| ------------------ | --------------------------------------------------------------------------------------------------- |
-| `/experiment`      | **Start here.** Guided end-to-end flow: define goal → mine tasks → configure comparison → run → interpret. |
-| `/assess-codebase` | Check whether a repo is worth benchmarking (complexity, PR history, test coverage) before committing time. |
-| `/interpret`       | Analyze existing eval results — rank configs, compare cost vs. score, surface recommendations.      |
-| `/ratings`         | Record and review session quality ratings over time.                                                |
-
-You can also just describe what you want in plain language. The agent picks the right skill automatically:
-
-- *"I want to compare Claude Sonnet vs Opus on my repo"* → `/experiment`
-- *"Is this repo good for benchmarking?"* → `/assess-codebase`
-- *"What do these results tell me?"* → `/interpret`
+| Skill                  | What it does                                                                                                                    | Say something like                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `codeprobe-mine`       | Mines eval tasks from your repo's merged PR/MR history: real code-change tasks with ground truth, test scripts, and scoring rubrics. | "Mine tasks from this repo", "benchmark my repo"       |
+| `codeprobe-run`        | Executes a task suite in isolated per-task sessions, scores with automated tests, and emits NDJSON events plus a terminal envelope. | "Run the eval", "score the agent on these tasks"       |
+| `codeprobe-interpret`  | Turns a run output directory into structured analysis: compares configurations statistically and ranks them by score and cost-efficiency. | "Interpret the results", "compare the configurations"  |
+| `codeprobe-calibrate`  | Runs the calibration gate on a new curator version and emits a curator profile when the validity thresholds are met.            | "Calibrate the curator", "run the calibration gate"    |
+| `codeprobe-check-infra` | Diagnoses mined-task infrastructure for capability drift and offline readiness before a run, including credential-TTL preflight. | "Check infra before this run", "any capability drift?" |
 
 ## What the full workflow looks like
 
-Starting from `/experiment`, the agent walks you through:
+codeprobe's comparison is an A/B over MCP servers and tool configurations on the same agent (Claude Code): identical tasks and model, different tool setups, so the score delta isolates what the tooling contributes. A typical conversation-driven session moves through three skills:
 
-1. **Goal** — what are you trying to learn? (MCP comparison, model comparison, prompt comparison, custom, or "I already have tasks").
-2. **Tasks** — mine from PR history, use pre-mined tasks, or generate micro-benchmark probes.
-3. **Configurations** — define one or more agent/model/tool combinations to compare.
-4. **Run** — execute tasks against each config in parallel, isolated in git worktrees.
-5. **Interpret** — rank configs by score and cost-efficiency, generate an HTML report.
+1. **Mine.** "Mine tasks from this repo" makes the agent run `codeprobe mine`, extracting a reusable task suite from merged PR history.
+2. **Run.** "Run the suite with and without the MCP server" makes it run `codeprobe run` once per tool configuration, each task isolated in its own git worktree.
+3. **Interpret.** "What do these results tell me?" makes it run `codeprobe interpret` to rank the configurations by score and cost-efficiency.
 
 Each phase runs a real `codeprobe` CLI command. The agent handles the flag combinations and interprets the output; you approve or adjust at each step.
 
@@ -61,6 +57,6 @@ The skills are for interactive sessions where you want the agent to handle the w
 
 ## Troubleshooting
 
-- **Skills don't show up in `/`**: make sure `.claude/skills/<skill-name>/SKILL.md` exists and has valid YAML frontmatter. Restart Claude Code.
-- **Agent invokes the wrong skill**: the internal skills (`mine-tasks`, `run-eval`, `scaffold`, `probe`, `acceptance-loop`, `integration-test`) are marked `user-invocable: false` so the agent only reaches them via `/experiment`. If you want direct access, flip that flag to `true` in the relevant `SKILL.md`.
-- **`codeprobe: command not found` inside the skill**: the agent shells out to the `codeprobe` CLI. Make sure it's installed in the same environment the agent runs from (`pip install codeprobe`).
+- **Skills don't get picked up**: make sure `.claude/skills/<skill-name>/SKILL.md` exists and has valid YAML frontmatter. Restart Claude Code; skills are discovered on startup.
+- **Skills out of date after upgrading codeprobe**: re-run `codeprobe skills install`. If it refuses with `SKILL_INSTALL_CONFLICT` because you edited the installed copies, re-run with `--force` to overwrite them.
+- **`codeprobe: command not found` inside a skill**: the skills shell out to the `codeprobe` CLI. Make sure it's installed in the same environment the agent runs from (`pip install codeprobe`).

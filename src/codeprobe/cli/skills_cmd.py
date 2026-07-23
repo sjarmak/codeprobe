@@ -1,14 +1,19 @@
-"""``codeprobe skills`` — user-home skill migration helper.
+"""``codeprobe skills`` — skill installation and migration helpers.
 
-Implements PRD §13-T5 + §16 M-Mod 5: the user-home skills at
+``codeprobe skills install`` copies the packaged agent skills
+(``codeprobe.skills_data`` wheel package data) into a ``.claude/skills``
+directory — the project-local one by default, ``~/.claude/skills`` with
+``--user`` — so pip customers get the paired-skills contract (PRD §7)
+without cloning this repository. Existing files that differ from the
+packaged versions are never overwritten without ``--force``.
+
+``codeprobe skills migrate`` implements PRD §13-T5 + §16 M-Mod 5: the
+user-home skills at
 ``~/.claude/skills/{mine-tasks, run-eval, interpret, check-infra,
 calibrate}/`` predate v0.6.0 and now diverge from the authoritative
-repo-committed skills at ``.claude/skills/codeprobe-*/SKILL.md`` inside
-this repository. Leaving them in place causes Claude Code's skill
-resolver to pick the stale copy.
-
-``codeprobe skills migrate`` rewrites each old skill as a tiny
-``DEPRECATED`` stub that points at the repo-committed replacement:
+packaged skills. Leaving them in place causes Claude Code's skill
+resolver to pick the stale copy. The migration rewrites each old skill
+as a tiny ``DEPRECATED`` stub that points at the replacement:
 
 * ``user-invocable: false`` — the stub never triggers on its own.
 * Description starts with ``DEPRECATED:`` so the skill index is
@@ -30,6 +35,7 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 
 import click
@@ -77,10 +83,10 @@ envelope / error-code / default-resolution shape.
 
 ## What to do
 
-* If you installed codeprobe via ``pip install codeprobe``, the new
-  skill ships with the package and your agent will find
-  ``codeprobe-{new_suffix}`` automatically inside any project that
-  imports the package.
+* If you installed codeprobe via ``pip install codeprobe``, run
+  ``codeprobe skills install`` to materialize the packaged
+  ``codeprobe-{new_suffix}`` replacement into your project's
+  ``.claude/skills/`` directory.
 * If you want to keep editing a local copy, delete this directory
   (``rm -r ~/.claude/skills/{old_name}``) and pin the repo-committed
   version via your project-level ``.claude`` config.
@@ -108,6 +114,59 @@ class SkillMigrationResult:
 def _user_skills_root() -> Path:
     """Return ``~/.claude/skills`` (may not exist)."""
     return Path.home() / ".claude" / "skills"
+
+
+@dataclass(frozen=True)
+class SkillInstallPlan:
+    """Planned action for a single packaged skill during ``install``."""
+
+    name: str
+    action: str  # "installed" | "unchanged" | "overwritten"
+    target: Path
+    content: str
+
+
+def _packaged_skills() -> list[tuple[str, str]]:
+    """Return ``(skill_name, SKILL.md text)`` for every packaged skill.
+
+    Enumerates ``codeprobe.skills_data`` wheel package data. The
+    ``codeprobe-*`` filter is defensive: the package should contain
+    nothing else, but a stray directory must never be installed into a
+    customer's ``.claude/skills``.
+    """
+    root = resources.files("codeprobe.skills_data")
+    found: list[tuple[str, str]] = []
+    for entry in root.iterdir():
+        if not entry.name.startswith("codeprobe-") or not entry.is_dir():
+            continue
+        skill_md = entry / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        found.append((entry.name, skill_md.read_text(encoding="utf-8")))
+    return sorted(found)
+
+
+def _plan_skill_install(
+    packaged: list[tuple[str, str]], dest: Path, *, force: bool
+) -> tuple[list[SkillInstallPlan], list[str]]:
+    """Plan the per-skill actions without touching the filesystem.
+
+    Returns ``(plan, conflicts)``; a non-empty ``conflicts`` list means
+    the caller must refuse before any write happens.
+    """
+    plan: list[SkillInstallPlan] = []
+    conflicts: list[str] = []
+    for name, content in packaged:
+        target = dest / name / "SKILL.md"
+        if not target.is_file():
+            plan.append(SkillInstallPlan(name, "installed", target, content))
+        elif target.read_bytes() == content.encode("utf-8"):
+            plan.append(SkillInstallPlan(name, "unchanged", target, content))
+        elif force:
+            plan.append(SkillInstallPlan(name, "overwritten", target, content))
+        else:
+            conflicts.append(name)
+    return plan, conflicts
 
 
 def _is_deprecated_stub(skill_md: Path) -> bool:
@@ -200,6 +259,108 @@ _NON_TTY_ACK_VALUE = "ack"
 @click.group(cls=CodeprobeGroup)
 def skills() -> None:
     """Manage Claude Code skill surfaces for codeprobe."""
+
+
+@skills.command("install")
+@add_json_flags
+@click.option(
+    "--dest",
+    "dest_opt",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Directory to install skills into "
+        "(default: ./.claude/skills of the current directory)."
+    ),
+)
+@click.option(
+    "--user",
+    "user_flag",
+    is_flag=True,
+    default=False,
+    help="Install into ~/.claude/skills instead (mutually exclusive with --dest).",
+)
+@click.option(
+    "--force",
+    "force_flag",
+    is_flag=True,
+    default=False,
+    help="Overwrite existing SKILL.md files that differ from the packaged versions.",
+)
+def install_cmd(
+    dest_opt: Path | None,
+    user_flag: bool,
+    force_flag: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
+    """Install the packaged codeprobe agent skills into .claude/skills.
+
+    Copies every ``codeprobe-*/SKILL.md`` shipped inside the
+    ``codeprobe`` wheel (package data under ``codeprobe.skills_data``)
+    into the destination. Files already identical to the packaged
+    versions are left untouched; files that differ are never overwritten
+    without ``--force`` — the command refuses with
+    ``SKILL_INSTALL_CONFLICT`` before writing anything.
+    """
+    out_mode = resolve_mode(
+        "skills install", json_flag, no_json_flag, json_lines_flag,
+    )
+    if dest_opt is not None and user_flag:
+        raise PrescriptiveError(
+            code="MUTEX_FLAGS",
+            message=(
+                "Cannot use --dest with --user. Use --dest <path> for an "
+                "explicit directory or --user for ~/.claude/skills."
+            ),
+            next_try_flag="--dest",
+            next_try_value="",
+            detail={"conflicting_flags": ["--dest", "--user"]},
+        )
+    if user_flag:
+        dest = _user_skills_root()
+    elif dest_opt is not None:
+        dest = dest_opt
+    else:
+        dest = Path.cwd() / ".claude" / "skills"
+
+    plan, conflicts = _plan_skill_install(
+        _packaged_skills(), dest, force=force_flag
+    )
+    if conflicts:
+        raise PrescriptiveError(
+            code="SKILL_INSTALL_CONFLICT",
+            message=(
+                f"{len(conflicts)} skill file(s) under {dest} differ from "
+                "the packaged versions; refusing to overwrite local edits "
+                "without --force. Nothing was written."
+            ),
+            next_try_flag="--force",
+            next_try_value="",
+            detail={"dest": str(dest), "conflicts": conflicts},
+        )
+
+    for step in plan:
+        if step.action != "unchanged":
+            step.target.parent.mkdir(parents=True, exist_ok=True)
+            step.target.write_text(step.content, encoding="utf-8")
+
+    emit_envelope(
+        command="skills install",
+        data={
+            "dest": str(dest),
+            "installed": [s.name for s in plan if s.action == "installed"],
+            "unchanged": [s.name for s in plan if s.action == "unchanged"],
+            "conflicts_overwritten": [
+                s.name for s in plan if s.action == "overwritten"
+            ],
+            "skill_count": len(plan),
+        },
+    )
+    if out_mode.mode == "pretty":
+        for step in plan:
+            click.echo(f"  {step.action:>20s}  {step.name} → {step.target}")
 
 
 @skills.command("migrate")

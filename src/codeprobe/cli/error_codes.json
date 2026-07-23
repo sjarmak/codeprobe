@@ -440,6 +440,22 @@
       "since": "0.12.0",
       "description": "MCP-family mining could not derive the Sourcegraph repo identifier from the repository's origin remote (missing or not a parsable GitHub URL). An empty --sg-repo silently disables the Sourcegraph consensus leg and a wrong value corrupts the MCP-benefit comparison, so codeprobe refuses instead of degrading.",
       "remediation_pattern": "Pass --sg-repo github.com/{owner}/{repo} matching the repository's Sourcegraph identifier."
+    },
+    {
+      "code": "SKILL_INSTALL_CONFLICT",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.12.0",
+      "description": "`codeprobe skills install` found existing SKILL.md files at the destination that differ from the packaged versions. Nothing was written — overwriting local edits requires explicit consent. The conflicting skill names are listed in `error.detail.conflicts`.",
+      "remediation_pattern": "Re-run with --force to overwrite the listed skills, or move the locally edited copies aside first."
+    },
+    {
+      "code": "PURGE_REFUSED",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.12.0",
+      "description": "`codeprobe purge --yes` found a deletion candidate that resolves outside <PATH>/.codeprobe/ (typically a symlink inside a runs/ tree pointing at customer source). The purge aborted before deleting anything (fail closed). The refused paths are listed in `error.detail.refused`.",
+      "remediation_pattern": "Inspect the listed paths (`ls -la <path>`), remove the escaping symlink manually, then re-run `codeprobe purge <path> --yes`."
     }
   ]
 }

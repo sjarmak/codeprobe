@@ -82,6 +82,22 @@ def _load_package_data() -> dict[str, list[str]]:
     return raw.get("tool", {}).get("setuptools", {}).get("package-data", {})
 
 
+# The shipped agent skills are package data under codeprobe.skills_data.
+# ``_iter_runtime_data_files`` cannot discover them (``.md`` is not a runtime
+# suffix and the codeprobe-* subdirs are not packages), so they get explicit
+# assertions of their own.
+SKILL_NAMES: tuple[str, ...] = (
+    "codeprobe-calibrate",
+    "codeprobe-check-infra",
+    "codeprobe-interpret",
+    "codeprobe-mine",
+    "codeprobe-run",
+)
+SKILL_WHEEL_PATHS: tuple[str, ...] = tuple(
+    f"codeprobe/skills_data/{name}/SKILL.md" for name in SKILL_NAMES
+)
+
+
 def _glob_matches(pattern: str, name: str) -> bool:
     return fnmatch.fnmatchcase(name, pattern)
 
@@ -114,6 +130,27 @@ def test_runtime_data_files_declared_in_package_data() -> None:
         "Runtime data files are not covered by [tool.setuptools.package-data]:\n  "
         + "\n  ".join(missing)
     )
+
+
+def test_skills_data_declared_in_package_data() -> None:
+    """The shipped agent skills are declared as codeprobe.skills_data
+    package data with a glob matching each codeprobe-*/SKILL.md."""
+    package_data = _load_package_data()
+    globs = package_data.get("codeprobe.skills_data")
+    assert globs, (
+        "'codeprobe.skills_data' has no [tool.setuptools.package-data] entry "
+        "— the wheel would ship no agent skills"
+    )
+    for name in SKILL_NAMES:
+        rel = f"{name}/SKILL.md"
+        assert any(_glob_matches(g, rel) for g in globs), (
+            f"no glob in package-data['codeprobe.skills_data'] = {globs!r} "
+            f"matches '{rel}'"
+        )
+    # The canonical files must actually exist on disk under the package.
+    for name in SKILL_NAMES:
+        path = SRC_ROOT / "skills_data" / name / "SKILL.md"
+        assert path.is_file(), f"missing canonical skill file: {path}"
 
 
 @pytest.mark.integration
@@ -153,5 +190,16 @@ def test_built_wheel_contains_runtime_data_files(tmp_path: Path) -> None:
         str(p.relative_to(SRC_ROOT.parent)).replace("\\", "/")
         for p in _iter_runtime_data_files()
     ]
+    expected.extend(SKILL_WHEEL_PATHS)
     missing = [name for name in expected if name not in names]
     assert not missing, f"wheel is missing data files: {missing}"
+
+    # Exactly the five product skills ship — no machine-local agent skills
+    # (gc-*, compass-*, codeprobe-orientation, ...) may leak into the wheel.
+    shipped_skills = sorted(
+        name for name in names if name.startswith("codeprobe/skills_data/")
+        and name.endswith("SKILL.md")
+    )
+    assert shipped_skills == sorted(SKILL_WHEEL_PATHS), (
+        f"wheel skills_data contents drifted: {shipped_skills}"
+    )
