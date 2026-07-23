@@ -10,6 +10,9 @@
   tagging on the two newest verdicts (both `EVALUATED` + `all_pass`, at
   least one from `--eval-mode full`), the changelog heading, and the
   version bump. Verdicts now record the `eval_mode` that produced them.
+- `scipy-stubs` now declares an upper bound (`<2`) in the dev extras —
+  the sole unbounded dependency, caught by criterion CI-DEPS-UPPER-001 on
+  the acceptance loop's first real run.
 
 ## 0.12.0 (2026-07-23)
 
