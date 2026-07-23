@@ -941,6 +941,18 @@ def run_eval(
             _print_dry_run(estimate)
             return
 
+        # Anchor --out's destination into experiment.json (codeprobe-xcue):
+        # exp_dir (experiment.json, tasks_dir) never moves, but results/
+        # checkpoints/trace.db do when --out is passed. Recording write_dir
+        # here — before any agent spawns — is what lets a plain
+        # `codeprobe interpret <exp_dir>` (zero extra flags) find the
+        # relocated results.json afterward; see load path in interpret_cmd.
+        # Omitted entirely when --out is absent, so default (no --out)
+        # experiment.json bytes are unchanged.
+        if out is not None and experiment.results_base_dir != str(write_dir):
+            experiment = replace(experiment, results_base_dir=str(write_dir))
+            save_experiment(exp_dir, experiment)
+
         # Containment gate (codeprobe-f7rl.3): a real run launches an
         # autonomous agent with --dangerously-skip-permissions plus mined
         # third-party test/verifier scripts. Outside a container this needs

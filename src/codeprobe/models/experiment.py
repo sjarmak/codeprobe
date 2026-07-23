@@ -229,3 +229,11 @@ class Experiment:
     bias_overshipping_recall_min: float = 0.95
     bias_overshipping_low_precision_max: float = 0.5
     bias_overshipping_precision_gap_min: float = 0.3
+    # Anchor for `run --out <dir>` (codeprobe-xcue): when a run relocates its
+    # writes (runs/, checkpoints, trace.db) away from the experiment
+    # directory, the absolute destination is recorded here so a plain
+    # `codeprobe interpret <exp_dir>` — with zero extra flags — can still
+    # find the relocated results.json files. ``None`` (the default) means
+    # results live under the experiment directory itself, exactly as before
+    # this field existed.
+    results_base_dir: str | None = None

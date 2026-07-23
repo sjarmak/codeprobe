@@ -184,10 +184,22 @@ def run_interpret(
                 detail={"path": str(path), "cause": str(exc)},
             ) from exc
 
+    # `run --out <dir>` relocates runs/<config>/results.json away from
+    # exp_dir (codeprobe-xcue); the destination is anchored into
+    # experiment.json as ``results_base_dir`` at run time (see run_cmd.py),
+    # so a plain `codeprobe interpret <exp_dir>` finds it with no extra
+    # flag. Absent that field (the default, no --out), results live under
+    # exp_dir itself — unchanged behavior.
+    results_root = (
+        Path(experiment.results_base_dir)
+        if experiment.results_base_dir
+        else exp_dir
+    )
+
     all_results = []
     for config in experiment.configs:
         try:
-            results = load_config_results(exp_dir, config.label)
+            results = load_config_results(results_root, config.label)
             all_results.append(results)
         except (FileNotFoundError, ValueError) as exc:
             if mode.mode == "pretty":

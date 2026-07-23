@@ -160,6 +160,60 @@ def test_run_out_redirects_results(
     assert (exp_dir / "experiment.json").is_file()
 
 
+def test_run_out_then_interpret_finds_relocated_results(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codeprobe-xcue Finding 1: run --out anchors the relocated results into
+    experiment.json so a plain `interpret <exp_dir>` — zero extra flags —
+    finds them, instead of reading the (empty) default runs/ location and
+    reporting "No results found." Fails before the run_cmd/interpret_cmd
+    fix and passes after.
+    """
+    adapter = FakeAdapter(cost_usd=0.0, cost_model="unknown", duration=0.0)
+    monkeypatch.setattr("codeprobe.cli.run_cmd.resolve", lambda _name: adapter)
+
+    exp_dir = repo / ".codeprobe" / "exp"
+    out_dir = tmp_path / "custom-results"
+    out_dir.mkdir()
+
+    run_result = CliRunner().invoke(
+        main,
+        [
+            "run",
+            str(exp_dir),
+            "--agent",
+            "fake",
+            "--parallel",
+            "1",
+            "--force-plain",
+            "--out",
+            str(out_dir),
+        ],
+        catch_exceptions=False,
+    )
+    assert run_result.exit_code == 0, run_result.output
+
+    # The bug: exp_dir itself never moves, so a plain `interpret <exp_dir>`
+    # must be the one command that finds the relocated results — no
+    # --out/--config flag on interpret.
+    interpret_result = CliRunner().invoke(
+        main,
+        ["interpret", str(exp_dir), "--format", "json"],
+        catch_exceptions=False,
+    )
+    assert interpret_result.exit_code == 0, interpret_result.output
+    assert "No results found" not in interpret_result.output
+
+    payload = json.loads(
+        [ln for ln in interpret_result.output.splitlines() if ln.strip()][-1]
+    )
+    assert payload["data"]["has_results"] is True
+
+    # experiment.json now anchors where run --out actually wrote.
+    experiment_data = json.loads((exp_dir / "experiment.json").read_text())
+    assert experiment_data["results_base_dir"] == str(out_dir)
+
+
 def test_run_out_rejects_missing_parent_directory(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
