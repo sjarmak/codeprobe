@@ -61,9 +61,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.33: --max-cost-usd help text now states experiment
         # scope (all arms), all merged on top of f7rl.24/.27 → 1209.
         # codeprobe-f7rl.32: interpret --format help expanded (html writes
-        # the report file in every output mode). Real line number below,
-        # confirmed by running the lint test against the merged file.
-        ("src/codeprobe/cli/__init__.py", 1209),
+        # the report file in every output mode): +10 → 1219.
+        ("src/codeprobe/cli/__init__.py", 1219),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
@@ -89,10 +88,9 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.27: +18 for entries below the add-config
         # quarantine refusal block (+2 imports, +16 block; the block's
         # own SystemExit(1) carries a lint-exempt pragma, not an entry).
-        # codeprobe-f7rl.7: entries below experiment_status further shifted
+        # codeprobe-f7rl.7: entries below experiment_status shifted +9
         # (repeat-aware completion counts distinct task_ids and appends the
-        # trial count to the progress column). Real line numbers below,
-        # confirmed by running the lint test against the merged file.
+        # trial count to the progress column).
         ("src/codeprobe/cli/experiment_cmd.py", 185),
         ("src/codeprobe/cli/experiment_cmd.py", 194),
         ("src/codeprobe/cli/experiment_cmd.py", 210),
@@ -100,8 +98,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         ("src/codeprobe/cli/experiment_cmd.py", 283),
         ("src/codeprobe/cli/experiment_cmd.py", 353),
         ("src/codeprobe/cli/experiment_cmd.py", 370),
-        ("src/codeprobe/cli/experiment_cmd.py", 452),
-        ("src/codeprobe/cli/experiment_cmd.py", 459),
+        ("src/codeprobe/cli/experiment_cmd.py", 461),
+        ("src/codeprobe/cli/experiment_cmd.py", 468),
         ("src/codeprobe/cli/init_cmd.py", 50),
         ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),
