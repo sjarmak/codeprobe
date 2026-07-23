@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from acceptance.verify import (
+    _DATACLASS_ROUNDTRIP_LOADERS,
     CANARY_FILENAME,
     RESULT_FAIL,
     RESULT_PASS,
@@ -962,7 +963,7 @@ def test_no_handler_skip_reported_distinctly_from_eval_mode_skip(
             id = "NO-HANDLER-CRIT"
             description = "check_type with no registered Verifier handler"
             tier = "behavioral"
-            check_type = "stream_separation"
+            check_type = "log_level_matches"
             severity = "critical"
             prd_source = "fake.md#x"
             [criterion.params]
@@ -988,6 +989,411 @@ def test_no_handler_skip_reported_distinctly_from_eval_mode_skip(
     assert verdict["no_handler_criteria"] == [
         {"criterion_id": "NO-HANDLER-CRIT", "tier": "behavioral", "severity": "critical"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# dataclass_roundtrip (structural)
+# ---------------------------------------------------------------------------
+
+
+def _roundtrip_manifest(tmp_path: Path, fixture_rel: str) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent(f"""
+            [[criterion]]
+            id = "RT-1"
+            description = "results round-trip through CompletedTask"
+            tier = "structural"
+            check_type = "dataclass_roundtrip"
+            severity = "critical"
+            prd_source = "fake.md#R16"
+            [criterion.params]
+            module = "codeprobe.models.experiment"
+            symbol = "CompletedTask"
+            fixture = "{fixture_rel}"
+            """).strip()
+    )
+    return manifest
+
+
+def test_dataclass_roundtrip_passes_on_faithful_fixture(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "fx").mkdir()
+    (project / "fx" / "results.json").write_text(
+        json.dumps(
+            {
+                "completed": [
+                    {"task_id": "t1", "automated_score": 1.0, "cost_source": "cli"},
+                    {"task_id": "t2", "automated_score": 0.0, "extra_new_key": "ignored"},
+                ]
+            }
+        )
+    )
+    manifest = _roundtrip_manifest(project / "acceptance", "fx/results.json")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+    assert verdict["fail_count"] == 0
+
+
+def test_dataclass_roundtrip_fails_when_required_field_absent(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "fx").mkdir()
+    # No task_id / automated_score → CompletedTask cannot be constructed.
+    (project / "fx" / "results.json").write_text(
+        json.dumps({"completed_tasks": [{"status": "completed"}]})
+    )
+    manifest = _roundtrip_manifest(project / "acceptance", "fx/results.json")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    assert "cannot construct" in verdict["failures"][0]["evidence"]
+
+
+def test_dataclass_roundtrip_skips_when_fixture_missing(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    manifest = _roundtrip_manifest(project / "acceptance", "fx/does-not-exist.json")
+    v = Verifier(manifest, project_root=project)
+    result = next(
+        r for r in _criterion_results(v, tmp_path / "ws") if r["criterion_id"] == "RT-1"
+    )
+    assert result["result"] == RESULT_SKIP
+    assert "fixture not found" in result["evidence"]
+
+
+def test_dataclass_roundtrip_against_real_fixture(tmp_path: Path) -> None:
+    """The committed tests/fixtures/results.json round-trips through the real
+    CompletedTask — the exact contract OUT-ROUNDTRIP-002 encodes."""
+    project = Path(__file__).resolve().parent.parent
+    manifest = _roundtrip_manifest(tmp_path, "tests/fixtures/results.json")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+    assert verdict["fail_count"] == 0
+
+
+def test_dataclass_roundtrip_catches_a_real_field_drop_in_the_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codeprobe-2s54 Finding 3: the check must exercise the SAME
+    deserialization path production uses, so a field-drop regression IN
+    THAT LOADER is caught — not just a TypeError from bad fixture data.
+
+    Registers a fake dataclass module and a deliberately buggy "production
+    loader" that drops ``cost_usd`` on load (the exact shape of regression
+    R16 exists to catch), points a criterion at it, and asserts the
+    criterion FAILS naming the dropped field. This is the proof that the
+    fail path — unreachable before this fix — is now reachable.
+    """
+    import dataclasses as dc
+    import types
+
+    fake_models = types.ModuleType("fake_roundtrip_models")
+
+    @dc.dataclass(frozen=True)
+    class FakeTask:
+        task_id: str
+        cost_usd: float = 0.0
+
+    fake_models.FakeTask = FakeTask  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_roundtrip_models", fake_models)
+
+    fake_loader_mod = types.ModuleType("fake_roundtrip_loader")
+
+    class _Loaded:
+        def __init__(self, completed: list[object]) -> None:
+            self.completed = completed
+
+    def buggy_load_config_results(exp_dir: Path, config_label: str) -> _Loaded:
+        path = exp_dir / "runs" / config_label / "results.json"
+        data = json.loads(path.read_text())
+        # BUG: constructs FakeTask from only task_id, silently dropping
+        # cost_usd — exactly the class of production-loader regression
+        # R16 exists to catch.
+        completed = [FakeTask(task_id=t["task_id"]) for t in data["completed"]]
+        return _Loaded(completed)
+
+    fake_loader_mod.buggy_load_config_results = buggy_load_config_results  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_roundtrip_loader", fake_loader_mod)
+
+    monkeypatch.setitem(
+        _DATACLASS_ROUNDTRIP_LOADERS,
+        ("fake_roundtrip_models", "FakeTask"),
+        ("fake_roundtrip_loader", "buggy_load_config_results"),
+    )
+
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "fx").mkdir()
+    (project / "fx" / "results.json").write_text(
+        json.dumps({"completed": [{"task_id": "t1", "cost_usd": 1.23}]})
+    )
+    manifest = project / "acceptance" / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "RT-FAKE"
+            description = "fake dataclass round-trips without field loss"
+            tier = "structural"
+            check_type = "dataclass_roundtrip"
+            severity = "critical"
+            prd_source = "fake.md#R16"
+            [criterion.params]
+            module = "fake_roundtrip_models"
+            symbol = "FakeTask"
+            fixture = "fx/results.json"
+            """).strip()
+    )
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    evidence = verdict["failures"][0]["evidence"]
+    assert "lost/altered" in evidence
+    assert "cost_usd" in evidence
+
+
+# ---------------------------------------------------------------------------
+# yaml_field_equal (structural)
+# ---------------------------------------------------------------------------
+
+
+def _yaml_equal_manifest(tmp_path: Path) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "YAML-EQ"
+            description = "both workflows use the same runner image"
+            tier = "structural"
+            check_type = "yaml_field_equal"
+            severity = "medium"
+            prd_source = "fake.md#ci"
+            [criterion.params]
+            files = ["wf/a.yml", "wf/b.yml"]
+            jsonpath = "$.jobs.*.runs-on"
+            must_match = true
+            """).strip()
+    )
+    return manifest
+
+
+def test_yaml_field_equal_passes_when_all_equal(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text(
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n  test:\n    runs-on: ubuntu-latest\n"
+    )
+    (project / "wf" / "b.yml").write_text(
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+    )
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+
+
+def test_yaml_field_equal_fails_when_images_differ(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n")
+    (project / "wf" / "b.yml").write_text("jobs:\n  publish:\n    runs-on: ubuntu-22.04\n")
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    assert "differ" in verdict["failures"][0]["evidence"]
+
+
+def test_yaml_field_equal_skips_when_file_missing(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n")
+    # wf/b.yml absent.
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    result = next(
+        r for r in _criterion_results(v, tmp_path / "ws") if r["criterion_id"] == "YAML-EQ"
+    )
+    assert result["result"] == RESULT_SKIP
+
+
+def test_yaml_field_equal_fails_when_a_matched_job_lacks_the_field(
+    tmp_path: Path,
+) -> None:
+    """codeprobe-2s54 Finding 2: both files are present, but b.yml's only
+    job (e.g. a reusable-workflow `uses:` job) has no `runs-on` at all. The
+    old behaviour silently dropped that job from the collected values and
+    reported "same runner image" against a', the sole remaining value —
+    this must now FAIL instead, naming the job that lacked the field."""
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n")
+    (project / "wf" / "b.yml").write_text(
+        "jobs:\n  publish:\n    uses: ./.github/workflows/reusable.yml\n"
+    )
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    evidence = verdict["failures"][0]["evidence"]
+    assert "publish" in evidence
+    assert "wf/b.yml" in evidence
+
+
+# ---------------------------------------------------------------------------
+# stream_separation (behavioral)
+# ---------------------------------------------------------------------------
+
+
+def _stream_manifest(tmp_path: Path, params_toml: str) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent(f"""
+            [[criterion]]
+            id = "STREAM"
+            description = "stdout/stderr stay separated"
+            tier = "behavioral"
+            check_type = "stream_separation"
+            severity = "critical"
+            prd_source = "fake.md#stderr"
+            [criterion.params]
+            {params_toml}
+            """).strip()
+    )
+    return manifest
+
+
+def test_stream_separation_json_stdout_pass_and_fail(tmp_path: Path) -> None:
+    manifest = _stream_manifest(
+        tmp_path, 'command = "x"\nstdout_must_parse_as = "json"\nwarning_channel = "stderr"'
+    )
+    v = Verifier(manifest)
+
+    ws_ok = tmp_path / "ok"
+    ws_ok.mkdir()
+    (ws_ok / "STREAM.stdout").write_text('{"ok": true}\n')
+    assert v.run(ws_ok)["pass_count"] == 1
+
+    ws_bad = tmp_path / "bad"
+    ws_bad.mkdir()
+    (ws_bad / "STREAM.stdout").write_text("WARNING: heads up\n{\"ok\": true}\n")
+    assert v.run(ws_bad)["fail_count"] == 1
+
+
+def test_stream_separation_not_contains_pass_and_fail(tmp_path: Path) -> None:
+    manifest = _stream_manifest(
+        tmp_path,
+        'command = "x"\nstdout_must_not_contain = "INFO codeprobe"\n'
+        'stderr_may_contain = "INFO codeprobe"',
+    )
+    v = Verifier(manifest)
+
+    ws_ok = tmp_path / "ok"
+    ws_ok.mkdir()
+    (ws_ok / "STREAM.stdout").write_text("pure results, no logs here\n")
+    assert v.run(ws_ok)["pass_count"] == 1
+
+    ws_bad = tmp_path / "bad"
+    ws_bad.mkdir()
+    (ws_bad / "STREAM.stdout").write_text("INFO codeprobe: leaked onto stdout\n")
+    assert v.run(ws_bad)["fail_count"] == 1
+
+
+def test_stream_separation_skips_when_stdout_missing(tmp_path: Path) -> None:
+    manifest = _stream_manifest(tmp_path, 'command = "x"\nstdout_must_parse_as = "json"')
+    v = Verifier(manifest)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = next(
+        r for r in _criterion_results(v, ws) if r["criterion_id"] == "STREAM"
+    )
+    assert result["result"] == RESULT_SKIP
+    assert "missing" in result["evidence"]
+
+
+# ---------------------------------------------------------------------------
+# json_lines_valid (behavioral)
+# ---------------------------------------------------------------------------
+
+
+def _json_lines_manifest(tmp_path: Path) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "JLINES"
+            description = "one valid JSON object per log line"
+            tier = "behavioral"
+            check_type = "json_lines_valid"
+            severity = "high"
+            prd_source = "fake.md#json-events"
+            [criterion.params]
+            command = "x"
+            channel = "stderr"
+            required_keys = ["level", "logger", "message"]
+            """).strip()
+    )
+    return manifest
+
+
+def test_json_lines_valid_pass(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text(
+        '{"level": "INFO", "logger": "codeprobe", "message": "started"}\n'
+        '{"level": "DEBUG", "logger": "codeprobe.mine", "message": "3 tasks"}\n'
+    )
+    assert v.run(ws)["pass_count"] == 1
+
+
+def test_json_lines_valid_fails_on_non_json_line(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text(
+        '{"level": "INFO", "logger": "codeprobe", "message": "ok"}\n'
+        "Traceback (most recent call last):\n"
+    )
+    verdict = v.run(ws)
+    assert verdict["fail_count"] == 1
+    assert "not valid JSON" in verdict["failures"][0]["evidence"]
+
+
+def test_json_lines_valid_fails_on_missing_required_key(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text('{"level": "INFO", "message": "no logger key"}\n')
+    verdict = v.run(ws)
+    assert verdict["fail_count"] == 1
+    assert "missing required keys" in verdict["failures"][0]["evidence"]
+
+
+def test_json_lines_valid_skips_when_channel_artifact_missing(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = next(r for r in _criterion_results(v, ws) if r["criterion_id"] == "JLINES")
+    assert result["result"] == RESULT_SKIP
+    assert "missing" in result["evidence"]
+
+
+def test_json_lines_valid_fails_when_channel_empty(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text("\n  \n")
+    verdict = v.run(ws)
+    assert verdict["fail_count"] == 1
+    assert "no non-empty lines" in verdict["failures"][0]["evidence"]
 
 
 # ---------------------------------------------------------------------------

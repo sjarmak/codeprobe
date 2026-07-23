@@ -10,7 +10,8 @@ Before tagging, confirm all three:
    the acceptance loop, then check it:
 
    ```bash
-   uv run python scripts/acceptance_loop.py --eval-mode full --iterations 2
+   uv run python scripts/acceptance_loop.py --eval-mode full --iterations 2 \
+       --target-repo <a real repo> --producer-agent claude
    uv run python scripts/pre_tag_check.py
    ```
 
@@ -35,6 +36,29 @@ Before tagging, confirm all three:
    `--eval-mode full` (real agent runs, real spend) before a tag is
    created; `pre_tag_check.py` enforces this mechanically via the
    `eval_mode` field recorded in each verdict.
+
+   **Producer agent (binding for 0.13.0 and later):** `--eval-mode full`
+   requires `--producer-agent` — no silent default. The loop runs a real
+   `codeprobe mine` + `codeprobe run --agent <producer-agent>` against
+   `--target-repo`, aggregates the per-arm results into
+   `.codeprobe/results.json`, and only then can the statistical criteria
+   (`SILENT-RUN-RESULTS-002`, `TELEM-COST-SOURCE-001`, `TELEM-COST-USD-002`)
+   evaluate instead of skipping. The chosen agent is stamped into every
+   full-mode verdict as `producer_agent`. **The two full-mode greens gating
+   0.13.0 MUST come from a REAL agent producer (e.g. `--producer-agent
+   claude`), never the `e2e-stub`.** `e2e-stub` is a zero-budget wiring
+   check only: its telemetry is honest-but-fake (`cost_source =
+   "unavailable"`, `cost_usd = 0.0`), which passes the `TELEM-*` criteria
+   without any genuine cost signal — so a verdict whose `producer_agent` is
+   `e2e-stub` is NOT release evidence. Before tagging, confirm both feeding
+   verdicts record a real `producer_agent`.
+
+   The exact 0.13.0 gate command an operator runs (real agent, real spend):
+
+   ```bash
+   uv run python scripts/acceptance_loop.py --eval-mode full --iterations 2 \
+       --target-repo <a real git repo> --producer-agent claude
+   ```
 2. **`CHANGELOG.md` has an entry for the version being released.** A `##
    <version>` heading; see the `Unreleased` section for the running list of
    changes since the last release. `scripts/check_release_artifacts.py`

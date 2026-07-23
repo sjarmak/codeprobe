@@ -67,9 +67,11 @@ class TestStructuralSkip:
         [
             "import_equals",
             "dataclass_has_fields",
+            "dataclass_roundtrip",
             "regex_present",
             "regex_absent",
             "pyproject_deps_bounded",
+            "yaml_field_equal",
         ],
     )
     def test_structural_types_produce_no_action(self, check_type: str) -> None:
@@ -92,11 +94,11 @@ class TestHandlerlessSkip:
     @pytest.mark.parametrize(
         "check_type",
         [
-            "stream_separation",
+            # log_level_matches is the only remaining handler-less type: a
+            # subprocess's logger level is not observable from --help, so no
+            # honest handler exists and no artifact is worth emitting
+            # (codeprobe-2s54).
             "log_level_matches",
-            "json_lines_valid",
-            "dataclass_roundtrip",
-            "yaml_field_equal",
         ],
     )
     def test_handlerless_types_produce_no_action(self, check_type: str) -> None:
@@ -108,6 +110,46 @@ class TestHandlerlessSkip:
             project_root=PROJECT_ROOT,
         )
         assert actions == []
+
+
+# ---------------------------------------------------------------------------
+# Behavioral stream-capture check_types now emit a command-capture action
+# ---------------------------------------------------------------------------
+
+
+class TestStreamCaptureEmitters:
+    @pytest.mark.parametrize("check_type", ["stream_separation", "json_lines_valid"])
+    def test_captures_stdout_stderr_exit(self, check_type: str) -> None:
+        c = _criterion(
+            id="STREAM-001",
+            check_type=check_type,
+            params={"command": "codeprobe interpret {results} --format json"},
+        )
+        actions = compile_actions(
+            [c],
+            target_repo=TARGET_REPO,
+            workspace=WORKSPACE,
+            project_root=PROJECT_ROOT,
+        )
+        assert len(actions) == 1
+        a = actions[0]
+        assert "STREAM-001.stdout" in a.artifact_paths
+        assert "STREAM-001.stderr" in a.artifact_paths
+        assert "STREAM-001.exit" in a.artifact_paths
+        # {results} token was substituted, not left literal.
+        assert "{results}" not in a.shell_snippet
+
+    @pytest.mark.parametrize("check_type", ["stream_separation", "json_lines_valid"])
+    def test_missing_command_returns_stub(self, check_type: str) -> None:
+        c = _criterion(id="STREAM-STUB", check_type=check_type, params={})
+        actions = compile_actions(
+            [c],
+            target_repo=TARGET_REPO,
+            workspace=WORKSPACE,
+            project_root=PROJECT_ROOT,
+        )
+        assert len(actions) == 1
+        assert "COMPILE_ERROR" in actions[0].shell_snippet
 
 
 # ---------------------------------------------------------------------------

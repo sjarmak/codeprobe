@@ -1,0 +1,80 @@
+{
+  "config": "default",
+  "completed": [
+    {
+      "task_id": "probe-findfunction-000",
+      "automated_score": 0.0,
+      "repeat_index": 0,
+      "status": "completed",
+      "duration_seconds": 0.00015161698684096336,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "cache_read_tokens": null,
+      "cache_creation_tokens": null,
+      "cost_usd": 0.0,
+      "cost_model": "unknown",
+      "cost_source": "unavailable",
+      "tool_call_count": null,
+      "tool_use_by_name": null,
+      "num_turns": null,
+      "result_subtype": null,
+      "duration_api_ms": null,
+      "error_category": null,
+      "mcp_init": null,
+      "scoring_details": {
+        "passed": false,
+        "scorer_family": "binary_test",
+        "verdict": "incorrect"
+      },
+      "metadata": {
+        "max_turns_choice": "default"
+      }
+    },
+    {
+      "task_id": "probe-countcallers-001",
+      "automated_score": 1.0,
+      "repeat_index": 1,
+      "status": "completed",
+      "duration_seconds": 4.2,
+      "input_tokens": 1200,
+      "output_tokens": 340,
+      "cache_read_tokens": 512,
+      "cache_creation_tokens": 128,
+      "cost_usd": 0.0187,
+      "cost_model": "claude-sonnet-4",
+      "cost_source": "api_reported",
+      "tool_call_count": 6,
+      "tool_use_by_name": {"Read": 4, "Grep": 2},
+      "num_turns": 3,
+      "result_subtype": "success",
+      "duration_api_ms": 4100,
+      "error_category": null,
+      "mcp_init": {"servers": ["sourcegraph"]},
+      "scoring_details": {
+        "passed": true,
+        "scorer_family": "binary_test",
+        "verdict": "correct"
+      },
+      "metadata": {
+        "max_turns_choice": "explicit"
+      }
+    },
+    {
+      "task_id": "probe-errorcase-002",
+      "automated_score": 0.0,
+      "repeat_index": 0,
+      "status": "error",
+      "duration_seconds": 0.5,
+      "cost_usd": 0.0,
+      "cost_model": "unknown",
+      "cost_source": "unavailable",
+      "error_category": "quota",
+      "provenance_note": "records may carry keys newer than the CompletedTask schema; the round-trip must tolerate and ignore them, not crash"
+    }
+  ],
+  "summary": {
+    "config": "default",
+    "completed": 3,
+    "mean_score": 0.3333333333333333
+  }
+}
