@@ -16,9 +16,9 @@
 
 [[entry]]
 file = "src/codeprobe/mining/extractor.py"
-line_start = 80
-line_end = 87
-reason = "Known violation: file-count difficulty estimation (<=3 easy, >10 hard). CLAUDE.md ZFC section."
+line_start = 358
+line_end = 366
+reason = "Known violation: _estimate_difficulty() file-count estimation (<=3 easy, >10 hard). docs/conventions/zfc-compliance.md."
 
 [[entry]]
 file = "src/codeprobe/assess/heuristics.py"

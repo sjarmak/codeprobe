@@ -114,7 +114,7 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
         reason=(
             "_OVERSHIPPING_RECALL_MIN named module constant, not config-plumbed."
         ),
-        follow_up_bead="codeprobe-jdkq-followup-bias-thresholds-config",
+        follow_up_bead="codeprobe-kdng",
     ),
     Offender(
         relpath="src/codeprobe/core/bias_detection.py",
@@ -125,7 +125,7 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
             "_OVERSHIPPING_LOW_PRECISION_MAX named module constant, not "
             "config-plumbed."
         ),
-        follow_up_bead="codeprobe-jdkq-followup-bias-thresholds-config",
+        follow_up_bead="codeprobe-kdng",
     ),
     Offender(
         relpath="src/codeprobe/core/bias_detection.py",
@@ -136,12 +136,12 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
             "_OVERSHIPPING_PRECISION_GAP_MIN named module constant, not "
             "config-plumbed."
         ),
-        follow_up_bead="codeprobe-jdkq-followup-bias-thresholds-config",
+        follow_up_bead="codeprobe-kdng",
     ),
     # ArtifactScorer low-confidence warning threshold. Promoted from an
     # inline ``< 0.5`` literal to a named module constant during the
-    # codeprobe-jdkq commit; the named form is honest documentation but
-    # still hardcoded. Same follow-up bead covers the config plumbing.
+    # scorer-honesty hardening work; the named form is honest documentation
+    # but still hardcoded. Same follow-up bead covers the config plumbing.
     Offender(
         relpath="src/codeprobe/core/scoring/scorers.py",
         rule="hardcoded-threshold",
@@ -151,7 +151,7 @@ _KNOWN_OFFENDERS: tuple[Offender, ...] = (
             "_LOW_CONFIDENCE_THRESHOLD warns when ground_truth.confidence "
             "< 0.5. Named, documented, but not config-sourced."
         ),
-        follow_up_bead="codeprobe-jdkq-followup-bias-thresholds-config",
+        follow_up_bead="codeprobe-kdng",
     ),
 )
 
