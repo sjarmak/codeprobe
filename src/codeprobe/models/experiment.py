@@ -61,6 +61,12 @@ class ExperimentConfig:
     # Legacy boolean values are accepted by the loader for back-compat:
     # ``True`` → ``"hide"``, ``False`` → ``"off"``.
     hide_local_source: Literal["off", "hide", "scaffold"] = "off"
+    # Confidence below which ArtifactScorer logs a warning about
+    # low-confidence ground truth (codeprobe-kdng). Policy threshold,
+    # not a score adjustment — tune per config to change sensitivity
+    # without editing scorer code. Default reproduces the historical
+    # hardcoded value in core/scoring/scorers.py.
+    low_confidence_threshold: float = 0.5
     extra: dict = field(default_factory=dict)
 
     def __repr__(self) -> str:
@@ -79,6 +85,7 @@ class ExperimentConfig:
             f"preambles={self.preambles!r}, reward_type={self.reward_type!r}, "
             f"max_turns={self.max_turns!r}, "
             f"hide_local_source={self.hide_local_source!r}, "
+            f"low_confidence_threshold={self.low_confidence_threshold!r}, "
             f"extra={self.extra!r})"
         )
 
@@ -206,3 +213,19 @@ class Experiment:
     configs: list[ExperimentConfig] = field(default_factory=list)
     tasks_dir: str = "tasks"
     task_ids: tuple[str, ...] = ()
+    # Bias-detection thresholds (codeprobe-kdng) — see
+    # core/bias_detection.py's overshipping detector. Experiment-scoped
+    # (not per-config) because the detector compares two configs'
+    # results against one shared sensitivity bar. Defaults reproduce the
+    # historical hardcoded values so behavior is unchanged unless a user
+    # opts into different sensitivity.
+    #
+    # * ``bias_overshipping_recall_min``: both configs must reach this
+    #   recall before an over-shipping comparison is even considered.
+    # * ``bias_overshipping_low_precision_max``: the over-shipper's
+    #   precision must be at or below this to flag.
+    # * ``bias_overshipping_precision_gap_min``: minimum precision delta
+    #   between the two configs required to flag.
+    bias_overshipping_recall_min: float = 0.95
+    bias_overshipping_low_precision_max: float = 0.5
+    bias_overshipping_precision_gap_min: float = 0.3

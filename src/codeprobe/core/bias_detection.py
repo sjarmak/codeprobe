@@ -52,14 +52,15 @@ _SG_GT_CATEGORIES: frozenset[str] = frozenset(
     }
 )
 
-# Thresholds for the over-shipping informational pattern. After
+# Default thresholds for the over-shipping informational pattern. After
 # codeprobe-voxa reward is recall, so the trigger looks at *precision*
 # rather than score gap: both configs achieved high recall, but one
-# shipped substantially more files than the other. Documented constants —
-# users can reason about exactly when a warning fires.
-_OVERSHIPPING_RECALL_MIN = 0.95          # both configs found ~everything
-_OVERSHIPPING_LOW_PRECISION_MAX = 0.5    # the over-shipper's precision
-_OVERSHIPPING_PRECISION_GAP_MIN = 0.3    # min precision delta to flag
+# shipped substantially more files than the other. These are policy —
+# sourced from ``Experiment.bias_overshipping_*`` (codeprobe-kdng) and
+# passed as keyword arguments below; the defaults on
+# :func:`detect_overshipping_anti_pattern` reproduce the historical
+# hardcoded values so an experiment.json that omits them sees unchanged
+# behavior.
 
 
 @dataclass(frozen=True)
@@ -311,14 +312,25 @@ def detect_backend_overlap(
 
 def detect_overshipping_anti_pattern(
     config_results: dict[str, list[dict]],
+    *,
+    recall_min: float = 0.95,
+    low_precision_max: float = 0.5,
+    precision_gap_min: float = 0.3,
 ) -> list[BiasWarning]:
     """Flag informational over-shipping: same recall, different precision.
 
     Post-codeprobe-voxa reward is recall, so over-shipping no longer
     suppresses a config's score. The warning is now informational: it
     surfaces tasks where two configs both recovered the oracle (recall ≥
-    threshold) but one submitted substantially more files than the other.
-    Users see the *behavioural* difference; the reward is unaffected.
+    ``recall_min``) but one submitted substantially more files than the
+    other (precision at or below ``low_precision_max``, with a gap of at
+    least ``precision_gap_min`` versus the tighter config). Users see the
+    *behavioural* difference; the reward is unaffected.
+
+    The three thresholds are policy, sourced from
+    ``Experiment.bias_overshipping_*`` (codeprobe-kdng); callers that
+    don't plumb an experiment (e.g. direct unit tests) get the historical
+    hardcoded defaults.
     """
     warnings: list[BiasWarning] = []
     labels = list(config_results.keys())
@@ -359,7 +371,7 @@ def detect_overshipping_anti_pattern(
                 ):
                     continue
                 # Both must have recovered ~the entire oracle.
-                if a_recall < _OVERSHIPPING_RECALL_MIN or b_recall < _OVERSHIPPING_RECALL_MIN:
+                if a_recall < recall_min or b_recall < recall_min:
                     continue
                 # Identify over-shipper as the lower-precision side.
                 if a_prec <= b_prec:
@@ -372,9 +384,9 @@ def detect_overshipping_anti_pattern(
                     over_label, tight_label = b_label, a_label
                     over_prec, tight_prec = b_prec, a_prec
                     over_recall = b_recall
-                if over_prec > _OVERSHIPPING_LOW_PRECISION_MAX:
+                if over_prec > low_precision_max:
                     continue
-                if (tight_prec - over_prec) < _OVERSHIPPING_PRECISION_GAP_MIN:
+                if (tight_prec - over_prec) < precision_gap_min:
                     continue
                 warnings.append(
                     BiasWarning(
@@ -497,7 +509,14 @@ def detect_bias_warnings(
     task_gt_backends = collect_task_gt_backends(exp_dir, experiment.tasks_dir)
     warnings: list[BiasWarning] = []
     warnings.extend(detect_backend_overlap(experiment.configs, task_gt_backends))
-    warnings.extend(detect_overshipping_anti_pattern(config_results))
+    warnings.extend(
+        detect_overshipping_anti_pattern(
+            config_results,
+            recall_min=experiment.bias_overshipping_recall_min,
+            low_precision_max=experiment.bias_overshipping_low_precision_max,
+            precision_gap_min=experiment.bias_overshipping_precision_gap_min,
+        )
+    )
     warnings.extend(
         detect_no_independent_baseline(experiment.configs, task_gt_backends)
     )

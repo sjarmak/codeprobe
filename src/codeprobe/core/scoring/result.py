@@ -331,3 +331,22 @@ def scorer_accepts_agent_state(scorer: object) -> bool:
     except (TypeError, ValueError):
         return False
     return "agent_state" in sig.parameters
+
+
+def scorer_accepts_low_confidence_threshold(scorer: object) -> bool:
+    """Return True if ``scorer.score`` accepts a ``low_confidence_threshold`` kwarg.
+
+    Structural capability check (codeprobe-kdng), mirroring
+    :func:`scorer_accepts_agent_state`: ``ArtifactScorer`` and
+    ``DualScorer`` opt in; ``BinaryScorer`` / ``ContinuousScorer`` and
+    third-party scorers that don't accept the parameter keep the legacy
+    hardcoded-default behavior.
+    """
+    score = getattr(scorer, "score", None)
+    if score is None:
+        return False
+    try:
+        sig = inspect.signature(score)
+    except (TypeError, ValueError):
+        return False
+    return "low_confidence_threshold" in sig.parameters

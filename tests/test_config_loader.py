@@ -188,6 +188,66 @@ class TestToExperiment:
         experiment = to_experiment(evalrc)
         assert experiment.configs[0].reward_type == "binary"
 
+    def test_explicit_config_extracts_low_confidence_threshold(self) -> None:
+        """codeprobe-kdng: low_confidence_threshold is a recognized
+        explicit-config key, not rejected by the unknown-key guard."""
+        evalrc = EvalrcConfig(
+            name="threshold",
+            configs={
+                "strict": {"agent": "claude", "low_confidence_threshold": 0.8},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].low_confidence_threshold == 0.8
+
+    def test_explicit_config_low_confidence_threshold_defaults(self) -> None:
+        """low_confidence_threshold defaults to 0.5 when not specified."""
+        evalrc = EvalrcConfig(
+            name="default-threshold",
+            configs={"baseline": {"agent": "claude"}},
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].low_confidence_threshold == 0.5
+
+    def test_explicit_config_low_confidence_threshold_rejects_string(self) -> None:
+        """codeprobe-kdng: a quoted number must fail loud at load time,
+        not silently carry a str that later blows up in the scorer with
+        a bare TypeError after the agent run already paid full cost."""
+        evalrc = EvalrcConfig(
+            name="bad-threshold",
+            configs={
+                "strict": {"agent": "claude", "low_confidence_threshold": "0.8"},
+            },
+        )
+        with pytest.raises(ValueError, match="low_confidence_threshold"):
+            to_experiment(evalrc)
+
+    def test_explicit_config_low_confidence_threshold_rejects_out_of_range(
+        self,
+    ) -> None:
+        evalrc = EvalrcConfig(
+            name="oob-threshold",
+            configs={
+                "strict": {"agent": "claude", "low_confidence_threshold": 1.5},
+            },
+        )
+        with pytest.raises(ValueError, match="low_confidence_threshold"):
+            to_experiment(evalrc)
+
+    def test_explicit_config_low_confidence_threshold_null_uses_default(
+        self,
+    ) -> None:
+        """An explicit null must fall back to the 0.5 default, same as an
+        absent key — it must not silently carry None into scoring."""
+        evalrc = EvalrcConfig(
+            name="null-threshold",
+            configs={
+                "strict": {"agent": "claude", "low_confidence_threshold": None},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].low_confidence_threshold == 0.5
+
 
 class TestDimensions:
     """Test dimensions-based cross-product config generation."""

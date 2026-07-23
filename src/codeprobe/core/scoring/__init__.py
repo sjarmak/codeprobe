@@ -56,6 +56,7 @@ from codeprobe.core.scoring.result import (  # noqa: F401
     read_task_metadata,
     read_task_verification,
     scorer_accepts_agent_state,
+    scorer_accepts_low_confidence_threshold,
 )
 from codeprobe.core.scoring.sandbox import (  # noqa: F401
     _SAFE_ENV_KEYS,
@@ -71,7 +72,6 @@ from codeprobe.core.scoring.sandbox import (  # noqa: F401
 )
 from codeprobe.core.scoring.scorers import (  # noqa: F401
     _IR_LIST_ANSWER_TYPES,
-    _LOW_CONFIDENCE_THRESHOLD,
     _MAX_GROUND_TRUTH_BYTES,
     _ORACLE_TYPE_SCORERS,
     _WEIGHT_TOLERANCE,
@@ -137,6 +137,7 @@ __all__ = [
     "read_task_metadata",
     "read_task_verification",
     "scorer_accepts_agent_state",
+    "scorer_accepts_low_confidence_threshold",
     # sandbox
     "_SAFE_ENV_KEYS",
     "_TOKEN_PATTERN",
@@ -150,7 +151,6 @@ __all__ = [
     "scorer_env_override",
     # scorers
     "_IR_LIST_ANSWER_TYPES",
-    "_LOW_CONFIDENCE_THRESHOLD",
     "_MAX_GROUND_TRUTH_BYTES",
     "_ORACLE_TYPE_SCORERS",
     "_WEIGHT_TOLERANCE",

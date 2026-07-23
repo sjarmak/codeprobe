@@ -12,7 +12,13 @@ from pathlib import Path
 import pytest
 
 from codeprobe.analysis.stats import PASS_THRESHOLD
-from codeprobe.core.scoring import ArtifactScorer, ScoreResult
+from codeprobe.core.scoring import (
+    ArtifactScorer,
+    BinaryScorer,
+    DualScorer,
+    ScoreResult,
+    scorer_accepts_low_confidence_threshold,
+)
 
 # ---------------------------------------------------------------------------
 # ScoreResult.details field
@@ -145,3 +151,22 @@ class TestArtifactScorerFileListThreshold:
         result = ArtifactScorer().score("", task_dir)
         assert result.score >= PASS_THRESHOLD
         assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# scorer_accepts_low_confidence_threshold — structural capability check
+# ---------------------------------------------------------------------------
+
+
+class TestScorerAcceptsLowConfidenceThreshold:
+    def test_artifact_scorer_accepts(self) -> None:
+        assert scorer_accepts_low_confidence_threshold(ArtifactScorer()) is True
+
+    def test_dual_scorer_accepts(self) -> None:
+        assert scorer_accepts_low_confidence_threshold(DualScorer()) is True
+
+    def test_binary_scorer_does_not_accept(self) -> None:
+        assert scorer_accepts_low_confidence_threshold(BinaryScorer()) is False
+
+    def test_object_without_score_method_is_false(self) -> None:
+        assert scorer_accepts_low_confidence_threshold(object()) is False
