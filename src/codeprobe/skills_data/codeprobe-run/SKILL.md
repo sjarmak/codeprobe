@@ -16,7 +16,7 @@ per-task events followed by a terminal envelope.
 
 If doctor reports failures (missing backends, bad credentials, permission
 issues), resolve them first. Do not retry `codeprobe run` until doctor
-reports `status == "ok"`.
+reports `ok: true`.
 
 ## Bare invocation
 
@@ -52,7 +52,7 @@ On non-TTY stdout, the default output is a **dual surface** per §7.2 + §5.4:
 - Per task, one or more JSON records with `"record_type": "event"` are written
   as newline-delimited JSON (NDJSON).
 - The final record has `"record_type": "envelope"` and contains the aggregate
-  run summary (status, totals, per-task scores, cost).
+  run summary (per-config score summaries, totals, cost).
 
 Pass `--json` to collapse this into a single terminal envelope (no per-task
 events). Pass `--json-lines` to force NDJSON mode even when `--json` would
@@ -60,38 +60,63 @@ otherwise be selected from `CODEPROBE_JSON`.
 
 ## JSON fields to parse
 
-Terminal envelope shape (emitted with `--json` or as the last NDJSON record):
+Terminal envelope shape (emitted with `--json` or as the last NDJSON
+record). Top-level keys are exactly the `Envelope` dataclass fields in
+`src/codeprobe/cli/envelope.py`:
 
 ```json
 {
-  "status": "ok" | "error",
-  "command": "run",
-  "exit_code": 0,
   "record_type": "envelope",
+  "ok": true,
+  "command": "run",
+  "version": "<codeprobe version>",
+  "schema_version": "1",
+  "exit_code": 0,
   "data": {
-    "run_id": "...",
-    "agent": "claude",
-    "tasks_total": <int>,
-    "tasks_passed": <int>,
-    "tasks_failed": <int>,
-    "cost_usd": <float>,
-    "results": [ { "task_id": "...", "score": <float>, "cost_usd": <float>, "status": "..." } ]
+    "command_schema_version": "1",
+    "experiment": "...",
+    "configs": [
+      {
+        "label": "...",
+        "tasks": 10,
+        "scored_count": 9,
+        "mean_score": 0.72,
+        "perfect": 4,
+        "cost_usd": 3.21,
+        "quota_error_count": 0,
+        "infra_failure_count": 1,
+        "errored_count": 1
+      }
+    ],
+    "total_tasks": 10,
+    "total_cost_usd": 3.21,
+    "tenant": "<tenant or null>",
+    "tenant_source": "<flag|env or null>"
   },
-  "errors": [
-    { "code": "<CODE>", "message": "...", "remediation": "...", "terminal": <bool> }
-  ]
+  "error": null,
+  "warnings": [],
+  "next_steps": []
 }
 ```
+
+Parse `ok`. On `false`, inspect `error.code`; `error` is a single object
+with `code` / `message` / `kind` / `terminal` / `next_try_flag` /
+`next_try_value` / `diagnose_cmd` / `message_for_agent` / `detail`, not an
+array. On `true`, read `data.configs[]`. `mean_score` and `perfect` cover
+the scored population only (`scored_count`); check `quota_error_count`,
+`infra_failure_count`, and `errored_count` before treating two configs as
+comparable.
 
 Per-task event shape (NDJSON stream):
 
 ```json
 {
   "record_type": "event",
+  "event": "task_done",
   "task_id": "...",
-  "status": "...",
-  "score": <float>,
-  "cost_usd": <float>
+  "score": 1.0,
+  "duration_seconds": 12.3,
+  "cost_usd": 0.42
 }
 ```
 

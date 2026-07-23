@@ -31,32 +31,57 @@ Regression mode (per-task score over commit history from `codeprobe mine --refre
 codeprobe interpret <tasks_path> --json --regression --results <results_path>
 ```
 
-Alternative serialization via `--format` (applies only when `--json` is not set):
+Alternative serialization via `--format`:
 
 ```bash
-codeprobe interpret <results_path> --format csv
+codeprobe interpret <results_path> --format csv    # CSV on stdout (pretty mode)
+codeprobe interpret <results_path> --format html   # writes <experiment>_report.html
 ```
+
+`--format html` writes the HTML report file in every output mode. In envelope
+mode (the non-TTY default, or `--json`) the envelope carries the file's
+location as `data.html_report_path`; the key is present even on a
+`VALIDITY_FAILED` (exit 2) envelope, so the validity-stamped report is still
+discoverable. `--format csv` and `--format json` shape stdout in pretty mode
+only; the envelope's report payload is always JSON.
 
 ## JSON fields to parse
 
+Top-level keys are exactly the `Envelope` dataclass fields in
+`src/codeprobe/cli/envelope.py`:
+
 ```json
 {
-  "status": "ok" | "error",
+  "record_type": "envelope",
+  "ok": true,
   "command": "interpret",
+  "version": "<codeprobe version>",
+  "schema_version": "1",
   "exit_code": 0,
   "data": {
-    "configs": [
-      { "id": "...", "score_mean": <float>, "cost_mean_usd": <float>, "rank": <int> }
-    ],
-    "recommendations": [ { "text": "...", "confidence": <float> } ],
-    "regression": { "task_id": "...", "series": [ { "sha": "...", "score": <float> } ] }
+    "command_schema_version": "1",
+    "experiment": "...",
+    "has_results": true,
+    "is_partial": false,
+    "completion_ratio": 1.0,
+    "validity": { "passed": true },
+    "report": { "summaries": [], "rankings": [], "comparisons": [], "tasks": [] }
   },
-  "errors": [ { "code": "<CODE>", "message": "...", "remediation": "...", "terminal": <bool> } ]
+  "error": null,
+  "warnings": [],
+  "next_steps": []
 }
 ```
 
-`data.regression` is only present when `--regression` is passed. `data.configs`
-is always a sorted list; `rank == 1` is the top config.
+Parse `ok`. On `false`, inspect `error.code`; `error` is a single object
+(`code` / `message` / `kind` / `terminal` / `diagnose_cmd` / ... fields),
+not an array. On `true`, branch on `data.has_results`: when `false`, `data`
+carries only a `message` ("Run 'codeprobe run' first"); when `true`,
+`data.report` holds the full JSON report (per-config `summaries`, sorted
+`rankings` with `rank == 1` on top, pairwise `comparisons`, per-task rows in
+`tasks`). Gate on `data.validity.passed` before quoting any score: a
+failing infra-validity gate emits `ok: false` with `exit_code: 2` and the
+same `data` block spliced in.
 
 ## Error handling
 

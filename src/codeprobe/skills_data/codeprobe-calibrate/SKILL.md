@@ -41,26 +41,40 @@ codeprobe calibrate <holdout_path> --json --curator-version <id> --threshold 0.6
 
 ## JSON fields to parse
 
+Top-level keys are exactly the `Envelope` dataclass fields in
+`src/codeprobe/cli/envelope.py`:
+
 ```json
 {
-  "status": "ok" | "error",
+  "record_type": "envelope",
+  "ok": true,
   "command": "calibrate",
+  "version": "<codeprobe version>",
+  "schema_version": "1",
   "exit_code": 0,
   "data": {
-    "curator_version": "...",
-    "holdout_tasks": <int>,
-    "holdout_repos": <int>,
-    "pearson_correlation": <float>,
-    "thresholds": { "min_tasks": <int>, "min_repos": <int>, "threshold": <float> },
-    "profile_path": "<abs-path | null>",
-    "passed": <bool>
+    "command_schema_version": "1",
+    "profile": {
+      "correlation_coefficient": 0.72,
+      "calibration_confidence": 0.72,
+      "holdout_size": 120,
+      "holdout_repos": [ "..." ],
+      "produced_at": "<ISO 8601 UTC>",
+      "curator_version": "..."
+    },
+    "out_path": "<abs-path or null>"
   },
-  "errors": [ { "code": "<CODE>", "message": "...", "remediation": "...", "terminal": <bool> } ]
+  "error": null,
+  "warnings": [],
+  "next_steps": []
 }
 ```
 
-`profile_path` is `null` unless `passed == true`. A passed gate is the only
-condition under which any profile artifact exists.
+Parse `ok`. A `true` envelope means the gate PASSED and `data.profile` is the
+emitted calibration profile (`calibration_confidence` is the canonical alias
+of `correlation_coefficient` for downstream surfaces). A rejected gate never
+emits a profile: the command exits 2 with `ok: false` and `error.code` of
+`CALIBRATION_REJECTED` (`error` is a single object, never an array).
 
 ## Error handling
 

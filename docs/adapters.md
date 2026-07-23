@@ -63,7 +63,12 @@ Because `AgentAdapter` is a `@runtime_checkable` Protocol, you never need to
 inherit from it. Any class with all five members satisfies the contract:
 
 ```python
-from codeprobe.adapters.protocol import AgentAdapter, AgentConfig, AgentOutput
+from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
+    AgentAdapter,
+    AgentConfig,
+    AgentOutput,
+)
 
 class MinimalAdapter:
     @property
