@@ -71,13 +71,13 @@ jobs:
       # works. Its own internal rebuild must not feed the published artifact
       # (see comment above) — the upload already happened.
       #
-      # The wheel install below is required, not cosmetic: the structural
-      # smoke's import_equals / dataclass_has_fields handlers import
-      # codeprobe in THIS interpreter (acceptance/verify.py), so without it
-      # they skip on ImportError and the strict smoke fails. Installing the
-      # checked wheel also means those import checks exercise the actual
-      # release artifact rather than a checkout.
-      - run: pip install dist/codeprobe-*.whl
+      # No `pip install dist/codeprobe-*.whl` here (codeprobe-zqmr): the
+      # structural smoke's import_equals / dataclass_has_fields handlers now
+      # resolve imports inside the venv ReleaseGate.build_and_stage() stages
+      # internally (Verifier(..., python_interpreter=venv_python)), not in
+      # this job's interpreter. codeprobe is intentionally NOT importable
+      # here — that's what proves the smoke tests the staged install rather
+      # than whatever happens to be on this runner's Python path.
       - run: python scripts/release_gate.py
 
   publish:

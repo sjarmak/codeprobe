@@ -23,7 +23,9 @@ The tests cover the explicit acceptance criteria from the work-unit brief:
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 import textwrap
 from pathlib import Path
 
@@ -291,6 +293,192 @@ def test_import_equals_handler(tmp_path: Path) -> None:
     verdict = v.run(tmp_path / "ws")
     assert verdict["pass_count"] == 1
     assert verdict["fail_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Subprocess-mode introspection (codeprobe-zqmr): import_equals /
+# dataclass_has_fields must resolve imports in a *staged* interpreter, not
+# whichever interpreter is running the verifier, when python_interpreter is
+# set. These tests prove the smoke does not depend on the caller interpreter
+# by making a fake module importable ONLY via an env var (PYTHONPATH) that is
+# set *after* this process's sys.path was already computed — so the caller
+# genuinely cannot import it in-process, while a freshly-spawned subprocess
+# (standing in for a staged venv) picks it up at interpreter startup.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def staged_fake_module(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A module importable only by a subprocess that inherits PYTHONPATH.
+
+    Confirms up front that the *caller* cannot import it, then arranges for
+    a child ``python -c`` process to succeed via PYTHONPATH — simulating a
+    staged venv without needing to actually build one.
+    """
+    staged_dir = tmp_path / "staged_pkgs"
+    staged_dir.mkdir()
+    (staged_dir / "codeprobe_zqmr_fakemod.py").write_text(
+        "ANSWER = 42\n\n\nclass Widget:\n    x: int\n    y: str\n"
+    )
+    with pytest.raises(ImportError):
+        importlib.import_module("codeprobe_zqmr_fakemod")
+    monkeypatch.setenv("PYTHONPATH", str(staged_dir))
+    return staged_dir
+
+
+def test_import_equals_subprocess_mode_passes_via_staged_interpreter(
+    tmp_path: Path, staged_fake_module: Path
+) -> None:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "IMP-STAGED-OK"
+            description = "constant only importable in the staged interpreter"
+            tier = "structural"
+            check_type = "import_equals"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "codeprobe_zqmr_fakemod"
+            symbol = "ANSWER"
+            expected = 42
+            """).strip())
+    v = Verifier(manifest, python_interpreter=Path(sys.executable))
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1, verdict["failures"]
+    assert verdict["fail_count"] == 0
+
+
+def test_dataclass_has_fields_subprocess_mode_pass_and_fail(
+    tmp_path: Path, staged_fake_module: Path
+) -> None:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "DC-STAGED-OK"
+            description = "Widget has expected fields, checked in staged interpreter"
+            tier = "structural"
+            check_type = "dataclass_has_fields"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "codeprobe_zqmr_fakemod"
+            symbol = "Widget"
+            required_fields = ["x", "y"]
+
+            [[criterion]]
+            id = "DC-STAGED-MISSING"
+            description = "Widget is missing a field that was never declared"
+            tier = "structural"
+            check_type = "dataclass_has_fields"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "codeprobe_zqmr_fakemod"
+            symbol = "Widget"
+            required_fields = ["x", "z"]
+            """).strip())
+    v = Verifier(manifest, python_interpreter=Path(sys.executable))
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1, verdict["failures"]
+    assert verdict["fail_count"] == 1
+
+
+def test_import_equals_subprocess_mode_missing_symbol_fails(
+    tmp_path: Path, staged_fake_module: Path
+) -> None:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "IMP-STAGED-MISSING-SYMBOL"
+            description = "symbol does not exist on the staged module"
+            tier = "structural"
+            check_type = "import_equals"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "codeprobe_zqmr_fakemod"
+            symbol = "NOPE"
+            expected = 1
+            """).strip())
+    v = Verifier(manifest, python_interpreter=Path(sys.executable))
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    assert "not defined" in verdict["failures"][0]["evidence"]
+
+
+def test_import_equals_subprocess_mode_import_error_skips(tmp_path: Path) -> None:
+    """No PYTHONPATH trick here — the module genuinely does not exist
+    anywhere, so even the staged interpreter must skip (not fail)."""
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "IMP-STAGED-NO-MODULE"
+            description = "module does not exist anywhere"
+            tier = "structural"
+            check_type = "import_equals"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "codeprobe_zqmr_totally_absent_module"
+            symbol = "ANSWER"
+            expected = 1
+            """).strip())
+    v = Verifier(manifest, python_interpreter=Path(sys.executable))
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["skip_count"] == 1
+    assert verdict["pass_count"] == 0
+    assert verdict["fail_count"] == 0
+
+
+def test_import_equals_subprocess_crash_skips_with_evidence(tmp_path: Path) -> None:
+    """A ``python_interpreter`` that isn't Python at all (crashes on any
+    invocation) must be a loud skip, never a silent pass."""
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "IMP-CRASHED-INTERPRETER"
+            description = "the staged interpreter itself is broken"
+            tier = "structural"
+            check_type = "import_equals"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "codeprobe_zqmr_fakemod"
+            symbol = "ANSWER"
+            expected = 42
+            """).strip())
+    v = Verifier(manifest, python_interpreter=Path("/bin/false"))
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["skip_count"] == 1
+    assert verdict["pass_count"] == 0
+    assert verdict["fail_count"] == 0
+
+
+def test_import_equals_python_interpreter_none_preserves_in_process_behavior(
+    tmp_path: Path,
+) -> None:
+    """Default (``python_interpreter=None``) must be byte-for-byte the
+    historical in-process path — no subprocess spawned at all."""
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "IMP-INPROCESS"
+            description = "known constant equals expected, in-process"
+            tier = "structural"
+            check_type = "import_equals"
+            severity = "high"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            module = "acceptance.verify"
+            symbol = "MIN_TIER_EVALUATED_PCT"
+            expected = 80.0
+            """).strip())
+    v = Verifier(manifest)
+    assert v.python_interpreter is None
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+    assert verdict["fail_count"] == 0
 
 
 def test_regex_present_handler(tmp_path: Path) -> None:
