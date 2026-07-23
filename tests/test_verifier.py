@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from acceptance.verify import (
+    _DATACLASS_ROUNDTRIP_LOADERS,
     CANARY_FILENAME,
     RESULT_FAIL,
     RESULT_PASS,
@@ -1074,6 +1075,86 @@ def test_dataclass_roundtrip_against_real_fixture(tmp_path: Path) -> None:
     assert verdict["fail_count"] == 0
 
 
+def test_dataclass_roundtrip_catches_a_real_field_drop_in_the_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codeprobe-2s54 Finding 3: the check must exercise the SAME
+    deserialization path production uses, so a field-drop regression IN
+    THAT LOADER is caught — not just a TypeError from bad fixture data.
+
+    Registers a fake dataclass module and a deliberately buggy "production
+    loader" that drops ``cost_usd`` on load (the exact shape of regression
+    R16 exists to catch), points a criterion at it, and asserts the
+    criterion FAILS naming the dropped field. This is the proof that the
+    fail path — unreachable before this fix — is now reachable.
+    """
+    import dataclasses as dc
+    import types
+
+    fake_models = types.ModuleType("fake_roundtrip_models")
+
+    @dc.dataclass(frozen=True)
+    class FakeTask:
+        task_id: str
+        cost_usd: float = 0.0
+
+    fake_models.FakeTask = FakeTask  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_roundtrip_models", fake_models)
+
+    fake_loader_mod = types.ModuleType("fake_roundtrip_loader")
+
+    class _Loaded:
+        def __init__(self, completed: list[object]) -> None:
+            self.completed = completed
+
+    def buggy_load_config_results(exp_dir: Path, config_label: str) -> _Loaded:
+        path = exp_dir / "runs" / config_label / "results.json"
+        data = json.loads(path.read_text())
+        # BUG: constructs FakeTask from only task_id, silently dropping
+        # cost_usd — exactly the class of production-loader regression
+        # R16 exists to catch.
+        completed = [FakeTask(task_id=t["task_id"]) for t in data["completed"]]
+        return _Loaded(completed)
+
+    fake_loader_mod.buggy_load_config_results = buggy_load_config_results  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_roundtrip_loader", fake_loader_mod)
+
+    monkeypatch.setitem(
+        _DATACLASS_ROUNDTRIP_LOADERS,
+        ("fake_roundtrip_models", "FakeTask"),
+        ("fake_roundtrip_loader", "buggy_load_config_results"),
+    )
+
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "fx").mkdir()
+    (project / "fx" / "results.json").write_text(
+        json.dumps({"completed": [{"task_id": "t1", "cost_usd": 1.23}]})
+    )
+    manifest = project / "acceptance" / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "RT-FAKE"
+            description = "fake dataclass round-trips without field loss"
+            tier = "structural"
+            check_type = "dataclass_roundtrip"
+            severity = "critical"
+            prd_source = "fake.md#R16"
+            [criterion.params]
+            module = "fake_roundtrip_models"
+            symbol = "FakeTask"
+            fixture = "fx/results.json"
+            """).strip()
+    )
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    evidence = verdict["failures"][0]["evidence"]
+    assert "lost/altered" in evidence
+    assert "cost_usd" in evidence
+
+
 # ---------------------------------------------------------------------------
 # yaml_field_equal (structural)
 # ---------------------------------------------------------------------------
@@ -1140,6 +1221,30 @@ def test_yaml_field_equal_skips_when_file_missing(tmp_path: Path) -> None:
         r for r in _criterion_results(v, tmp_path / "ws") if r["criterion_id"] == "YAML-EQ"
     )
     assert result["result"] == RESULT_SKIP
+
+
+def test_yaml_field_equal_fails_when_a_matched_job_lacks_the_field(
+    tmp_path: Path,
+) -> None:
+    """codeprobe-2s54 Finding 2: both files are present, but b.yml's only
+    job (e.g. a reusable-workflow `uses:` job) has no `runs-on` at all. The
+    old behaviour silently dropped that job from the collected values and
+    reported "same runner image" against a', the sole remaining value —
+    this must now FAIL instead, naming the job that lacked the field."""
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n")
+    (project / "wf" / "b.yml").write_text(
+        "jobs:\n  publish:\n    uses: ./.github/workflows/reusable.yml\n"
+    )
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    evidence = verdict["failures"][0]["evidence"]
+    assert "publish" in evidence
+    assert "wf/b.yml" in evidence
 
 
 # ---------------------------------------------------------------------------

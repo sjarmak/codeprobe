@@ -56,6 +56,7 @@ import importlib
 import json
 import re
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -89,6 +90,26 @@ STATUS_INCOMPLETE: str = "INCOMPLETE"
 RESULT_PASS: str = "pass"
 RESULT_FAIL: str = "fail"
 RESULT_SKIP: str = "skip"
+
+#: Registry mapping ``(module, symbol)`` of the dataclass a
+#: ``dataclass_roundtrip`` criterion names to the production function that
+#: actually deserializes it from disk. R16 (the contract this check_type
+#: enforces) is "no KNOWN dataclass field is lost or altered on load" — that
+#: can only be a real assertion if the check calls the SAME code the
+#: production loader calls, not a reimplementation of its field-filter
+#: logic (a reimplementation of a lossless operation can never observe the
+#: loss it exists to catch). Each entry takes ``(exp_dir, config_label)``
+#: exactly like ``core.experiment.load_config_results`` and returns an
+#: object exposing ``.completed`` (a sequence of dataclass instances).
+#: Deliberately explicit and fail-loud rather than falling back to a
+#: reimplementation for an unregistered pair — see
+#: ``Verifier._check_dataclass_roundtrip``.
+_DATACLASS_ROUNDTRIP_LOADERS: dict[tuple[str, str], tuple[str, str]] = {
+    ("codeprobe.models.experiment", "CompletedTask"): (
+        "codeprobe.core.experiment",
+        "load_config_results",
+    ),
+}
 
 #: Python source executed via ``<interpreter> -c <script> <module> <symbol>``
 #: to introspect a module/symbol inside a *different* interpreter than the
@@ -619,16 +640,27 @@ class Verifier:
     def _check_dataclass_roundtrip(
         self, criterion: Criterion, _workspace: Path
     ) -> CheckResult:
-        """Round-trip every record in a JSON fixture through a dataclass.
+        """Round-trip every record in a JSON fixture through the REAL
+        production loader for ``module.symbol``.
 
-        Loads ``fixture`` (project-relative), extracts its record list, and
-        for each record constructs ``module.symbol`` from the record's
-        known-field subset then re-serializes via ``dataclasses.asdict``.
-        Fails if any record cannot be constructed (e.g. a required field is
-        absent) or if any known field is dropped or altered by the
-        round-trip — the data-loss contract R16 exists to catch. Unknown
-        keys (newer-schema fields) are ignored, matching
-        ``core.experiment.load_config_results``.
+        R16 is "no KNOWN dataclass field is lost or altered when results.json
+        is loaded back". Loads ``fixture`` (project-relative), extracts its
+        record list, writes it to a throwaway ``exp_dir/runs/<label>/
+        results.json`` in the on-disk shape ``core.experiment.
+        save_config_results`` produces, then calls the SAME function
+        production calls to read it back — the loader registered for
+        ``(module, symbol)`` in ``_DATACLASS_ROUNDTRIP_LOADERS`` — rather
+        than reimplementing its field-filter logic inline. A field-drop
+        regression in the real loader therefore actually fails this
+        criterion; a hand-rolled reimplementation of a lossless operation
+        never could. Unknown keys (newer-schema fields, e.g. a fixture
+        record's deliberate ``provenance_note``) are legitimately dropped —
+        that is not data loss, so they are excluded from the comparison.
+
+        If ``(module, symbol)`` has no registered loader, this fails loudly
+        (structural, no I/O flakiness) naming the gap rather than silently
+        falling back to a construct-and-asdict reimplementation whose fail
+        path can never fire — see the module-level registry's docstring.
         """
         params = criterion.params
         module_name = params.get("module")
@@ -665,29 +697,82 @@ class Verifier:
             field_names = {f.name for f in dataclasses.fields(cls)}
         except TypeError:
             return self._fail(criterion, f"{module_name}.{symbol} is not a dataclass")
+
+        loader_ref = _DATACLASS_ROUNDTRIP_LOADERS.get((module_name, symbol))
+        if loader_ref is None:
+            return self._fail(
+                criterion,
+                f"no production loader registered for {module_name}.{symbol} "
+                "in acceptance.verify._DATACLASS_ROUNDTRIP_LOADERS — a "
+                "construct-and-asdict reimplementation cannot observe a real "
+                "field-drop regression (R16's stated purpose), so this check "
+                "refuses to fall back to one; register the real on-disk "
+                "loader for this dataclass before adding this criterion",
+            )
+        loader_module_name, loader_symbol = loader_ref
+        try:
+            loader_module = importlib.import_module(loader_module_name)
+        except ImportError as exc:
+            return self._skip(
+                criterion, f"cannot import loader {loader_module_name}: {exc}"
+            )
+        loader = getattr(loader_module, loader_symbol, None)
+        if loader is None:
+            return self._fail(
+                criterion,
+                f"registered loader {loader_module_name}.{loader_symbol} not defined",
+            )
+
+        config_label = "acceptance-roundtrip-check"
         for idx, rec in enumerate(records):
             if not isinstance(rec, dict):
                 return self._fail(criterion, f"record {idx} is not a JSON object")
+            label = rec.get("task_id", idx)
             known = {k: v for k, v in rec.items() if k in field_names}
-            try:
-                obj = cls(**known)
-            except TypeError as exc:
-                label = rec.get("task_id", idx)
+
+            # One record per loader call (not a single batch call over all
+            # records) so a construction failure is attributed to the
+            # record that caused it, exactly as the prior reimplementation
+            # did — while still calling the real production function.
+            with tempfile.TemporaryDirectory() as tmp:
+                exp_dir = Path(tmp)
+                runs_dir = exp_dir / "runs" / config_label
+                runs_dir.mkdir(parents=True)
+                (runs_dir / "results.json").write_text(
+                    json.dumps({"config": config_label, "completed": [rec]})
+                )
+                try:
+                    loaded = loader(exp_dir, config_label)
+                except Exception as exc:  # noqa: BLE001 - any loader failure is evidence
+                    return self._fail(
+                        criterion,
+                        f"record {label!r} cannot construct {symbol} via "
+                        f"the production loader {loader_module_name}."
+                        f"{loader_symbol}: {exc}",
+                    )
+
+            loaded_completed = getattr(loaded, "completed", None)
+            if not loaded_completed:
                 return self._fail(
                     criterion,
-                    f"record {label!r} cannot construct {symbol}: {exc}",
+                    f"record {label!r} was dropped entirely by the "
+                    f"production loader {loader_module_name}.{loader_symbol}",
                 )
+            obj = loaded_completed[0]
             roundtripped = dataclasses.asdict(obj)
             lost = [k for k, v in known.items() if roundtripped.get(k) != v]
             if lost:
-                label = rec.get("task_id", idx)
                 return self._fail(
                     criterion,
-                    f"record {label!r} lost/altered fields on round-trip: {lost}",
+                    f"record {label!r} lost/altered fields through the "
+                    f"production loader {loader_module_name}."
+                    f"{loader_symbol}: {lost}",
                 )
         return self._pass(
             criterion,
-            f"all {len(records)} records round-trip through {symbol} without field loss",
+            f"all {len(records)} records round-trip through "
+            f"{loader_module_name}.{loader_symbol} ({symbol}) without "
+            "known-field loss",
         )
 
     def _check_yaml_field_equal(
@@ -698,8 +783,13 @@ class Verifier:
         Parses each ``files`` entry with PyYAML, selects values via the same
         minimal JSONPath the JSON handlers use (``$.jobs.*.runs-on`` etc.),
         and — when ``must_match`` is truthy — requires every collected value
-        to be equal. A missing file skips (unevaluable), an empty selection
-        fails (the field the contract names is absent).
+        to be equal. A missing file skips (unevaluable); an empty selection
+        fails (the field the contract names is absent everywhere); and an
+        entry the wildcard step matches but that lacks the selected leaf
+        (e.g. a reusable-workflow ``uses:`` job with no ``runs-on``) also
+        fails rather than being silently dropped from the comparison —
+        partial absence must be observable, never read as "every value that
+        exists happens to match".
         """
         import yaml
 
@@ -710,6 +800,7 @@ class Verifier:
         if not isinstance(files, list) or not files:
             return self._skip(criterion, "missing/invalid files param")
         collected: list[Any] = []
+        missing_by_file: dict[str, list[str]] = {}
         for rel in files:
             if not isinstance(rel, str):
                 return self._skip(criterion, f"non-string file entry: {rel!r}")
@@ -720,11 +811,17 @@ class Verifier:
                 doc = yaml.safe_load(fp.read_text())
             except yaml.YAMLError as exc:
                 return self._skip(criterion, f"yaml parse error in {rel}: {exc}")
-            selected = _jsonpath_select(doc, jsonpath)
-            if isinstance(selected, list):
-                collected.extend(selected)
-            elif selected is not None:
-                collected.append(selected)
+            selected, gaps = _jsonpath_select_reporting_gaps(doc, jsonpath)
+            collected.extend(selected)
+            if gaps:
+                missing_by_file[rel] = gaps
+        if missing_by_file:
+            return self._fail(
+                criterion,
+                f"{jsonpath!r} matched but the field was absent for: "
+                f"{missing_by_file} (a matched entry lacking the selected "
+                "field is not silently counted as equal)",
+            )
         if not collected:
             return self._fail(
                 criterion, f"no values selected by {jsonpath!r} across {files}"
@@ -1379,6 +1476,67 @@ def _jsonpath_select(data: Any, path: str) -> Any:
         else:
             return None
     return current
+
+
+def _jsonpath_select_reporting_gaps(data: Any, path: str) -> tuple[list[Any], list[str]]:
+    """Resolve a single dict-wildcard JSONPath, surfacing partial absence.
+
+    Handles the ``$.<key1>...<keyN>.*.<leaf1>...<leafM>`` shape — exactly
+    what :meth:`Verifier._check_yaml_field_equal` uses (``$.jobs.*.runs-on``
+    etc.) — and returns ``(values, missing_keys)`` where ``missing_keys``
+    names every dict key produced by the ``.*`` wildcard step whose value
+    did NOT contain the subsequent leaf path.
+
+    :func:`_jsonpath_select` silently drops such entries from its result
+    (a job dict without ``runs-on`` simply never reaches the collected
+    list), which makes a job that legitimately lacks the selected field
+    indistinguishable from a job that was never selected. This function
+    exists to make that distinction observable so callers can fail loudly
+    instead of reporting an accidental "match" over a shrunken set.
+
+    Any shape this function does not specifically handle (no ``.*`` token,
+    more than one ``.*`` token, or a ``[*]`` list-wildcard) falls back to
+    :func:`_jsonpath_select` with no gap tracking, preserving its existing
+    behaviour for every other current caller.
+    """
+    stripped = path[1:] if path.startswith("$") else path
+    stripped = stripped.lstrip(".")
+    tokens = _tokenise_jsonpath(stripped) if stripped else []
+
+    if tokens.count(".*") != 1 or "[*]" in tokens:
+        selected = _jsonpath_select(data, path)
+        if isinstance(selected, list):
+            return (selected, [])
+        return (([selected] if selected is not None else []), [])
+
+    wildcard_idx = tokens.index(".*")
+    pre_tokens = tokens[:wildcard_idx]
+    post_tokens = tokens[wildcard_idx + 1 :]
+
+    current: Any = data
+    for token in pre_tokens:
+        if not isinstance(current, dict) or token not in current:
+            return ([], [])
+        current = current[token]
+    if not isinstance(current, dict):
+        return ([], [])
+
+    values: list[Any] = []
+    missing: list[str] = []
+    for key, item in current.items():
+        node = item
+        found = True
+        for token in post_tokens:
+            if isinstance(node, dict) and token in node:
+                node = node[token]
+            else:
+                found = False
+                break
+        if found:
+            values.append(node)
+        else:
+            missing.append(key)
+    return (values, missing)
 
 
 def _tokenise_jsonpath(path: str) -> list[str]:
