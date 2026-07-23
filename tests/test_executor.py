@@ -30,6 +30,7 @@ from codeprobe.core.isolation import (
     git_pin_commit,
 )
 from codeprobe.core.preamble import DefaultPreambleResolver, _base_prompt
+from codeprobe.core.scoring import ScoreResult
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
@@ -377,6 +378,51 @@ def test_execute_config_forwards_reward_type(tmp_path: Path):
     # and the scoring_details would differ. The test.sh passes, so score = 1.0 either way,
     # but we can verify the scorer was invoked by checking the result is valid.
     assert results[0].status == "completed"
+
+
+def test_execute_config_forwards_low_confidence_threshold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codeprobe-kdng: ExperimentConfig.low_confidence_threshold must reach
+    the scorer through the full execute_config -> execute_task ->
+    _score_in_sandbox chain. Every hop declares a 0.5 default, so a future
+    refactor that drops any single hop would keep the full suite green
+    while silently reverting the per-config field to 0.5 at runtime — this
+    test drives the real production chain with a non-default value and a
+    capturing stub scorer so that regression can't hide."""
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline", low_confidence_threshold=0.9)
+    agent_config = AgentConfig()
+
+    captured: dict = {}
+
+    class _CapturingScorer:
+        def score(
+            self,
+            agent_output: str,
+            task_dir: Path,
+            *,
+            low_confidence_threshold: float = 0.5,
+            **_kwargs: object,
+        ) -> ScoreResult:
+            captured["low_confidence_threshold"] = low_confidence_threshold
+            return ScoreResult(score=1.0, passed=True)
+
+    monkeypatch.setattr(
+        "codeprobe.core.executor.get_scorer", lambda reward_type: _CapturingScorer()
+    )
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=[task_dir],
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=agent_config,
+    )
+    assert len(results) == 1
+    assert results[0].status == "completed"
+    assert captured["low_confidence_threshold"] == 0.9
 
 
 def test_execute_config_runs_all_tasks(tmp_path: Path):

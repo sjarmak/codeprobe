@@ -187,7 +187,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
 
     # Lazy import: codeprobe.config.loader imports models.experiment which
     # imports this module — keep the coercion helper out of module init.
-    from codeprobe.config.loader import _coerce_hide_local_source
+    from codeprobe.config.loader import _coerce_hide_local_source, _coerce_unit_float
 
     configs = [
         ExperimentConfig(
@@ -206,7 +206,9 @@ def load_experiment(exp_dir: Path) -> Experiment:
             hide_local_source=_coerce_hide_local_source(
                 c.get("hide_local_source")
             ),
-            low_confidence_threshold=c.get("low_confidence_threshold", 0.5),
+            low_confidence_threshold=_coerce_unit_float(
+                c.get("low_confidence_threshold"), "low_confidence_threshold", 0.5
+            ),
             extra=c.get("extra", {}),
         )
         for c in data.get("configs", [])
@@ -227,14 +229,20 @@ def load_experiment(exp_dir: Path) -> Experiment:
         configs=configs,
         tasks_dir=tasks_dir,
         task_ids=task_ids,
-        bias_overshipping_recall_min=data.get(
-            "bias_overshipping_recall_min", 0.95
+        bias_overshipping_recall_min=_coerce_unit_float(
+            data.get("bias_overshipping_recall_min"),
+            "bias_overshipping_recall_min",
+            0.95,
         ),
-        bias_overshipping_low_precision_max=data.get(
-            "bias_overshipping_low_precision_max", 0.5
+        bias_overshipping_low_precision_max=_coerce_unit_float(
+            data.get("bias_overshipping_low_precision_max"),
+            "bias_overshipping_low_precision_max",
+            0.5,
         ),
-        bias_overshipping_precision_gap_min=data.get(
-            "bias_overshipping_precision_gap_min", 0.3
+        bias_overshipping_precision_gap_min=_coerce_unit_float(
+            data.get("bias_overshipping_precision_gap_min"),
+            "bias_overshipping_precision_gap_min",
+            0.3,
         ),
     )
 

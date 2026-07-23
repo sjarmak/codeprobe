@@ -164,6 +164,36 @@ def _coerce_hide_local_source(raw: object) -> Literal["off", "hide", "scaffold"]
     )
 
 
+def _coerce_unit_float(raw: object, field_name: str, default: float) -> float:
+    """Coerce a user-supplied threshold, failing loud on bad input.
+
+    Mirrors :func:`_coerce_hide_local_source`: several codeprobe-kdng
+    threshold fields (``low_confidence_threshold``, the
+    ``bias_overshipping_*`` trio) are read straight off untrusted
+    experiment.json / .evalrc.yaml with no type or range check, so a
+    quoted number (``"0.8"``) or a stray ``null`` loads silently and
+    only blows up as a bare ``TypeError`` deep in scoring or bias
+    detection — after the run has already paid full agent cost. ``None``
+    (key absent, or explicitly ``null``) falls back to *default*, same
+    as the hide_local_source coercion. Accepted values are plain
+    ``int``/``float`` (``bool`` excluded — ``True``/``False`` are
+    numerically 1/0 but not sensible thresholds) in the closed unit
+    interval ``[0.0, 1.0]``, the scale of the confidence / recall /
+    precision values these thresholds are compared against.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ValueError(
+            f"{field_name} must be a number in [0.0, 1.0]; "
+            f"got {raw!r} ({type(raw).__name__})"
+        )
+    value = float(raw)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"{field_name} must be in [0.0, 1.0]; got {value!r}")
+    return value
+
+
 # Keys that map 1:1 onto ExperimentConfig fields.
 _CONFIG_KEYS = frozenset(
     {
@@ -241,7 +271,9 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             hide_local_source=_coerce_hide_local_source(
                 cfg.get("hide_local_source")
             ),
-            low_confidence_threshold=cfg.get("low_confidence_threshold", 0.5),
+            low_confidence_threshold=_coerce_unit_float(
+                cfg.get("low_confidence_threshold"), "low_confidence_threshold", 0.5
+            ),
             extra=_validated_extra(label, cfg),
         )
         for label, cfg in configs_dict.items()

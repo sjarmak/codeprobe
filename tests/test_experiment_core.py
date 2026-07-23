@@ -95,6 +95,77 @@ def test_save_and_load_experiment_custom_bias_thresholds(tmp_path: Path):
     assert loaded.configs[0].low_confidence_threshold == 0.7
 
 
+def test_load_experiment_rejects_string_low_confidence_threshold(tmp_path: Path):
+    """codeprobe-kdng: a hand-edited experiment.json with a quoted number
+    must fail loud at load time, not silently carry the str through to
+    ArtifactScorer.score where `confidence < low_confidence_threshold`
+    raises a bare TypeError after the agent run already paid full cost."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    data = json.loads((exp_dir / "experiment.json").read_text())
+    data["configs"][0]["low_confidence_threshold"] = "0.8"
+    (exp_dir / "experiment.json").write_text(json.dumps(data))
+
+    with pytest.raises(ValueError, match="low_confidence_threshold"):
+        load_experiment(exp_dir)
+
+
+def test_load_experiment_null_low_confidence_threshold_uses_default(
+    tmp_path: Path,
+):
+    """An explicit JSON null must fall back to the 0.5 default, not carry
+    None through to the comparison in ArtifactScorer.score."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    data = json.loads((exp_dir / "experiment.json").read_text())
+    data["configs"][0]["low_confidence_threshold"] = None
+    (exp_dir / "experiment.json").write_text(json.dumps(data))
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.configs[0].low_confidence_threshold == 0.5
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "bias_overshipping_recall_min",
+        "bias_overshipping_low_precision_max",
+        "bias_overshipping_precision_gap_min",
+    ],
+)
+def test_load_experiment_rejects_string_bias_threshold(
+    tmp_path: Path, field_name: str
+):
+    """codeprobe-kdng: hand-editing experiment.json is the only tuning
+    surface for the bias_overshipping_* thresholds (no .evalrc.yaml key
+    exists for them) — a quoted number must fail at load time instead of
+    raising a raw TypeError deep inside detect_bias_warnings during
+    `experiment aggregate`, after a completed (expensive) run."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    data = json.loads((exp_dir / "experiment.json").read_text())
+    data[field_name] = "0.9"
+    (exp_dir / "experiment.json").write_text(json.dumps(data))
+
+    with pytest.raises(ValueError, match=field_name):
+        load_experiment(exp_dir)
+
+
+def test_load_experiment_rejects_out_of_range_bias_threshold(tmp_path: Path):
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    data = json.loads((exp_dir / "experiment.json").read_text())
+    data["bias_overshipping_recall_min"] = 1.5
+    (exp_dir / "experiment.json").write_text(json.dumps(data))
+
+    with pytest.raises(ValueError, match="bias_overshipping_recall_min"):
+        load_experiment(exp_dir)
+
+
 def test_load_experiment_missing_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         load_experiment(tmp_path / "nonexistent")
