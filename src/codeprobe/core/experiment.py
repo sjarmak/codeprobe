@@ -166,6 +166,8 @@ def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
     }
     if experiment.task_ids:
         data["task_ids"] = list(experiment.task_ids)
+    if experiment.results_base_dir:
+        data["results_base_dir"] = experiment.results_base_dir
     path = exp_dir / "experiment.json"
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -244,6 +246,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
             "bias_overshipping_precision_gap_min",
             0.3,
         ),
+        results_base_dir=data.get("results_base_dir"),
     )
 
 

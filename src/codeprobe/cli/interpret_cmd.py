@@ -7,7 +7,11 @@ from typing import TYPE_CHECKING
 
 import click
 
-from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+from codeprobe.cli._output_helpers import (
+    emit_envelope,
+    resolve_mode,
+    validate_out_path,
+)
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.config.defaults import (
     resolve_experiment_config,
@@ -107,6 +111,7 @@ def run_interpret(
     path: str,
     fmt: str = "text",
     *,
+    out: str | None = None,
     json_flag: bool = False,
     no_json_flag: bool = False,
     json_lines_flag: bool = False,
@@ -122,6 +127,11 @@ def run_interpret(
         generate_report,
     )
     from codeprobe.core.experiment import load_config_results, load_experiment
+
+    # Validated up front (before any report generation) so a bad --out fails
+    # fast. The target file need not exist yet -- only its parent directory
+    # must -- see validate_out_path.
+    out_path: Path | None = validate_out_path(out) if out is not None else None
 
     # Resolve output mode once up-front. ``--format text`` maps to an
     # explicit pretty request; ``--format json`` is orthogonal and is used
@@ -174,10 +184,22 @@ def run_interpret(
                 detail={"path": str(path), "cause": str(exc)},
             ) from exc
 
+    # `run --out <dir>` relocates runs/<config>/results.json away from
+    # exp_dir (codeprobe-xcue); the destination is anchored into
+    # experiment.json as ``results_base_dir`` at run time (see run_cmd.py),
+    # so a plain `codeprobe interpret <exp_dir>` finds it with no extra
+    # flag. Absent that field (the default, no --out), results live under
+    # exp_dir itself — unchanged behavior.
+    results_root = (
+        Path(experiment.results_base_dir)
+        if experiment.results_base_dir
+        else exp_dir
+    )
+
     all_results = []
     for config in experiment.configs:
         try:
-            results = load_config_results(exp_dir, config.label)
+            results = load_config_results(results_root, config.label)
             all_results.append(results)
         except (FileNotFoundError, ValueError) as exc:
             if mode.mode == "pretty":
@@ -213,10 +235,25 @@ def run_interpret(
     # The write happens before the validity gate so a FAILED run still
     # leaves the (validity-stamped) report on disk; a write failure
     # propagates — no silent fallback.
+    #
+    # ``--out`` overrides the default write location for html, and — new —
+    # also materializes text/json/csv reports to disk (those formats write
+    # nothing by default, matching pre-existing behavior when --out is
+    # omitted).
     html_report_path: Path | None = None
     if fmt == "html":
-        html_report_path = exp_dir / f"{experiment.name}_report.html"
+        html_report_path = (
+            out_path if out_path is not None
+            else exp_dir / f"{experiment.name}_report.html"
+        )
         html_report_path.write_text(format_html_report(report))
+    elif out_path is not None:
+        _non_html_writers = {
+            "csv": format_csv_report,
+            "json": format_json_report,
+        }
+        render = _non_html_writers.get(fmt, format_text_report)
+        out_path.write_text(render(report))
 
     # codeprobe-c4al: the gate FAILs the command, it does not merely narrate.
     # Rendering comes first in every mode — the caller keeps the full report —
@@ -240,6 +277,9 @@ def run_interpret(
             click.echo(f"HTML report written to {html_report_path}")
         else:
             click.echo(format_text_report(report))
+
+        if out_path is not None and fmt != "html":
+            click.echo(f"Report written to {out_path}")
 
         if validity is not None and not validity.passed:
             raise _validity_error(validity, exp_dir)
@@ -268,6 +308,8 @@ def run_interpret(
         # codeprobe-f7rl.32: the artifact must be discoverable from the
         # envelope — this key rides into the VALIDITY_FAILED envelope too.
         data["html_report_path"] = str(html_report_path)
+    if out_path is not None:
+        data["out_path"] = str(out_path)
 
     if validity is not None and not validity.passed:
         # The error renderer emits the envelope (ok=false, exit_code=2) with

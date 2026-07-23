@@ -26,6 +26,7 @@ import json
 import os
 import sys
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any, TypeVar
 
 import click
@@ -38,6 +39,7 @@ from codeprobe.cli.envelope import (
     WarningEntry,
     emit,
 )
+from codeprobe.cli.errors import PrescriptiveError
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -148,6 +150,43 @@ def resolve_explicit_mode(
     return OutputMode(mode="pretty", use_rich=sys.stdout.isatty())
 
 
+def validate_out_path(raw: str) -> Path:
+    """Resolve and validate a user-supplied ``--out`` path.
+
+    Shared by ``mine``, ``run``, and ``interpret`` — each treats ``--out`` as
+    a destination it has not yet created (a directory for ``mine``/``run``, a
+    report file for ``interpret``), so only the *parent* directory is
+    required to already exist. Checking there, at the CLI boundary, turns a
+    bad ``--out`` into one prescriptive error instead of a mid-run IOError
+    from deep inside mining/execution/report-writing code.
+
+    Raises :class:`PrescriptiveError` (``INVALID_OUT_PATH``) when the parent
+    directory is missing or not writable.
+    """
+    path = Path(raw).expanduser().resolve()
+    parent = path.parent
+    if not parent.is_dir():
+        raise PrescriptiveError(
+            code="INVALID_OUT_PATH",
+            message=(
+                f"--out parent directory does not exist: {parent}. "
+                "Create it first or choose a path under an existing directory."
+            ),
+            next_try_flag="--out",
+            next_try_value=str(Path.cwd() / "out"),
+            detail={"out": str(path), "parent": str(parent)},
+        )
+    if not os.access(parent, os.W_OK):
+        raise PrescriptiveError(
+            code="INVALID_OUT_PATH",
+            message=f"--out parent directory is not writable: {parent}",
+            next_try_flag="--out",
+            next_try_value=str(Path.cwd() / "out"),
+            detail={"out": str(path), "parent": str(parent)},
+        )
+    return path
+
+
 def _normalise_data(data: dict[str, Any] | None) -> dict[str, Any]:
     """Ensure the envelope ``data`` payload carries ``command_schema_version``.
 
@@ -208,4 +247,5 @@ __all__ = [
     "emit_event",
     "resolve_explicit_mode",
     "resolve_mode",
+    "validate_out_path",
 ]

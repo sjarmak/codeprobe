@@ -71,7 +71,7 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.14: --resume option on mine — all text-only mine
         # help additions, no new raise, confirmed by running the lint test
         # against the merged file.
-        ("src/codeprobe/cli/_output_helpers.py", 109),
+        ("src/codeprobe/cli/_output_helpers.py", 111),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
         ("src/codeprobe/cli/auth_cmd.py", 41),

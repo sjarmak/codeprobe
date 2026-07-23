@@ -26,6 +26,7 @@ from codeprobe.cli._output_helpers import (
     emit_envelope,
     emit_event,
     resolve_mode,
+    validate_out_path,
 )
 from codeprobe.cli.capability_preflight import check_arm_capabilities
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
@@ -615,6 +616,7 @@ def run_eval(
     pristine_config: bool = False,
     offline: bool = False,
     offline_expected_run_duration: str = "1h",
+    out: str | None = None,
     tenant: str | None = None,
     tenant_source: str | None = None,
     json_flag: bool = False,
@@ -747,6 +749,12 @@ def run_eval(
                 )
 
         assert experiment is not None  # narrowed above; keep mypy happy
+
+        # --out redirects where results (runs/, checkpoints, trace.db) are
+        # written; exp_dir itself (experiment.json, tasks_dir resolution)
+        # is untouched. Validated up front, before any adapter/container
+        # preflight, so a bad --out fails fast.
+        write_dir = validate_out_path(out) if out is not None else exp_dir
 
         # Resolve to the git repo root — `path` may be an experiment subdir.
         try:
@@ -933,6 +941,18 @@ def run_eval(
             _print_dry_run(estimate)
             return
 
+        # Anchor --out's destination into experiment.json (codeprobe-xcue):
+        # exp_dir (experiment.json, tasks_dir) never moves, but results/
+        # checkpoints/trace.db do when --out is passed. Recording write_dir
+        # here — before any agent spawns — is what lets a plain
+        # `codeprobe interpret <exp_dir>` (zero extra flags) find the
+        # relocated results.json afterward; see load path in interpret_cmd.
+        # Omitted entirely when --out is absent, so default (no --out)
+        # experiment.json bytes are unchanged.
+        if out is not None and experiment.results_base_dir != str(write_dir):
+            experiment = replace(experiment, results_base_dir=str(write_dir))
+            save_experiment(exp_dir, experiment)
+
         # Containment gate (codeprobe-f7rl.3): a real run launches an
         # autonomous agent with --dangerously-skip-permissions plus mined
         # third-party test/verifier scripts. Outside a container this needs
@@ -977,7 +997,7 @@ def run_eval(
             if trace_overflow == "fail"
             else TraceOverflowPolicy.TRUNCATE
         )
-        trace_runs_dir = exp_dir / "runs"
+        trace_runs_dir = write_dir / "runs"
         trace_runs_dir.mkdir(parents=True, exist_ok=True)
         trace_db_path = trace_runs_dir / "trace.db"
         trace_content_policy = ContentPolicy(deny_globs=tuple(trace_deny))
@@ -1097,7 +1117,7 @@ def run_eval(
                 if msg:
                     click.echo(f"  [{exp_config.label}] Warning: {msg}", err=True)
 
-            config_runs_dir = exp_dir / "runs" / exp_config.label
+            config_runs_dir = write_dir / "runs" / exp_config.label
             config_runs_dir.mkdir(parents=True, exist_ok=True)
             legacy_jsonl = config_runs_dir / "checkpoint.jsonl"
             checkpoint_db = config_runs_dir / "checkpoint.db"
@@ -1233,7 +1253,7 @@ def run_eval(
                     },
                 )
 
-            save_config_results(exp_dir, exp_config.label, results)
+            save_config_results(write_dir, exp_config.label, results)
 
             # Mean and pass-rate exclude non-executed runs (status=="error":
             # quota casualties, invalid-model/crash errors — see
