@@ -618,6 +618,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # In CI, codeprobe refuses to auto-derive a tenant
+    # (TENANT_REQUIRED_IN_CI, src/codeprobe/tenant.py). The harness IS a
+    # controlled environment, so satisfy the guard the way its own error
+    # message prescribes: set an explicit, deterministic tenant for every
+    # subprocess. setdefault so a caller-provided tenant still wins.
+    os.environ.setdefault("CODEPROBE_TENANT", "e2e-self-serve")
+
     workdir = Path(tempfile.mkdtemp(prefix="codeprobe-e2e-"))
     _log(f"scratch workdir: {workdir}")
     try:
