@@ -10,7 +10,9 @@ when a maintainer wants end-to-end coverage.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from dataclasses import fields
 from pathlib import Path
 
@@ -475,3 +477,75 @@ def test_build_and_stage_real_wheel() -> None:  # pragma: no cover - opt-in
     assert result.built is True
     assert result.installed is True
     assert result.version_matches is True
+
+
+# ---------------------------------------------------------------------------
+# scripts/release_gate.py CLI wiring
+#
+# These tests prove the CLI wiring (main() reads a StagingResult and maps it
+# to an exit code) rather than re-proving ReleaseGate.build_and_stage itself,
+# which is already covered above. run_release_gate is monkeypatched so no
+# real build happens.
+# ---------------------------------------------------------------------------
+
+_RELEASE_GATE_SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "release_gate.py"
+)
+_RELEASE_GATE_SPEC = importlib.util.spec_from_file_location(
+    "release_gate_script", _RELEASE_GATE_SCRIPT_PATH
+)
+assert _RELEASE_GATE_SPEC is not None and _RELEASE_GATE_SPEC.loader is not None
+release_gate_script = importlib.util.module_from_spec(_RELEASE_GATE_SPEC)
+sys.modules[_RELEASE_GATE_SPEC.name] = release_gate_script
+_RELEASE_GATE_SPEC.loader.exec_module(release_gate_script)
+
+
+def _staging_result(**overrides: object) -> StagingResult:
+    defaults: dict[str, object] = {
+        "built": True,
+        "installed": True,
+        "version_matches": True,
+        "structural_criteria_passed": True,
+        "wheel_path": Path("/tmp/codeprobe-0.12.0-py3-none-any.whl"),
+        "error": None,
+    }
+    defaults.update(overrides)
+    return StagingResult(**defaults)  # type: ignore[arg-type]
+
+
+def test_release_gate_cli_returns_zero_on_all_true(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        release_gate_script, "run_release_gate", lambda repo_root: _staging_result()
+    )
+    exit_code = release_gate_script.main(["--repo-root", str(tmp_path)])
+    assert exit_code == 0
+
+
+def test_release_gate_cli_returns_nonzero_on_failed_staging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    failed = _staging_result(
+        structural_criteria_passed=False, error="one or more structural smoke criteria did not pass"
+    )
+    monkeypatch.setattr(
+        release_gate_script, "run_release_gate", lambda repo_root: failed
+    )
+    exit_code = release_gate_script.main(["--repo-root", str(tmp_path)])
+    assert exit_code == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["built", "installed", "version_matches", "structural_criteria_passed"],
+)
+def test_release_gate_cli_returns_nonzero_if_any_field_false(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str
+) -> None:
+    failed = _staging_result(**{field: False, "error": f"{field} failed"})
+    monkeypatch.setattr(
+        release_gate_script, "run_release_gate", lambda repo_root: failed
+    )
+    exit_code = release_gate_script.main(["--repo-root", str(tmp_path)])
+    assert exit_code == 1
