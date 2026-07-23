@@ -57,6 +57,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -80,6 +81,21 @@ from codeprobe.acceptance_compiler import TestAction, compile_actions  # noqa: E
 #: (a handful of shell commands each); anything slower is hung, and a hung
 #: action must not stall the loop.
 DEFAULT_ACTION_TIMEOUT_S: float = 300.0
+
+#: Per-producer-step wall-clock timeout in seconds. A real ``codeprobe run``
+#: against a genuine agent can be slow; kept generous but bounded so a hung
+#: producer cannot stall the loop forever.
+DEFAULT_PRODUCER_TIMEOUT_S: float = 1800.0
+
+#: Number of tasks the producer's ``codeprobe mine`` step requests. Small so
+#: the producer stays cheap; the statistical criteria only need >= 1 result.
+DEFAULT_PRODUCER_MINE_COUNT: int = 3
+
+#: The ``codeprobe`` invocation the producer shells out to. A module-level
+#: constant (not a hardcoded literal) so a test can point the producer at a
+#: stub/shim binary — e.g. ``(sys.executable, "-m", "codeprobe")`` — without
+#: a real install on PATH.
+DEFAULT_CODEPROBE_CMD: tuple[str, ...] = ("codeprobe",)
 
 #: Default durable verdict history directory, repo-relative and gitignored.
 DEFAULT_HISTORY_DIRNAME: str = "acceptance/verdict-history"
@@ -179,6 +195,109 @@ def _reset_target_repo_state(target_repo: Path) -> None:
         )
 
 
+def _aggregate_run_results(target_repo: Path, producer_agent: str) -> dict[str, Any]:
+    """Consolidate every per-arm ``runs/<arm>/results.json`` into one file.
+
+    ``codeprobe run`` writes per-configuration results to
+    ``.codeprobe/runs/<arm>/results.json`` (``core.experiment.save_config_results``),
+    each a ``{"config", "completed", "summary"}`` object. The statistical
+    criteria, however, read a single ``.codeprobe/results.json`` keyed by
+    ``completed_tasks`` (``$.completed_tasks[*].cost_source`` etc.). This is
+    a mechanical transform — it relocates the *real* ``CompletedTask``
+    records the agent produced into the path the contract reads, inventing
+    no telemetry. ``producer_agent`` is stamped into the file so a consumer
+    can see whose run the records came from (stub vs. real agent).
+
+    Returns a small record dict; writes nothing when no per-arm results
+    exist (an honest missing ``results.json`` so dependent criteria skip).
+    """
+    runs_dir = target_repo / ".codeprobe" / "runs"
+    completed: list[Any] = []
+    arms: list[str] = []
+    for results_path in sorted(runs_dir.glob("*/results.json")):
+        try:
+            data = json.loads(results_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"outcome": "error", "stage": "aggregate", "detail": f"{results_path}: {exc}"}
+        records = data.get("completed")
+        if isinstance(records, list):
+            completed.extend(records)
+            arms.append(results_path.parent.name)
+    if not completed:
+        return {"outcome": "error", "stage": "aggregate", "detail": "no per-arm results found"}
+    out_path = target_repo / ".codeprobe" / "results.json"
+    out_path.write_text(
+        json.dumps(
+            {
+                "producer_agent": producer_agent,
+                "arms": arms,
+                "completed_tasks": completed,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    return {
+        "outcome": "completed",
+        "stage": "aggregate",
+        "results_path": str(out_path),
+        "completed_count": len(completed),
+    }
+
+
+def _run_producer(
+    target_repo: Path,
+    producer_agent: str,
+    *,
+    timeout_s: float = DEFAULT_PRODUCER_TIMEOUT_S,
+    mine_count: int = DEFAULT_PRODUCER_MINE_COUNT,
+    codeprobe_cmd: tuple[str, ...] = DEFAULT_CODEPROBE_CMD,
+) -> dict[str, Any]:
+    """Populate ``target_repo/.codeprobe/results.json`` via a real run.
+
+    Runs ``codeprobe mine`` then ``codeprobe run --agent <producer_agent>``
+    against ``target_repo``, then aggregates the per-arm results into the
+    single ``results.json`` the statistical criteria read. The agent is the
+    caller's *explicit* ``--producer-agent`` choice — there is no default,
+    so a stub can never masquerade as real release evidence by accident.
+
+    Every step's failure is recorded and returned, never masked: a failed
+    mine/run leaves no ``results.json``, so the dependent statistical
+    criteria skip and the verdict trends to an honest INCOMPLETE rather than
+    a false green.
+    """
+    mine = [
+        *codeprobe_cmd, "mine", str(target_repo),
+        "--count", str(mine_count),
+        "--no-interactive", "--no-llm", "--source", "local",
+    ]
+    run = [
+        *codeprobe_cmd, "run", str(target_repo),
+        "--agent", producer_agent,
+        "--repeats", "1", "--uncontained",
+    ]
+    for stage, cmd in (("mine", mine), ("run", run)):
+        try:
+            completed = subprocess.run(  # noqa: S603 - fixed argv, trusted inputs
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                cwd=str(target_repo),
+            )
+        except subprocess.TimeoutExpired:
+            return {"outcome": "timeout", "stage": stage, "detail": f"exceeded {timeout_s}s"}
+        except OSError as exc:
+            return {"outcome": "os_error", "stage": stage, "detail": f"{type(exc).__name__}: {exc}"}
+        if completed.returncode != 0:
+            return {
+                "outcome": "error",
+                "stage": stage,
+                "detail": f"exit {completed.returncode}: {completed.stderr.strip()[-500:]}",
+            }
+    return _aggregate_run_results(target_repo, producer_agent)
+
+
 def execute_action(
     action: TestAction,
     workspace: Path,
@@ -245,8 +364,19 @@ def run_loop(
     eval_mode: str | None,
     iterations: int,
     action_timeout_s: float,
+    producer_agent: str | None = None,
+    producer_timeout_s: float = DEFAULT_PRODUCER_TIMEOUT_S,
 ) -> int:
-    """Run up to ``iterations`` compile→execute→verify→decide cycles."""
+    """Run up to ``iterations`` compile→execute→verify→decide cycles.
+
+    In ``full`` eval mode ``producer_agent`` is required: after resetting
+    ``target_repo/.codeprobe`` and before compiling the Test Agent actions,
+    the loop runs a real ``codeprobe mine``/``run`` producer with that agent
+    so the statistical criteria (``SILENT-RUN-RESULTS-002``, the ``TELEM-``
+    cost checks) have a populated ``results.json`` to evaluate instead of
+    skipping. The producer agent name is stamped into every full-mode
+    verdict so a stub-produced green is never mistaken for real evidence.
+    """
     if not criteria_path.is_file():
         print(f"ERROR: criteria manifest not found: {criteria_path}", file=sys.stderr)
         return 2
@@ -271,6 +401,27 @@ def run_loop(
 
         if eval_mode == "full":
             _reset_target_repo_state(target_repo)
+            if producer_agent is not None:
+                producer_record = _run_producer(
+                    target_repo,
+                    producer_agent,
+                    timeout_s=producer_timeout_s,
+                )
+                if producer_record["outcome"] == "completed":
+                    print(
+                        f"[iter {iteration}] producer ({producer_agent}): "
+                        f"populated results.json with "
+                        f"{producer_record.get('completed_count')} completed task(s)"
+                    )
+                else:
+                    print(
+                        f"[iter {iteration}] producer ({producer_agent}) did not "
+                        f"complete: {producer_record['stage']} "
+                        f"{producer_record['outcome']} ({producer_record['detail']}) "
+                        "— statistical criteria will skip and the verdict trends "
+                        "to INCOMPLETE",
+                        file=sys.stderr,
+                    )
 
         actions = compile_actions(
             active,
@@ -296,6 +447,13 @@ def run_loop(
             eval_mode=eval_mode,
         )
         verdict = verifier.run(workspace, iteration=iteration)
+        # Honesty guard (codeprobe-2s54): stamp whose producer run the
+        # statistical criteria were evaluated against. A stub producer
+        # ("e2e-stub") emits honest-but-fake telemetry (cost_source=
+        # "unavailable", cost_usd=0.0) that passes the TELEM-* criteria, so
+        # a green verdict is only real release evidence when producer_agent
+        # names a REAL agent. None in default mode (no producer ran).
+        verdict["producer_agent"] = producer_agent if eval_mode == "full" else None
         verdict_path = history_dir / f"verdict-{iteration:04d}.json"
         verifier.write_verdict(verdict, verdict_path)
 
@@ -416,10 +574,41 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_ACTION_TIMEOUT_S,
         help=f"Per-action timeout in seconds (default: {DEFAULT_ACTION_TIMEOUT_S}).",
     )
+    parser.add_argument(
+        "--producer-agent",
+        type=str,
+        default=None,
+        help=(
+            "Agent that produces the real run this loop verifies. REQUIRED "
+            "with --eval-mode full — the statistical criteria need a "
+            "results.json populated by a genuine 'codeprobe run', and the "
+            "agent must be a conscious operator choice (no silent default). "
+            "Use 'e2e-stub' for a zero-budget wiring check; the two full-mode "
+            "greens gating a release MUST come from a REAL agent (e.g. "
+            "'claude'), never the stub."
+        ),
+    )
+    parser.add_argument(
+        "--producer-timeout",
+        type=float,
+        default=DEFAULT_PRODUCER_TIMEOUT_S,
+        help=f"Per-producer-step timeout in seconds (default: {DEFAULT_PRODUCER_TIMEOUT_S}).",
+    )
     args = parser.parse_args(argv)
 
     if args.iterations < 1:
         print(f"ERROR: --iterations must be >= 1, got {args.iterations}", file=sys.stderr)
+        return 2
+
+    if args.eval_mode == "full" and not args.producer_agent:
+        print(
+            "ERROR: --producer-agent is required with --eval-mode full. The "
+            "statistical tier is only meaningful against a results.json a real "
+            "'codeprobe run' produced; pick the agent explicitly (e.g. "
+            "--producer-agent claude, or --producer-agent e2e-stub for a "
+            "zero-budget wiring check).",
+            file=sys.stderr,
+        )
         return 2
 
     repo_root = args.repo_root.resolve()
@@ -448,6 +637,8 @@ def main(argv: list[str] | None = None) -> int:
         eval_mode=eval_mode,
         iterations=args.iterations,
         action_timeout_s=args.action_timeout,
+        producer_agent=args.producer_agent,
+        producer_timeout_s=args.producer_timeout,
     )
 
 

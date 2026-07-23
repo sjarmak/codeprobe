@@ -306,6 +306,7 @@ def test_execute_action_kills_grandchild_process_group_on_timeout(
 
 def test_producer_timeout_does_not_leak_stale_target_repo_state(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Reproduces the cross-iteration silent-pass-through: a full-mode
     producer (simulating ``codeprobe mine``) writes 3 tasks into the shared,
@@ -355,9 +356,19 @@ def test_producer_timeout_does_not_leak_stale_target_repo_state(
     target_repo = tmp_path / "target"
     target_repo.mkdir()
 
+    # This test exercises the compiled-action reset/poison path, not the real
+    # producer — neutralize the producer so it does no subprocess work while
+    # still satisfying the required-in-full-mode --producer-agent gate.
+    monkeypatch.setattr(
+        acceptance_loop,
+        "_run_producer",
+        lambda *a, **k: {"outcome": "completed", "stage": "aggregate", "completed_count": 0},
+    )
+
     args = [
         "--iterations", "1",
         "--eval-mode", "full",
+        "--producer-agent", "e2e-stub",
         "--repo-root", str(Path(__file__).resolve().parent.parent),
         "--criteria", str(manifest),
         "--history-dir", str(tmp_path / "history"),
@@ -422,7 +433,9 @@ def test_history_appends_across_invocations(
     assert [v["iteration"] for v in verdicts] == [1, 2]
 
 
-def test_full_mode_recorded_in_verdict(tmp_path: Path) -> None:
+def test_full_mode_recorded_in_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     manifest = tmp_path / "criteria.toml"
     manifest.write_text(
         textwrap.dedent("""
@@ -439,11 +452,161 @@ def test_full_mode_recorded_in_verdict(tmp_path: Path) -> None:
             required_fields = ["id"]
             """).strip()
     )
-    args = _loop_args(tmp_path, manifest)
+    # Full mode now requires --producer-agent; neutralize the real producer
+    # (this test only asserts eval_mode + producer_agent land in the verdict).
+    monkeypatch.setattr(
+        acceptance_loop,
+        "_run_producer",
+        lambda *a, **k: {"outcome": "completed", "stage": "aggregate", "completed_count": 0},
+    )
+    args = _loop_args(tmp_path, manifest, extra=["--producer-agent", "e2e-stub"])
     args[args.index("default")] = "full"
     exit_code = acceptance_loop.main(args)
     assert exit_code == 0
-    assert _read_verdicts(tmp_path)[0]["eval_mode"] == "full"
+    verdict = _read_verdicts(tmp_path)[0]
+    assert verdict["eval_mode"] == "full"
+    # Honesty guard: the producer agent name is stamped into the verdict.
+    assert verdict["producer_agent"] == "e2e-stub"
+
+
+# ---------------------------------------------------------------------------
+# Real-run producer wiring (--producer-agent)
+# ---------------------------------------------------------------------------
+
+
+def test_full_mode_requires_producer_agent(
+    tmp_path: Path, passing_manifest: Path
+) -> None:
+    """--eval-mode full with no --producer-agent is a setup error (exit 2):
+    the operator must consciously pick the agent; there is no silent default."""
+    args = _loop_args(tmp_path, passing_manifest)
+    args[args.index("default")] = "full"
+    assert acceptance_loop.main(args) == 2
+
+
+# A fake ``codeprobe`` that emulates the two producer steps with no agent
+# spend: ``mine`` scaffolds ``.codeprobe/``, ``run`` writes a per-arm
+# results.json whose records carry honest stub-shaped telemetry (matching the
+# real e2e-stub: cost_source="unavailable", cost_usd=0.0, both floats).
+_FAKE_CODEPROBE = '''\
+import json
+import sys
+from pathlib import Path
+
+sub = sys.argv[1]
+repo = Path(sys.argv[2])
+cp = repo / ".codeprobe"
+if sub == "mine":
+    (cp / "tasks").mkdir(parents=True, exist_ok=True)
+    (cp / "experiment.json").write_text(json.dumps({"name": "default", "configs": []}))
+    print(json.dumps({"ok": True, "command": "mine"}))
+elif sub == "run":
+    arm = cp / "runs" / "default"
+    arm.mkdir(parents=True, exist_ok=True)
+    completed = [
+        {"task_id": "t1", "automated_score": 1.0, "cost_usd": 0.0,
+         "cost_model": "unknown", "cost_source": "unavailable"},
+        {"task_id": "t2", "automated_score": 0.0, "cost_usd": 0.0,
+         "cost_model": "unknown", "cost_source": "unavailable"},
+    ]
+    (arm / "results.json").write_text(
+        json.dumps({"config": "default", "completed": completed, "summary": {}})
+    )
+    print(json.dumps({"ok": True, "command": "run"}))
+else:
+    sys.exit(3)
+'''
+
+
+def _write_fake_codeprobe(tmp_path: Path) -> tuple[str, ...]:
+    shim = tmp_path / "fake_codeprobe.py"
+    shim.write_text(_FAKE_CODEPROBE)
+    return (sys.executable, str(shim))
+
+
+def test_run_producer_populates_results_and_statistical_criteria_evaluate(
+    tmp_path: Path,
+) -> None:
+    """End-to-end wiring: the producer runs mine+run, aggregates the per-arm
+    results into ``.codeprobe/results.json``, and the three statistical
+    criteria that read that file then EVALUATE (pass) instead of skipping.
+    Uses a zero-budget fake codeprobe — no real agent, no API spend."""
+    from acceptance.verify import RESULT_SKIP, Verifier
+
+    target = tmp_path / "target"
+    target.mkdir()
+    codeprobe_cmd = _write_fake_codeprobe(tmp_path)
+
+    record = acceptance_loop._run_producer(
+        target, "e2e-stub", timeout_s=30.0, codeprobe_cmd=codeprobe_cmd
+    )
+    assert record["outcome"] == "completed"
+    assert record["completed_count"] == 2
+
+    results_path = target / ".codeprobe" / "results.json"
+    assert results_path.is_file()
+    payload = json.loads(results_path.read_text())
+    assert payload["producer_agent"] == "e2e-stub"
+    assert len(payload["completed_tasks"]) == 2
+
+    # Sync the target's .codeprobe into a workspace exactly like the compiled
+    # sync action does, then evaluate the real statistical criteria in full
+    # mode. They must NOT skip — that is the whole point of the producer.
+    import shutil
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    shutil.copytree(target / ".codeprobe", ws / ".codeprobe")
+
+    repo_root = Path(__file__).resolve().parent.parent
+    v = Verifier(repo_root / "acceptance" / "criteria.toml", eval_mode="full")
+    targets = {
+        "SILENT-RUN-RESULTS-002",
+        "TELEM-COST-SOURCE-001",
+        "TELEM-COST-USD-002",
+    }
+    for c in v.criteria:
+        if c.id in targets:
+            res = v._handlers()[c.check_type](v, c, ws.resolve())
+            assert res.result != RESULT_SKIP, f"{c.id} skipped: {res.evidence}"
+            assert res.result == "pass", f"{c.id} -> {res.result}: {res.evidence}"
+
+
+def test_run_producer_records_error_and_writes_no_results_on_run_failure(
+    tmp_path: Path,
+) -> None:
+    """When a producer step exits non-zero, the failure is recorded and NO
+    results.json is written — so dependent statistical criteria skip and the
+    verdict trends to an honest INCOMPLETE, never a false green."""
+    target = tmp_path / "target"
+    target.mkdir()
+    # A shim that always exits non-zero on the 'run' step.
+    shim = tmp_path / "failing_codeprobe.py"
+    shim.write_text(
+        "import sys\n"
+        "if sys.argv[1] == 'run':\n"
+        "    sys.stderr.write('boom\\n'); sys.exit(1)\n"
+        "print('{}')\n"
+    )
+    record = acceptance_loop._run_producer(
+        target, "e2e-stub", timeout_s=30.0, codeprobe_cmd=(sys.executable, str(shim))
+    )
+    assert record["outcome"] == "error"
+    assert record["stage"] == "run"
+    assert not (target / ".codeprobe" / "results.json").exists()
+
+
+def test_run_producer_reports_missing_agent_binary(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    record = acceptance_loop._run_producer(
+        target,
+        "e2e-stub",
+        timeout_s=30.0,
+        codeprobe_cmd=(str(tmp_path / "nonexistent-codeprobe-binary"),),
+    )
+    assert record["outcome"] == "os_error"
+    assert record["stage"] == "mine"
 
 
 # ---------------------------------------------------------------------------
