@@ -462,8 +462,8 @@
       "kind": "prescriptive",
       "exit_code": 2,
       "since": "0.13.0",
-      "description": "The --out path passed to `mine`, `run`, or `interpret` has a parent directory that does not exist or is not writable, or (mine only) --out was combined with --refresh, whose existing task directory already is the output location.",
-      "remediation_pattern": "Pass a --out path whose parent directory already exists and is writable (mkdir -p it first if needed), and drop --out when using --refresh."
+      "description": "The --out path passed to `mine`, `run`, or `interpret` has a parent directory that does not exist or is not writable.",
+      "remediation_pattern": "Pass a --out path whose parent directory already exists and is writable (mkdir -p it first if needed)."
     }
   ]
 }
