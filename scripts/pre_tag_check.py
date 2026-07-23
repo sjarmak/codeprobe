@@ -14,9 +14,18 @@ BEFORE ``git tag v<version>``:
    denominator, so a tier can report 100% while evaluating nothing (see the
    acceptance-loop doctrine skill). Verdicts written before ``eval_mode``
    was recorded count as not-full.
-3. **CHANGELOG.md has a ``## <version>`` heading** for the version in
+3. **No critical/high-severity criterion is handler-less in either of the
+   two newest verdicts.** A ``check_type`` with no registered handler in
+   ``acceptance.verify.Verifier._handlers()`` is structurally unevaluable in
+   EVERY eval mode (``skip_reason="no_handler"``), excluded from the
+   evaluated denominator same as an eval_mode skip — so a critical criterion
+   can go unchecked forever while the verdict still reports EVALUATED +
+   all_pass. Medium/low severity handler gaps are reported as a warning,
+   not a failure (mirrors ``BLOCKING_SEVERITIES`` in
+   ``acceptance/converge.py``).
+4. **CHANGELOG.md has a ``## <version>`` heading** for the version in
    ``pyproject.toml``.
-4. **The version is not already tagged** — ``v<version>`` must not exist,
+5. **The version is not already tagged** — ``v<version>`` must not exist,
    i.e. the version bump landed.
 
 Every failed check prints the exact command that fixes it and the script
@@ -101,6 +110,24 @@ def _verdict_eval_mode(path: Path) -> str | None:
     return mode if isinstance(mode, str) else None
 
 
+#: Severities that must never be structurally unevaluable at tag time —
+#: mirrors acceptance/converge.py's BLOCKING_SEVERITIES for quarantine.
+_BLOCKING_NO_HANDLER_SEVERITIES = frozenset({"critical", "high"})
+
+
+def _no_handler_criteria(path: Path) -> list[dict[str, str]]:
+    """Read ``no_handler_criteria`` from a verdict file; ``[]`` on any parse
+    problem or if the verdict predates this field."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    entries = data.get("no_handler_criteria")
+    return entries if isinstance(entries, list) else []
+
+
 def run_checks(repo_root: Path, history_dir: Path) -> int:
     """Run all preconditions; print PASS/FAIL per check; return exit code."""
     failures: list[str] = []
@@ -149,7 +176,46 @@ def run_checks(repo_root: Path, history_dir: Path) -> int:
         else:
             print("PASS: at least one of the last two verdicts is eval_mode=full")
 
-    # 3. Changelog heading.
+    # 3. No critical/high-severity criterion is structurally unevaluable in
+    #    every mode (no registered Verifier handler for its check_type).
+    #    These are excluded from evaluated_pct same as eval_mode skips, so a
+    #    verdict can be EVALUATED + all_pass while a critical criterion was
+    #    never checked at all — never mind which eval mode ran.
+    if len(verdict_paths) >= 2:
+        blocking: dict[str, set[str]] = {}
+        non_blocking: dict[str, set[str]] = {}
+        for path in verdict_paths:
+            for entry in _no_handler_criteria(path):
+                cid = entry.get("criterion_id", "?")
+                severity = entry.get("severity", "?")
+                bucket = (
+                    blocking
+                    if severity in _BLOCKING_NO_HANDLER_SEVERITIES
+                    else non_blocking
+                )
+                bucket.setdefault(cid, set()).add(severity)
+        if blocking:
+            ids = sorted(blocking)
+            failures.append(
+                f"{len(ids)} critical/high-severity criterion(ia) have no "
+                f"registered Verifier handler and were never evaluated in "
+                f"EITHER of the last two verdicts: {ids}.\n"
+                "  Fix: register a handler for their check_type in "
+                "acceptance/verify.py::Verifier._handlers(), or downgrade "
+                "severity with human sign-off if the check truly doesn't "
+                "warrant blocking release."
+            )
+        elif non_blocking:
+            print(
+                f"WARNING: {len(non_blocking)} medium/low-severity "
+                f"criterion(ia) have no registered Verifier handler and "
+                f"were never evaluated: {sorted(non_blocking)} (not "
+                "blocking — severity is below critical/high)."
+            )
+        else:
+            print("PASS: no critical/high-severity criterion is handler-less")
+
+    # 4. Changelog heading.
     if not changelog_has_heading(repo_root / "CHANGELOG.md", version):
         failures.append(
             f"CHANGELOG.md has no '## {version}' heading.\n"
@@ -159,7 +225,7 @@ def run_checks(repo_root: Path, history_dir: Path) -> int:
     else:
         print(f"PASS: CHANGELOG.md has a '## {version}' heading")
 
-    # 4. Tag does not already exist.
+    # 5. Tag does not already exist.
     tag = f"v{version}"
     if tag_exists(repo_root, tag):
         failures.append(

@@ -222,6 +222,88 @@ def test_action_timeout_yields_honest_incomplete(tmp_path: Path) -> None:
     assert verdict["skip_count"] == 1
 
 
+def test_hung_stdout_contains_action_does_not_yield_false_pass(
+    tmp_path: Path,
+) -> None:
+    """Reproduces the silent-pass-through: the command prints the expected
+    substring and then hangs. Bash's ``( cmd ) > out 2> err`` redirection
+    creates and flushes the ``.stdout`` artifact before the hang, and the
+    ``.exit`` file is never written (the loop kills the process at the
+    timeout). Only ``cli_exit_code`` reads ``.exit``; ``stdout_contains``
+    reads only ``.stdout``, so without poisoning the artifacts on timeout
+    this criterion would PASS on a command that never finished.
+    """
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "MINING-HANG"
+            description = "prints then hangs past the action timeout"
+            tier = "behavioral"
+            check_type = "stdout_contains"
+            severity = "critical"
+            prd_source = "fake.md#x"
+            [criterion.params]
+            command = "echo MINING COMPLETE; sleep 5"
+            must_contain = "MINING COMPLETE"
+            """).strip()
+    )
+    exit_code = acceptance_loop.main(
+        _loop_args(tmp_path, manifest, extra=["--action-timeout", "0.3"])
+    )
+    assert exit_code == 0  # CONTINUE, not a crash
+    verdict = _read_verdicts(tmp_path)[0]
+    assert verdict["pass_count"] == 0
+    assert verdict["skip_count"] == 1
+    assert verdict["all_pass"] is False
+    workspace = tmp_path / "workspaces" / "iter-0001"
+    assert not (workspace / "MINING-HANG.stdout").exists()
+
+
+def test_execute_action_poisons_preexisting_artifact_on_timeout(
+    tmp_path: Path,
+) -> None:
+    """Directly exercises ``execute_action``: a partial artifact left by a
+    hung command (simulated here) must be removed, not evaluated."""
+    workspace = tmp_path
+    (workspace / "HANG.stdout").write_text("MINING COMPLETE\n")
+    action = acceptance_loop.TestAction(
+        criterion_id="HANG",
+        description="hang",
+        shell_snippet="sleep 5",
+        artifact_paths=("HANG.stdout", "HANG.stderr", "HANG.exit"),
+    )
+    record = acceptance_loop.execute_action(action, workspace, timeout_s=0.2)
+    assert record["outcome"] == "timeout"
+    assert not (workspace / "HANG.stdout").exists()
+
+
+def test_execute_action_kills_grandchild_process_group_on_timeout(
+    tmp_path: Path,
+) -> None:
+    """A timeout must kill the WHOLE process group, not just ``bash``. The
+    compiler always wraps the real command in a ``( cmd ) > out 2> err``
+    subshell, so the real command is a grandchild of ``bash -c``; without
+    ``start_new_session`` + ``killpg`` that grandchild survives as an
+    orphan and can keep writing into shared state after the loop moves on.
+    """
+    workspace = tmp_path
+    marker = workspace / "orphan-wrote-this"
+    action = acceptance_loop.TestAction(
+        criterion_id="ORPHAN",
+        description="grandchild outlives its parent",
+        shell_snippet=f'( sleep 0.5 && touch "{marker}" ) & wait',
+        artifact_paths=(),
+    )
+    record = acceptance_loop.execute_action(action, workspace, timeout_s=0.1)
+    assert record["outcome"] == "timeout"
+    # Give the (would-be) orphan the time it needed to write the marker.
+    import time
+
+    time.sleep(1.0)
+    assert not marker.exists()
+
+
 def test_history_appends_across_invocations(
     tmp_path: Path, passing_manifest: Path
 ) -> None:

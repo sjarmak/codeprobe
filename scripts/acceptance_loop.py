@@ -52,7 +52,10 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -110,6 +113,33 @@ def select_criteria(criteria: list[Criterion], eval_mode: str | None) -> list[Cr
     return [c for c in criteria if c.eval_mode_required in (None, eval_mode)]
 
 
+def _poison_artifacts(workspace: Path, artifact_paths: tuple[str, ...]) -> None:
+    """Delete an action's declared artifacts after a timeout/os_error.
+
+    A compiled snippet's redirection (``( cmd ) > out 2> err``) opens the
+    ``.stdout``/``.stderr`` files before the command runs, so a command that
+    prints something and then hangs leaves a *partial* artifact behind even
+    though it never finished (the ``.exit`` file is never written, since the
+    trailing ``echo "$?" > .exit`` never executes). If those partial
+    artifacts are left in the workspace, artifact-presence checks
+    (``stdout_contains``, ``stderr_contains``, ``cli_help_contains``,
+    ``file_exists``) read them as a normal completion and can PASS on a
+    command that actually hung — only ``cli_exit_code`` was ever protected,
+    because its artifact is written last. Removing every artifact the
+    action declared forces every check type to see a missing artifact and
+    skip, the same honest-INCOMPLETE path ``cli_exit_code`` already got.
+    """
+    for rel in artifact_paths:
+        candidate = workspace / rel
+        try:
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            elif candidate.exists() or candidate.is_symlink():
+                candidate.unlink()
+        except OSError:
+            pass
+
+
 def execute_action(
     action: TestAction,
     workspace: Path,
@@ -121,28 +151,49 @@ def execute_action(
     reads whatever artifacts the snippet managed (or failed) to produce, and
     missing artifacts surface as skips that push the verdict toward an
     honest INCOMPLETE.
+
+    The snippet runs in its own process group (``start_new_session=True``)
+    so a timeout can kill the whole tree, not just the ``bash`` wrapper: the
+    compiler always wraps the real command in a ``( cmd ) > out 2> err``
+    subshell, so the command the Test Agent cares about is always a
+    grandchild of the ``bash -c`` process, and a plain SIGKILL to that one
+    pid leaves grandchildren (e.g. a hung ``codeprobe mine``) running as
+    orphans that keep consuming spend and keep writing into shared state
+    (like ``target_repo/.codeprobe/``) after the loop has moved on.
     """
     record: dict[str, Any] = {"criterion_id": action.criterion_id}
     try:
-        completed = subprocess.run(
+        proc = subprocess.Popen(
             ["bash", "-c", action.shell_snippet],
             cwd=str(workspace),
-            timeout=timeout_s,
-            capture_output=True,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
         )
-    except subprocess.TimeoutExpired:
-        record["outcome"] = "timeout"
-        record["detail"] = f"exceeded {timeout_s}s"
-        return record
     except OSError as exc:
         record["outcome"] = "os_error"
         record["detail"] = f"{type(exc).__name__}: {exc}"
+        _poison_artifacts(workspace, action.artifact_paths)
         return record
+
+    try:
+        _stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # already exited between the timeout and the kill attempt
+        proc.communicate()  # reap; the whole group is dead so this returns promptly
+        record["outcome"] = "timeout"
+        record["detail"] = f"exceeded {timeout_s}s"
+        _poison_artifacts(workspace, action.artifact_paths)
+        return record
+
     record["outcome"] = "completed"
-    record["returncode"] = completed.returncode
-    if completed.stderr:
-        record["stderr_tail"] = completed.stderr[-2000:]
+    record["returncode"] = proc.returncode
+    if stderr:
+        record["stderr_tail"] = stderr[-2000:]
     return record
 
 
@@ -211,9 +262,24 @@ def run_loop(
             f"all_pass={verdict['all_pass']} "
             f"pass={verdict['pass_count']} fail={verdict['fail_count']} "
             f"skip={verdict['skip_count']} "
-            f"(mode-skips={verdict['mode_skip_count']}) "
+            f"(eval-mode-skips={verdict['mode_skip_count']} "
+            f"no-handler-skips={verdict['no_handler_count']}) "
             f"evaluated_pct={verdict['evaluated_pct']}"
         )
+        if verdict["no_handler_count"]:
+            critical_no_handler = [
+                c
+                for c in verdict["no_handler_criteria"]
+                if c["severity"] in ("critical", "high")
+            ]
+            print(
+                f"[iter {iteration}]   WARNING: {verdict['no_handler_count']} "
+                "criterion/a have no registered Verifier handler and are "
+                "structurally unevaluable in ANY eval mode "
+                f"({[c['criterion_id'] for c in verdict['no_handler_criteria']]}); "
+                f"{len(critical_no_handler)} of those are critical/high severity.",
+                file=sys.stderr,
+            )
         for failure in verdict["failures"]:
             print(
                 f"[iter {iteration}]   FAIL {failure['criterion_id']} "

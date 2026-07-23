@@ -7,15 +7,39 @@ structured verdict JSON produced upstream by the evaluator.
 Responsibilities:
 
 - Persist verdicts in SQLite (WAL mode) so a crashed runner can resume.
-- Detect monotonic-progress regressions (pass_count must not decrease).
+- Detect monotonic-progress regressions (pass_count must not decrease)
+  **between consecutive verdicts recorded under the same ``eval_mode``**.
+  ``default`` mode excludes mode-gated criteria from compilation (a smaller
+  denominator) while ``full`` mode evaluates all of them, so a raw
+  ``pass_count`` comparison across a mode switch compares two different
+  criteria sets and is not a regression signal — see §"Mixed eval_mode
+  history" below.
 - Detect oscillating criteria (pass/fail flips more than twice) and
   quarantine them.
 - Detect the three-strike rule: same criterion failing three iterations in a
   row with the same evidence escalates for human intervention.
-- Gate release on two consecutive ``all_pass`` verdicts AND absence of any
-  blocking (critical/high) quarantined criteria.
+- Gate release on two consecutive, **same-``eval_mode``** ``all_pass``
+  verdicts AND absence of any blocking (critical/high) quarantined criteria.
 - Produce a markdown escalation report summarizing stuck / quarantined
   criteria so humans know what to look at.
+
+## Mixed eval_mode history
+
+``acceptance/verify.py`` records the ``eval_mode`` a verdict was produced
+under (``None`` for default, ``"full"`` for full). The acceptance loop's
+history directory is append-only and mode-agnostic — a ``default``-mode run
+and a ``full``-mode run against the same history both land in this
+controller. Because ``default`` mode compiles a strict subset of criteria
+(mode-gated ones are excluded), its ``pass_count`` is not comparable to a
+``full``-mode verdict's ``pass_count``: comparing them directly produces
+either a phantom ``HALT_REGRESSION`` (dropping from a bigger full-mode count
+to a smaller default-mode count) or a premature ``RELEASE`` (a single
+full-mode green immediately following an unrelated default-mode green looks
+like "two consecutive greens" even though the mode-gated criteria set only
+ever received one green — the exact "one green can be luck" case the
+two-consecutive-green rule exists to prevent). Both :meth:`_detect_regression`
+and :meth:`is_release_ready` therefore only compare verdicts whose
+``eval_mode`` matches.
 
 This module is ZFC-compliant: all decisions are deterministic arithmetic /
 state comparisons, not semantic judgments.
@@ -318,12 +342,24 @@ class ConvergenceController:
         return "\n".join(lines).rstrip() + "\n"
 
     def is_release_ready(self) -> bool:
-        """Return True iff the last two verdicts are all_pass AND no blocking quarantine."""
+        """Return True iff the last two verdicts are same-mode, all_pass, AND no blocking quarantine.
+
+        The last two verdicts must share ``eval_mode`` — see the module
+        docstring's "Mixed eval_mode history" section. A ``default``-mode
+        green followed by a ``full``-mode green (or vice versa) is not
+        "two consecutive greens on the same criteria set"; it is one green
+        on a strict subset of criteria followed by exactly one green on the
+        full set, which is precisely the single-data-point case this rule
+        exists to reject.
+        """
         history = self._load_history()
         if len(history) < 2:
             return False
 
         last, prev = history[-1], history[-2]
+        if last.get("eval_mode") != prev.get("eval_mode"):
+            return False
+
         if not (bool(last.get("all_pass")) and bool(prev.get("all_pass"))):
             return False
 
@@ -362,8 +398,18 @@ class ConvergenceController:
     def _detect_regression(
         self, history: list[dict[str, Any]]
     ) -> dict[str, Any] | None:
-        """Return regression info if pass_count ever decreased, else None."""
+        """Return regression info if pass_count ever decreased, else None.
+
+        Only compares consecutive verdicts recorded under the same
+        ``eval_mode`` — ``default`` mode evaluates a strict subset of
+        criteria (mode-gated ones are excluded), so its ``pass_count`` is
+        not comparable to a ``full``-mode verdict's. Comparing across a mode
+        switch would blame a denominator change on a regression that never
+        happened (see the module docstring's "Mixed eval_mode history").
+        """
         for prev, curr in zip(history, history[1:]):
+            if prev.get("eval_mode") != curr.get("eval_mode"):
+                continue
             prev_pass = int(prev.get("pass_count", 0))
             curr_pass = int(curr.get("pass_count", 0))
             if curr_pass < prev_pass:

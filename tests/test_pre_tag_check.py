@@ -41,6 +41,7 @@ def _write_verdict(
     status: str = "EVALUATED",
     all_pass: bool = True,
     eval_mode: str | None = "full",
+    no_handler_criteria: list[dict[str, str]] | None = None,
 ) -> Path:
     history.mkdir(parents=True, exist_ok=True)
     path = history / f"verdict-{index:04d}.json"
@@ -54,6 +55,7 @@ def _write_verdict(
                 "pass_count": 5,
                 "fail_count": 0 if all_pass else 1,
                 "failures": [],
+                "no_handler_criteria": no_handler_criteria or [],
             }
         )
     )
@@ -183,6 +185,58 @@ def test_one_full_mode_verdict_suffices(repo: Path) -> None:
     history = repo / "acceptance" / "verdict-history"
     _write_verdict(history, 1, eval_mode=None)
     _write_verdict(history, 2, eval_mode="full")
+    assert _run(repo) == 0
+
+
+# ---------------------------------------------------------------------------
+# Handler-less critical/high criteria
+# ---------------------------------------------------------------------------
+
+
+def test_fails_when_critical_criterion_is_handler_less(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A critical criterion with no registered Verifier handler must never
+    be silently READY — it was never evaluated in ANY eval mode."""
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(
+        history,
+        2,
+        no_handler_criteria=[
+            {"criterion_id": "LOG-STDERR-003", "tier": "behavioral", "severity": "critical"}
+        ],
+    )
+    assert _run(repo) == 1
+    err = capsys.readouterr().err
+    assert "LOG-STDERR-003" in err
+    assert "no registered Verifier handler" in err
+
+
+def test_warns_but_does_not_fail_on_medium_handler_less_criterion(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    history = repo / "acceptance" / "verdict-history"
+    _write_verdict(
+        history,
+        2,
+        no_handler_criteria=[
+            {"criterion_id": "SOME-LOW-PRIORITY", "tier": "behavioral", "severity": "medium"}
+        ],
+    )
+    assert _run(repo) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "SOME-LOW-PRIORITY" in out
+
+
+def test_passes_when_no_handler_criteria_field_absent(repo: Path) -> None:
+    """Verdicts written before this field existed must not break the gate."""
+    history = repo / "acceptance" / "verdict-history"
+    for index in (1, 2):
+        path = history / f"verdict-{index:04d}.json"
+        data = json.loads(path.read_text())
+        del data["no_handler_criteria"]
+        path.write_text(json.dumps(data))
     assert _run(repo) == 0
 
 
