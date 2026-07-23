@@ -321,3 +321,131 @@ def test_run_help_agent_lists_codex_from_registry():
     for name in available():
         assert name in result.output, f"--agent help missing registered agent {name}"
     assert "codex" in result.output
+
+
+# --- --pristine-config flag (codeprobe-f7rl.24) ------------------------------
+
+
+def _setup_pristine_experiment(tmp_path):
+    """Minimal experiment dir with one claude-agent task for run tests.
+
+    Uses a registered agent: the upfront per-arm backend/capability
+    preflight (codeprobe-f7rl.26) rejects unknown backends before the
+    --dry-run early return, so 'fake' would fail with UNKNOWN_BACKEND.
+    Dry-run never spawns the adapter, so no claude CLI is required.
+    """
+    import json
+    import stat
+
+    exp_dir = tmp_path / ".codeprobe" / "exp"
+    task_dir = exp_dir / "tasks" / "task-001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("Do stuff.", encoding="utf-8")
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir()
+    test_sh = tests_dir / "test.sh"
+    test_sh.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    test_sh.chmod(test_sh.stat().st_mode | stat.S_IXUSR)
+    experiment = {
+        "name": "exp",
+        "description": "pristine test",
+        "tasks_dir": "tasks",
+        "task_ids": ["task-001"],
+        "configs": [
+            {
+                "label": "baseline",
+                "agent": "claude",
+                "model": None,
+                "extra": {"timeout_seconds": 60},
+            }
+        ],
+    }
+    (exp_dir / "experiment.json").write_text(
+        json.dumps(experiment), encoding="utf-8"
+    )
+    return exp_dir
+
+
+def test_run_pristine_config_flag_in_help():
+    runner = CliRunner()
+    result = runner.invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--pristine-config" in result.output
+
+
+def test_run_pristine_config_dry_run_accepted(tmp_path):
+    """`codeprobe run --pristine-config --dry-run` parses and exits clean."""
+    exp_dir = _setup_pristine_experiment(tmp_path)
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["run", str(exp_dir), "--pristine-config", "--dry-run"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_run_envelope_carries_pristine_config(tmp_path, capsys):
+    """The run envelope records the pristine_config setting (provenance)."""
+    import json
+    import subprocess
+    from unittest.mock import patch
+
+    from codeprobe.cli import run_cmd as run_cmd_mod
+    from tests.conftest import FakeAdapter
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "t@example.com"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "t"],
+        check=True,
+        capture_output=True,
+    )
+    (repo / "README.md").write_text("seed\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "README.md"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "seed"],
+        check=True,
+        capture_output=True,
+    )
+    exp_dir = _setup_pristine_experiment(repo)
+
+    adapter = FakeAdapter(
+        stdout="ok", cost_usd=0.0, cost_model="unknown", duration=0.0
+    )
+    with patch.object(run_cmd_mod, "resolve", return_value=adapter):
+        run_cmd_mod.run_eval(
+            str(exp_dir),
+            agent="fake",
+            parallel=1,
+            quiet=True,
+            force_plain=True,
+            pristine_config=True,
+            json_flag=True,
+        )
+
+    out = capsys.readouterr().out
+    envelope = None
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        payload = json.loads(line)
+        if payload.get("command") == "run":
+            envelope = payload
+    assert envelope is not None, out
+    assert envelope["data"]["pristine_config"] is True

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -222,6 +223,11 @@ class TestNdjsonStreamCollector:
         usage = self.collector.collect(raw)
         assert usage.error is not None
         assert "outputTokens" in usage.error
+        # Both causes are named: an outdated CLI is only one explanation —
+        # a session that died before producing output (auth / quota / rate
+        # limit) yields the same shape (codeprobe-f7rl.29).
+        assert "1.0.4" in usage.error
+        assert "quota" in usage.error
 
     def test_plain_text(self):
         raw = (FIXTURES / "copilot_plain.txt").read_text()
@@ -439,9 +445,12 @@ class TestGoldenFileContracts:
         assert (
             usage.output_tokens == 198
         ), f"Golden contract broken: expected output_tokens=198, got {usage.output_tokens}"
+        # Both token counts are native (usage event inputTokens + summed
+        # assistant.message outputTokens) — no heuristic ran, so the honest
+        # provenance label is 'calculated' (codeprobe-f7rl.36).
         assert (
-            usage.cost_source == "estimated"
-        ), f"Golden contract broken: expected cost_source='estimated', got {usage.cost_source!r}"
+            usage.cost_source == "calculated"
+        ), f"Golden contract broken: expected cost_source='calculated', got {usage.cost_source!r}"
         assert (
             usage.cost_model == "per_token"
         ), f"Golden contract broken: expected cost_model='per_token', got {usage.cost_model!r}"
@@ -483,6 +492,64 @@ class TestNdjsonCostSourceEstimated:
             usage.input_tokens * gpt4o[0] / 1_000_000 + 100 * gpt4o[1] / 1_000_000
         )
         assert usage.cost_usd == pytest.approx(expected, abs=1e-10)
+
+
+class TestNdjsonModelPricing:
+    """Model-keyed rate lookup and cost provenance labels (codeprobe-f7rl.36)."""
+
+    collector = NdjsonStreamCollector()
+
+    # Fully native counts: usage event supplies both inputTokens and
+    # outputTokens, no content to estimate from.
+    _NATIVE_1M = '{"type":"usage","data":{"inputTokens":1000000,"outputTokens":1000000}}\n'
+
+    def test_copilot_cost_uses_selected_model_rates(self):
+        usage = self.collector.collect(self._NATIVE_1M, model="gpt-4o-mini")
+        # 1M in * 0.15/1M + 1M out * 0.60/1M — mini rates, not gpt-4o's 12.50
+        assert usage.cost_usd == pytest.approx(0.75, abs=1e-10)
+        assert usage.cost_model == "per_token"
+        assert usage.cost_source == "calculated"
+
+    def test_copilot_unknown_model_cost_unavailable(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="codeprobe.adapters.telemetry"):
+            usage = self.collector.collect(self._NATIVE_1M, model="claude-sonnet-4-6")
+        assert usage.cost_usd is None
+        assert usage.cost_source == "unavailable"
+        assert usage.cost_model == "subscription"
+        # Tokens survive even when cost cannot be honestly priced
+        assert usage.input_tokens == 1_000_000
+        assert usage.output_tokens == 1_000_000
+        assert "claude-sonnet-4-6" in caplog.text
+        assert "gpt-4o" in caplog.text
+
+    def test_copilot_default_model_is_gpt4o(self):
+        usage = self.collector.collect(self._NATIVE_1M)
+        # No model kwarg: gpt-4o default-session assumption, unchanged
+        assert usage.cost_usd == pytest.approx(12.50, abs=1e-10)
+        assert usage.cost_model == "per_token"
+
+    def test_copilot_native_tokens_labeled_calculated(self):
+        usage = self.collector.collect(self._NATIVE_1M)
+        assert usage.cost_source == "calculated"
+
+    @patch("codeprobe.adapters.telemetry._count_tokens_tiktoken", return_value=None)
+    def test_copilot_heuristic_input_labeled_estimated(self, _mock_tiktoken):
+        raw = (
+            '{"type":"user.message","data":{"content":"hello world hello"}}\n'
+            '{"type":"assistant.message","data":{"content":"hi","outputTokens":10}}\n'
+        )
+        usage = self.collector.collect(raw)
+        assert usage.cost_source == "estimated"
+
+    @patch("codeprobe.adapters.telemetry._count_tokens_tiktoken", return_value=7)
+    def test_copilot_tiktoken_input_labeled_calculated(self, _mock_tiktoken):
+        raw = (
+            '{"type":"user.message","data":{"content":"hello world hello"}}\n'
+            '{"type":"assistant.message","data":{"content":"hi","outputTokens":10}}\n'
+        )
+        usage = self.collector.collect(raw)
+        assert usage.input_tokens == 7
+        assert usage.cost_source == "calculated"
 
 
 # -- tiktoken integration tests ------------------------------------------------

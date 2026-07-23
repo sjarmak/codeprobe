@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from codeprobe.adapters.protocol import AdapterQuotaError
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
     BudgetChecker,
@@ -193,8 +194,10 @@ def _find_active_experiment_dir(
 def _classify_error(exc: BaseException) -> str:
     """Classify an exception into an error category.
 
-    Returns one of: 'timeout', 'system', 'agent'.
+    Returns one of: 'quota', 'timeout', 'system', 'agent'.
     """
+    if isinstance(exc, AdapterQuotaError):
+        return "quota"
     if isinstance(exc, subprocess.TimeoutExpired):
         return "timeout"
     if isinstance(exc, (OSError, MemoryError)):
@@ -212,17 +215,24 @@ def _call_isolate_session(
     slot_id: int,
     *,
     namespace: str | None = None,
+    pristine: bool = False,
 ) -> dict[str, str]:
-    """Call ``adapter.isolate_session`` with namespace support when available."""
+    """Call ``adapter.isolate_session`` forwarding only supported kwargs.
+
+    ``namespace`` and ``pristine`` are passed when the adapter's signature
+    accepts them; adapters with the bare ``(slot_id)`` shape keep working.
+    """
     isolate = getattr(adapter, "isolate_session")
     try:
         params: Mapping[str, inspect.Parameter] = inspect.signature(isolate).parameters
     except (TypeError, ValueError):
         params = {}
+    kwargs: dict[str, str | bool | None] = {}
     if "namespace" in params:
-        result: dict[str, str] = isolate(slot_id, namespace=namespace)
-    else:
-        result = isolate(slot_id)
+        kwargs["namespace"] = namespace
+    if "pristine" in params:
+        kwargs["pristine"] = pristine
+    result: dict[str, str] = isolate(slot_id, **kwargs)
     return result
 
 
@@ -790,13 +800,20 @@ def execute_task(
         # after writing it), fall through to scoring.
         has_answer = found_answer is not None or found_answer_json is not None
         if output.exit_code != 0 and not output.stdout.strip() and not has_answer:
-            error_msg = output.stderr or f"Agent exited with code {output.exit_code}"
+            # A bare timeout (or quota stub) lands here with empty stdout:
+            # honour the adapter-declared category and error text so the
+            # row is never miscounted as an agent failure.
+            error_msg = (
+                output.error
+                or output.stderr
+                or f"Agent exited with code {output.exit_code}"
+            )
             return TaskResult(
                 completed=CompletedTask(
                     task_id=task_id,
                     automated_score=0.0,
                     status="error",
-                    error_category="agent",
+                    error_category=output.error_category or "agent",
                     metadata={"error": sanitize_secrets(error_msg), **_turn_cap_meta},
                     **_output_fields(),
                 ),
@@ -1094,6 +1111,7 @@ def execute_config(
     event_dispatcher: EventDispatcher | None = None,
     trace_recorder: TraceRecorder | None = None,
     config_max_turns_source: str = "",
+    pristine_config: bool = False,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -1115,6 +1133,12 @@ def execute_config(
     TaskStarted, TaskScored, RunFinished) are emitted.  If *max_cost_usd*
     is also set, a :class:`BudgetChecker` is registered to handle budget
     warnings and halt checks via the event system.
+
+    When *pristine_config* is True, adapters whose ``isolate_session``
+    accepts a ``pristine`` kwarg exclude operator personalization
+    (CLAUDE.md, settings, skills, ...) from the per-slot config dir so
+    arms are reproducible across operators. Both the sequential and
+    parallel dispatch paths run the same isolate/cleanup lifecycle.
     """
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
@@ -1363,54 +1387,72 @@ def execute_config(
 
     with quarantine_cm:
         if workers <= 1:
-            # Sequential — preserves original behavior and budget checks
-            for idx, (task_dir, repeat_index) in enumerate(pending_work):
-                if quota_exhausted:
-                    _budget_msg(
-                        "OAuth quota exhausted — halting remaining "
-                        f"{len(pending_work) - idx} trials"
-                    )
-                    break
-                if _budget_exceeded():
-                    _budget_msg(
-                        f"Cost budget exceeded: ${cumulative_cost:.2f} > "
-                        f"${max_cost_usd:.2f} — halting"
-                    )
-                    break
-                # Emit TaskStarted event
-                if event_dispatcher is not None:
-                    event_dispatcher.emit(
-                        TaskStarted(
-                            task_id=task_dir.name,
-                            config_label=experiment_config.label,
-                            timestamp=time.time(),
+            # Sequential — preserves original behavior and budget checks.
+            # Session isolation mirrors the parallel branch: one namespaced
+            # slot env for the whole config, cleaned up in the finally.
+            # Without it, serial runs used the real ~/.claude wholesale and
+            # serial vs parallel arms saw different config state.
+            session_namespace = _build_session_namespace(experiment_config.label)
+            try:
+                sess_env = _call_isolate_session(
+                    adapter,
+                    0,
+                    namespace=session_namespace,
+                    pristine=pristine_config,
+                )
+                for idx, (task_dir, repeat_index) in enumerate(pending_work):
+                    if quota_exhausted:
+                        _budget_msg(
+                            "OAuth quota exhausted — halting remaining "
+                            f"{len(pending_work) - idx} trials"
                         )
-                    )
-                # Reset working directory between tasks so leftovers from
-                # task N don't corrupt task N+1's results.  Also restores
-                # the original branch/HEAD in case the previous task pinned
-                # to a specific commit.
-                if idx > 0:
-                    _git_reset_workdir(
-                        repo_path,
-                        extra_excludes=clean_excludes,
-                        restore_ref=original_ref,
-                    )
-                try:
-                    task_result = _run_one(task_dir, repeat_index=repeat_index)
-                except Exception as exc:  # noqa: BLE001 — preserve, don't drop
-                    # Mirror the parallel path: a per-task crash becomes one
-                    # error result and the rest of the config still runs
-                    # (codeprobe-s6o). Without this, an uncaught scorer
-                    # exception aborted execute_config and dropped every
-                    # already-collected result for this config.
-                    task_result = _crash_result(task_dir, repeat_index, exc)
-                _handle_result(task_result)
-            # Restore original HEAD after all sequential tasks complete so
-            # the repo isn't left on a detached commit from the last task.
-            _git_reset_workdir(
-                repo_path, extra_excludes=clean_excludes, restore_ref=original_ref
-            )
+                        break
+                    if _budget_exceeded():
+                        _budget_msg(
+                            f"Cost budget exceeded: ${cumulative_cost:.2f} > "
+                            f"${max_cost_usd:.2f} — halting"
+                        )
+                        break
+                    # Emit TaskStarted event
+                    if event_dispatcher is not None:
+                        event_dispatcher.emit(
+                            TaskStarted(
+                                task_id=task_dir.name,
+                                config_label=experiment_config.label,
+                                timestamp=time.time(),
+                            )
+                        )
+                    # Reset working directory between tasks so leftovers from
+                    # task N don't corrupt task N+1's results.  Also restores
+                    # the original branch/HEAD in case the previous task pinned
+                    # to a specific commit.
+                    if idx > 0:
+                        _git_reset_workdir(
+                            repo_path,
+                            extra_excludes=clean_excludes,
+                            restore_ref=original_ref,
+                        )
+                    try:
+                        task_result = _run_one(
+                            task_dir,
+                            repeat_index=repeat_index,
+                            session_env=sess_env,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — preserve, don't drop
+                        # Mirror the parallel path: a per-task crash becomes one
+                        # error result and the rest of the config still runs
+                        # (codeprobe-s6o). Without this, an uncaught scorer
+                        # exception aborted execute_config and dropped every
+                        # already-collected result for this config.
+                        task_result = _crash_result(task_dir, repeat_index, exc)
+                    _handle_result(task_result)
+                # Restore original HEAD after all sequential tasks complete so
+                # the repo isn't left on a detached commit from the last task.
+                _git_reset_workdir(
+                    repo_path, extra_excludes=clean_excludes, restore_ref=original_ref
+                )
+            finally:
+                _cleanup_session_namespace(adapter, session_namespace)
         else:
             # Parallel — dispatch all pending tasks to thread pool
             logger.info(
@@ -1451,6 +1493,7 @@ def execute_config(
                         adapter,
                         slot_id,
                         namespace=session_namespace,
+                        pristine=pristine_config,
                     )
                     return _run_one(
                         task_dir,

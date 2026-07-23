@@ -271,6 +271,34 @@ def test_add_config_rejects_unsafe_label(runner: CliRunner, exp_dir: Path) -> No
     assert result.exit_code == 1
 
 
+def test_add_config_codex_quarantined(runner: CliRunner, exp_dir: Path) -> None:
+    """codeprobe-f7rl.27: a config that can never run must not be persisted.
+
+    The codex adapter is quarantined (single-shot completion API, no
+    workspace access); add-config refuses it with the same message run
+    preflight uses, and nothing is written to experiment.json.
+    """
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "add-config",
+            str(exp_dir),
+            "--label",
+            "codex-arm",
+            "--agent",
+            "codex",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "quarantined" in result.output
+    assert "cannot edit files" in result.output
+    assert "claude" in result.output  # the alternative is named
+
+    loaded = load_experiment(exp_dir)
+    assert "codex-arm" not in [c.label for c in loaded.configs]
+
+
 # ---- validate ----
 
 

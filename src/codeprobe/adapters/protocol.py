@@ -29,6 +29,74 @@ class AdapterExecutionError(AdapterError):
     """Unrecoverable failure during agent execution."""
 
 
+class AdapterQuotaError(AdapterError):
+    """Provider quota / rate-limit exhaustion — unrecoverable within this run.
+
+    Raised by API-based adapters when the provider rejects the call for
+    quota or rate-limit reasons. The executor classifies it as
+    ``error_category='quota'`` and halts dispatch of the remaining trials
+    instead of burning wall clock on guaranteed-failing work
+    (codeprobe-f7rl.29).
+    """
+
+
+@dataclass(frozen=True)
+class AdapterCapabilities:
+    """Which :class:`AgentConfig` knobs an adapter actually honors.
+
+    Every field defaults to ``False`` because the contract is FAIL-CLOSED:
+    an adapter that does not declare a capability is treated as supporting
+    nothing beyond prompt+model. The run preflight hard-refuses any
+    experiment arm that requests a knob its adapter does not cover —
+    otherwise the knob silently no-ops and the A/B report labels arms as
+    different configs while the numbers compare nothing (codeprobe-f7rl.26).
+
+    Declarations must match the adapter's actual ``config.*`` usage
+    (grep-verified in review), never its aspirations.
+    """
+
+    mcp_config: bool = False
+    allowed_tools: bool = False
+    disallowed_tools: bool = False
+    max_turns: bool = False
+    permission_mode: bool = False
+    workspace_cwd: bool = False
+    timeout: bool = False
+
+
+def capabilities_of(adapter: object) -> AdapterCapabilities:
+    """Return *adapter*'s declared capabilities, fail-closed.
+
+    An adapter without a ``capabilities`` attribute — or with one of the
+    wrong type — is treated as supporting nothing beyond prompt+model,
+    so third-party adapters that predate the declaration are refused any
+    knob rather than silently dropping it.
+    """
+    caps = getattr(adapter, "capabilities", None)
+    if isinstance(caps, AdapterCapabilities):
+        return caps
+    return AdapterCapabilities()
+
+
+def quarantine_message(agent_name: str) -> str:
+    """The user-facing refusal for a quarantined adapter.
+
+    codeprobe-f7rl decision 4: the codex adapter is a single-shot
+    completion API, not a coding agent — it never sees the repository,
+    cannot edit files, and its exit_code=0 outputs read as valid 0.0
+    measurements. Every refusal site (``codeprobe run`` preflight,
+    ``experiment add-config``, the library ``run_experiment``) uses this
+    one message so they can never drift apart. An adapter opts in by
+    setting a truthy ``quarantined`` class attribute.
+    """
+    return (
+        f"--agent {agent_name} is quarantined: the current adapter is a "
+        "single-shot completion API that never sees your repository and "
+        "cannot edit files, so its scores are not comparable. Use "
+        "--agent claude (first-class) or copilot."
+    )
+
+
 @dataclass(frozen=True)
 class McpServerStatus:
     """Attach status of a single MCP server, verbatim from the CLI init event.
@@ -199,6 +267,16 @@ class AgentAdapter(Protocol):
     @property
     def name(self) -> str:
         """Human-readable agent name."""
+        ...
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        """Which :class:`AgentConfig` knobs this adapter honors.
+
+        FAIL-CLOSED: run preflight treats a missing declaration as
+        "prompt+model only" and refuses any arm requesting more (use
+        :func:`capabilities_of` to read it safely).
+        """
         ...
 
     def preflight(self, config: AgentConfig) -> list[str]:

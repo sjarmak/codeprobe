@@ -23,19 +23,21 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from codeprobe.core.scoring.materialize import AgentState
 
+from codeprobe.config.redact import token_freetext_pattern
+
 logger = logging.getLogger(__name__)
 
+# Prefix-derived token shapes come from the canonical list in
+# config/redact.py (single source of truth); only non-prefix shapes
+# are enumerated here.
 _TOKEN_PATTERN = re.compile(
     r"("
-    r"ghp_[A-Za-z0-9]{36}"  # GitHub personal access token
-    r"|gho_[A-Za-z0-9]{36}"  # GitHub OAuth token
-    r"|github_pat_[A-Za-z0-9_]{80,}"  # GitHub fine-grained PAT
-    r"|sk-[A-Za-z0-9]{32,}"  # OpenAI / Anthropic API key
-    r"|sk-ant-[A-Za-z0-9\-]{80,}"  # Anthropic API key (long form)
-    r"|AKIA[0-9A-Z]{16}"  # AWS access key ID
-    r"|Bearer\s+\S{20,}"  # Authorization bearer tokens
-    r"|token\s+\S{20,}"  # Generic token patterns
-    r")",
+    + token_freetext_pattern().pattern
+    + r"|github_pat_[A-Za-z0-9_]{80,}"  # GitHub fine-grained PAT
+    + r"|AKIA[0-9A-Z]{16}"  # AWS access key ID
+    + r"|Bearer\s+\S{20,}"  # Authorization bearer tokens
+    + r"|token\s+\S{20,}"  # Generic token patterns
+    + r")",
     re.IGNORECASE,
 )
 

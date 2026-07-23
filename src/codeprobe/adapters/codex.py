@@ -7,7 +7,9 @@ import os
 import time
 
 from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentConfig,
     AgentOutput,
@@ -32,7 +34,19 @@ class CodexAdapter:
     Tries the Responses API (responses.create) first. If the model is not
     available on that endpoint (NotFoundError), falls back to the Chat
     Completions API (chat.completions.create).
+
+    QUARANTINED (codeprobe-f7rl decision 4): ``run()`` is a single-shot
+    completion call — the model never sees the workspace and cannot edit
+    files, yet its ``exit_code=0`` outputs flow into ``CompletedTask``
+    ``status='completed'`` and read as genuine 0.0 measurements. Run
+    preflight refuses every codex arm (``ADAPTER_QUARANTINED``) and
+    ``experiment add-config --agent codex`` is rejected. The adapter stays
+    registered so the refusal is prescriptive rather than a raw KeyError.
+    Exit condition: rewrite this adapter around the real OpenAI Codex CLI
+    agent (workspace access, file edits, honest telemetry).
     """
+
+    quarantined: bool = True
 
     def __init__(self) -> None:
         self._collector = ApiResponseCollector()
@@ -40,6 +54,13 @@ class CodexAdapter:
     @property
     def name(self) -> str:
         return "codex"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: run() honors prompt and model only — no MCP
+        # config, tool restriction, turn cap, permission mode, cwd, or
+        # timeout reaches the API call. All-False (fail-closed default).
+        return AdapterCapabilities()
 
     def preflight(self, config: AgentConfig) -> list[str]:
         issues: list[str] = []
@@ -110,7 +131,7 @@ class CodexAdapter:
         except openai.AuthenticationError as exc:
             raise AdapterSetupError(f"OPENAI_API_KEY invalid: {exc}") from exc
         except openai.RateLimitError as exc:
-            raise AdapterExecutionError(f"Rate limited: {exc}") from exc
+            raise AdapterQuotaError(f"Rate limited: {exc}") from exc
         except openai.APIError as exc:
             raise AdapterExecutionError(f"OpenAI API error: {exc}") from exc
 

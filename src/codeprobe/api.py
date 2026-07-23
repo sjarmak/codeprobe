@@ -26,7 +26,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
+from codeprobe.adapters.protocol import (
+    ALLOWED_PERMISSION_MODES,
+    AgentConfig,
+    quarantine_message,
+)
 from codeprobe.analysis.report import Report, generate_report
 from codeprobe.analysis.stats import task_passed
 from codeprobe.core.checkpoint import CheckpointStore
@@ -137,6 +141,15 @@ def run_experiment(
         experiment_configs = list(experiment.configs)
     else:
         experiment_configs = [ExperimentConfig(label="default")]
+
+    # Refuse quarantined adapters (codeprobe-f7rl.27, currently codex)
+    # upfront — before ANY config executes — so a mixed experiment never
+    # produces a half-run comparison or spends on the other arms. A
+    # quarantined adapter's exit_code=0 outputs would enter the report
+    # as valid all-zero measurements.
+    for exp_config in experiment_configs:
+        if getattr(resolve(exp_config.agent), "quarantined", False):
+            raise ValueError(quarantine_message(exp_config.agent))
 
     all_config_results: list[ConfigResults] = []
 

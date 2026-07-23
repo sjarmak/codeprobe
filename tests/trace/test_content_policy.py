@@ -115,3 +115,27 @@ def test_multiple_env_values_redacted() -> None:
     assert "secret-alpha-123" not in out
     assert "secret-beta-456" not in out
     assert out.count(REDACTED_ENV) == 2
+
+
+# ---------------------------------------------------------------------------
+# Token-shaped strings not present in the environment (canonical prefix list)
+# ---------------------------------------------------------------------------
+
+_TOKEN_SAMPLES = (
+    "glpat-" + "x1Y2" * 5,
+    "xoxb-" + "1234567890ab" * 2,
+    "sgp_" + "0123456789abcdef" * 2 + "01234567",
+    "sk-proj-" + "Ab1" * 14,
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("token", _TOKEN_SAMPLES)
+@pytest.mark.parametrize("is_output", [True, False])
+def test_token_not_in_env_still_redacted(token: str, is_output: bool) -> None:
+    """A token pasted into tool IO that is NOT a live env value (e.g. read
+    from a customer's .env file) must still be stripped before storage."""
+    policy = ContentPolicy(env_values=frozenset())
+    out = policy.apply(f"found in .env: {token}", is_output=is_output)
+    assert token not in out
+    assert REDACTED_AUTH in out

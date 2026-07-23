@@ -40,14 +40,18 @@ class AgentAdapter(Protocol):
 ```
 
 Because `AgentAdapter` is a `@runtime_checkable` Protocol, you never need to
-inherit from it. Any class with `name`, `preflight`, and `run` satisfies the
-contract:
+inherit from it. Any class with `name`, `capabilities`, `preflight`, and
+`run` satisfies the contract:
 
 ```python
 class MinimalAdapter:
     @property
     def name(self) -> str:
         return "my-agent"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        return AdapterCapabilities()  # prompt+model only
 
     def preflight(self, config: AgentConfig) -> list[str]:
         return []
@@ -57,6 +61,33 @@ class MinimalAdapter:
 
 assert isinstance(MinimalAdapter(), AgentAdapter)  # passes
 ```
+
+### Capabilities
+
+Adapters declare which `AgentConfig` knobs they actually honor via a
+`capabilities` property returning `AdapterCapabilities` (defined in
+`protocol.py`):
+
+```python
+@property
+def capabilities(self) -> AdapterCapabilities:
+    return AdapterCapabilities(mcp_config=True, workspace_cwd=True, timeout=True)
+```
+
+The contract is **fail-closed**: an adapter without the property is treated
+as supporting nothing beyond prompt+model. `codeprobe run` checks every
+experiment arm's requested knobs (`mcp_config`, resolved
+`allowed_tools`/`disallowed_tools` — including the `mcp_mode`
+strict/pragmatic auto-derived restriction — `max_turns`, and a declared
+`permission_mode`) against the arm's adapter before any agent spawns, and
+hard-refuses with `ADAPTER_CAPABILITY` on mismatch. There is no override
+flag: a knob the adapter would silently drop makes the A/B labels lie.
+Consequence: an MCP arm under the default `mcp_mode=strict` is refused on
+adapters without tool-surface control (e.g. copilot); the honest path is
+`mcp_mode=loose`, which runs with a comparison-validity warning.
+
+Declarations must match the adapter's actual `config.*` usage — declare
+what the code enforces today, not what the vendor CLI could support.
 
 ## Data Types
 
@@ -297,8 +328,20 @@ class MyApiAdapter:
 
 | Adapter               | File                                      | Notes                                                                                                                                  |
 | --------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `CodexAdapter`        | `src/codeprobe/adapters/codex.py`         | Tries Responses API, falls back to Chat Completions                                                                                    |
 | `OpenAICompatAdapter` | `src/codeprobe/adapters/openai_compat.py` | Generic adapter for any OpenAI-compatible endpoint (Ollama, Together, vLLM, Groq, etc.) with configurable `base_url` and pricing table |
+
+### Quarantined: `CodexAdapter`
+
+`CodexAdapter` (`src/codeprobe/adapters/codex.py`, `quarantined = True`) is
+**not** a working comparison adapter. Its `run()` is a single-shot completion
+call (Responses API, Chat Completions fallback): the model never sees the
+workspace and cannot edit files, yet its `exit_code=0` outputs would read as
+valid 0.0 measurements. `codeprobe run` refuses any codex arm upfront with
+`ADAPTER_QUARANTINED` — before any arm runs or spends — and
+`experiment add-config --agent codex` is rejected. The name stays registered
+so the refusal is prescriptive rather than a raw `KeyError`. The quarantine
+lifts when the adapter is rewritten around the real OpenAI Codex CLI agent
+(workspace access, file edits, honest telemetry).
 
 ## Registration
 
@@ -441,6 +484,7 @@ def test_myagent_output_valid_cost_model():
 Before submitting a new adapter:
 
 - [ ] Implements `name` (property), `preflight()`, and `run()`
+- [ ] Declares `capabilities` (`AdapterCapabilities`) matching actual `config.*` usage — undeclared knobs get the arm refused at preflight
 - [ ] `preflight()` checks for binary/SDK and credentials
 - [ ] `run()` extracts token counts and cost when available
 - [ ] `cost_model` and `cost_source` are set honestly (never claim `api_reported` when parsing logs)

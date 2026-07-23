@@ -297,6 +297,42 @@ class TestBuildCommandAllowedToolsPartition:
         assert "--allowedTools" not in cmd
 
 
+class TestStrictMcpConfigPinning:
+    """--strict-mcp-config is unconditional (codeprobe-f7rl.24).
+
+    Without the bare flag, a baseline arm with no mcp_config inherits the
+    operator's ambient MCP servers (~/.claude.json and .mcp.json), so an
+    'MCP off vs on' comparison is not off-vs-on and two operators get
+    different numbers on the same repo.
+    """
+
+    def _cmd(self, config: AgentConfig) -> list[str]:
+        adapter = ClaudeAdapter()
+        if adapter.find_binary() is None:
+            pytest.skip("claude binary not available")
+        return adapter.build_command("prompt", config)
+
+    def test_no_mcp_config_pins_strict_without_mcp_config_flag(self) -> None:
+        cmd = self._cmd(AgentConfig(mcp_config=None))
+        assert "--strict-mcp-config" in cmd
+        assert "--mcp-config" not in cmd
+
+    def test_empty_mcp_config_pins_strict_without_mcp_config_flag(self) -> None:
+        cmd = self._cmd(AgentConfig(mcp_config={}))
+        assert "--strict-mcp-config" in cmd
+        assert "--mcp-config" not in cmd
+
+    def test_mcp_config_set_carries_both_flags(self, tmp_path: Path) -> None:
+        server_path, fixtures_path = _write_fixture_server(tmp_path)
+        cmd = self._cmd(
+            AgentConfig(mcp_config=_mcp_config_for(server_path, fixtures_path))
+        )
+        assert "--strict-mcp-config" in cmd
+        assert "--mcp-config" in cmd
+        mcp_path = Path(cmd[cmd.index("--mcp-config") + 1])
+        assert mcp_path.is_file()
+
+
 # ---------------------------------------------------------------------------
 # Layer 2 — fixture-replay MCP server is a real JSON-RPC speaker
 # ---------------------------------------------------------------------------

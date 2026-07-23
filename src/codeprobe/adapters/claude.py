@@ -16,9 +16,11 @@ from typing import Any
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import (
     ALLOWED_PERMISSION_MODES,
+    AdapterCapabilities,
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.adapters.quota import detect_quota_error
 from codeprobe.adapters.telemetry import (
     JsonStdoutCollector,
     parse_mcp_init_manifest,
@@ -29,27 +31,6 @@ from codeprobe.core.sandbox import is_sandboxed
 # (claude-sonnet-4-6) but NOT full API model IDs with date suffixes
 # (claude-sonnet-4-6-20250514). Strip the date suffix when present.
 _API_MODEL_DATE_SUFFIX = re.compile(r"(-\d{8})$")
-
-# Patterns that indicate an OAuth / API quota was exhausted. Detected
-# from raw stdout/stderr because the Claude CLI does not surface these
-# as JSON envelopes — it returns a short literal message and exits
-# successfully, which would otherwise be scored as a 0.0 task failure
-# and silently contaminate the run mean (codeprobe-9xrl).
-#
-# Robust to wording variants: monthly limits, rate limits, generic
-# "quota" terminology. Case-insensitive.
-_QUOTA_PATTERN = re.compile(
-    r"(?i)"
-    r"(monthly\s+usage\s+limit"
-    r"|rate\s+limit\s+(?:exceeded|reached)"
-    r"|quota\s+(?:exceeded|exhausted)"
-    r"|usage\s+limit\s+reached"
-    # 2026-06 OAuth wording: "You've hit your session limit · resets 1:10pm".
-    # Anchored on "hit your" because bare "session limit" appears in agent
-    # prose on session-management tasks and must not halt the run.
-    r"|hit\s+your\s+session\s+limit)"
-)
-
 
 def _cli_origin_text(stdout: str) -> str:
     """Return only the CLI's own literal lines of *stdout*.
@@ -91,21 +72,12 @@ def _detect_quota_error(stdout: str, stderr: str | None) -> str | None:
 
     Scans stderr (where the API/CLI transport surfaces rate-limit messages)
     and the CLI's literal stdout lines only — NOT the agent's stream-json
-    tool I/O (see :func:`_cli_origin_text`). Returns the triggering line so
-    the executor can include it in the task's error metadata.
+    tool I/O (see :func:`_cli_origin_text`). Delegates the pattern match to
+    the shared :mod:`codeprobe.adapters.quota` detector, which returns the
+    triggering line so the executor can include it in the task's error
+    metadata.
     """
-    for stream in (_cli_origin_text(stdout), stderr or ""):
-        if not stream:
-            continue
-        match = _QUOTA_PATTERN.search(stream)
-        if match:
-            # Find and return the line containing the match so the user
-            # sees the exact wording (helps Anthropic message rewording).
-            for line in stream.splitlines():
-                if _QUOTA_PATTERN.search(line):
-                    return line.strip()
-            return match.group(0)
-    return None
+    return detect_quota_error(_cli_origin_text(stdout), stderr)
 
 # Result-record subtypes that mark a TERMINAL agent outcome — the CLI ran
 # the agent to a protocol-defined stop condition, so a 0.0 reward is a
@@ -142,6 +114,27 @@ _MUTABLE_DIR_NAMES: frozenset[str] = frozenset(
     }
 )
 _MUTABLE_FILE_NAMES: frozenset[str] = frozenset({"history.jsonl"})
+
+# Operator personalization that biases eval arms when mirrored into a
+# slot config dir (global memory, settings, skills, hooks, ...). Excluded
+# from the mirror when ``pristine=True`` so two operators produce the
+# same effective agent config on the same repo. Credential files and
+# ``.claude.json`` (auth + project-trust state) stay mirrored; the
+# user-level MCP servers inside ``.claude.json`` are neutralized by the
+# unconditional ``--strict-mcp-config`` in ``build_command``.
+_PERSONALIZATION_NAMES: frozenset[str] = frozenset(
+    {
+        "CLAUDE.md",
+        "settings.json",
+        "settings.local.json",
+        "skills",
+        "agents",
+        "hooks",
+        "plugins",
+        "commands",
+        "rules",
+    }
+)
 _SAFE_NAMESPACE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -214,6 +207,7 @@ def _build_mirror_slot_env(
     real_config: Path,
     slot_id: int,
     namespace: str | None = None,
+    pristine: bool = False,
 ) -> dict[str, str]:
     """Build a per-slot ``CLAUDE_CONFIG_DIR`` that mirrors ``real_config``.
 
@@ -223,6 +217,11 @@ def _build_mirror_slot_env(
     slots.  Mutable per-session state (``_MUTABLE_DIR_NAMES`` and
     ``_MUTABLE_FILE_NAMES``) is recreated as fresh empty dirs/files inside
     the slot to prevent parallel-worker races.
+
+    When ``pristine`` is True, ``_PERSONALIZATION_NAMES`` entries are not
+    mirrored — and are deliberately kept out of ``seen`` so the stale-entry
+    sweep below purges leftovers from a slot dir previously built
+    non-pristine. Credentials and ``.claude.json`` remain mirrored.
 
     Stale symlinks from earlier isolation runs are refreshed so that
     additions, removals, or changes in ``real_config`` propagate to every
@@ -239,6 +238,8 @@ def _build_mirror_slot_env(
 
     seen: set[str] = set()
     for entry in real_config.iterdir():
+        if pristine and entry.name in _PERSONALIZATION_NAMES:
+            continue
         seen.add(entry.name)
         target = slot_dir / entry.name
         is_mutable = entry.name in _MUTABLE_DIR_NAMES or entry.name in _MUTABLE_FILE_NAMES
@@ -291,6 +292,21 @@ class ClaudeAdapter(BaseAdapter):
 
     _binary_name = "claude"
     _install_hint = "Claude CLI not found. Install from https://claude.ai/download"
+
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: build_command consumes mcp_config, allowed_tools,
+        # disallowed_tools, max_turns, and permission_mode; BaseAdapter.run
+        # enforces cwd and timeout_seconds on the subprocess.
+        return AdapterCapabilities(
+            mcp_config=True,
+            allowed_tools=True,
+            disallowed_tools=True,
+            max_turns=True,
+            permission_mode=True,
+            workspace_cwd=True,
+            timeout=True,
+        )
 
     def __init__(self) -> None:
         self._collector = JsonStdoutCollector()
@@ -419,9 +435,17 @@ class ClaudeAdapter(BaseAdapter):
                 )
             cmd.extend(["--permission-mode", config.permission_mode])
 
+        # Pin the MCP tool surface unconditionally. Without a bare
+        # --strict-mcp-config, an arm that declares no mcp_config silently
+        # inherits the operator's ambient MCP servers (user-level
+        # ~/.claude.json and repo-level .mcp.json), so an "MCP off"
+        # baseline is not actually off and two operators get different
+        # numbers on the same repo. With the flag, only servers named via
+        # --mcp-config are loaded — none when the flag stands alone.
         mcp_path = self._write_mcp_config(config)
         if mcp_path:
-            cmd.extend(["--mcp-config", mcp_path, "--strict-mcp-config"])
+            cmd.extend(["--mcp-config", mcp_path])
+        cmd.append("--strict-mcp-config")
 
         # Tool restrictions. Claude CLI has three related flags:
         #   --tools A,B           restricts the *built-in* tool allowlist
@@ -468,6 +492,7 @@ class ClaudeAdapter(BaseAdapter):
         self,
         slot_id: int,
         namespace: str | None = None,
+        pristine: bool = False,
     ) -> dict[str, str]:
         """Return a per-slot ``CLAUDE_CONFIG_DIR`` for session isolation.
 
@@ -481,6 +506,11 @@ class ClaudeAdapter(BaseAdapter):
         parallel workers from racing on shared state — which under real
         load manifested as API 401 errors (codeprobe-nac).
 
+        When ``pristine`` is True, operator personalization
+        (``_PERSONALIZATION_NAMES``: CLAUDE.md, settings, skills, agents,
+        hooks, plugins, commands, rules) is excluded from the mirror so
+        eval arms are reproducible across operators.
+
         When no credential file is found the CLI is presumed to use the OS
         keychain; in that case this returns an empty dict so the agent
         uses the default config dir and keychain reads continue to work.
@@ -493,6 +523,7 @@ class ClaudeAdapter(BaseAdapter):
                 real_config,
                 slot_id,
                 namespace=namespace,
+                pristine=pristine,
             )
 
         return {}

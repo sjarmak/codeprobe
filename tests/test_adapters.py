@@ -15,6 +15,7 @@ from codeprobe.adapters.protocol import (
     ALLOWED_COST_SOURCES,
     AdapterError,
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentAdapter,
     AgentConfig,
@@ -180,12 +181,17 @@ class TestAgentOutputValidation:
 
 class TestNarrowedProtocol:
     def test_minimal_adapter_satisfies_protocol(self) -> None:
-        """A class with only name/preflight/run satisfies AgentAdapter."""
+        """The minimal protocol surface now includes a capability declaration."""
+        from codeprobe.adapters.protocol import AdapterCapabilities
 
         class MinimalAdapter:
             @property
             def name(self) -> str:
                 return "minimal"
+
+            @property
+            def capabilities(self) -> AdapterCapabilities:
+                return AdapterCapabilities()
 
             def preflight(self, config: AgentConfig) -> list[str]:
                 return []
@@ -199,6 +205,28 @@ class TestNarrowedProtocol:
         adapter = MinimalAdapter()
         assert isinstance(adapter, AgentAdapter)
         assert adapter.name == "minimal"
+
+    def test_undeclared_adapter_fails_isinstance_but_reads_fail_closed(self) -> None:
+        """An adapter without ``capabilities`` isn't Protocol-conformant, and
+        ``capabilities_of`` treats it as prompt+model only (codeprobe-f7rl.26)."""
+        from codeprobe.adapters.protocol import AdapterCapabilities, capabilities_of
+
+        class LegacyAdapter:
+            @property
+            def name(self) -> str:
+                return "legacy"
+
+            def preflight(self, config: AgentConfig) -> list[str]:
+                return []
+
+            def run(self, prompt: str, config: AgentConfig) -> AgentOutput:
+                return AgentOutput(stdout="ok", stderr=None, exit_code=0, duration_seconds=0.1)
+
+            def isolate_session(self, slot_id: int) -> dict[str, str]:
+                return {}
+
+        assert not isinstance(LegacyAdapter(), AgentAdapter)
+        assert capabilities_of(LegacyAdapter()) == AdapterCapabilities()
 
 
 # -- AgentOutput error / cost_source fields ------------------------------------
@@ -473,6 +501,103 @@ class TestTimeoutTelemetryExtraction:
         assert output.input_tokens == 100
         assert output.output_tokens == 50
         assert output.cost_usd == pytest.approx(0.001)
+
+    def test_timeout_bare_stamps_timeout_category(self) -> None:
+        """A timeout with no stdout carries error_category='timeout' so the
+        executor never counts it as an agent failure (codeprobe-f7rl.29)."""
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
+        exc.stdout = None
+        exc.stderr = None
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test", config)
+        assert output.error_category == "timeout"
+
+    def test_timeout_partial_parse_stamps_timeout_category(self) -> None:
+        """A timeout with parseable partial stdout (no quota stub) also
+        carries error_category='timeout'."""
+        adapter = _StubAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
+        exc.stdout = "partial out"
+        exc.stderr = ""
+        with patch("subprocess.run", side_effect=exc):
+            output = adapter.run("test", config)
+        assert output.error_category == "timeout"
+
+    def test_claude_timeout_with_quota_stub_classifies_quota(self) -> None:
+        """A quota stub inside a timed-out trial still classifies as quota,
+        and the merged error keeps both messages (codeprobe-f7rl.29)."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = "You've hit your session limit · resets 1:10pm"
+        exc.stderr = ""
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert output.error_category == "quota"
+        assert "timed out" in output.error
+        assert "hit your session limit" in output.error
+
+    def test_claude_timeout_partial_stream_preserves_result_fields(self) -> None:
+        """The rebuilt timeout AgentOutput keeps num_turns, result_subtype,
+        tool_use_by_name, duration_api_ms, and mcp_init from the partial
+        parse — previously all dropped (codeprobe-f7rl.29)."""
+        adapter = ClaudeAdapter()
+        config = AgentConfig(timeout_seconds=5)
+        stream = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "tools": ["Read", "mcp__sg__search"],
+                        "mcp_servers": [{"name": "sg", "status": "connected"}],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [{"type": "tool_use", "name": "Read"}]
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "result": "partial",
+                        "is_error": False,
+                        "usage": {"input_tokens": 10, "output_tokens": 20},
+                        "total_cost_usd": 0.01,
+                        "num_turns": 7,
+                        "duration_api_ms": 1234,
+                    }
+                ),
+            ]
+        )
+        exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+        exc.stdout = stream
+        exc.stderr = ""
+        with (
+            patch("subprocess.run", side_effect=exc),
+            patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+        ):
+            output = adapter.run("test prompt", config)
+        assert output.error_category == "timeout"
+        assert "timed out" in output.error
+        assert output.num_turns == 7
+        assert output.result_subtype == "success"
+        assert output.duration_api_ms == 1234
+        assert output.tool_use_by_name == {"Read": 1}
+        assert output.mcp_init is not None
+        assert output.mcp_init.captured is True
+        assert "mcp__sg__search" in output.mcp_init.offered_tools
 
     def test_timeout_parse_output_failure_still_returns_timeout_error(self) -> None:
         """If parse_output itself raises on timeout path, we still get a valid AgentOutput."""
@@ -842,6 +967,31 @@ class TestCopilotInputTokens:
         assert output.cost_usd == pytest.approx(800 * 2.50 / 1_000_000 + 200 * 10.0 / 1_000_000)
 
 
+def test_copilot_adapter_threads_model_to_collector() -> None:
+    """build_command records config.model; parse_output prices with it (codeprobe-f7rl.36).
+
+    build_command and parse_output run on the same worker thread inside
+    BaseAdapter.run, so the thread-local set by build_command must reach
+    the collector's rate lookup.
+    """
+    adapter = CopilotAdapter()
+    config = AgentConfig(model="gpt-4o-mini")
+    with patch.object(CopilotAdapter, "_require_binary", return_value="copilot"):
+        cmd = adapter.build_command("fix the bug", config)
+    assert "--model" in cmd and "gpt-4o-mini" in cmd
+
+    # copilot_with_usage.txt: native inputTokens=1234, outputTokens=87
+    stdout = (FIXTURE_DIR / "copilot_with_usage.txt").read_text()
+    result = subprocess.CompletedProcess(
+        args=["copilot"], returncode=0, stdout=stdout, stderr=""
+    )
+    output = adapter.parse_output(result, duration=1.0)
+
+    mini_cost = 1234 * 0.15 / 1_000_000 + 87 * 0.60 / 1_000_000
+    assert output.cost_usd == pytest.approx(mini_cost, abs=1e-10)
+    assert output.cost_source == "calculated"
+
+
 # -- CodexAdapter --------------------------------------------------------------
 
 
@@ -960,7 +1110,7 @@ class TestCodexAdapter:
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
             config = AgentConfig()
-            with pytest.raises(AdapterExecutionError, match="Rate limited"):
+            with pytest.raises(AdapterQuotaError, match="Rate limited"):
                 adapter.run("test", config)
 
     def test_run_api_error(self) -> None:
@@ -1087,7 +1237,7 @@ class TestCodexAdapter:
                 adapter.run("test", config)
 
     def test_run_chat_completions_rate_limit_error(self) -> None:
-        """Rate limit errors from the chat completions fallback raise AdapterExecutionError."""
+        """Rate limit errors from the chat completions fallback raise AdapterQuotaError."""
         from codeprobe.adapters.codex import CodexAdapter
 
         mock_client_instance = MagicMock()
@@ -1098,7 +1248,7 @@ class TestCodexAdapter:
         with patch.dict("sys.modules", {"openai": mock_openai}):
             adapter = CodexAdapter()
             config = AgentConfig()
-            with pytest.raises(AdapterExecutionError, match="Rate limited"):
+            with pytest.raises(AdapterQuotaError, match="Rate limited"):
                 adapter.run("test", config)
 
     def test_run_double_not_found_error(self) -> None:
@@ -1515,6 +1665,120 @@ class TestIsolateSession:
             (real_claude / "settings.json").write_text('{"v": 3}')
             adapter.isolate_session(0)
             assert '"v": 3' in (slot0 / "settings.json").read_text()
+
+
+class TestPristineMirror:
+    """pristine=True excludes operator personalization from slot dirs
+    (codeprobe-f7rl.24) so eval arms are reproducible across operators.
+    """
+
+    _PERSONALIZATION = (
+        "CLAUDE.md",
+        "settings.json",
+        "settings.local.json",
+        "skills",
+        "hooks",
+    )
+
+    def _make_real_config(self, tmp_path: Path) -> Path:
+        real_config = tmp_path / "home" / ".claude"
+        real_config.mkdir(parents=True)
+        (real_config / "credentials.json").write_text('{"token": "t"}')
+        (real_config / ".claude.json").write_text('{"projects": {}}')
+        (real_config / "CLAUDE.md").write_text("# operator memory")
+        (real_config / "settings.json").write_text('{"theme": "dark"}')
+        (real_config / "settings.local.json").write_text("{}")
+        (real_config / "skills").mkdir()
+        (real_config / "skills" / "s.md").write_text("# skill")
+        (real_config / "hooks").mkdir()
+        (real_config / "hooks" / "h.sh").write_text("#!/bin/sh\n")
+        return real_config
+
+    def test_pristine_keeps_creds_and_claude_json_only(
+        self, tmp_path: Path
+    ) -> None:
+        from codeprobe.adapters.claude import _build_mirror_slot_env
+
+        real_config = self._make_real_config(tmp_path)
+        with patch(
+            "codeprobe.adapters.claude.tempfile.gettempdir",
+            return_value=str(tmp_path / "tmp"),
+        ):
+            env = _build_mirror_slot_env(real_config, 0, pristine=True)
+
+        slot = Path(env["CLAUDE_CONFIG_DIR"])
+        assert (slot / "credentials.json").is_symlink()
+        assert (slot / ".claude.json").is_symlink()
+        for name in self._PERSONALIZATION:
+            assert not (slot / name).exists(), (
+                f"pristine slot must not contain personalization entry {name}"
+            )
+
+    def test_non_pristine_preserves_current_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        from codeprobe.adapters.claude import _build_mirror_slot_env
+
+        real_config = self._make_real_config(tmp_path)
+        with patch(
+            "codeprobe.adapters.claude.tempfile.gettempdir",
+            return_value=str(tmp_path / "tmp"),
+        ):
+            env = _build_mirror_slot_env(real_config, 0, pristine=False)
+
+        slot = Path(env["CLAUDE_CONFIG_DIR"])
+        assert (slot / "credentials.json").is_symlink()
+        for name in self._PERSONALIZATION:
+            assert (slot / name).is_symlink()
+
+    def test_pristine_rebuild_purges_prior_personalization(
+        self, tmp_path: Path
+    ) -> None:
+        """A slot previously built non-pristine loses personalization
+        entries when rebuilt pristine — the stale-entry sweep purges the
+        now-unmirrored symlinks."""
+        from codeprobe.adapters.claude import _build_mirror_slot_env
+
+        real_config = self._make_real_config(tmp_path)
+        with patch(
+            "codeprobe.adapters.claude.tempfile.gettempdir",
+            return_value=str(tmp_path / "tmp"),
+        ):
+            env = _build_mirror_slot_env(real_config, 0, pristine=False)
+            slot = Path(env["CLAUDE_CONFIG_DIR"])
+            for name in self._PERSONALIZATION:
+                assert (slot / name).is_symlink()
+
+            env2 = _build_mirror_slot_env(real_config, 0, pristine=True)
+
+        assert Path(env2["CLAUDE_CONFIG_DIR"]) == slot
+        for name in self._PERSONALIZATION:
+            assert not (slot / name).exists(), (
+                f"stale personalization entry {name} survived pristine rebuild"
+            )
+        assert (slot / "credentials.json").is_symlink()
+        assert (slot / ".claude.json").is_symlink()
+
+    def test_isolate_session_forwards_pristine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter = ClaudeAdapter()
+        fake_home = tmp_path / "home"
+        self._make_real_config(tmp_path)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            env = adapter.isolate_session(0, pristine=True)
+
+        slot = Path(env["CLAUDE_CONFIG_DIR"])
+        assert (slot / "credentials.json").is_symlink()
+        for name in self._PERSONALIZATION:
+            assert not (slot / name).exists()
 
 
 class TestCheckParallelAuth:

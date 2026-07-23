@@ -427,9 +427,14 @@ class NdjsonStreamCollector:
     - ``outputTokens`` from ``assistant.message`` events
     - Input tokens estimated from ``user.message`` and ``tool.execution_complete``
       content (Copilot CLI does not report input tokens natively)
+
+    Accepts ``model`` via ``**context``: the Copilot model the session was
+    launched with, used to select the rate card. ``None`` means the session
+    default (assumed gpt-4o).
     """
 
     def collect(self, raw_output: str, **context: Any) -> UsageData:
+        model: str | None = context.get("model")
         raw = raw_output or ""
         output_tokens = None
         input_tokens = None
@@ -502,20 +507,21 @@ class NdjsonStreamCollector:
             return UsageData(
                 error=(
                     "Copilot CLI returned JSON but no outputTokens field. "
-                    "Ensure Copilot CLI >= 1.0.4. "
-                    "Upgrade with: gh extension upgrade copilot"
+                    "Either the CLI is older than 1.0.4 (upgrade with: "
+                    "gh extension upgrade copilot) or the session failed "
+                    "before producing output (auth, quota, or rate-limit "
+                    "exhaustion)."
                 ),
             )
 
         # Estimate input tokens from stream content if not natively reported.
         # Try tiktoken first for exact counts, then fall back to heuristic.
-        tiktoken_used = False
+        heuristic_used = False
         if input_tokens is None and input_text_parts:
             combined_text = " ".join(input_text_parts)
             tiktoken_count = _count_tokens_tiktoken(combined_text, "gpt-4o")
             if tiktoken_count is not None:
                 input_tokens = tiktoken_count
-                tiktoken_used = True
                 logger.debug(
                     "Copilot input_tokens=%d counted via tiktoken from %d stream chars",
                     input_tokens,
@@ -525,30 +531,42 @@ class NdjsonStreamCollector:
                 # ~4 chars/token (mirrors _estimate_tokens) computed from the
                 # length directly — no need to materialize a throwaway string.
                 input_tokens = max(1, input_chars // 4)
+                heuristic_used = True
                 logger.debug(
                     "Copilot input_tokens=%d estimated from %d stream chars",
                     input_tokens,
                     input_chars,
                 )
 
-        # Estimate cost from token counts using GPT-4o pricing (Copilot's
-        # underlying model).  Even on a subscription plan, token-based cost
-        # estimates allow meaningful comparisons across configs and agents.
+        # Cost from token counts using the rate card for the model the
+        # session was launched with; gpt-4o is the documented default-session
+        # assumption when no model was requested. A model missing from
+        # COPILOT_PRICING gets no cost at all — an honest gap, never a
+        # wrong-rate-card guess.
+        requested_model = model or "gpt-4o"
+        rates = COPILOT_PRICING.rates.get(requested_model)
         estimated_cost: float | None = None
-        gpt4o_pricing = COPILOT_PRICING.rates.get("gpt-4o")
-        if gpt4o_pricing is not None and output_tokens is not None:
-            out_cost = output_tokens * gpt4o_pricing[1] / 1_000_000
+        if rates is None:
+            logger.warning(
+                "No Copilot pricing for model %r (rate card covers: %s); "
+                "cost_usd unavailable",
+                requested_model,
+                ", ".join(sorted(COPILOT_PRICING.rates)),
+            )
+        else:
+            out_cost = output_tokens * rates[1] / 1_000_000
             in_cost = (
-                input_tokens * gpt4o_pricing[0] / 1_000_000
+                input_tokens * rates[0] / 1_000_000
                 if input_tokens is not None
                 else 0.0
             )
             estimated_cost = in_cost + out_cost
 
-        # When tiktoken provides exact input counts, cost_source is 'calculated'.
-        # When using heuristic estimation, cost_source is 'estimated'.
+        # Label by how the numbers were produced: 'estimated' only when the
+        # chars//4 heuristic supplied input_tokens; native counts and
+        # tiktoken-exact counts are 'calculated'.
         if estimated_cost is not None:
-            cost_source = "calculated" if tiktoken_used else "estimated"
+            cost_source = "estimated" if heuristic_used else "calculated"
         else:
             cost_source = "unavailable"
 

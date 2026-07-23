@@ -272,6 +272,76 @@ class TestCodexRunContract:
         assert out.error is not None and "usage" in out.error.lower()
 
 
+# -- Capability declaration contract ---------------------------------------------
+
+
+class TestAdapterCapabilities:
+    """Every builtin adapter declares capabilities matching its config.* usage.
+
+    These assertions are exact (``==`` on the frozen dataclass), so adding
+    knob support to an adapter without updating its declaration — or vice
+    versa — fails here (codeprobe-f7rl.26).
+    """
+
+    def test_every_builtin_exposes_capabilities(self) -> None:
+        from codeprobe.adapters.protocol import AdapterCapabilities
+        from codeprobe.core.registry import resolve
+
+        for name in ("claude", "codex", "copilot"):
+            adapter = resolve(name)
+            assert isinstance(adapter.capabilities, AdapterCapabilities), name
+
+    def test_claude_honors_every_knob(self) -> None:
+        from codeprobe.adapters.claude import ClaudeAdapter
+        from codeprobe.adapters.protocol import AdapterCapabilities
+
+        assert ClaudeAdapter().capabilities == AdapterCapabilities(
+            mcp_config=True,
+            allowed_tools=True,
+            disallowed_tools=True,
+            max_turns=True,
+            permission_mode=True,
+            workspace_cwd=True,
+            timeout=True,
+        )
+
+    def test_codex_honors_no_knobs(self) -> None:
+        from codeprobe.adapters.codex import CodexAdapter
+        from codeprobe.adapters.protocol import AdapterCapabilities
+
+        assert CodexAdapter().capabilities == AdapterCapabilities()
+
+    def test_copilot_honors_exactly_mcp_cwd_timeout(self) -> None:
+        from codeprobe.adapters.copilot import CopilotAdapter
+        from codeprobe.adapters.protocol import AdapterCapabilities
+
+        assert CopilotAdapter().capabilities == AdapterCapabilities(
+            mcp_config=True,
+            workspace_cwd=True,
+            timeout=True,
+        )
+
+    def test_openai_compat_honors_no_knobs(self) -> None:
+        from codeprobe.adapters.openai_compat import OpenAICompatAdapter
+        from codeprobe.adapters.protocol import AdapterCapabilities
+
+        adapter = OpenAICompatAdapter(api_base="http://localhost:11434/v1", model="m")
+        assert adapter.capabilities == AdapterCapabilities()
+
+    def test_capabilities_of_is_fail_closed(self) -> None:
+        """No declaration — or a wrong-typed one — means prompt+model only."""
+        from codeprobe.adapters.protocol import AdapterCapabilities, capabilities_of
+
+        class Undeclared:
+            pass
+
+        class WrongType:
+            capabilities = {"mcp_config": True}
+
+        assert capabilities_of(Undeclared()) == AdapterCapabilities()
+        assert capabilities_of(WrongType()) == AdapterCapabilities()
+
+
 # -- Registry lazy-import tests -------------------------------------------------
 
 

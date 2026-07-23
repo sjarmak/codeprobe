@@ -195,3 +195,40 @@ class TestRunExperiment:
 
         with pytest.raises(ValueError, match="No tasks found"):
             run_experiment(exp_dir)
+
+    def test_quarantined_adapter_refused_before_any_arm_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """codeprobe-f7rl.27: a codex arm refuses the whole run upfront.
+
+        The library path must match the CLI preflight: no half-run
+        comparison — the claude arm ahead of the codex arm must not
+        execute either.
+        """
+        from codeprobe.adapters.claude import ClaudeAdapter
+        from codeprobe.adapters.codex import CodexAdapter
+        from codeprobe.api import run_experiment
+
+        calls: list[str] = []
+
+        def _make_run(adapter_name: str):
+            def _run(self, prompt, config, session_env=None):  # noqa: ANN001
+                calls.append(adapter_name)
+                raise AssertionError(f"{adapter_name}.run must not be called")
+
+            return _run
+
+        monkeypatch.setattr(ClaudeAdapter, "run", _make_run("claude"))
+        monkeypatch.setattr(CodexAdapter, "run", _make_run("codex"))
+
+        exp_dir = _make_experiment_dir(
+            tmp_path,
+            configs=[
+                {"label": "baseline", "agent": "claude"},
+                {"label": "codex-arm", "agent": "codex"},
+            ],
+        )
+
+        with pytest.raises(ValueError, match="quarantined"):
+            run_experiment(exp_dir)
+        assert calls == []

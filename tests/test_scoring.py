@@ -109,6 +109,41 @@ def test_sanitize_secrets_redacts_bearer():
     assert "eyJhbGci" not in cleaned
 
 
+def test_sanitize_secrets_redacts_anthropic_long_form():
+    token = "sk-ant-" + "Ab1-" * 21  # 84-char tail
+    cleaned = sanitize_secrets(f"key {token} rejected")
+    assert token not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_sanitize_secrets_redacts_openai_project_key():
+    token = "sk-proj-" + "Ab1" * 14  # hyphenated prefix, 42-char tail
+    cleaned = sanitize_secrets(f"OPENAI_API_KEY={token}")
+    assert token not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_sanitize_secrets_redacts_gitlab_pat():
+    token = "glpat-" + "x1Y2" * 5  # 20-char tail
+    cleaned = sanitize_secrets(f"remote: {token}")
+    assert token not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_sanitize_secrets_redacts_slack_bot_token():
+    token = "xoxb-" + "1234567890ab" * 2  # 24-char tail
+    cleaned = sanitize_secrets(f"SLACK_TOKEN={token}")
+    assert token not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_sanitize_secrets_redacts_sourcegraph_token():
+    token = "sgp_" + "0123456789abcdef" * 2 + "01234567"  # 40 hex tail
+    cleaned = sanitize_secrets(f"SRC_ACCESS_TOKEN={token}")
+    assert token not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
 def test_sanitize_secrets_leaves_clean_text():
     text = "normal error message"
     assert sanitize_secrets(text) == text

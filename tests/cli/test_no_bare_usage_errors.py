@@ -52,7 +52,10 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # 2026-07-04 mine-help docstring reword (drop literal --no-llm): +1 → 1148.
         # codeprobe-b31f: --dual-verify help text corrected (it advertised the
         # exact task types the flag is rejected for): +3 → 1151.
-        ("src/codeprobe/cli/__init__.py", 1151),
+        # codeprobe-f7rl.24: +13 by the --pristine-config option block → 1164.
+        # codeprobe-f7rl.27: +3 by the codex-quarantine note above
+        # _AGENT_NAMES → 1167.
+        ("src/codeprobe/cli/__init__.py", 1167),
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
@@ -62,26 +65,31 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # the top of the module (quota-exclusion in the headline mean).
         # codeprobe-77z: lines shifted +1 by the is_infra_failure import
         # (infra-failure count surfaced on the experiment.json summary).
-        ("src/codeprobe/cli/experiment_cmd.py", 56),
-        ("src/codeprobe/cli/experiment_cmd.py", 68),
-        ("src/codeprobe/cli/experiment_cmd.py", 75),
-        ("src/codeprobe/cli/experiment_cmd.py", 90),
-        ("src/codeprobe/cli/experiment_cmd.py", 101),
+        # codeprobe-f7rl.27: +2 by the quarantine_message and registry
+        # imports at the top of the module.
+        ("src/codeprobe/cli/experiment_cmd.py", 58),
+        ("src/codeprobe/cli/experiment_cmd.py", 70),
+        ("src/codeprobe/cli/experiment_cmd.py", 77),
+        ("src/codeprobe/cli/experiment_cmd.py", 92),
+        ("src/codeprobe/cli/experiment_cmd.py", 103),
         # jf28: lines shifted +1 (signature gained `hide_local_source`)
         # for entries above the ExperimentConfig() call; +2 for entries
         # below (the ExperimentConfig() call also grew one line).
         # codeprobe-2nw2.4: experiment_add_config docstring grew by 6
         # lines when `hide_local_source` was widened from bool to a
         # typed Literal["off","hide","scaffold"]; all entries shifted +6.
-        ("src/codeprobe/cli/experiment_cmd.py", 167),
-        ("src/codeprobe/cli/experiment_cmd.py", 176),
-        ("src/codeprobe/cli/experiment_cmd.py", 192),
-        ("src/codeprobe/cli/experiment_cmd.py", 221),
-        ("src/codeprobe/cli/experiment_cmd.py", 265),
-        ("src/codeprobe/cli/experiment_cmd.py", 335),
-        ("src/codeprobe/cli/experiment_cmd.py", 352),
-        ("src/codeprobe/cli/experiment_cmd.py", 434),
-        ("src/codeprobe/cli/experiment_cmd.py", 441),
+        # codeprobe-f7rl.27: +18 for entries below the add-config
+        # quarantine refusal block (+2 imports, +16 block; the block's
+        # own SystemExit(1) carries a lint-exempt pragma, not an entry).
+        ("src/codeprobe/cli/experiment_cmd.py", 185),
+        ("src/codeprobe/cli/experiment_cmd.py", 194),
+        ("src/codeprobe/cli/experiment_cmd.py", 210),
+        ("src/codeprobe/cli/experiment_cmd.py", 239),
+        ("src/codeprobe/cli/experiment_cmd.py", 283),
+        ("src/codeprobe/cli/experiment_cmd.py", 353),
+        ("src/codeprobe/cli/experiment_cmd.py", 370),
+        ("src/codeprobe/cli/experiment_cmd.py", 452),
+        ("src/codeprobe/cli/experiment_cmd.py", 459),
         ("src/codeprobe/cli/init_cmd.py", 50),
         ("src/codeprobe/cli/probe_cmd.py", 100),
         ("src/codeprobe/cli/ratings_cmd.py", 74),

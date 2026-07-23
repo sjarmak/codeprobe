@@ -13,7 +13,11 @@ from pathlib import Path
 import click
 
 from codeprobe.adapters.models import validate_model
-from codeprobe.adapters.protocol import ALLOWED_PERMISSION_MODES, AgentConfig
+from codeprobe.adapters.protocol import (
+    ALLOWED_PERMISSION_MODES,
+    AgentConfig,
+    quarantine_message,
+)
 from codeprobe.analysis.dual import format_dual_suffix
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
@@ -22,6 +26,7 @@ from codeprobe.cli._output_helpers import (
     emit_event,
     resolve_mode,
 )
+from codeprobe.cli.capability_preflight import check_arm_capabilities
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.config.defaults import (
@@ -505,6 +510,7 @@ def run_eval(
     suite_path: str | None = None,
     trace_overflow: str = "fail",
     trace_deny: tuple[str, ...] = (),
+    pristine_config: bool = False,
     offline: bool = False,
     offline_expected_run_duration: str = "1h",
     tenant: str | None = None,
@@ -666,6 +672,52 @@ def run_eval(
                 cfg.agent or agent,
                 model if model is not None else cfg.model,
             )
+
+        # Refuse, pre-spend, any arm whose knobs its adapter cannot honor
+        # (codeprobe-f7rl.26). Fail-closed: an adapter that declares no
+        # capabilities is treated as prompt+model only. Without this gate
+        # the knobs silently no-op (e.g. copilot never blocks
+        # Grep/Bash/Glob/Read under mcp_mode=strict) and the report
+        # compares arms that never differed. Resolving here also surfaces
+        # a typo'd per-arm agent before the other arm spends money.
+        for cfg in _configs_to_validate:
+            try:
+                arm_adapter = resolve(cfg.agent or agent)
+            except KeyError as exc:
+                raise PrescriptiveError(
+                    code="UNKNOWN_BACKEND",
+                    message=(
+                        f"Unknown agent backend in config {cfg.label!r}: {exc}"
+                    ),
+                    next_try_flag="--agent",
+                    next_try_value="claude",
+                    detail={
+                        "config_label": cfg.label,
+                        "requested": cfg.agent or agent,
+                    },
+                ) from exc
+            # Quarantined adapters (codeprobe-f7rl decision 4, currently
+            # codex) are registered — so the failure is prescriptive, not
+            # a raw KeyError — but must never dispatch: their all-zero
+            # arms would enter means as valid measurements. Refuse the
+            # whole run upfront, before any arm spends.
+            if getattr(arm_adapter, "quarantined", False):
+                arm_agent = cfg.agent or agent
+                raise PrescriptiveError(
+                    code="ADAPTER_QUARANTINED",
+                    message=quarantine_message(arm_agent),
+                    terminal=True,
+                    next_try_flag="--agent",
+                    next_try_value="claude",
+                    detail={
+                        "config_label": cfg.label,
+                        "adapter": getattr(
+                            arm_adapter, "name", type(arm_adapter).__name__
+                        ),
+                        "requested": arm_agent,
+                    },
+                )
+            check_arm_capabilities(cfg, arm_adapter, cli_max_turns=max_turns)
 
         # Resolve to the git repo root — `path` may be an experiment subdir.
         try:
@@ -1016,6 +1068,7 @@ def run_eval(
                     preamble_resolver=preamble_resolver,
                     trace_recorder=trace_recorder,
                     config_max_turns_source=config_max_turns_source,
+                    pristine_config=pristine_config,
                 )
             except KeyboardInterrupt:
                 interrupted = True
@@ -1159,6 +1212,7 @@ def run_eval(
                 "configs": summary_configs,
                 "total_tasks": total_tasks,
                 "total_cost_usd": total_cost,
+                "pristine_config": pristine_config,
                 "tenant": tenant,
                 "tenant_source": tenant_source,
             },

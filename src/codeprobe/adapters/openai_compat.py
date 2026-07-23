@@ -12,7 +12,9 @@ import os
 import time
 
 from codeprobe.adapters.protocol import (
+    AdapterCapabilities,
     AdapterExecutionError,
+    AdapterQuotaError,
     AdapterSetupError,
     AgentConfig,
     AgentOutput,
@@ -60,6 +62,14 @@ class OpenAICompatAdapter:
     def name(self) -> str:
         return self._adapter_name
 
+    @property
+    def capabilities(self) -> AdapterCapabilities:
+        # Grep-verified: run() honors prompt and model only. The chat
+        # completions call enforces neither timeout_seconds nor cwd, and
+        # carries no MCP config, tool restriction, turn cap, or
+        # permission mode. All-False (fail-closed default).
+        return AdapterCapabilities()
+
     def preflight(self, config: AgentConfig) -> list[str]:
         issues: list[str] = []
         try:
@@ -104,7 +114,7 @@ class OpenAICompatAdapter:
                 f"API key invalid ({self._api_key_env}): {exc}"
             ) from exc
         except openai.RateLimitError as exc:
-            raise AdapterExecutionError(f"Rate limited: {exc}") from exc
+            raise AdapterQuotaError(f"Rate limited: {exc}") from exc
         except openai.APIError as exc:
             raise AdapterExecutionError(f"OpenAI-compatible API error: {exc}") from exc
 

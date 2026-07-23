@@ -38,3 +38,18 @@ def test_resolve_returns_same_class_type():
     a = resolve("claude")
     b = resolve("claude")
     assert type(a) is type(b)
+
+
+def test_resolve_codex_still_registered():
+    """codeprobe-f7rl.27: quarantine is run-preflight policy, not registry
+    removal — resolution keeps working so the refusal is prescriptive
+    (ADAPTER_QUARANTINED) rather than a raw KeyError."""
+    from codeprobe.adapters.codex import CodexAdapter
+
+    adapter = resolve("codex")
+    assert isinstance(adapter, CodexAdapter)
+    assert isinstance(adapter, AgentAdapter)
+
+
+def test_available_lists_codex():
+    assert "codex" in available()

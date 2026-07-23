@@ -178,6 +178,22 @@
       "remediation_pattern": "Pass --backend=<one of: claude|codex|copilot|...> \u2014 see `codeprobe run --help` for the current registry."
     },
     {
+      "code": "ADAPTER_CAPABILITY",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "An experiment arm requests knobs (mcp_config, allowed/disallowed tools, max_turns, permission_mode) its agent adapter cannot honor; running would silently drop them and the arms would not be comparable. Refused pre-spend, no override flag.",
+      "remediation_pattern": "Set agent=claude for the arm, or remove the unsupported knobs from the config. For MCP arms on tool-surface-less adapters, mcp_mode=loose runs with a comparison-validity warning."
+    },
+    {
+      "code": "ADAPTER_QUARANTINED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "An arm requests a quarantined adapter (currently codex): a single-shot completion API that never sees the repository and cannot edit files, so its scores are not comparable. Refused upfront, before any arm runs or spends; no override flag.",
+      "remediation_pattern": "Set --agent claude (first-class) or copilot for the arm. Quarantine lifts when the adapter is rewritten around the real OpenAI Codex CLI agent."
+    },
+    {
       "code": "NO_BACKENDS_CONFIGURED",
       "kind": "diagnostic",
       "exit_code": 2,

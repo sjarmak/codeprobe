@@ -5,10 +5,11 @@ from __future__ import annotations
 import stat
 import subprocess
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from codeprobe.adapters.protocol import AgentConfig, AgentOutput
+from codeprobe.adapters.protocol import AdapterQuotaError, AgentConfig, AgentOutput
 from codeprobe.core.executor import (
     DryRunEstimate,
     TaskResult,
@@ -527,6 +528,66 @@ def test_execute_config_calls_callback(tmp_path: Path):
     )
     assert len(callback_results) == 1
     assert callback_results[0].task_id == "task-000"
+
+
+# --- Quota circuit-breaker tests (codeprobe-f7rl.29) ---
+
+
+class _QuotaRaisingAdapter(FakeAdapter):
+    """Adapter whose run() raises AdapterQuotaError, like an API-based
+    adapter hitting provider rate limits (codex / openai_compat)."""
+
+    def __init__(self, *, run_delay: float = 0.0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._run_delay = run_delay
+
+    def run(self, prompt, config, session_env=None):
+        self.run_calls.append((prompt, config))
+        if self._run_delay:
+            time.sleep(self._run_delay)
+        raise AdapterQuotaError("Rate limited: 429 insufficient_quota")
+
+
+def test_execute_config_sequential_halts_on_quota_error(tmp_path: Path):
+    """A raised AdapterQuotaError halts the sequential dispatch loop:
+    only the first trial runs, and its row carries error_category='quota'."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(4)]
+    adapter = _QuotaRaisingAdapter(stdout="unused")
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="baseline"),
+        agent_config=AgentConfig(),
+        parallel=1,
+    )
+    assert len(results) == 1
+    assert results[0].error_category == "quota"
+    assert results[0].status == "error"
+    assert "Rate limited" in results[0].metadata["error"]
+    assert len(adapter.run_calls) == 1
+
+
+def test_execute_config_parallel_halts_on_quota_error(tmp_path: Path):
+    """The parallel path cancels pending trials after the first quota row."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(24)]
+    adapter = _QuotaRaisingAdapter(stdout="unused", run_delay=0.05)
+    fake_iso = MagicMock()
+    fake_iso.acquire.return_value = tmp_path
+    with patch("codeprobe.core.executor.WorktreeIsolation", return_value=fake_iso):
+        results = execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=tmp_path,
+            experiment_config=ExperimentConfig(label="baseline"),
+            agent_config=AgentConfig(),
+            parallel=2,
+        )
+    # Halt fires on the first processed result; the rest are cancelled.
+    assert len(results) == 1
+    assert results[0].error_category == "quota"
+    assert results[0].status == "error"
+    assert len(adapter.run_calls) < len(tasks)
 
 
 # --- Cost circuit-breaker tests ---
@@ -1072,6 +1133,86 @@ class TestConcurrencySemaphore:
         assert namespaces_received[0] is not None
         assert namespaces_received[0] == namespaces_received[1]
 
+    def test_sequential_runs_isolate_session_lifecycle(
+        self, tmp_path: Path
+    ) -> None:
+        """Serial dispatch performs the same isolate_session/cleanup
+        lifecycle as parallel (codeprobe-f7rl.24): isolate_session is
+        called, its env reaches adapter.run via session_env, and
+        cleanup_session_namespace fires."""
+        tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(2)]
+
+        session_envs_received: list[dict[str, str] | None] = []
+        isolate_calls: list[tuple[str | None, bool]] = []
+        cleanup_namespaces: list[str | None] = []
+
+        class TrackingAdapter(FakeAdapter):
+            def run(self, prompt, config, session_env=None):
+                session_envs_received.append(session_env)
+                return super().run(prompt, config, session_env=session_env)
+
+            def isolate_session(
+                self,
+                slot_id: int,
+                namespace: str | None = None,
+                pristine: bool = False,
+            ) -> dict[str, str]:
+                isolate_calls.append((namespace, pristine))
+                return {"CLAUDE_CONFIG_DIR": f"/tmp/fake/{namespace}/slot-{slot_id}"}
+
+            def cleanup_session_namespace(self, namespace: str | None) -> None:
+                cleanup_namespaces.append(namespace)
+
+        adapter = TrackingAdapter(stdout="output")
+
+        with patch("codeprobe.core.executor._git_reset_workdir"):
+            execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=tmp_path,
+                experiment_config=ExperimentConfig(label="baseline"),
+                agent_config=AgentConfig(),
+                parallel=1,
+                pristine_config=True,
+            )
+
+        # One isolate_session call for the whole serial config run.
+        assert len(isolate_calls) == 1
+        namespace, pristine = isolate_calls[0]
+        assert namespace is not None
+        assert namespace.startswith("baseline-")
+        assert pristine is True
+
+        # Every task received the isolated session env.
+        assert len(session_envs_received) == 2
+        for env in session_envs_received:
+            assert env == {"CLAUDE_CONFIG_DIR": f"/tmp/fake/{namespace}/slot-0"}
+
+        # Cleanup fired with the same namespace.
+        assert cleanup_namespaces == [namespace]
+
+    def test_sequential_isolation_works_with_bare_adapter_signature(
+        self, tmp_path: Path
+    ) -> None:
+        """Adapters with the bare isolate_session(slot_id) shape (no
+        namespace/pristine kwargs) still work on the serial path."""
+        tasks = [_make_task(tmp_path / "task-000", passing=True)]
+        adapter = FakeAdapter(stdout="output")
+
+        with patch("codeprobe.core.executor._git_reset_workdir"):
+            results = execute_config(
+                adapter=adapter,
+                task_dirs=tasks,
+                repo_path=tmp_path,
+                experiment_config=ExperimentConfig(label="baseline"),
+                agent_config=AgentConfig(),
+                parallel=1,
+                pristine_config=True,
+            )
+
+        assert len(results) == 1
+        assert results[0].status != "error"
+
 
 # --- Repeat infrastructure tests ---
 
@@ -1274,6 +1415,21 @@ class TestErrorTaxonomy:
         """Generic exceptions -> 'agent'."""
         assert _classify_error(RuntimeError("something")) == "agent"
         assert _classify_error(ValueError("bad value")) == "agent"
+
+    def test_classify_error_quota(self) -> None:
+        """AdapterQuotaError -> 'quota' (codeprobe-f7rl.29)."""
+        exc = AdapterQuotaError("Rate limited: 429 insufficient_quota")
+        assert _classify_error(exc) == "quota"
+
+    def test_execute_task_quota_error_sets_category(self, tmp_path: Path) -> None:
+        """When adapter.run() raises AdapterQuotaError, error_category='quota'."""
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        config = AgentConfig()
+
+        adapter = _QuotaRaisingAdapter(stdout="")
+        result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+        assert result.status == "error"
+        assert result.error_category == "quota"
 
     def test_execute_task_timeout_sets_category(self, tmp_path: Path) -> None:
         """When adapter.run() raises TimeoutExpired, error_category='timeout'."""
