@@ -130,6 +130,27 @@ print(json.dumps({
 """
 
 
+def _canonicalize_for_import_equals(value: Any) -> Any:
+    """Coerce ``value`` to the shape it would have after a JSON round-trip.
+
+    Subprocess-mode ``import_equals`` (see :meth:`Verifier._introspect_via_subprocess`)
+    necessarily serializes the introspected value through ``json.dumps`` /
+    ``json.loads`` to cross the process boundary — this turns tuples into
+    lists and stringifies non-string dict keys. Without this normalization,
+    in-process mode compares the live Python object directly, so the same
+    ``import_equals`` criterion could pass or fail depending solely on
+    whether ``python_interpreter`` happens to be set (e.g. a tuple-valued
+    constant checked against a TOML array). Applying the same coercion here
+    keeps the two modes semantically equivalent, matching what the module
+    docstring promises.
+    """
+    if isinstance(value, (tuple, list)):
+        return [_canonicalize_for_import_equals(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _canonicalize_for_import_equals(v) for k, v in value.items()}
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -485,7 +506,7 @@ class Verifier:
         if not hasattr(module, symbol):
             return self._fail(criterion, f"{module_name}.{symbol} not defined")
         actual = getattr(module, symbol)
-        if actual == expected:
+        if _canonicalize_for_import_equals(actual) == expected:
             return self._pass(criterion, f"{module_name}.{symbol} == {expected!r}")
         return self._fail(
             criterion,
@@ -559,10 +580,22 @@ class Verifier:
         should return ``result`` directly. Returns ``(None, payload)`` with
         the parsed ``status: "ok"`` payload when the caller should continue
         with its own pass/fail comparison.
+
+        Runs with ``-I`` (isolated mode) so the child genuinely resolves
+        ``module_name`` against :attr:`python_interpreter`'s own venv
+        site-packages: without it, the child inherits the caller's
+        ``PYTHONPATH`` (which is prepended ahead of venv site-packages) and
+        ``-c`` prepends the caller's cwd to ``sys.path``, so a module on
+        either could shadow the staged venv's install and produce a false
+        pass. ``-I`` does not affect resolution of the venv's own
+        site-packages, which lives under the interpreter's prefix.
         """
         assert self.python_interpreter is not None
         cmd = [
             str(self.python_interpreter),
+            "-I",  # isolated mode: ignore PYTHONPATH/cwd/user site so this
+            # genuinely probes python_interpreter's own venv site-packages,
+            # not whatever the caller's environment happens to leak in.
             "-c",
             _SUBPROCESS_INTROSPECT_SCRIPT,
             module_name,
