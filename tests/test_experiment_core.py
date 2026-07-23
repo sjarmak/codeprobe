@@ -62,6 +62,39 @@ def test_save_and_load_experiment(tmp_path: Path):
     assert loaded.configs[0].label == "baseline"
 
 
+def test_save_and_load_experiment_default_bias_thresholds(tmp_path: Path):
+    """codeprobe-kdng: defaults round-trip through experiment.json."""
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.bias_overshipping_recall_min == 0.95
+    assert loaded.bias_overshipping_low_precision_max == 0.5
+    assert loaded.bias_overshipping_precision_gap_min == 0.3
+    assert loaded.configs[0].low_confidence_threshold == 0.5
+
+
+def test_save_and_load_experiment_custom_bias_thresholds(tmp_path: Path):
+    """codeprobe-kdng: non-default thresholds round-trip through
+    experiment.json — the config surface is real, not decorative."""
+    exp = Experiment(
+        name="test-exp",
+        configs=[
+            ExperimentConfig(label="baseline", low_confidence_threshold=0.7),
+        ],
+        bias_overshipping_recall_min=0.8,
+        bias_overshipping_low_precision_max=0.4,
+        bias_overshipping_precision_gap_min=0.2,
+    )
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    loaded = load_experiment(exp_dir)
+    assert loaded.bias_overshipping_recall_min == 0.8
+    assert loaded.bias_overshipping_low_precision_max == 0.4
+    assert loaded.bias_overshipping_precision_gap_min == 0.2
+    assert loaded.configs[0].low_confidence_threshold == 0.7
+
+
 def test_load_experiment_missing_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         load_experiment(tmp_path / "nonexistent")

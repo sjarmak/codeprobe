@@ -156,6 +156,13 @@ def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
         "description": experiment.description,
         "tasks_dir": experiment.tasks_dir,
         "configs": serialized_configs,
+        "bias_overshipping_recall_min": experiment.bias_overshipping_recall_min,
+        "bias_overshipping_low_precision_max": (
+            experiment.bias_overshipping_low_precision_max
+        ),
+        "bias_overshipping_precision_gap_min": (
+            experiment.bias_overshipping_precision_gap_min
+        ),
     }
     if experiment.task_ids:
         data["task_ids"] = list(experiment.task_ids)
@@ -199,6 +206,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
             hide_local_source=_coerce_hide_local_source(
                 c.get("hide_local_source")
             ),
+            low_confidence_threshold=c.get("low_confidence_threshold", 0.5),
             extra=c.get("extra", {}),
         )
         for c in data.get("configs", [])
@@ -219,6 +227,15 @@ def load_experiment(exp_dir: Path) -> Experiment:
         configs=configs,
         tasks_dir=tasks_dir,
         task_ids=task_ids,
+        bias_overshipping_recall_min=data.get(
+            "bias_overshipping_recall_min", 0.95
+        ),
+        bias_overshipping_low_precision_max=data.get(
+            "bias_overshipping_low_precision_max", 0.5
+        ),
+        bias_overshipping_precision_gap_min=data.get(
+            "bias_overshipping_precision_gap_min", 0.3
+        ),
     )
 
 

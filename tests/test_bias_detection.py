@@ -21,6 +21,7 @@ from codeprobe.core.bias_detection import (
     collect_task_gt_backends,
     config_backends,
     detect_backend_overlap,
+    detect_bias_warnings,
     detect_no_independent_baseline,
     detect_overshipping_anti_pattern,
     detect_task_gt_backends,
@@ -408,6 +409,126 @@ def test_overshipping_silent_when_precision_gap_small() -> None:
         ],
     }
     assert detect_overshipping_anti_pattern(config_results) == []
+
+
+def test_overshipping_custom_recall_min_gates_detection() -> None:
+    """codeprobe-kdng: recall_min is a config-plumbed keyword, not a
+    hardcoded constant — a recall of 0.8 is silent at the historical
+    default (0.95) but flags when the caller loosens the bar."""
+    config_results = {
+        "baseline": [
+            {
+                "task_id": "t1",
+                "automated_score": 0.8,
+                "scoring_details": {"recall": 0.8, "precision": 0.05},
+            }
+        ],
+        "with-sg": [
+            {
+                "task_id": "t1",
+                "automated_score": 0.8,
+                "scoring_details": {"recall": 0.8, "precision": 1.0},
+            }
+        ],
+    }
+    assert detect_overshipping_anti_pattern(config_results) == []
+    warnings = detect_overshipping_anti_pattern(config_results, recall_min=0.7)
+    assert len(warnings) == 1
+    assert warnings[0].kind == "overshipping"
+
+
+def test_overshipping_custom_precision_gap_min_gates_detection() -> None:
+    """A precision gap of 0.15 is silent at the historical default (0.3)
+    but flags when the caller tightens ``precision_gap_min``."""
+    config_results = {
+        "baseline": [
+            {
+                "task_id": "t1",
+                "automated_score": 1.0,
+                "scoring_details": {"recall": 1.0, "precision": 0.4},
+            }
+        ],
+        "with-sg": [
+            {
+                "task_id": "t1",
+                "automated_score": 1.0,
+                "scoring_details": {"recall": 1.0, "precision": 0.55},
+            }
+        ],
+    }
+    assert detect_overshipping_anti_pattern(config_results) == []
+    warnings = detect_overshipping_anti_pattern(
+        config_results, precision_gap_min=0.1
+    )
+    assert len(warnings) == 1
+    assert warnings[0].kind == "overshipping"
+
+
+def test_overshipping_custom_low_precision_max_gates_detection() -> None:
+    """An over-shipper precision of 0.55 is silent at the historical
+    default ``low_precision_max`` (0.5) but flags when the caller raises
+    the bar."""
+    config_results = {
+        "baseline": [
+            {
+                "task_id": "t1",
+                "automated_score": 1.0,
+                "scoring_details": {"recall": 1.0, "precision": 0.55},
+            }
+        ],
+        "with-sg": [
+            {
+                "task_id": "t1",
+                "automated_score": 1.0,
+                "scoring_details": {"recall": 1.0, "precision": 1.0},
+            }
+        ],
+    }
+    assert detect_overshipping_anti_pattern(config_results) == []
+    warnings = detect_overshipping_anti_pattern(
+        config_results, low_precision_max=0.6
+    )
+    assert len(warnings) == 1
+    assert warnings[0].kind == "overshipping"
+
+
+def test_detect_bias_warnings_uses_experiment_overshipping_thresholds(
+    tmp_path: Path,
+) -> None:
+    """detect_bias_warnings must read the three overshipping thresholds
+    from the Experiment (codeprobe-kdng), not the removed module
+    constants — a non-default recall_min on the experiment changes the
+    aggregate outcome."""
+    config_results = {
+        "baseline": [
+            {
+                "task_id": "t1",
+                "automated_score": 0.8,
+                "scoring_details": {"recall": 0.8, "precision": 0.05},
+            }
+        ],
+        "with-sg": [
+            {
+                "task_id": "t1",
+                "automated_score": 0.8,
+                "scoring_details": {"recall": 0.8, "precision": 1.0},
+            }
+        ],
+    }
+    exp = Experiment(
+        name="exp",
+        configs=[ExperimentConfig(label="baseline"), ExperimentConfig(label="with-sg")],
+    )
+    default_warnings, _ = detect_bias_warnings(exp, tmp_path, config_results)
+    assert not any(w.kind == "overshipping" for w in default_warnings)
+
+    loose_exp = Experiment(
+        name="exp",
+        configs=exp.configs,
+        bias_overshipping_recall_min=0.7,
+    )
+    loose_warnings, _ = detect_bias_warnings(loose_exp, tmp_path, config_results)
+    assert any(w.kind == "overshipping" for w in loose_warnings)
 
 
 # ---- detect_no_independent_baseline ----

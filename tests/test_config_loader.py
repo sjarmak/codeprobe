@@ -188,6 +188,27 @@ class TestToExperiment:
         experiment = to_experiment(evalrc)
         assert experiment.configs[0].reward_type == "binary"
 
+    def test_explicit_config_extracts_low_confidence_threshold(self) -> None:
+        """codeprobe-kdng: low_confidence_threshold is a recognized
+        explicit-config key, not rejected by the unknown-key guard."""
+        evalrc = EvalrcConfig(
+            name="threshold",
+            configs={
+                "strict": {"agent": "claude", "low_confidence_threshold": 0.8},
+            },
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].low_confidence_threshold == 0.8
+
+    def test_explicit_config_low_confidence_threshold_defaults(self) -> None:
+        """low_confidence_threshold defaults to 0.5 when not specified."""
+        evalrc = EvalrcConfig(
+            name="default-threshold",
+            configs={"baseline": {"agent": "claude"}},
+        )
+        experiment = to_experiment(evalrc)
+        assert experiment.configs[0].low_confidence_threshold == 0.5
+
 
 class TestDimensions:
     """Test dimensions-based cross-product config generation."""

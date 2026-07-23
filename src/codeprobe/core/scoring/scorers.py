@@ -872,11 +872,11 @@ class OracleChecksScorer:
 
 _MAX_GROUND_TRUTH_BYTES = 10 * 1024 * 1024  # 10 MB
 
-# Confidence below which we log a warning about low-confidence ground
-# truth in :class:`ArtifactScorer`. Promoted from an inline literal so
-# verifier-honesty lint sees a named, documented constant rather than a
-# bare ``< 0.5`` in scoring code (see tests/lint/test_scorer_honesty.py).
-_LOW_CONFIDENCE_THRESHOLD: float = 0.5
+# The confidence warning threshold (default 0.5, historical value) is a
+# policy value sourced from ``ExperimentConfig.low_confidence_threshold``
+# (codeprobe-kdng) and passed as the ``low_confidence_threshold`` keyword
+# argument to :meth:`ArtifactScorer.score` below — not a module constant,
+# so it can be tuned per experiment without editing scorer code.
 
 
 def _load_json_file(path: Path) -> dict | list | None:
@@ -1009,9 +1009,22 @@ class ArtifactScorer:
     - V2: ``checks`` array with weighted multi-check scoring
     - V1: single ``answer_type`` + ``answer``
     - Legacy: ``expected`` file list
+
+    ``score`` accepts an optional ``low_confidence_threshold`` keyword
+    (default 0.5, the historical hardcoded value) sourced from
+    ``ExperimentConfig.low_confidence_threshold`` (codeprobe-kdng). The
+    executor detects support structurally via
+    :func:`scorer_accepts_low_confidence_threshold`, mirroring the
+    ``agent_state`` opt-in pattern.
     """
 
-    def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
+    def score(
+        self,
+        agent_output: str,
+        task_dir: Path,
+        *,
+        low_confidence_threshold: float = 0.5,
+    ) -> ScoreResult:
         # Resolve the IR family up front so error-path ScoreResults can
         # declare the rubric the caller requested. Verifier-honesty lint
         # (tests/lint/test_scorer_honesty.py) requires every ScoreResult
@@ -1045,7 +1058,7 @@ class ArtifactScorer:
 
         # Warn on low-confidence ground truth
         confidence = gt.get("confidence")
-        if confidence is not None and confidence < _LOW_CONFIDENCE_THRESHOLD:
+        if confidence is not None and confidence < low_confidence_threshold:
             logger.warning(
                 "Low confidence ground truth (%.2f) in %s",
                 confidence,
@@ -1337,18 +1350,21 @@ def _safe_leg_score(
     scorer: object,
     agent_output: str,
     task_dir: Path,
+    **kwargs: float,
 ) -> ScoreResult:
     """Invoke a sub-scorer, catching exceptions so both legs always run.
 
     DualScorer must never short-circuit because one leg raises. Any
     exception is converted into a ScoreResult(score=0.0) with the
-    exception message exposed via ``error``.
+    exception message exposed via ``error``. ``kwargs`` forwards
+    leg-specific options (e.g. ``low_confidence_threshold`` for the
+    artifact leg) — callers pass only what the target scorer accepts.
     """
     try:
         score_fn = getattr(scorer, "score", None)
         if score_fn is None:
             raise AttributeError(f"{type(scorer).__name__!r} has no .score method")
-        return cast(ScoreResult, score_fn(agent_output, task_dir))
+        return cast(ScoreResult, score_fn(agent_output, task_dir, **kwargs))
     except Exception as exc:  # noqa: BLE001 — both legs must run
         scorer_name = type(scorer).__name__
         logger.exception(
@@ -1388,6 +1404,9 @@ class DualScorer:
         direct leg runs normally.
       - Missing or unparseable ``metadata.json``: returns score 0.0 with
         an error — dual tasks require valid verification metadata.
+
+    ``score`` accepts an optional ``low_confidence_threshold`` keyword,
+    forwarded to the internal artifact leg (codeprobe-kdng).
     """
 
     def __init__(self) -> None:
@@ -1419,6 +1438,8 @@ class DualScorer:
         self,
         agent_output: str,
         task_dir: Path,
+        *,
+        low_confidence_threshold: float = 0.5,
     ) -> ScoreResult:
         verification = read_task_verification(task_dir)
         if not verification:
@@ -1449,7 +1470,12 @@ class DualScorer:
         artifact_scorer = ArtifactScorer()
 
         direct_result = _safe_leg_score(direct_scorer, agent_output, task_dir)
-        artifact_result = _safe_leg_score(artifact_scorer, agent_output, task_dir)
+        artifact_result = _safe_leg_score(
+            artifact_scorer,
+            agent_output,
+            task_dir,
+            low_confidence_threshold=low_confidence_threshold,
+        )
 
         details: dict = {
             "score_direct": direct_result.score,

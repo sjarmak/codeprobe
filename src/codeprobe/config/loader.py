@@ -179,6 +179,7 @@ _CONFIG_KEYS = frozenset(
         "reward_type",
         "max_turns",
         "hide_local_source",
+        "low_confidence_threshold",
     }
 )
 
@@ -240,6 +241,7 @@ def _configs_from_explicit(configs_dict: dict) -> list[ExperimentConfig]:
             hide_local_source=_coerce_hide_local_source(
                 cfg.get("hide_local_source")
             ),
+            low_confidence_threshold=cfg.get("low_confidence_threshold", 0.5),
             extra=_validated_extra(label, cfg),
         )
         for label, cfg in configs_dict.items()

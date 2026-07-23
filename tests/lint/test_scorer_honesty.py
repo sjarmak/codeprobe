@@ -98,62 +98,13 @@ class Offender:
     follow_up_bead: str
 
 
-_KNOWN_OFFENDERS: tuple[Offender, ...] = (
-    # Bias-detection hardcoded thresholds.
-    #
-    # The ``_OVERSHIPPING_*`` constants in ``bias_detection.py`` are
-    # *named* and documented, but they are still magic numbers wired
-    # into the detector without config plumbing. ZFC says thresholds
-    # are policy; they should be sourced from a config or per-experiment
-    # declaration so users can tune sensitivity without editing code.
-    Offender(
-        relpath="src/codeprobe/core/bias_detection.py",
-        rule="hardcoded-threshold",
-        line_start=60,
-        line_end=60,
-        reason=(
-            "_OVERSHIPPING_RECALL_MIN named module constant, not config-plumbed."
-        ),
-        follow_up_bead="codeprobe-kdng",
-    ),
-    Offender(
-        relpath="src/codeprobe/core/bias_detection.py",
-        rule="hardcoded-threshold",
-        line_start=61,
-        line_end=61,
-        reason=(
-            "_OVERSHIPPING_LOW_PRECISION_MAX named module constant, not "
-            "config-plumbed."
-        ),
-        follow_up_bead="codeprobe-kdng",
-    ),
-    Offender(
-        relpath="src/codeprobe/core/bias_detection.py",
-        rule="hardcoded-threshold",
-        line_start=62,
-        line_end=62,
-        reason=(
-            "_OVERSHIPPING_PRECISION_GAP_MIN named module constant, not "
-            "config-plumbed."
-        ),
-        follow_up_bead="codeprobe-kdng",
-    ),
-    # ArtifactScorer low-confidence warning threshold. Promoted from an
-    # inline ``< 0.5`` literal to a named module constant during the
-    # scorer-honesty hardening work; the named form is honest documentation
-    # but still hardcoded. Same follow-up bead covers the config plumbing.
-    Offender(
-        relpath="src/codeprobe/core/scoring/scorers.py",
-        rule="hardcoded-threshold",
-        line_start=820,
-        line_end=880,
-        reason=(
-            "_LOW_CONFIDENCE_THRESHOLD warns when ground_truth.confidence "
-            "< 0.5. Named, documented, but not config-sourced."
-        ),
-        follow_up_bead="codeprobe-kdng",
-    ),
-)
+# No known offenders currently tracked. The bias-detection
+# ``_OVERSHIPPING_*`` constants and the ``ArtifactScorer`` low-confidence
+# threshold were plumbed through ``ExperimentConfig`` /
+# ``Experiment.bias_overshipping_*`` in codeprobe-kdng; the module-level
+# constants they used to require are gone, so the offenders list is
+# empty rather than waived.
+_KNOWN_OFFENDERS: tuple[Offender, ...] = ()
 
 
 def _offender_for(

@@ -284,6 +284,35 @@ class TestConfidenceWarning:
             scorer.score("", tmp_path)
         assert "Low confidence" not in caplog.text
 
+    def test_custom_threshold_silences_warning_below_default(
+        self, tmp_path: Path, scorer: ArtifactScorer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """codeprobe-kdng: low_confidence_threshold is config-plumbed, not
+        hardcoded — a caller-supplied threshold below the confidence value
+        silences the warning that the historical 0.5 default would emit."""
+        _write_json(
+            tmp_path / "ground_truth.json",
+            {"answer_type": "text", "answer": "x", "confidence": 0.4},
+        )
+        _write_json(tmp_path / "answer.json", {"answer": "x"})
+        with caplog.at_level(logging.WARNING):
+            scorer.score("", tmp_path, low_confidence_threshold=0.3)
+        assert "Low confidence" not in caplog.text
+
+    def test_custom_threshold_raises_warning_above_default(
+        self, tmp_path: Path, scorer: ArtifactScorer, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A confidence that would pass the 0.5 default still warns when the
+        caller supplies a stricter (higher) threshold."""
+        _write_json(
+            tmp_path / "ground_truth.json",
+            {"answer_type": "text", "answer": "x", "confidence": 0.6},
+        )
+        _write_json(tmp_path / "answer.json", {"answer": "x"})
+        with caplog.at_level(logging.WARNING):
+            scorer.score("", tmp_path, low_confidence_threshold=0.7)
+        assert "Low confidence" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Edge cases

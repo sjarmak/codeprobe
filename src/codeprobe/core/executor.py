@@ -53,6 +53,7 @@ from codeprobe.core.scoring import (
     read_task_metadata,
     sanitize_secrets,
     scorer_accepts_agent_state,
+    scorer_accepts_low_confidence_threshold,
     scorer_env_override,
 )
 from codeprobe.core.turn_cap import (
@@ -334,6 +335,7 @@ def _score_in_sandbox(
     turn_cap_meta: dict,
     output_fields: dict,
     resolved_preambles: list[dict[str, str]],
+    low_confidence_threshold: float = 0.5,
 ) -> TaskResult:
     """Score the agent output in an isolated per-run sandbox.
 
@@ -426,9 +428,15 @@ def _score_in_sandbox(
                 base_commit=base_commit, workspace=effective_workspace
             )
 
-        score_kwargs: dict[str, AgentState] = (
-            {"agent_state": agent_state} if agent_state is not None else {}
-        )
+        # Same structural opt-in pattern for the low-confidence-warning
+        # threshold (codeprobe-kdng): scorers that don't accept the
+        # kwarg (BinaryScorer, ContinuousScorer, ...) keep their own
+        # defaults untouched.
+        score_kwargs: dict[str, AgentState | float] = {}
+        if agent_state is not None:
+            score_kwargs["agent_state"] = agent_state
+        if scorer_accepts_low_confidence_threshold(scorer):
+            score_kwargs["low_confidence_threshold"] = low_confidence_threshold
         with scorer_env_override(env_overrides):
             score_result = scorer.score(output.stdout, scoring_dir, **score_kwargs)
 
@@ -465,6 +473,7 @@ def execute_task(
     hide_local_source: Literal["off", "hide", "scaffold"] = "off",
     hide_local_source_keep: tuple[str, ...] = (),
     config_max_turns_source: str = "",
+    low_confidence_threshold: float = 0.5,
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -892,6 +901,7 @@ def execute_task(
             turn_cap_meta=_turn_cap_meta,
             output_fields=_output_fields(),
             resolved_preambles=resolved_preambles,
+            low_confidence_threshold=low_confidence_threshold,
         )
     finally:
         if _owned_iso is not None:
@@ -1180,6 +1190,7 @@ def execute_config(
                 session_env=session_env,
                 hide_local_source=experiment_config.hide_local_source,
                 config_max_turns_source=config_max_turns_source,
+                low_confidence_threshold=experiment_config.low_confidence_threshold,
             )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:

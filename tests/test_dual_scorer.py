@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 from pathlib import Path
@@ -326,7 +327,7 @@ def test_both_legs_run_when_artifact_raises(
     monkeypatch: pytest.MonkeyPatch,
     passing_task_dir: Path,
 ):
-    def _boom(self, agent_output, task_dir):
+    def _boom(self, agent_output, task_dir, **kwargs):
         raise RuntimeError("artifact exploded")
 
     monkeypatch.setattr(ArtifactScorer, "score", _boom)
@@ -472,6 +473,36 @@ def test_unparseable_metadata_json_fails_with_error(tmp_path: Path):
     assert result.passed is False
     assert result.error is not None
     assert "metadata" in result.error.lower()
+
+
+def test_low_confidence_threshold_forwards_to_artifact_leg(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """codeprobe-kdng: DualScorer.score's low_confidence_threshold kwarg
+    must reach the internal ArtifactScorer leg, not just the top-level
+    ArtifactScorer.score signature."""
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    _write_metadata(task_dir)
+    _write_test_sh(task_dir, exit_code=0)
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(parents=True, exist_ok=True)
+    (tests_dir / "ground_truth.json").write_text(
+        json.dumps(
+            {"answer_type": "boolean", "answer": True, "confidence": 0.4}
+        ),
+        encoding="utf-8",
+    )
+    _write_answer(task_dir, answer=True)
+
+    with caplog.at_level(logging.WARNING):
+        DualScorer().score("", task_dir, low_confidence_threshold=0.3)
+    assert "Low confidence" not in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        DualScorer().score("", task_dir)
+    assert "Low confidence" in caplog.text
 
 
 def test_metadata_missing_verification_block_fails(tmp_path: Path):
