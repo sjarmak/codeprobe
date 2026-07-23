@@ -7,7 +7,7 @@ import math
 import statistics
 from collections import Counter
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.models.experiment import (
@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 PASS_THRESHOLD = 0.5
 
 _SMALL_SAMPLE_THRESHOLD = 10
+
+# Minimum shared (paired) tasks for a pairwise verdict. Below 3 shared tasks
+# no paired test in this module has meaningful power (wilcoxon_test already
+# returns None for n < 2), so compare_configs REFUSES the verdict instead of
+# caveating it (locked decision 6, epic codeprobe-f7rl).
+_MIN_PAIRED_TASKS = 3
 
 # Import AFTER PASS_THRESHOLD is defined: dual.py defers its own stats
 # import to function bodies, so this direction is the only safe one.
@@ -205,6 +211,26 @@ def wilcoxon_test(a_scores: Sequence[float], b_scores: Sequence[float]) -> float
         return None
 
 
+def holm_adjusted(p_values: Sequence[float | None]) -> list[float | None]:
+    """Holm step-down adjusted p-values for a family of pairwise tests.
+
+    ``None`` entries (untested pairs, e.g. REFUSED comparisons) stay ``None``
+    and keep their positions; the family size ``m`` counts only the non-None
+    entries. Standard step-down: sort the tested p-values ascending, then
+    ``adjusted[i] = max(adjusted so far, (m - rank) * p)`` clamped to 1.0,
+    which enforces monotonicity by construction. Deterministic math
+    (ZFC-allowed; locked decision 6, epic codeprobe-f7rl).
+    """
+    tested = [(i, p) for i, p in enumerate(p_values) if p is not None]
+    adjusted: list[float | None] = [None] * len(p_values)
+    m = len(tested)
+    running = 0.0
+    for rank, (i, p) in enumerate(sorted(tested, key=lambda ip: ip[1])):
+        running = max(running, (m - rank) * p)
+        adjusted[i] = min(running, 1.0)
+    return adjusted
+
+
 def cliffs_delta(a: Sequence[float], b: Sequence[float]) -> float:
     """Cliff's delta effect size for ordinal/binary data.
 
@@ -335,6 +361,11 @@ class ConfigSummary:
     total_tokens: int | None
     is_partial: bool = False
     tasks_expected: int | None = None
+    # Number of unique task_ids observed — the repeat-safe N. With --repeats
+    # the trial count (``total_tasks``) exceeds the task count, so partial
+    # detection and the rendered "N=x/y" compare THIS against
+    # ``tasks_expected``, never the trial count (codeprobe-f7rl.9).
+    distinct_task_count: int = 0
     # ``ci_lower`` / ``ci_upper`` bound the *primary metric* for this summary.
     # For binary scorers the primary metric is ``pass_rate`` (Wilson CI);
     # for continuous scorers it's ``mean_score`` (normal-approximation CI
@@ -384,6 +415,18 @@ class ConfigSummary:
     # comparison is INVALID, not a null result. Zero when no config was
     # supplied to the summarizer (the audit needs the declared surface).
     abandoned_surface_count: int = 0
+    # Cost provenance (codeprobe-f7rl.35, locked decision 6). Per-trial tally
+    # of ``CompletedTask.cost_source`` over ALL trials (api_reported /
+    # calculated / estimated / unavailable), so every summary surface can show
+    # where its cost number came from. Treated as immutable after construction.
+    cost_source_counts: dict[str, int] = field(default_factory=dict)
+    # Fraction of SCORABLE trials (the reward population, ``is_scorable_run``)
+    # that carry a non-None ``cost_usd``; 0.0 when no scorable trials exist.
+    # ``total_cost_usd`` sums whatever costs exist, so an arm covered on 2/10
+    # trials shows a total ~5x lower than a fully-captured arm — coverage < 1.0
+    # means that total must never break a tie, earn "Best cost-efficiency",
+    # or render without a not-comparable flag (codeprobe-f7rl.35).
+    cost_coverage: float = 0.0
 
     @property
     def scored_count(self) -> int:
@@ -398,9 +441,29 @@ class ConfigSummary:
         return self.total_tasks - self.errored_count
 
 
+def cost_comparable(a: ConfigSummary, b: ConfigSummary) -> bool:
+    """Return whether two arms' cost totals may be compared head-to-head.
+
+    True iff BOTH arms captured cost on every scorable trial
+    (``cost_coverage == 1.0``). A partially-covered total is an undercount of
+    unknown size, so any decision built on it (winner tiebreak, ranking sort,
+    "Best cost-efficiency") compares apples to a fraction of oranges. This is
+    the ONE structural comparability predicate (deterministic policy
+    enforcement, ZFC) that the winner tiebreak and the ranking layer route
+    through (codeprobe-f7rl.35, locked decision 6).
+    """
+    return a.cost_coverage == 1.0 and b.cost_coverage == 1.0
+
+
 @dataclass(frozen=True)
 class PairwiseComparison:
-    """Statistical comparison between two configurations."""
+    """Statistical comparison between two configurations.
+
+    When ``comparable`` is False the pair was REFUSED (disjoint task sets or
+    below the paired-comparison floor): ``winner`` is empty, ``refusal_reason``
+    says why, and the diff fields are reference-only data, not a verdict
+    (locked decision 6, epic codeprobe-f7rl).
+    """
 
     config_a: str
     config_b: str
@@ -414,6 +477,21 @@ class PairwiseComparison:
     effect_size_method: str = ""
     ci_lower: float = 0.0
     ci_upper: float = 0.0
+    comparable: bool = True
+    refusal_reason: str = ""
+    # Structured verdict phrase from _derive_verdict — the same string that
+    # closes ``summary`` ("X wins", "effectively tied", "X nominally ahead
+    # (…)"). Renderers gate the Winner badge on this field instead of
+    # string-parsing ``summary``; empty for REFUSED pairs (codeprobe-f7rl.31).
+    verdict: str = ""
+    # Multiple-comparison correction (codeprobe-f7rl.10). For k=2 experiments
+    # no correction runs: ``p_value_adjusted`` equals the raw ``p_value`` and
+    # ``correction`` stays "none". For k>2 the report layer Holm-corrects the
+    # family and re-derives the verdict from the ADJUSTED p; ``n_comparisons``
+    # is the family size m (number of tested pairs).
+    p_value_adjusted: float | None = None
+    correction: str = "none"
+    n_comparisons: int = 1
 
 
 def summarize_config(
@@ -424,15 +502,21 @@ def summarize_config(
 ) -> ConfigSummary:
     """Compute summary statistics for a single config's results.
 
-    When *total_tasks* is provided and exceeds the number of completed tasks,
-    the summary is flagged as partial. When *config* is provided, the
+    When *total_tasks* is provided and exceeds the number of DISTINCT task
+    ids observed (repeat-safe — trials do not count twice), the summary is
+    flagged as partial. When *config* is provided, the
     tool-surface audit (codeprobe-1gg) runs and ``abandoned_surface_count``
     counts trials that ignored an enabled surface.
     """
     tasks = results.completed
     total = len(tasks)
 
-    is_partial = total_tasks is not None and total < total_tasks
+    # Repeat-safe partial detection: compare unique task_ids to the expected
+    # task count. Comparing the trial count would break both ways under
+    # --repeats — 12 trials on 10 tasks looks complete at 6/10 tasks
+    # (codeprobe-f7rl.9).
+    distinct = len({t.task_id for t in tasks})
+    is_partial = total_tasks is not None and distinct < total_tasks
 
     if total == 0:
         return ConfigSummary(
@@ -449,6 +533,7 @@ def summarize_config(
             total_tokens=None,
             is_partial=is_partial,
             tasks_expected=total_tasks,
+            distinct_task_count=0,
         )
 
     completed_tasks = [t for t in tasks if t.status == "completed"]
@@ -490,6 +575,13 @@ def summarize_config(
     costs = [t.cost_usd for t in tasks if t.cost_usd is not None]
     total_cost: float | None = sum(costs) if costs else None
 
+    # Cost provenance (codeprobe-f7rl.35): tally cost_source over ALL trials;
+    # coverage counts only scorable trials so it matches the reward population
+    # the rest of the summary is quoted over.
+    cost_source_counts = dict(Counter(t.cost_source for t in tasks))
+    covered_scorable = sum(1 for t in reward_tasks if t.cost_usd is not None)
+    cost_coverage = covered_scorable / scored_total if scored_total else 0.0
+
     tokens = [
         (t.input_tokens or 0) + (t.output_tokens or 0)
         for t in tasks
@@ -520,6 +612,7 @@ def summarize_config(
         total_tokens=total_tokens,
         is_partial=is_partial,
         tasks_expected=total_tasks,
+        distinct_task_count=distinct,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
         score_type=score_type,
@@ -532,6 +625,8 @@ def summarize_config(
         infra_failure_count=infra_count,
         errored_count=errored_count,
         abandoned_surface_count=abandoned_count,
+        cost_source_counts=cost_source_counts,
+        cost_coverage=cost_coverage,
     )
 
 
@@ -549,8 +644,9 @@ def summarize_completed_tasks(
     buffering all tasks in memory. Produces identical output to
     summarize_config() for the same data.
 
-    When *total_tasks* is provided and exceeds the number of consumed tasks,
-    the summary is flagged as partial.
+    When *total_tasks* is provided and exceeds the number of DISTINCT task
+    ids consumed (repeat-safe — trials do not count twice), the summary is
+    flagged as partial.
     """
     total = 0
     completed_count = 0
@@ -558,11 +654,18 @@ def summarize_completed_tasks(
     passed = 0
     token_sum = 0
     has_tokens = False
+    # Repeat-safe N — mirrors summarize_config()'s distinct-task counting so
+    # the two summarizers stay identical (codeprobe-f7rl.9).
+    seen_task_ids: set[str] = set()
 
     scores: list[float] = []
     durations: list[float] = []
     costs: list[float] = []
     billing_models: list[str] = []
+    # Cost provenance accumulators — mirror summarize_config()'s tally over
+    # ALL trials and coverage over scorable trials (codeprobe-f7rl.35).
+    cost_source_counter: Counter[str] = Counter()
+    covered_scorable = 0
 
     dual_count = 0
     direct_passes = 0
@@ -576,6 +679,7 @@ def summarize_completed_tasks(
 
     for task in tasks:
         total += 1
+        seen_task_ids.add(task.task_id)
         if task.status == "completed":
             completed_count += 1
         else:
@@ -601,7 +705,10 @@ def summarize_completed_tasks(
             if task_passed(task):
                 passed += 1
             durations.append(task.duration_seconds)
+            if task.cost_usd is not None:
+                covered_scorable += 1
 
+        cost_source_counter[task.cost_source] += 1
         if task.cost_usd is not None:
             costs.append(task.cost_usd)
 
@@ -620,7 +727,9 @@ def summarize_completed_tasks(
             if artifact_pass:
                 artifact_passes += 1
 
-    is_partial = total_tasks is not None and total < total_tasks
+    # Repeat-safe partial detection — see summarize_config() (codeprobe-f7rl.9).
+    distinct = len(seen_task_ids)
+    is_partial = total_tasks is not None and distinct < total_tasks
 
     if total == 0:
         return ConfigSummary(
@@ -637,6 +746,7 @@ def summarize_completed_tasks(
             total_tokens=None,
             is_partial=is_partial,
             tasks_expected=total_tasks,
+            distinct_task_count=0,
         )
 
     # Number of real (executed, non-casualty) trials — the reward population size.
@@ -675,6 +785,7 @@ def summarize_completed_tasks(
         total_tokens=token_sum if has_tokens else None,
         is_partial=is_partial,
         tasks_expected=total_tasks,
+        distinct_task_count=distinct,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
         score_type=score_type,
@@ -687,18 +798,27 @@ def summarize_completed_tasks(
         infra_failure_count=infra_count,
         errored_count=total - scored_total,
         abandoned_surface_count=abandoned_count,
+        cost_source_counts=dict(cost_source_counter),
+        cost_coverage=covered_scorable / scored_total if scored_total else 0.0,
     )
 
 
 def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
-    """Determine the better config by score, then cost, then speed."""
+    """Determine the better config by score, then cost, then speed.
+
+    The cost tiebreak only runs when :func:`cost_comparable` holds — both arms
+    fully cost-covered. A partially-covered total is an undercount, so letting
+    it break a tie would crown the arm that merely lost more cost telemetry
+    (codeprobe-f7rl.35). Incomparable costs fall through to the speed tiebreak.
+    """
     if not math.isclose(a.mean_score, b.mean_score, rel_tol=1e-9):
         return a.label if a.mean_score > b.mean_score else b.label
 
     cost_a = a.total_cost_usd
     cost_b = b.total_cost_usd
     if (
-        cost_a is not None
+        cost_comparable(a, b)
+        and cost_a is not None
         and cost_b is not None
         and not math.isclose(cost_a, cost_b, rel_tol=1e-9)
     ):
@@ -708,6 +828,60 @@ def _determine_winner(a: ConfigSummary, b: ConfigSummary) -> str:
         return a.label if a.mean_duration_sec < b.mean_duration_sec else b.label
 
     return a.label
+
+
+def _derive_verdict(
+    winner: str,
+    score_diff: float,
+    effect_size: float | None,
+    effect_size_method: str,
+    p_value: float | None,
+) -> str:
+    """Derive the verdict phrase from the comparison statistics.
+
+    Module-level so the report layer can re-run it with a Holm-ADJUSTED
+    p-value for k>2 experiments (codeprobe-f7rl.10). Softens the verdict
+    when the effect is negligible or the test is underpowered, so we don't
+    confidently declare a "winner" on what may be noise. Thresholds:
+      Cohen's d: |d| < 0.2 is "negligible" (Cohen 1988).
+      Cliff's delta: |delta| < 0.147 is "negligible" (Romano et al. 2006).
+      p-value > 0.05: not significant at the conventional threshold.
+    """
+    scores_tied = abs(score_diff) < 0.01
+    negligible_threshold = 0.2 if effect_size_method == "cohens_d" else 0.147
+    small_effect = (
+        effect_size is not None and abs(effect_size) < negligible_threshold
+    )
+    not_significant = p_value is not None and p_value > 0.05
+
+    if scores_tied:
+        return "effectively tied"
+    if small_effect and not_significant:
+        return f"{winner} nominally ahead (not significant; small effect)"
+    if small_effect:
+        return f"{winner} nominally ahead (small effect size)"
+    if not_significant:
+        return f"{winner} nominally ahead (not significant at p=0.05)"
+    return f"{winner} wins"
+
+
+def _comparison_summary(
+    label_a: str,
+    label_b: str,
+    score_diff: float,
+    cost_diff: float | None,
+    speed_diff: float,
+    verdict: str,
+) -> str:
+    """Build the one-line human-readable comparison summary."""
+    parts = [f"{score_diff:+.0%} score"]
+    if cost_diff is not None:
+        parts.append(f"{cost_diff:+.2f} cost")
+    if speed_diff < 0:
+        parts.append(f"{abs(speed_diff):.1f}s faster")
+    elif speed_diff > 0:
+        parts.append(f"{speed_diff:.1f}s slower")
+    return f"{label_a} vs {label_b}: {', '.join(parts)} → {verdict}"
 
 
 def compare_configs(
@@ -720,7 +894,10 @@ def compare_configs(
     """Compare two configurations and determine which is better.
 
     When *a_scores* and *b_scores* are provided (paired per-task scores),
-    statistical hypothesis tests and effect sizes are computed.
+    statistical hypothesis tests and effect sizes are computed. With no
+    paired scores (disjoint task sets) or fewer than ``_MIN_PAIRED_TASKS``
+    shared tasks the comparison is REFUSED: ``comparable=False``, no winner,
+    and the diff fields are reference-only (locked decision 6).
     """
     score_diff = a.mean_score - b.mean_score
 
@@ -729,6 +906,37 @@ def compare_configs(
         cost_diff = a.total_cost_usd - b.total_cost_usd
 
     speed_diff = a.mean_duration_sec - b.mean_duration_sec
+
+    # REFUSED verdicts on incomparable arms (locked decision 6, epic
+    # codeprobe-f7rl). Without this gate the disjoint case fell through every
+    # verdict guard (p_value and effect_size both None) straight to
+    # "{winner} wins" — the pair with the LEAST statistical basis made the
+    # STRONGEST claim. Refuse before any winner or test is computed; the
+    # diffs above stay populated as reference-only data.
+    refusal_reason = ""
+    if a_scores is None or b_scores is None:
+        refusal_reason = "no shared tasks between arms (disjoint task sets)"
+    elif len(a_scores) < _MIN_PAIRED_TASKS:
+        refusal_reason = (
+            f"only {len(a_scores)} shared task(s), below the "
+            f"{_MIN_PAIRED_TASKS}-task paired-comparison floor"
+        )
+    if refusal_reason:
+        return PairwiseComparison(
+            config_a=a.label,
+            config_b=b.label,
+            score_diff=score_diff,
+            cost_diff=cost_diff,
+            speed_diff=speed_diff,
+            winner="",
+            summary=(
+                f"{a.label} vs {b.label}: NOT COMPARABLE — {refusal_reason}; "
+                "no verdict (per-arm means are reference only)"
+            ),
+            comparable=False,
+            refusal_reason=refusal_reason,
+        )
+
     winner = _determine_winner(a, b)
 
     # Statistical tests when raw scores are available
@@ -758,41 +966,10 @@ def compare_configs(
             ci_lo = mean_diff - 1.96 * se
             ci_hi = mean_diff + 1.96 * se
 
-    # Build human-readable summary
-    parts: list[str] = []
-    parts.append(f"{score_diff:+.0%} score")
-    if cost_diff is not None:
-        parts.append(f"{cost_diff:+.2f} cost")
-    if speed_diff < 0:
-        parts.append(f"{abs(speed_diff):.1f}s faster")
-    elif speed_diff > 0:
-        parts.append(f"{speed_diff:.1f}s slower")
-
-    # Soften the verdict when the effect is negligible or the test is
-    # underpowered, so we don't confidently declare a "winner" on what may
-    # be noise. Thresholds:
-    #   Cohen's d: |d| < 0.2 is "negligible" (Cohen 1988).
-    #   Cliff's delta: |delta| < 0.147 is "negligible" (Romano et al. 2006).
-    #   p-value > 0.05: not significant at the conventional threshold.
-    scores_tied = abs(score_diff) < 0.01
-    negligible_threshold = 0.2 if eff_method == "cohens_d" else 0.147
-    small_effect = (
-        eff_size is not None and abs(eff_size) < negligible_threshold
+    verdict = _derive_verdict(winner, score_diff, eff_size, eff_method, p_val)
+    summary = _comparison_summary(
+        a.label, b.label, score_diff, cost_diff, speed_diff, verdict
     )
-    not_significant = p_val is not None and p_val > 0.05
-
-    if scores_tied:
-        verdict = "effectively tied"
-    elif small_effect and not_significant:
-        verdict = f"{winner} nominally ahead (not significant; small effect)"
-    elif small_effect:
-        verdict = f"{winner} nominally ahead (small effect size)"
-    elif not_significant:
-        verdict = f"{winner} nominally ahead (not significant at p=0.05)"
-    else:
-        verdict = f"{winner} wins"
-
-    summary = f"{a.label} vs {b.label}: {', '.join(parts)} \u2192 {verdict}"
 
     return PairwiseComparison(
         config_a=a.label,
@@ -802,9 +979,13 @@ def compare_configs(
         speed_diff=speed_diff,
         winner=winner,
         summary=summary,
+        verdict=verdict,
         p_value=p_val,
         effect_size=eff_size,
         effect_size_method=eff_method,
         ci_lower=ci_lo,
         ci_upper=ci_hi,
+        # Uncorrected single-pair default: adjusted == raw. The report layer
+        # overwrites this for k>2 families (codeprobe-f7rl.10).
+        p_value_adjusted=p_val,
     )

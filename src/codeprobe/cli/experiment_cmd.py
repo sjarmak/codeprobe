@@ -411,11 +411,16 @@ def experiment_status(path: str) -> None:
 
     for cfg in experiment.configs:
         completed = 0
+        distinct_done = 0
         avg_score: float | None = None
 
         try:
             results = load_config_results(exp_dir, cfg.label)
             completed = len(results.completed)
+            # `completed` counts trials (tasks x repeats); completion is
+            # judged on distinct task_ids so repeated runs can finish
+            # (codeprobe-f7rl.7).
+            distinct_done = len({t.task_id for t in results.completed})
             automated_scores = [
                 t.automated_score
                 for t in results.completed
@@ -428,9 +433,13 @@ def experiment_status(path: str) -> None:
 
         score_str = f"{avg_score:.2f}" if avg_score is not None else "--"
         status_str = (
-            "complete" if completed == total_tasks and total_tasks > 0 else "pending"
+            "complete"
+            if distinct_done == total_tasks and total_tasks > 0
+            else "pending"
         )
-        progress = f"{completed}/{total_tasks}" if completed < total_tasks else "done"
+        progress = f"{distinct_done}/{total_tasks}"
+        if completed > distinct_done:
+            progress += f" ({completed} trials)"
         click.echo(f"  {cfg.label:<25} {progress:<12} {score_str:<12} {status_str}")
 
 
@@ -468,6 +477,9 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
             config_results[cfg.label] = [
                 {
                     "task_id": t.task_id,
+                    # 0-based repeat number so aggregate consumers can
+                    # disaggregate repeated trials (codeprobe-f7rl.7).
+                    "repeat_index": t.repeat_index,
                     "automated_score": t.automated_score,
                     "duration_seconds": t.duration_seconds,
                     "cost_usd": t.cost_usd,
@@ -654,43 +666,64 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
     pairwise: list[dict] = []
     for i, a_label in enumerate(config_labels):
         for b_label in config_labels[i + 1 :]:
-            a_scores = {
-                r["task_id"]: r["automated_score"]
-                for r in config_results.get(a_label, [])
-                if r["automated_score"] is not None
-            }
-            b_scores = {
-                r["task_id"]: r["automated_score"]
-                for r in config_results.get(b_label, [])
-                if r["automated_score"] is not None
-            }
+            # Accumulate every scored repeat per task; the per-task mean is
+            # the statistical unit for --repeats (locked decision 6, epic
+            # codeprobe-f7rl / codeprobe-f7rl.7).
+            a_scores: dict[str, list[float]] = {}
+            for r in config_results.get(a_label, []):
+                if r["automated_score"] is not None:
+                    a_scores.setdefault(r["task_id"], []).append(
+                        r["automated_score"]
+                    )
+            b_scores: dict[str, list[float]] = {}
+            for r in config_results.get(b_label, []):
+                if r["automated_score"] is not None:
+                    b_scores.setdefault(r["task_id"], []).append(
+                        r["automated_score"]
+                    )
             shared = set(a_scores) & set(b_scores)
-            if shared:
-                deltas = [b_scores[t] - a_scores[t] for t in shared]
-                mean_delta = statistics.mean(deltas)
-                wins_b = sum(1 for d in deltas if d > 0.01)
-                wins_a = sum(1 for d in deltas if d < -0.01)
-                ties = len(deltas) - wins_b - wins_a
-
-                cohens_d: float | None = None
-                if len(deltas) > 1:
-                    sd = statistics.stdev(deltas)
-                    cohens_d = mean_delta / sd if sd > 0 else None
-
+            if not shared:
+                # Zero shared tasks: the arms are incomparable. Emit an
+                # explicit refusal entry instead of silently omitting the
+                # pair (decision 6's refusal contract).
                 pairwise.append(
                     {
                         "config_a": a_label,
                         "config_b": b_label,
-                        "shared_tasks": len(shared),
-                        "mean_delta": round(mean_delta, 4),
-                        "wins_a": wins_a,
-                        "wins_b": wins_b,
-                        "ties": ties,
-                        "cohens_d": (
-                            round(cohens_d, 3) if cohens_d is not None else None
-                        ),
+                        "shared_tasks": 0,
+                        "comparable": False,
                     }
                 )
+                continue
+
+            deltas = [
+                statistics.mean(b_scores[t]) - statistics.mean(a_scores[t])
+                for t in shared
+            ]
+            mean_delta = statistics.mean(deltas)
+            wins_b = sum(1 for d in deltas if d > 0.01)
+            wins_a = sum(1 for d in deltas if d < -0.01)
+            ties = len(deltas) - wins_b - wins_a
+
+            cohens_d: float | None = None
+            if len(deltas) > 1:
+                sd = statistics.stdev(deltas)
+                cohens_d = mean_delta / sd if sd > 0 else None
+
+            pairwise.append(
+                {
+                    "config_a": a_label,
+                    "config_b": b_label,
+                    "shared_tasks": len(shared),
+                    "mean_delta": round(mean_delta, 4),
+                    "wins_a": wins_a,
+                    "wins_b": wins_b,
+                    "ties": ties,
+                    "cohens_d": (
+                        round(cohens_d, 3) if cohens_d is not None else None
+                    ),
+                }
+            )
 
     # Bias detection — flag tautology and capability-boundary patterns.
     # Always computed so aggregate.json stays consistent across runs;
@@ -825,6 +858,12 @@ def experiment_aggregate(path: str, no_warn: bool = False) -> None:
     if pairwise and not suppress_winner:
         click.echo("\nPairwise Comparisons:")
         for p in pairwise:
+            if p.get("comparable") is False:
+                click.echo(
+                    f"  {p['config_a']} vs {p['config_b']}: "
+                    "not comparable (no shared tasks)"
+                )
+                continue
             click.echo(
                 f"  {p['config_a']} vs {p['config_b']}: "
                 f"delta={p['mean_delta']:+.3f}  "

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from codeprobe.analysis.stats import (
+    holm_adjusted,
     is_scorable_run,
     partition_reward_population,
     summarize_completed_tasks,
@@ -140,13 +143,20 @@ class TestMcNemarConsistencyWithTaskPassed:
         from codeprobe.analysis.report import generate_report
         from codeprobe.models.experiment import ConfigResults
 
+        # t3/t4 are concordant filler pairs: they keep both pass rates at 0.5
+        # and lift the shared-task count past the _MIN_PAIRED_TASKS floor so
+        # the comparison is not refused (codeprobe-f7rl.8).
         tasks_a = [
             _task("t1", 1.0, scoring_details={"passed": False}),
             _task("t2", 1.0),
+            _task("t3", 1.0),
+            _task("t4", 0.0),
         ]
         tasks_b = [
             _task("t1", 1.0),
             _task("t2", 0.0),
+            _task("t3", 1.0),
+            _task("t4", 0.0),
         ]
         cr_a = ConfigResults(config="cfg-a", completed=tasks_a)
         cr_b = ConfigResults(config="cfg-b", completed=tasks_b)
@@ -307,7 +317,9 @@ class TestVerdictSoftening:
         assert " b wins" not in cmp.summary
 
     def test_tied_scores_report_tied(self) -> None:
-        cmp = self._run_compare([0.5, 0.5], [0.5, 0.5])
+        # 3 paired scores: at the _MIN_PAIRED_TASKS floor so the pair is
+        # comparable and the tied verdict (not a refusal) is exercised.
+        cmp = self._run_compare([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         assert "effectively tied" in cmp.summary
 
     def test_real_experiment_numbers_produce_softened_verdict(self) -> None:
@@ -317,6 +329,78 @@ class TestVerdictSoftening:
         cmp = self._run_compare(baseline, with_mcp)
         # score_diff ~0.02, small cohen's d, high p → softened verdict
         assert "nominally ahead" in cmp.summary
+
+
+class TestRefusedVerdicts:
+    """compare_configs REFUSES incomparable arms instead of picking a winner
+    (locked decision 6, epic codeprobe-f7rl): disjoint task sets or fewer than
+    _MIN_PAIRED_TASKS shared tasks produce comparable=False and no verdict."""
+
+    def _summaries(self, a_scores, b_scores):
+        a_cr = ConfigResults(
+            config="a",
+            completed=[_task(f"a{i}", s) for i, s in enumerate(a_scores)],
+        )
+        b_cr = ConfigResults(
+            config="b",
+            completed=[_task(f"b{i}", s) for i, s in enumerate(b_scores)],
+        )
+        return summarize_config(a_cr), summarize_config(b_cr)
+
+    def test_disjoint_arms_refused(self) -> None:
+        """No shared tasks (a_scores=None) → refusal, never '+65% → A wins'."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8, 0.85], [0.2, 0.3, 0.25])
+        cmp = compare_configs(a_sum, b_sum, a_scores=None, b_scores=None)
+        assert cmp.comparable is False
+        assert cmp.winner == ""
+        assert "NOT COMPARABLE" in cmp.summary
+        assert "disjoint task sets" in cmp.refusal_reason
+        assert "wins" not in cmp.summary
+        assert cmp.p_value is None
+        assert cmp.effect_size is None
+
+    def test_below_floor_refused(self) -> None:
+        """2 paired scores → refused with the floor reason."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8], [0.2, 0.3])
+        cmp = compare_configs(
+            a_sum, b_sum, a_scores=[0.9, 0.8], b_scores=[0.2, 0.3]
+        )
+        assert cmp.comparable is False
+        assert cmp.winner == ""
+        assert "below the 3-task paired-comparison floor" in cmp.refusal_reason
+        assert "NOT COMPARABLE" in cmp.summary
+
+    def test_at_floor_comparable(self) -> None:
+        """3 paired scores → comparable, normal verdict chain."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8, 0.85], [0.2, 0.3, 0.25])
+        cmp = compare_configs(
+            a_sum, b_sum, a_scores=[0.9, 0.8, 0.85], b_scores=[0.2, 0.3, 0.25]
+        )
+        assert cmp.comparable is True
+        assert cmp.refusal_reason == ""
+        assert cmp.winner == "a"
+        assert "NOT COMPARABLE" not in cmp.summary
+
+    def test_refused_keeps_reference_diffs(self) -> None:
+        """Refusal keeps score/cost/speed diffs as reference-only data."""
+        from codeprobe.analysis.stats import compare_configs
+
+        a_sum, b_sum = self._summaries([0.9, 0.8, 0.85], [0.2, 0.3, 0.25])
+        cmp = compare_configs(a_sum, b_sum, a_scores=None, b_scores=None)
+        assert cmp.comparable is False
+        assert cmp.score_diff == pytest.approx(
+            a_sum.mean_score - b_sum.mean_score
+        )
+        assert cmp.cost_diff is not None
+        assert cmp.speed_diff == pytest.approx(
+            a_sum.mean_duration_sec - b_sum.mean_duration_sec
+        )
 
 
 def _quota_task(task_id: str, *, duration: float = 99.0) -> CompletedTask:
@@ -534,3 +618,84 @@ class TestQuotaExclusion:
         assert len(consumed) == 5
         # ...but only the 3 real trials land in the paired-score sink.
         assert set(sink) == {"r1", "r2", "r3"}
+
+
+class TestDistinctTaskCount:
+    """distinct_task_count is the repeat-safe N (codeprobe-f7rl.9)."""
+
+    def test_summarize_config_counts_unique_task_ids(self) -> None:
+        tasks = [_task("t1", 1.0), _task("t1", 0.0), _task("t2", 1.0)]
+        s = summarize_config(ConfigResults(config="cfg", completed=tasks))
+        assert s.distinct_task_count == 2
+
+    def test_streaming_counts_unique_task_ids(self) -> None:
+        tasks = [_task("t1", 1.0), _task("t1", 0.0), _task("t2", 1.0)]
+        s = summarize_completed_tasks("cfg", iter(tasks))
+        assert s.distinct_task_count == 2
+
+    def test_empty_input_distinct_zero(self) -> None:
+        batch = summarize_config(ConfigResults(config="cfg", completed=[]))
+        stream = summarize_completed_tasks("cfg", iter([]))
+        assert batch.distinct_task_count == 0
+        assert stream.distinct_task_count == 0
+
+    def test_repeats_do_not_fake_completeness(self) -> None:
+        """6 trials over 2 of 4 expected tasks → partial in BOTH summarizers.
+
+        The old trial-count check saw 6 > 4 and reported complete.
+        """
+        trials = [_task(f"t{i}", 1.0) for i in range(2) for _ in range(3)]
+        batch = summarize_config(
+            ConfigResults(config="cfg", completed=trials), total_tasks=4
+        )
+        stream = summarize_completed_tasks("cfg", iter(trials), total_tasks=4)
+        for s in (batch, stream):
+            assert s.distinct_task_count == 2
+            assert s.is_partial is True
+
+    def test_repeats_do_not_fake_partiality(self) -> None:
+        """All expected tasks covered by repeats → NOT partial."""
+        trials = [_task(f"t{i}", 1.0) for i in range(2) for _ in range(3)]
+        batch = summarize_config(
+            ConfigResults(config="cfg", completed=trials), total_tasks=2
+        )
+        stream = summarize_completed_tasks("cfg", iter(trials), total_tasks=2)
+        for s in (batch, stream):
+            assert s.distinct_task_count == 2
+            assert s.is_partial is False
+
+
+class TestHolmAdjusted:
+    """holm_adjusted — pure step-down correction (codeprobe-f7rl.10)."""
+
+    def test_known_vector(self) -> None:
+        """[0.01, 0.04, 0.03]: sorted multipliers 3,2,1 with monotone
+        enforcement give [0.03, 0.06, 0.06]."""
+        assert holm_adjusted([0.01, 0.04, 0.03]) == pytest.approx(
+            [0.03, 0.06, 0.06]
+        )
+
+    def test_none_entries_pass_through_and_reduce_m(self) -> None:
+        """None (untested/refused pair) keeps its position; m counts only
+        tested entries, so [0.01, None, 0.04] adjusts with m=2."""
+        result = holm_adjusted([0.01, None, 0.04])
+        assert result[1] is None
+        assert result[0] == pytest.approx(0.02)  # 2 * 0.01
+        assert result[2] == pytest.approx(0.04)  # max(0.02, 1 * 0.04)
+
+    def test_single_p_unchanged(self) -> None:
+        assert holm_adjusted([0.03]) == pytest.approx([0.03])
+
+    def test_monotone_and_clamped(self) -> None:
+        """Adjusted values never decrease in p-rank order and never exceed
+        1.0."""
+        raw = [0.9, 0.01, 0.5, 0.04]
+        result = holm_adjusted(raw)
+        assert all(p is not None and p <= 1.0 for p in result)
+        ranked = [adj for _, adj in sorted(zip(raw, result))]
+        assert ranked == sorted(ranked)
+        assert result[0] == 1.0  # 4 * 0.9 clamps
+
+    def test_empty_and_all_none(self) -> None:
+        assert holm_adjusted([]) == []
+        assert holm_adjusted([None, None]) == [None, None]

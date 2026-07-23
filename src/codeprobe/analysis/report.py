@@ -5,15 +5,19 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Iterator
-from dataclasses import asdict, dataclass
+import statistics
+from collections.abc import Iterable, Iterator
+from dataclasses import asdict, dataclass, replace
 
 from codeprobe.analysis.dual import dual_matrix, has_dual_scoring
 from codeprobe.analysis.ranking import RankedConfig, rank_configs
 from codeprobe.analysis.stats import (
     ConfigSummary,
     PairwiseComparison,
+    _comparison_summary,
+    _derive_verdict,
     compare_configs,
+    holm_adjusted,
     is_scorable_run,
     summarize_completed_tasks,
     summarize_config,
@@ -51,15 +55,21 @@ def _compute_partial_metadata(
 ) -> tuple[bool, int | None, float | None]:
     """Compute report-level partial metadata from summaries and total_tasks.
 
-    Returns (is_partial, tasks_expected, completion_ratio).
+    Returns (is_partial, tasks_expected, completion_ratio). Worst-arm
+    semantics: the report is partial when ANY arm is partial — one complete
+    arm must never mask a crashed one — and ``completion_ratio`` is the
+    worst arm's distinct-task coverage, not the best arm's
+    (codeprobe-f7rl.9; locked decision 6, epic codeprobe-f7rl).
     """
     if total_tasks is None:
         return False, None, None
 
-    # Sum completed tasks across all configs (take max per config for ratio)
-    tasks_completed = max((s.total_tasks for s in summaries), default=0)
-    is_partial = tasks_completed < total_tasks
-    completion_ratio = tasks_completed / total_tasks if total_tasks > 0 else 0.0
+    is_partial = any(s.is_partial for s in summaries)
+    if total_tasks > 0:
+        worst_distinct = min((s.distinct_task_count for s in summaries), default=0)
+        completion_ratio = worst_distinct / total_tasks
+    else:
+        completion_ratio = 0.0
     return is_partial, total_tasks, completion_ratio
 
 
@@ -96,17 +106,19 @@ def generate_report(
     # auto-detects binary vs continuous via _is_binary and picks the right
     # statistical test (McNemar + Cliff's delta for binary, Wilcoxon +
     # Cohen's d for continuous).
-    config_scores: dict[str, dict[str, float]] = {}
+    config_scores: dict[str, dict[str, list[float]]] = {}
     for cr in all_results:
         # Restrict to scorable runs so the paired hypothesis tests and effect
         # sizes in compare_configs match the reward population the summaries
         # report — non-executed runs (quota, invalid-model, crash) are excluded
         # (codeprobe-a8r; broadened to all status=="error" in codeprobe-h3j4).
-        config_scores[cr.config] = {
-            t.task_id: float(t.automated_score)
-            for t in cr.completed
-            if is_scorable_run(t)
-        }
+        # Every scorable repeat is accumulated per task_id so repeat trials
+        # don't overwrite each other (codeprobe-f7rl.7).
+        per_task: dict[str, list[float]] = {}
+        for t in cr.completed:
+            if is_scorable_run(t):
+                per_task.setdefault(t.task_id, []).append(float(t.automated_score))
+        config_scores[cr.config] = per_task
 
     comparisons: list[PairwiseComparison] = []
     for i, a in enumerate(summaries):
@@ -115,6 +127,11 @@ def generate_report(
             comparisons.append(
                 compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
             )
+
+    # k>2 runs a family of tests, so gate "wins" on Holm-adjusted p-values
+    # (codeprobe-f7rl.10). k=2 is a single test: no correction.
+    if len(summaries) > 2:
+        comparisons = _apply_multiple_comparison_correction(comparisons)
 
     is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
         summaries, total_tasks
@@ -139,7 +156,7 @@ def generate_report(
 
 def _tee_task_scores(
     tasks: Iterator[CompletedTask],
-    sink: dict[str, float],
+    sink: dict[str, list[float]],
     triage: ValidityTriage | None = None,
 ) -> Iterator[CompletedTask]:
     """Yield tasks unchanged while recording real trials' raw scores into *sink*.
@@ -147,11 +164,13 @@ def _tee_task_scores(
     Stores ``automated_score`` (continuous) rather than a binarized pass/fail
     indicator so pairwise statistical tests can operate on the true score
     distribution and choose Wilcoxon + Cohen's d for continuous scorers
-    vs McNemar + Cliff's delta for binary ones. Non-executed runs and infra
-    casualties are yielded but omitted from *sink* so the paired tests match the
-    reward population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z). When
-    *triage* is supplied every trial is also fed to it, so the streaming path
-    gets the same validity gate as the batch one without buffering the trials.
+    vs McNemar + Cliff's delta for binary ones. Every scorable repeat is
+    appended to the task's score list so repeat trials don't overwrite each
+    other (codeprobe-f7rl.7). Non-executed runs and infra casualties are
+    yielded but omitted from *sink* so the paired tests match the reward
+    population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z). When *triage*
+    is supplied every trial is also fed to it, so the streaming path gets the
+    same validity gate as the batch one without buffering the trials.
     """
     for t in tasks:
         if triage is not None:
@@ -161,12 +180,12 @@ def _tee_task_scores(
         # of the paired-score sink so compare_configs's statistical tests match
         # the reward population (codeprobe-a8r; codeprobe-h3j4; codeprobe-77z).
         if is_scorable_run(t):
-            sink[t.task_id] = float(t.automated_score)
+            sink.setdefault(t.task_id, []).append(float(t.automated_score))
         yield t
 
 
 def _paired_task_scores(
-    config_scores: dict[str, dict[str, float]],
+    config_scores: dict[str, dict[str, list[float]]],
     label_a: str,
     label_b: str,
 ) -> tuple[list[float] | None, list[float] | None]:
@@ -174,8 +193,13 @@ def _paired_task_scores(
 
     Returns ``(a_scores, b_scores)`` containing only tasks present in both
     configs (paired by task_id), or ``(None, None)`` when there are no
-    shared tasks. Scores are raw ``automated_score`` values; callers
-    downstream decide binary vs continuous handling.
+    shared tasks. Each emitted value is the mean over that task's scorable
+    repeats — the per-task mean is the statistical unit for ``--repeats``
+    (locked decision 6, epic codeprobe-f7rl). Means of binary repeats become
+    continuous, so compare_configs' _is_binary auto-routes to Wilcoxon +
+    Cohen's d, which is correct for aggregated units. When repeats are
+    unbalanced (some repeats excluded as casualties) the mean is over the
+    scorable repeats available.
     """
     a_by_id = config_scores.get(label_a, {})
     b_by_id = config_scores.get(label_b, {})
@@ -183,8 +207,62 @@ def _paired_task_scores(
     if not shared_ids:
         return None, None
     return (
-        [a_by_id[tid] for tid in shared_ids],
-        [b_by_id[tid] for tid in shared_ids],
+        [statistics.mean(a_by_id[tid]) for tid in shared_ids],
+        [statistics.mean(b_by_id[tid]) for tid in shared_ids],
+    )
+
+
+def _apply_multiple_comparison_correction(
+    comparisons: list[PairwiseComparison],
+) -> list[PairwiseComparison]:
+    """Holm-correct the family of pairwise tests for a k>2 experiment.
+
+    Runs all-at-once over the C(k,2) comparisons: REFUSED pairs contribute
+    ``None`` to the family and are never re-verdicted; every comparable pair
+    gets ``p_value_adjusted``, ``correction="holm"``, ``n_comparisons=m``
+    (the number of tested pairs), and its verdict/summary re-derived from
+    the ADJUSTED p — so "wins" is gated on the corrected result (locked
+    decision 6, epic codeprobe-f7rl). Callers gate on k>2; k=2 reports are
+    untouched by construction.
+    """
+    raw = [c.p_value if c.comparable else None for c in comparisons]
+    m = sum(1 for p in raw if p is not None)
+    if m == 0:
+        return comparisons
+    adjusted = holm_adjusted(raw)
+
+    corrected: list[PairwiseComparison] = []
+    for c, adj_p in zip(comparisons, adjusted):
+        if not c.comparable:
+            corrected.append(c)
+            continue
+        verdict = _derive_verdict(
+            c.winner, c.score_diff, c.effect_size, c.effect_size_method, adj_p
+        )
+        summary = _comparison_summary(
+            c.config_a, c.config_b, c.score_diff, c.cost_diff, c.speed_diff, verdict
+        )
+        corrected.append(
+            replace(
+                c,
+                summary=summary,
+                verdict=verdict,
+                p_value_adjusted=adj_p,
+                correction="holm",
+                n_comparisons=m,
+            )
+        )
+    return corrected
+
+
+def _holm_disclosure(report: Report) -> str | None:
+    """Disclosure sentence for Holm-corrected reports, or None for k=2."""
+    holm = [c for c in report.comparisons if c.correction == "holm"]
+    if not holm:
+        return None
+    return (
+        f"{len(report.summaries)} arms -> {holm[0].n_comparisons} pairwise "
+        "tests; p-values Holm-corrected (family-wise alpha=0.05)"
     )
 
 
@@ -204,13 +282,13 @@ def generate_report_streaming(
     When *total_tasks* is provided and exceeds completed tasks, the report
     is flagged as partial with a completion ratio.
     """
-    config_scores: dict[str, dict[str, float]] = {}
+    config_scores: dict[str, dict[str, list[float]]] = {}
     summaries: list[ConfigSummary] = []
     # The gate runs over the streamed trials of every config (codeprobe-77z) —
     # accumulated in the tee so no trial has to be buffered.
     triage = ValidityTriage()
     for label, tasks in config_task_pairs:
-        sink: dict[str, float] = {}
+        sink: dict[str, list[float]] = {}
         config_scores[label] = sink
         summaries.append(
             summarize_completed_tasks(
@@ -228,6 +306,11 @@ def generate_report_streaming(
                 compare_configs(a, b, a_scores=a_scores, b_scores=b_scores)
             )
 
+    # Same k>2 Holm gate as generate_report — streaming parity
+    # (codeprobe-f7rl.10).
+    if len(summaries) > 2:
+        comparisons = _apply_multiple_comparison_correction(comparisons)
+
     is_partial, tasks_expected, completion_ratio = _compute_partial_metadata(
         summaries, total_tasks
     )
@@ -244,6 +327,119 @@ def generate_report_streaming(
     )
 
 
+def _worst_arm_partial_line(report: Report) -> str:
+    """Worst-arm PARTIAL disclosure shared by the text and HTML surfaces.
+
+    Names the least-complete arm and its distinct-task coverage — the best
+    arm's count must never headline a partial report (codeprobe-f7rl.9).
+    """
+    worst = min(
+        report.summaries, key=lambda s: s.distinct_task_count, default=None
+    )
+    worst_label = worst.label if worst is not None else "(no arms)"
+    worst_n = worst.distinct_task_count if worst is not None else 0
+    pct = int((report.completion_ratio or 0.0) * 100)
+    return (
+        f"PARTIAL — worst arm {worst_label}: "
+        f"{worst_n}/{report.tasks_expected} tasks ({pct}%)"
+    )
+
+
+def _cost_covered_count(s: ConfigSummary) -> int:
+    """Number of scorable trials with captured cost, recovered from coverage.
+
+    ``cost_coverage`` is covered/scored exactly, so rounding the product
+    recovers the integer numerator without a separate stored field
+    (codeprobe-f7rl.35).
+    """
+    return round(s.cost_coverage * s.scored_count)
+
+
+def _cost_source_breakdown(s: ConfigSummary) -> str:
+    """Provenance summary: the single source name, or 'a 8, b 2' when mixed."""
+    sources = {
+        name: count
+        for name, count in s.cost_source_counts.items()
+        if name != "unavailable" and count > 0
+    }
+    if not sources:
+        return "unknown source"
+    if len(sources) == 1:
+        return next(iter(sources))
+    return ", ".join(
+        f"{name} {count}"
+        for name, count in sorted(sources.items(), key=lambda kv: (-kv[1], kv[0]))
+    )
+
+
+def _dominant_cost_source(s: ConfigSummary) -> str:
+    """Most common non-'unavailable' cost source, or '' when none."""
+    sources = [
+        (name, count)
+        for name, count in s.cost_source_counts.items()
+        if name != "unavailable" and count > 0
+    ]
+    if not sources:
+        return ""
+    return sorted(sources, key=lambda kv: (-kv[1], kv[0]))[0][0]
+
+
+def _ranking_cost_str(s: ConfigSummary) -> str:
+    """Per-arm cost phrase with coverage and provenance (codeprobe-f7rl.35).
+
+    Full coverage: '$1.00 total (10/10 trials, api_reported)'. Partial
+    coverage is an undercount, so the phrase carries an explicit
+    not-comparable flag instead of masquerading as a total.
+    """
+    if s.total_cost_usd is None:
+        return "no cost data"
+    covered = _cost_covered_count(s)
+    if s.cost_coverage == 1.0:
+        return (
+            f"${s.total_cost_usd:.2f} total "
+            f"({covered}/{s.scored_count} trials, {_cost_source_breakdown(s)})"
+        )
+    return (
+        f"${s.total_cost_usd:.2f} on {covered}/{s.scored_count} trials "
+        f"— not comparable"
+    )
+
+
+def _cost_provenance_note(summaries: Iterable[ConfigSummary]) -> str | None:
+    """Report-level cost disclosure, or None when costs are comparable.
+
+    Fires when any rendered cost number is decision-unsafe: some arm's
+    coverage is below 1.0, or arms disagree on dominant provenance. Returns
+    None when no arm has cost data at all — there is no misleading number to
+    flag (codeprobe-f7rl.35).
+    """
+    all_summaries = list(summaries)
+    with_cost = [s for s in all_summaries if s.total_cost_usd is not None]
+    if not with_cost:
+        return None
+    partial = any(s.cost_coverage < 1.0 for s in all_summaries)
+    dominants = {d for s in with_cost if (d := _dominant_cost_source(s))}
+    mixed_provenance = len(dominants) > 1
+    if not partial and not mixed_provenance:
+        return None
+    reasons: list[str] = []
+    if partial:
+        reasons.append("cost was not captured on every trial of every arm")
+    if mixed_provenance:
+        reasons.append(
+            "arms differ in dominant cost provenance "
+            f"({', '.join(sorted(dominants))})"
+        )
+    return (
+        "**Cost note:** "
+        + "; ".join(reasons)
+        + ". Cost totals are shown with per-arm coverage/provenance but were "
+        "EXCLUDED from winner tiebreaks and 'Best cost-efficiency' "
+        "recommendations — partial or mixed-provenance costs must not drive "
+        "decisions (codeprobe-f7rl.35)."
+    )
+
+
 def format_text_report(report: Report) -> str:
     """Format report as human-readable text."""
     lines: list[str] = []
@@ -252,9 +448,7 @@ def format_text_report(report: Report) -> str:
     lines.append("")
 
     if report.is_partial and report.tasks_expected is not None:
-        tasks_done = max((s.total_tasks for s in report.summaries), default=0)
-        pct = int((report.completion_ratio or 0.0) * 100)
-        lines.append(f"**PARTIAL** {tasks_done}/{report.tasks_expected} tasks ({pct}%)")
+        lines.append(f"**{_worst_arm_partial_line(report)}**")
         lines.append("")
 
     # Are any dual-scored tasks present anywhere in the report? Used to
@@ -270,11 +464,9 @@ def format_text_report(report: Report) -> str:
     lines.append("### Rankings")
     for rc in report.rankings:
         s = rc.summary
-        cost_str = (
-            f"${s.total_cost_usd:.2f} total"
-            if s.total_cost_usd is not None
-            else "no cost data"
-        )
+        # codeprobe-f7rl.35: cost with coverage + provenance; partial coverage
+        # renders an explicit not-comparable flag instead of a bare total.
+        cost_str = _ranking_cost_str(s)
         dual_suffix = ""
         if s.direct_pass_rate is not None and s.artifact_pass_rate is not None:
             dual_suffix = (
@@ -323,10 +515,30 @@ def format_text_report(report: Report) -> str:
             abandoned_suffix = (
                 f" ⚠ {s.abandoned_surface_count} abandoned-surface trial(s)"
             )
+        # codeprobe-f7rl.9: per-arm N (distinct tasks / expected) whenever an
+        # expectation exists, plus an explicit PARTIAL flag on incomplete arms
+        # so a crashed arm is visible on its own row, not just in the header.
+        n_suffix = ""
+        partial_suffix = ""
+        if s.tasks_expected is not None:
+            n_suffix = f" N={s.distinct_task_count}/{s.tasks_expected}"
+            if s.is_partial:
+                partial_suffix = (
+                    f" ⚠ PARTIAL ({s.distinct_task_count}/{s.tasks_expected} tasks)"
+                )
+        # codeprobe-f7rl.31: surface the stats-layer small-sample warning
+        # verbatim so text mode carries the same caution as HTML/CSV. The CIs
+        # above stay rendered — small N softens them, it does not erase them.
+        small_n_suffix = ""
+        if s.sample_size_warning:
+            small_n_suffix = (
+                f" ⚠ {s.sample_size_warning} — interpret CIs with caution"
+            )
         lines.append(
-            f"{rc.rank}. {rc.label} — {headline}{dual_suffix}, "
+            f"{rc.rank}. {rc.label} — {headline}{dual_suffix}{n_suffix}, "
             f"{cost_str}{quota_suffix}{infra_suffix}{errored_suffix}"
-            f"{abandoned_suffix} — {rc.recommendation}"
+            f"{abandoned_suffix}{partial_suffix}{small_n_suffix} — "
+            f"{rc.recommendation}"
         )
     if any(rc.summary.quota_error_count > 0 for rc in report.rankings):
         lines.append("")
@@ -346,6 +558,12 @@ def format_text_report(report: Report) -> str:
             "by non-use — treat the comparison as INVALID, not a null "
             "result, until the surface is exercised (codeprobe-1gg)."
         )
+    # codeprobe-f7rl.35: disclose when any arm's cost coverage is partial or
+    # arms differ in dominant provenance — mirrors the quota-note pattern.
+    cost_note = _cost_provenance_note(report.summaries)
+    if cost_note is not None:
+        lines.append("")
+        lines.append(f"> {cost_note}")
     lines.append("")
 
     # codeprobe-77z: infra-failure validity gate. A run holding an unresolved
@@ -388,6 +606,9 @@ def format_text_report(report: Report) -> str:
     # Detailed Comparison
     if report.comparisons:
         lines.append("### Detailed Comparison")
+        disclosure = _holm_disclosure(report)
+        if disclosure is not None:
+            lines.append(disclosure)
         for c in report.comparisons:
             lines.append(c.summary)
         lines.append("")
@@ -561,7 +782,9 @@ def _build_task_rows(report: Report) -> list[dict]:
                 {
                     "config": cr.config,
                     "task_id": task.task_id,
-                    "repeat": 1,
+                    # 1-based repeat number; repeat_index is 0-based so
+                    # single-repeat runs keep emitting repeat=1 unchanged.
+                    "repeat": task.repeat_index + 1,
                     "score": task.automated_score,
                     "pass": 1 if task_passed(task) else 0,
                     "duration_sec": task.duration_seconds,
@@ -709,7 +932,7 @@ def format_html_report(report: Report) -> str:
     scorable_rankings = [rc for rc in report.rankings if rc.summary.scored_count > 0]
     best_label = scorable_rankings[0].label if scorable_rankings else "N/A"
     best_rec = scorable_rankings[0].recommendation if scorable_rankings else ""
-    has_single_run = any(s.sample_size_warning for s in report.summaries)
+    small_sample_arms = [s for s in report.summaries if s.sample_size_warning]
 
     # --- Helpers ---
     def _esc(text: str) -> str:
@@ -729,6 +952,29 @@ def format_html_report(report: Report) -> str:
 
     def _fmt_score(val: float) -> str:
         return f"{val:.2f}"
+
+    def _cost_cell_html(s: ConfigSummary) -> str:
+        """Cost cell with coverage/provenance annotation (codeprobe-f7rl.35).
+
+        Full coverage gets a muted '(10/10 trials, api_reported)' note;
+        partial coverage gets a warn-badge with the not-comparable flag, the
+        same wording as the text ranking line.
+        """
+        if s.total_cost_usd is None:
+            return "—"
+        covered = _cost_covered_count(s)
+        if s.cost_coverage == 1.0:
+            return (
+                f"{_fmt_cost(s.total_cost_usd)} "
+                f'<span class="ci-metric-label">'
+                f"({covered}/{s.scored_count} trials, "
+                f"{_esc(_cost_source_breakdown(s))})</span>"
+            )
+        return (
+            f"{_fmt_cost(s.total_cost_usd)} "
+            f'<span class="warn-badge">⚠ cost on '
+            f"{covered}/{s.scored_count} trials — not comparable</span>"
+        )
 
     def _exclusion_badges_html(s: ConfigSummary) -> str:
         """Render this arm's reward-population exclusions as badges.
@@ -751,23 +997,47 @@ def format_html_report(report: Report) -> str:
         other_errored = s.errored_count - s.infra_failure_count
         if s.scored_count > 0 and other_errored > 0:
             badges.append(f"⚠ {other_errored} errored (excluded)")
+        # codeprobe-f7rl.9: flag the incomplete arm in the same eyepath as its
+        # mean — worded like the text report's per-arm PARTIAL suffix.
+        if s.is_partial and s.tasks_expected is not None:
+            badges.append(
+                f"⚠ PARTIAL ({s.distinct_task_count}/{s.tasks_expected} tasks)"
+            )
         if not badges:
             return "—"
         return " ".join(f'<span class="warn-badge">{_esc(b)}</span>' for b in badges)
 
     def _ci_bar_html(s: ConfigSummary) -> str:
-        """Render CI bar or single-run banner for a summary."""
-        if s.sample_size_warning:
-            return '<span class="single-run-badge">Single run</span>'
+        """Render the CI bar for a summary, with a small-N badge when needed.
+
+        Per the ConfigSummary contract, ``ci_lower``/``ci_upper`` bound the
+        PRIMARY metric: ``mean_score`` for continuous scorers, ``pass_rate``
+        for binary ones — so the point marker must read ``score_type`` or it
+        renders outside its own interval (codeprobe-f7rl.31). Small samples
+        keep their computed CIs; the accurate stats-layer warning is rendered
+        alongside the bar, never instead of it.
+        """
         lo = s.ci_lower * 100
         hi = s.ci_upper * 100
-        mid = s.pass_rate * 100
-        return (
-            f'<div class="ci-bar">'
+        if s.score_type == "continuous":
+            mid = s.mean_score * 100
+            metric = "mean score"
+        else:
+            mid = s.pass_rate * 100
+            metric = "pass rate"
+        bar = (
+            f'<div class="ci-bar" title="95% CI on {metric}">'
             f'<div class="ci-range" style="left:{lo:.1f}%;width:{hi - lo:.1f}%"></div>'
             f'<div class="ci-point" style="left:{mid:.1f}%"></div>'
             f"</div>"
+            f'<span class="ci-metric-label">{metric}</span>'
         )
+        if s.sample_size_warning:
+            bar += (
+                f' <span class="small-sample-badge">'
+                f"{_esc(s.sample_size_warning)}</span>"
+            )
+        return bar
 
     # --- HTML start ---
     parts.append("""<!DOCTYPE html>
@@ -790,10 +1060,11 @@ h3{font-size:1.1rem;margin:1.5rem 0 .5rem}
 .subtitle{color:var(--muted);margin-bottom:1.5rem}
 .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:1.2rem;margin-bottom:1rem}
 .executive{border-left:4px solid var(--accent)}
-.single-run-banner{background:var(--warning);color:#000;padding:.5rem 1rem;
+.small-sample-banner{background:var(--warning);color:#000;padding:.5rem 1rem;
 border-radius:4px;margin-bottom:1rem;font-weight:600}
-.single-run-badge{background:var(--warning);color:#000;padding:2px 8px;
+.small-sample-badge{background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600}
+.ci-metric-label{color:var(--muted);font-size:.75rem}
 .warn-badge{display:inline-block;background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600;margin:1px 0}
 .validity-fail{background:#f8d7da;border:1px solid var(--danger);color:#842029;
@@ -805,6 +1076,8 @@ tr:hover{background:#f1f3f5}
 .pass{color:var(--success);font-weight:600}
 .fail{color:var(--danger);font-weight:600}
 .winner-badge{background:var(--success);color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem}
+.refused-badge{background:var(--danger);color:#fff;padding:2px 8px;border-radius:4px;font-size:.8rem}
+.verdict-line{color:var(--muted);font-size:.9rem;margin:.25rem 0 .5rem}
 .pairwise-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(350px,1fr));gap:1rem}
 .pairwise-card{border:1px solid var(--border);border-radius:8px;padding:1rem;background:var(--card)}
 .pairwise-card h4{margin-bottom:.5rem}
@@ -829,17 +1102,22 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     parts.append('<p class="subtitle">Generated by codeprobe</p>\n')
 
     if report.is_partial and report.tasks_expected is not None:
-        tasks_done = max((s.total_tasks for s in report.summaries), default=0)
-        pct = int((report.completion_ratio or 0.0) * 100)
+        # Same worst-arm wording as the text header (codeprobe-f7rl.9).
         parts.append(
-            f'<div class="partial-banner">PARTIAL — {tasks_done}/{report.tasks_expected} '
-            f"tasks ({pct}%) completed</div>\n"
+            f'<div class="partial-banner">{_esc(_worst_arm_partial_line(report))}'
+            "</div>\n"
         )
 
-    if has_single_run:
+    if small_sample_arms:
+        # codeprobe-f7rl.31: render the accurate stats-layer warning per arm.
+        # The old "Single run — no confidence intervals available" wording was
+        # false for 2 <= N < 10: CIs exist and are rendered below.
+        per_arm = "; ".join(
+            f"{s.label}: {s.sample_size_warning}" for s in small_sample_arms
+        )
         parts.append(
-            '<div class="single-run-banner">'
-            "Single run — no confidence intervals available</div>\n"
+            '<div class="small-sample-banner">'
+            f"{_esc(per_arm)} — interpret confidence intervals with caution</div>\n"
         )
 
     # --- Executive Summary ---
@@ -847,7 +1125,9 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     parts.append('<div class="card executive">\n')
     if scorable_rankings:
         best_s = scorable_rankings[0].summary
-        cost_str = _fmt_cost(best_s.total_cost_usd)
+        # codeprobe-f7rl.35: the headline cost carries the same coverage /
+        # provenance annotation as the ranking table.
+        cost_str = _cost_cell_html(best_s)
         parts.append(
             f"<p><strong>Recommendation:</strong> {_esc(best_label)} — "
             f"{_esc(best_rec)}</p>\n"
@@ -876,7 +1156,7 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     parts.append('<h2 id="ranking-table">Rankings</h2>\n')
     parts.append("<table>\n<thead><tr>")
     parts.append(
-        "<th>Rank</th><th>Config</th><th>Pass Rate</th>"
+        "<th>Rank</th><th>Config</th><th>N</th><th>Pass Rate</th>"
         "<th>Mean Score</th><th>Cost</th><th>Billing</th><th>CI</th>"
         "<th>Exclusions</th>"
     )
@@ -892,11 +1172,18 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
         else:
             pass_cell = _fmt_pct(s.pass_rate)
             mean_cell = _fmt_score(s.mean_score)
+        # codeprobe-f7rl.9: per-arm N — distinct tasks over expected. Em dash
+        # when no expectation was supplied (report built without total_tasks).
+        if s.tasks_expected is not None:
+            n_cell = f"{s.distinct_task_count}/{s.tasks_expected}"
+        else:
+            n_cell = "—"
         parts.append(
             f"<tr><td>{rc.rank}</td><td>{_esc(rc.label)}</td>"
+            f"<td>{n_cell}</td>"
             f"<td>{pass_cell}</td>"
             f"<td>{mean_cell}</td>"
-            f"<td>{_fmt_cost(s.total_cost_usd)}</td>"
+            f"<td>{_cost_cell_html(s)}</td>"
             f"<td>{_esc(s.billing_model)}</td>"
             f"<td>{_ci_bar_html(s)}</td>"
             f"<td>{_exclusion_badges_html(s)}</td></tr>\n"
@@ -1000,17 +1287,37 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
     # --- Pairwise Comparison Cards ---
     if report.comparisons:
         parts.append('<h2 id="pairwise-comparisons">Pairwise Comparisons</h2>\n')
+        disclosure = _holm_disclosure(report)
+        if disclosure is not None:
+            parts.append(f"<p>{_esc(disclosure)}</p>\n")
         parts.append('<div class="pairwise-grid">\n')
         for c in report.comparisons:
             parts.append('<div class="pairwise-card">\n')
+            # REFUSED pairs (locked decision 6, epic codeprobe-f7rl) get a
+            # danger badge instead of a winner. Comparable pairs get the green
+            # Winner badge ONLY on a clean "X wins" verdict — a softened
+            # verdict ("effectively tied", "nominally ahead (…)") renders as a
+            # warning badge instead, so noise is never upgraded to a badged
+            # winner in the forwarded artifact (codeprobe-f7rl.31).
+            if not c.comparable:
+                badge = '<span class="refused-badge">NOT COMPARABLE</span>'
+            elif c.verdict == f"{c.winner} wins":
+                badge = f'<span class="winner-badge">Winner: {_esc(c.winner)}</span>'
+            else:
+                badge = f'<span class="warn-badge">{_esc(c.verdict)}</span>'
             parts.append(
-                f"<h4>{_esc(c.config_a)} vs {_esc(c.config_b)} "
-                f'<span class="winner-badge">Winner: {_esc(c.winner)}</span></h4>\n'
+                f"<h4>{_esc(c.config_a)} vs {_esc(c.config_b)} {badge}</h4>\n"
             )
+            parts.append(f'<p class="verdict-line">{_esc(c.summary)}</p>\n')
             parts.append(
                 f'<div class="stat-row"><span class="stat-label">Score diff</span>'
                 f'<span class="stat-value">{c.score_diff:+.3f}</span></div>\n'
             )
+            if not c.comparable:
+                # Reference-only card: the refusal already carries the reason;
+                # effect/p/CI are suppressed (never computed for refused pairs).
+                parts.append("</div>\n")
+                continue
             if c.effect_size is not None:
                 parts.append(
                     f'<div class="stat-row"><span class="stat-label">'
@@ -1018,15 +1325,29 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                     f'<span class="stat-value">{c.effect_size:.3f}</span></div>\n'
                 )
             if c.p_value is not None:
-                parts.append(
-                    f'<div class="stat-row"><span class="stat-label">p-value</span>'
-                    f'<span class="stat-value">{c.p_value:.4f}</span></div>\n'
-                )
-            if not has_single_run:
-                parts.append(
-                    f'<div class="stat-row"><span class="stat-label">CI</span>'
-                    f'<span class="stat-value">[{c.ci_lower:.3f}, {c.ci_upper:.3f}]</span></div>\n'
-                )
+                if c.correction == "holm" and c.p_value_adjusted is not None:
+                    # Holm-corrected family: the adjusted value is the one
+                    # verdicts are gated on; the raw value stays visible
+                    # (codeprobe-f7rl.10).
+                    parts.append(
+                        f'<div class="stat-row"><span class="stat-label">'
+                        f"p-value (Holm-adj.)</span>"
+                        f'<span class="stat-value">{c.p_value_adjusted:.4f} '
+                        f"(raw {c.p_value:.4f})</span></div>\n"
+                    )
+                else:
+                    parts.append(
+                        f'<div class="stat-row"><span class="stat-label">p-value</span>'
+                        f'<span class="stat-value">{c.p_value:.4f}</span></div>\n'
+                    )
+            # Always rendered — small samples soften CIs, they don't erase
+            # them (codeprobe-f7rl.31). The interval bounds the paired score
+            # difference computed in compare_configs.
+            parts.append(
+                f'<div class="stat-row"><span class="stat-label">'
+                f"CI (score diff)</span>"
+                f'<span class="stat-value">[{c.ci_lower:.3f}, {c.ci_upper:.3f}]</span></div>\n'
+            )
             parts.append("</div>\n")
         parts.append("</div>\n")
 
@@ -1054,11 +1375,15 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
                 if s.total_cost_usd is not None and s.total_tasks > 0
                 else "—"
             )
+            # codeprobe-h3j4 / codeprobe-f7rl.35: an arm with no scorable run
+            # has no pass rate — em dash, matching the ranking table, instead
+            # of a vacuous 0%.
+            pass_cell = "—" if s.scored_count == 0 else _fmt_pct(s.pass_rate)
             rows.append(
                 f"<tr><td>{_esc(s.label)}</td>"
-                f"<td>{_fmt_cost(s.total_cost_usd)}</td>"
+                f"<td>{_cost_cell_html(s)}</td>"
                 f"<td>{cost_per_task}</td>"
-                f"<td>{_fmt_pct(s.pass_rate)}</td></tr>\n"
+                f"<td>{pass_cell}</td></tr>\n"
             )
         rows.append("</tbody>\n</table>\n")
         return "".join(rows)
@@ -1102,9 +1427,12 @@ def format_csv_report(report: Report) -> str:
     """Format report as CSV with per-task rows."""
     buf = io.StringIO()
 
+    # codeprobe-f7rl.31: accurate small-N wording — CIs are computed and
+    # present for 2 <= N < 10, they just deserve caution, so the old
+    # "SINGLE RUN — no statistical confidence" comment was false.
     has_warning = any(s.sample_size_warning for s in report.summaries)
     if has_warning:
-        buf.write("# SINGLE RUN — no statistical confidence\n")
+        buf.write("# SMALL SAMPLE (N<10) — interpret confidence intervals with caution\n")
 
     writer = csv.DictWriter(buf, fieldnames=_CSV_COLUMNS, extrasaction="ignore")
     writer.writeheader()

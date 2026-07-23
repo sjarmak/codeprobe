@@ -31,11 +31,19 @@ Regression mode (per-task score over commit history from `codeprobe mine --refre
 codeprobe interpret <tasks_path> --json --regression --results <results_path>
 ```
 
-Alternative serialization via `--format` (applies only when `--json` is not set):
+Alternative serialization via `--format`:
 
 ```bash
-codeprobe interpret <results_path> --format csv
+codeprobe interpret <results_path> --format csv    # CSV on stdout (pretty mode)
+codeprobe interpret <results_path> --format html   # writes <experiment>_report.html
 ```
+
+`--format html` writes the HTML report file in every output mode. In envelope
+mode (the non-TTY default, or `--json`) the envelope carries the file's
+location as `data.html_report_path`; the key is present even on a
+`VALIDITY_FAILED` (exit 2) envelope, so the validity-stamped report is still
+discoverable. `--format csv` and `--format json` shape stdout in pretty mode
+only; the envelope's report payload is always JSON.
 
 ## JSON fields to parse
 

@@ -641,3 +641,115 @@ def test_aggregate_no_configs(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["experiment", "aggregate", str(d)])
     assert result.exit_code == 1
     assert "at least 1 configuration" in result.output
+
+
+# ---- repeats are first-class (codeprobe-f7rl.7) ----
+
+
+def test_aggregate_pairwise_uses_per_task_means(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """Repeat trials of the same task must be averaged, not overwritten.
+
+    baseline task-001 scores [1.0, 0.0] (per-task mean 0.5); variant
+    task-001 scores [0.0, 0.0] (mean 0.0). The old task_id-keyed dict kept
+    only the last repeat (0.0 vs 0.0 -> delta 0.0, tie); per-task means
+    give mean_delta -0.5 with no ties.
+    """
+    save_config_results(
+        exp_dir,
+        "baseline",
+        [
+            CompletedTask(task_id="task-001", automated_score=1.0, repeat_index=0),
+            CompletedTask(task_id="task-001", automated_score=0.0, repeat_index=1),
+        ],
+    )
+    save_config_results(
+        exp_dir,
+        "variant",
+        [
+            CompletedTask(task_id="task-001", automated_score=0.0, repeat_index=0),
+            CompletedTask(task_id="task-001", automated_score=0.0, repeat_index=1),
+        ],
+    )
+
+    # repeat_index round-trips through results.json, so the aggregate rows
+    # projection can carry it for disaggregation.
+    from codeprobe.core.experiment import load_config_results
+
+    loaded = load_config_results(exp_dir, "baseline")
+    assert sorted(t.repeat_index for t in loaded.completed) == [0, 1]
+
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads((exp_dir / "reports" / "aggregate.json").read_text())
+    pairwise = report["pairwise_deltas"]
+    assert len(pairwise) == 1
+    entry = pairwise[0]
+    assert entry["config_a"] == "baseline"
+    assert entry["config_b"] == "variant"
+    assert entry["shared_tasks"] == 1
+    assert entry["mean_delta"] == pytest.approx(-0.5)
+    assert entry["ties"] == 0
+    assert entry["wins_a"] == 1
+
+
+def test_aggregate_disjoint_pair_emitted_not_comparable(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    """Zero shared tasks -> explicit comparable:false entry, not omission."""
+    save_config_results(
+        exp_dir,
+        "baseline",
+        [CompletedTask(task_id="task-001", automated_score=1.0)],
+    )
+    save_config_results(
+        exp_dir,
+        "variant",
+        [CompletedTask(task_id="task-002", automated_score=1.0)],
+    )
+
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+    assert result.exit_code == 0, result.output
+
+    report = json.loads((exp_dir / "reports" / "aggregate.json").read_text())
+    pairwise = report["pairwise_deltas"]
+    assert len(pairwise) == 1
+    entry = pairwise[0]
+    assert entry["config_a"] == "baseline"
+    assert entry["config_b"] == "variant"
+    assert entry["shared_tasks"] == 0
+    assert entry["comparable"] is False
+
+
+def test_status_completes_with_repeats(runner: CliRunner, tmp_path: Path) -> None:
+    """A finished repeated run must show complete, not pending forever.
+
+    1 task dir, 2 trials of the same task_id: completion is judged on
+    distinct task_ids, with the trial count displayed alongside.
+    """
+    exp = Experiment(
+        name="repeat-exp",
+        configs=[ExperimentConfig(label="baseline", agent="claude")],
+        tasks_dir="tasks",
+    )
+    d = create_experiment_dir(tmp_path, exp)
+    task_dir = d / "tasks" / "task-001"
+    task_dir.mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("# task-001\nDo something.\n")
+
+    save_config_results(
+        d,
+        "baseline",
+        [
+            CompletedTask(task_id="task-001", automated_score=1.0, repeat_index=0),
+            CompletedTask(task_id="task-001", automated_score=0.5, repeat_index=1),
+        ],
+    )
+
+    result = runner.invoke(main, ["experiment", "status", str(d)])
+    assert result.exit_code == 0, result.output
+    assert "complete" in result.output
+    assert "(2 trials)" in result.output
+    assert "pending" not in result.output
