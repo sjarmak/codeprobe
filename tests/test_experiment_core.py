@@ -372,15 +372,15 @@ def test_ensure_default_experiment_single_named_subdir(tmp_path: Path):
     assert load_experiment(exp_dir).name == "only-one"
 
 
-def test_ensure_default_experiment_ambiguous_returns_none(tmp_path: Path):
-    """Multiple named subdirs: return None, never create or modify."""
+def test_ensure_default_experiment_ambiguous_raises(tmp_path: Path):
+    """Multiple named subdirs: raise, never create, modify, or guess."""
     codeprobe_dir = tmp_path / ".codeprobe"
     for name in ("exp-a", "exp-b"):
         create_experiment_dir(codeprobe_dir, Experiment(name=name))
 
-    result = ensure_default_experiment(tmp_path)
+    with pytest.raises(ValueError, match="Multiple experiments"):
+        ensure_default_experiment(tmp_path)
 
-    assert result is None
     assert not (codeprobe_dir / "experiment.json").exists()
     for name in ("exp-a", "exp-b"):
         assert load_experiment(codeprobe_dir / name).task_ids == ()
@@ -388,7 +388,7 @@ def test_ensure_default_experiment_ambiguous_returns_none(tmp_path: Path):
 
 def test_ensure_default_experiment_creates_default(tmp_path: Path):
     """No experiment anywhere: create .codeprobe/experiment.json."""
-    result = ensure_default_experiment(tmp_path)
+    result = ensure_default_experiment(tmp_path, description="Auto-created by codeprobe mine")
 
     codeprobe_dir = tmp_path / ".codeprobe"
     assert result == codeprobe_dir

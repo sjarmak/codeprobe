@@ -960,21 +960,25 @@ def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None
     """
     from codeprobe.core.experiment import (
         ensure_default_experiment,
-        find_experiment_dirs,
+        find_experiment_candidates,
         load_experiment,
         save_experiment,
     )
 
     global _EXPERIMENT_CREATED, _EXPERIMENT_DIR
 
-    candidates = find_experiment_dirs(repo_path)
+    candidates = find_experiment_candidates(repo_path)
     if len(candidates) > 1:
         return
 
     created = not candidates
-    exp_dir = candidates[0] if candidates else ensure_default_experiment(repo_path)
-    if exp_dir is None:  # defensive: only reachable on a concurrent write
-        return
+    if created:
+        try:
+            exp_dir = ensure_default_experiment(repo_path)
+        except ValueError:  # defensive: only reachable on a concurrent write
+            return
+    else:
+        exp_dir = candidates[0]
 
     experiment = load_experiment(exp_dir)
     updated = replace(experiment, task_ids=tuple(sorted(task_ids)))

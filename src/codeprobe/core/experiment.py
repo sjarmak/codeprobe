@@ -222,58 +222,6 @@ def load_experiment(exp_dir: Path) -> Experiment:
     )
 
 
-def find_experiment_dirs(repo_path: Path) -> list[Path]:
-    """Return candidate experiment directories under ``<repo>/.codeprobe/``.
-
-    Lookup order matches ``run``/``interpret`` discovery: a direct
-    ``.codeprobe/experiment.json`` (the canonical location written by
-    ``experiment init --non-interactive``) wins outright; otherwise named
-    subdirectories containing an ``experiment.json`` are returned sorted.
-    """
-    codeprobe_dir = repo_path / ".codeprobe"
-    if not codeprobe_dir.is_dir():
-        return []
-    if (codeprobe_dir / "experiment.json").is_file():
-        return [codeprobe_dir]
-    return sorted(
-        d
-        for d in codeprobe_dir.iterdir()
-        if d.is_dir() and (d / "experiment.json").is_file()
-    )
-
-
-def ensure_default_experiment(repo_path: Path) -> Path | None:
-    """Resolve the repo's experiment dir, creating a default when none exists.
-
-    Returns ``<repo>/.codeprobe`` when ``.codeprobe/experiment.json`` exists;
-    the single named subdirectory when exactly one exists; ``None`` when
-    multiple candidates exist (callers must never guess between experiments).
-    When no experiment exists at all, creates ``.codeprobe/experiment.json``
-    with a default experiment — mirroring the shape written by
-    ``experiment init --non-interactive`` — and returns ``.codeprobe``.
-    """
-    candidates = find_experiment_dirs(repo_path)
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
-        return None
-
-    from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
-
-    codeprobe_dir = repo_path / ".codeprobe"
-    codeprobe_dir.mkdir(exist_ok=True)
-    ensure_codeprobe_excluded(repo_path)
-    save_experiment(
-        codeprobe_dir,
-        Experiment(
-            name="default",
-            description="Auto-created by codeprobe mine",
-        ),
-    )
-    (codeprobe_dir / "tasks").mkdir(exist_ok=True)
-    return codeprobe_dir
-
-
 def _compute_summary(completed: Sequence[CompletedTask]) -> dict:
     """Compute aggregate summary from completed tasks.
 
