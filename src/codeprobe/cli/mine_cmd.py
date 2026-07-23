@@ -675,13 +675,27 @@ def _show_next_steps(
     *,
     llm_enriched: bool = False,
     tasks_dir: Path | None = None,
+    out_dir: Path | None = None,
 ) -> None:
     """Phase 6: Show concrete next-step commands (AC5).
 
     The first step points at ``codeprobe validate`` so users can verify
     task-directory structure before running a full eval — a cheap,
     offline check that catches malformed outputs early.
+
+    ``out_dir`` (``--out``) is where the experiment this mine run just
+    wrote actually lives. ``codeprobe run`` reads experiment.json from
+    the positional path it's given, so printing ``repo_path`` here when
+    ``--out`` was used points at ``<repo>/.codeprobe`` — which is empty —
+    and running the printed command fails with NO_EXPERIMENT
+    (codeprobe-xcue). The run/model/budget steps target ``out_dir`` when
+    set; re-mine commands (``--enrich`` / mine-more) append ``--out`` so
+    they keep writing to the same custom location instead of silently
+    falling back to the default.
     """
+    run_target = out_dir if out_dir is not None else repo_path
+    out_suffix = f" --out {out_dir}" if out_dir is not None else ""
+
     click.echo("Next steps:")
     click.echo()
     step = 1
@@ -692,26 +706,27 @@ def _show_next_steps(
         step += 1
     if not llm_enriched:
         click.echo(f"  {step}. Review and enrich task instructions (recommended):")
-        click.echo(f"     codeprobe mine {repo_path} --enrich")
+        click.echo(f"     codeprobe mine {repo_path} --enrich{out_suffix}")
         click.echo()
         step += 1
     click.echo(f"  {step}. Run the eval:")
-    click.echo(f"     codeprobe run {repo_path} --agent claude")
+    click.echo(f"     codeprobe run {run_target} --agent claude")
     click.echo()
     step += 1
     click.echo(f"  {step}. Try a different model:")
     click.echo(
-        f"     codeprobe run {repo_path} --agent claude --model claude-sonnet-4-6"
+        f"     codeprobe run {run_target} --agent claude --model claude-sonnet-4-6"
     )
     click.echo()
     step += 1
     click.echo(f"  {step}. Set a cost budget:")
-    click.echo(f"     codeprobe run {repo_path} --agent claude --max-cost-usd 5.00")
+    click.echo(f"     codeprobe run {run_target} --agent claude --max-cost-usd 5.00")
     click.echo()
     if min_files > 0:
         click.echo(f"  {step + 1}. Mine more tasks for better confidence:")
         click.echo(
-            f"     codeprobe mine {repo_path} --count 15 --min-files {min_files}"
+            f"     codeprobe mine {repo_path} --count 15 "
+            f"--min-files {min_files}{out_suffix}"
         )
         click.echo()
 
@@ -2075,6 +2090,7 @@ def _dispatch_cross_repo(
         (),
         primary,
         task_types=("sdlc_code_change",),
+        out_dir=out_dir,
     )
 
 
@@ -2534,6 +2550,7 @@ def _dispatch_sdlc(
         repo_path,
         task_types=("sdlc_code_change",),
         llm_enriched=llm_used,
+        out_dir=out_dir,
     )
 
 
@@ -2587,7 +2604,7 @@ def _dispatch_probes(
         tasks_dir=tasks_dir,
         suite_path=suite_path,
     )
-    _show_next_steps(repo_path, 0, tasks_dir=tasks_dir)
+    _show_next_steps(repo_path, 0, tasks_dir=tasks_dir, out_dir=out_dir)
 
 
 def _dispatch_comprehension(
@@ -2695,6 +2712,7 @@ def _dispatch_comprehension(
         (),
         repo_path,
         task_types=("architecture_comprehension",),
+        out_dir=out_dir,
     )
 
 
@@ -2919,7 +2937,8 @@ def _dispatch_mixed(
         click.echo(f"Subsystems: {', '.join(subsystems)}")
         click.echo()
     _show_next_steps(
-        repo_path, min_files, llm_enriched=llm_used, tasks_dir=tasks_dir
+        repo_path, min_files, llm_enriched=llm_used, tasks_dir=tasks_dir,
+        out_dir=out_dir,
     )
 
 
@@ -2933,6 +2952,7 @@ def _finish_mine_output(
     task_types: tuple[str, ...] = (),
     *,
     llm_enriched: bool = False,
+    out_dir: Path | None = None,
 ) -> None:
     """Shared output: quality warnings, summary block, and next steps."""
     from codeprobe.mining.writer import write_suite_manifest
@@ -2965,7 +2985,7 @@ def _finish_mine_output(
         click.echo(f"Subsystems: {', '.join(subsystems)}")
         click.echo()
     _show_next_steps(
-        repo_path, 0, llm_enriched=llm_enriched, tasks_dir=tasks_dir
+        repo_path, 0, llm_enriched=llm_enriched, tasks_dir=tasks_dir, out_dir=out_dir
     )
 
 
@@ -3751,6 +3771,7 @@ def _run_org_scale_mine(
         quarantined_count=len(quarantined),
         quarantine_dir=quarantine_dir if quarantined else None,
         consensus_config=consensus_config,
+        out_dir=out_dir,
     )
 
 
@@ -3963,6 +3984,7 @@ def _show_org_scale_results(
     quarantined_count: int = 0,
     quarantine_dir: Path | None = None,
     consensus_config: object | None = None,
+    out_dir: Path | None = None,
 ) -> None:
     """Display org-scale mining results table and next steps."""
     curated = bool(curation_backends)
@@ -4044,7 +4066,10 @@ def _show_org_scale_results(
     click.echo(f"     codeprobe validate {tasks_dir}")
     click.echo()
     click.echo("  2. Run eval:")
-    click.echo(f"     codeprobe run {repo_path} --agent claude")
+    click.echo(
+        f"     codeprobe run {out_dir if out_dir is not None else repo_path} "
+        "--agent claude"
+    )
     click.echo()
     click.echo("  3. Check individual oracle scores:")
     click.echo(f"     codeprobe oracle-check {tasks_dir}/<task_id>")
