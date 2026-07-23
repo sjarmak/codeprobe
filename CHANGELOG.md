@@ -1,10 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.12.0 (2026-07-23)
 
-Everything below is on `main` but not yet cut as a PyPI release. 0.12.0 is
-locked to land only once the E2E self-serve acceptance harness
-(codeprobe-f7rl.46) is green in CI — see `docs/release.md`.
+### Release engineering
+
+- Publishing is now gated: `publish.yml` runs the test matrix, then
+  `scripts/check_release_artifacts.py` (exactly one wheel + one sdist,
+  exactly the five packaged skills, filename versions match
+  `pyproject.toml`, changelog heading present — the check that would have
+  caught the 0.11.0 sdist leak), then the `ReleaseGate` structural smoke
+  (`scripts/release_gate.py`), and publishes the exact bytes it checked.
+- The E2E self-serve acceptance harness
+  (`scripts/e2e/self_serve_acceptance.py`) builds a real wheel, installs it
+  into a fresh venv, and drives the full mine → run → interpret journey
+  plus four negative cases; it runs as the `e2e-self-serve` job in both CI
+  and the publish gate.
+- Repointed three acceptance criteria at `scoring/scorers.py` after the
+  scoring-package split had left them permanently skipping — the release
+  gate's structural smoke now genuinely passes instead of failing on every
+  run.
 
 ### Customer self-serve hardening (codeprobe-f7rl)
 
