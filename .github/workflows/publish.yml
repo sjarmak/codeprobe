@@ -70,6 +70,14 @@ jobs:
       # Smoke-test only, past this point: proves a clean build/install still
       # works. Its own internal rebuild must not feed the published artifact
       # (see comment above) — the upload already happened.
+      #
+      # The wheel install below is required, not cosmetic: the structural
+      # smoke's import_equals / dataclass_has_fields handlers import
+      # codeprobe in THIS interpreter (acceptance/verify.py), so without it
+      # they skip on ImportError and the strict smoke fails. Installing the
+      # checked wheel also means those import checks exercise the actual
+      # release artifact rather than a checkout.
+      - run: pip install dist/codeprobe-*.whl
       - run: python scripts/release_gate.py
 
   publish:
