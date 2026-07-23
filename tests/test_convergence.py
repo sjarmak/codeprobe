@@ -44,6 +44,7 @@ def _verdict(
     quarantined: list[str] | None = None,
     status: str = "EVALUATED",
     evaluated_pct: dict[str, int] | None = None,
+    eval_mode: str | None = None,
 ) -> dict[str, Any]:
     """Build a verdict dict matching the spec shape."""
     return {
@@ -57,6 +58,7 @@ def _verdict(
         "status": status,
         "failures": failures or [],
         "quarantined": quarantined or [],
+        "eval_mode": eval_mode,
     }
 
 
@@ -151,6 +153,87 @@ def test_regression_halts(tmp_path: Path) -> None:
     report = cc.get_escalation_report()
     assert "Regression" in report
     assert "20" in report and "15" in report
+
+
+def test_regression_not_flagged_across_eval_mode_switch(tmp_path: Path) -> None:
+    """A full-mode verdict followed by a default-mode verdict has a smaller
+    pass_count purely because default mode compiles fewer criteria (mode-
+    gated ones are excluded) — that denominator shrink must never look like
+    a regression."""
+    cc = ConvergenceController(tmp_path / "db")
+    cc.record_verdict(
+        _verdict(
+            1,
+            pass_count=18,
+            fail_count=1,
+            all_pass=False,
+            failures=[_fail("STAT-1")],
+            eval_mode="full",
+        )
+    )
+    cc.record_verdict(
+        _verdict(2, pass_count=8, fail_count=0, all_pass=True, eval_mode=None)
+    )
+
+    result = cc.decide()
+    assert result.decision != Decision.HALT_REGRESSION
+    assert result.decision == Decision.CONTINUE
+
+
+def test_regression_flagged_across_non_adjacent_same_mode_verdicts(
+    tmp_path: Path,
+) -> None:
+    """A genuine same-mode regression must be caught even when a
+    different-mode verdict is interleaved between the two same-mode
+    verdicts, so neither pair is strictly adjacent. Comparing only adjacent
+    verdicts would skip both pairs here (each straddles a mode boundary)
+    and let a real full-mode 8→3 regression go completely undetected."""
+    cc = ConvergenceController(tmp_path / "db")
+    cc.record_verdict(
+        _verdict(1, pass_count=8, fail_count=0, all_pass=True, eval_mode="full")
+    )
+    cc.record_verdict(
+        _verdict(2, pass_count=5, fail_count=0, all_pass=True, eval_mode=None)
+    )
+    cc.record_verdict(
+        _verdict(
+            3,
+            pass_count=3,
+            fail_count=5,
+            all_pass=False,
+            failures=[_fail("X")],
+            eval_mode="full",
+        )
+    )
+
+    result = cc.decide()
+    assert result.decision == Decision.HALT_REGRESSION
+    assert result.context["previous"] == 8
+    assert result.context["current"] == 3
+    assert result.context["iteration"] == 3
+
+
+def test_regression_still_flagged_within_same_eval_mode(tmp_path: Path) -> None:
+    """A real drop within the SAME eval_mode must still halt."""
+    cc = ConvergenceController(tmp_path / "db")
+    cc.record_verdict(
+        _verdict(1, pass_count=20, fail_count=0, all_pass=True, eval_mode="full")
+    )
+    cc.record_verdict(
+        _verdict(
+            2,
+            pass_count=15,
+            fail_count=5,
+            all_pass=False,
+            failures=[_fail("X")],
+            eval_mode="full",
+        )
+    )
+
+    result = cc.decide()
+    assert result.decision == Decision.HALT_REGRESSION
+    assert result.context["previous"] == 20
+    assert result.context["current"] == 15
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +374,30 @@ def test_release_requires_two_consecutive(tmp_path: Path) -> None:
 
     assert cc.is_release_ready() is False
     assert cc.decide().decision != Decision.RELEASE
+
+
+def test_release_not_ready_across_eval_mode_switch(tmp_path: Path) -> None:
+    """A default-mode green immediately followed by a full-mode green is
+    NOT release-ready: the mode-gated criteria set (what full mode adds)
+    only ever received one green, which is exactly the single-data-point
+    case the two-consecutive-green rule exists to reject."""
+    cc = ConvergenceController(tmp_path / "db")
+    cc.record_verdict(
+        _verdict(1, pass_count=8, fail_count=0, all_pass=True, eval_mode=None)
+    )
+    cc.record_verdict(
+        _verdict(2, pass_count=18, fail_count=0, all_pass=True, eval_mode="full")
+    )
+
+    assert cc.is_release_ready() is False
+    assert cc.decide().decision != Decision.RELEASE
+
+    # A second consecutive full-mode green makes it release-ready.
+    cc.record_verdict(
+        _verdict(3, pass_count=18, fail_count=0, all_pass=True, eval_mode="full")
+    )
+    assert cc.is_release_ready() is True
+    assert cc.decide().decision == Decision.RELEASE
 
 
 def test_critical_quarantined_blocks_release(tmp_path: Path) -> None:

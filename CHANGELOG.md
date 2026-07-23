@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- The behavioral acceptance loop is now runnable end to end:
+  `scripts/acceptance_loop.py` compiles the criteria manifest into Test
+  Agent actions, executes them in a fresh workspace, verifies, persists
+  `verdict-NNNN.json` into `acceptance/verdict-history/`, and honors the
+  convergence controller's decision. `scripts/pre_tag_check.py` gates
+  tagging on the two newest verdicts (both `EVALUATED` + `all_pass`, at
+  least one from `--eval-mode full`), the changelog heading, and the
+  version bump. Verdicts now record the `eval_mode` that produced them.
+- `scipy-stubs` now declares an upper bound (`<2`) in the dev extras —
+  the sole unbounded dependency, caught by criterion CI-DEPS-UPPER-001 on
+  the acceptance loop's first real run.
+
 ## 0.12.0 (2026-07-23)
 
 ### Release engineering

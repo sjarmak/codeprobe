@@ -215,7 +215,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15,<0.16" },
     { name = "scipy", specifier = ">=1.11,<2" },
     { name = "scipy", marker = "extra == 'dev'", specifier = ">=1.11,<2" },
-    { name = "scipy-stubs", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "scipy-stubs", marker = "extra == 'dev'", specifier = ">=1.11,<2" },
     { name = "tiktoken", specifier = ">=0.7,<1" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0,<7" },
     { name = "types-requests", marker = "extra == 'dev'", specifier = ">=2.31,<3" },

@@ -947,6 +947,49 @@ def test_unsupported_check_type_skipped(tmp_path: Path) -> None:
     assert verdict["status"] == STATUS_EVALUATED  # skip reduces effective_total to 0
 
 
+def test_no_handler_skip_reported_distinctly_from_eval_mode_skip(
+    tmp_path: Path,
+) -> None:
+    """A handler-less check_type is structurally unevaluable in EVERY eval
+    mode, unlike an eval_mode-gated criterion which is only unevaluable in
+    the current mode. The verdict must report them as distinct counts (and
+    list the handler-less criteria with their severity) so a critical
+    criterion that can never be checked cannot hide inside a generic
+    "mode-skips" bucket."""
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(textwrap.dedent("""
+            [[criterion]]
+            id = "NO-HANDLER-CRIT"
+            description = "check_type with no registered Verifier handler"
+            tier = "behavioral"
+            check_type = "stream_separation"
+            severity = "critical"
+            prd_source = "fake.md#x"
+            [criterion.params]
+
+            [[criterion]]
+            id = "MODE-GATED"
+            description = "only meaningful in full mode"
+            tier = "statistical"
+            check_type = "count_ge"
+            severity = "medium"
+            prd_source = "fake.md#x"
+            eval_mode_required = "full"
+            [criterion.params]
+            source = "does-not-matter"
+            pattern = "*"
+            min_count = 1
+            """).strip())
+    v = Verifier(manifest, eval_mode=None)
+    verdict = v.run(tmp_path / "ws")
+
+    assert verdict["no_handler_count"] == 1
+    assert verdict["mode_skip_count"] == 1
+    assert verdict["no_handler_criteria"] == [
+        {"criterion_id": "NO-HANDLER-CRIT", "tier": "behavioral", "severity": "critical"}
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Smoke test: real manifest loads and evaluates
 # ---------------------------------------------------------------------------

@@ -310,8 +310,18 @@ class Verifier:
         fail_count = 0
         skip_count = 0
         mode_skip_count = 0
+        no_handler_count = 0
         failures: list[dict[str, str]] = []
-        # Track eval_mode skips per tier so they don't penalize evaluated_pct
+        # Criteria with no registered Verifier handler: structurally
+        # unevaluable in ANY eval mode (not just the current one), unlike
+        # eval_mode skips which are mode-specific. Reported distinctly so a
+        # caller can tell "this criterion is dry-run-only" apart from "this
+        # criterion can never be checked until a handler is written" — see
+        # the acceptance-loop doctrine's tier-padding discussion.
+        no_handler_criteria: list[dict[str, str]] = []
+        # Track eval_mode + no_handler skips per tier so they don't penalize
+        # evaluated_pct (both are structurally unevaluable, not missing
+        # coverage from a bad run).
         tier_mode_skips: dict[str, int] = {tier: 0 for tier in sorted(ALLOWED_TIERS)}
 
         for res in results:
@@ -332,9 +342,19 @@ class Verifier:
                 )
             else:
                 skip_count += 1
-                if res.skip_reason in ("eval_mode", "no_handler"):
+                if res.skip_reason == "eval_mode":
                     mode_skip_count += 1
                     tier_mode_skips[res.tier] += 1
+                elif res.skip_reason == "no_handler":
+                    no_handler_count += 1
+                    tier_mode_skips[res.tier] += 1
+                    no_handler_criteria.append(
+                        {
+                            "criterion_id": res.criterion_id,
+                            "tier": res.tier,
+                            "severity": res.severity,
+                        }
+                    )
 
         evaluated_pct: dict[str, float] = {}
         for tier, counts in tier_counts.items():
@@ -362,10 +382,13 @@ class Verifier:
             "iteration": iteration,
             "workspace": str(workspace),
             "criteria_source": str(self.criteria_path),
+            "eval_mode": self.eval_mode,
             "pass_count": pass_count,
             "fail_count": fail_count,
             "skip_count": skip_count,
             "mode_skip_count": mode_skip_count,
+            "no_handler_count": no_handler_count,
+            "no_handler_criteria": no_handler_criteria,
             "total_criteria": len(results),
             "evaluated_pct": evaluated_pct,
             "tier_counts": tier_counts,

@@ -39,6 +39,10 @@ Thumbs.db
 .codeprobe/
 experiments/
 
+# Acceptance-loop verdict history (durable local evidence written by
+# scripts/acceptance_loop.py, read by scripts/pre_tag_check.py)
+acceptance/verdict-history/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
