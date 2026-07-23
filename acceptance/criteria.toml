@@ -221,7 +221,7 @@ severity = "high"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#scoring"
 depends_on = []
 [criterion.params]
-file = "src/codeprobe/core/scoring.py"
+file = "src/codeprobe/core/scoring/scorers.py"
 pattern = "f1|F1|harmonic|2\\s*\\*\\s*precision\\s*\\*\\s*recall"
 forbid_pattern = "jaccard"
 
@@ -234,7 +234,7 @@ severity = "critical"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#scoring"
 depends_on = []
 [criterion.params]
-file = "src/codeprobe/core/scoring.py"
+file = "src/codeprobe/core/scoring/scorers.py"
 pattern = "returncode\\s*==\\s*0|exit.*0.*1\\.0"
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ severity = "critical"
 prd_source = "docs/prd/prd_codeprobe_hardening_and_accuracy.md#R16"
 depends_on = []
 [criterion.params]
-file = "src/codeprobe/core/scoring.py"
+file = "src/codeprobe/core/scoring/scorers.py"
 forbid_pattern = "return\\s+0\\.0\\s*$"
 allow_if_near = "error"
 
