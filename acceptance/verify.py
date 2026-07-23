@@ -408,9 +408,11 @@ class Verifier:
             # Structural (Python introspection / source inspection).
             "import_equals": Verifier._check_import_equals,
             "dataclass_has_fields": Verifier._check_dataclass_has_fields,
+            "dataclass_roundtrip": Verifier._check_dataclass_roundtrip,
             "regex_present": Verifier._check_regex_present,
             "regex_absent": Verifier._check_regex_absent,
             "pyproject_deps_bounded": Verifier._check_pyproject_deps_bounded,
+            "yaml_field_equal": Verifier._check_yaml_field_equal,
             # Behavioral (CLI outputs from workspace).
             "cli_exit_code": Verifier._check_cli_exit_code,
             "cli_help_contains": Verifier._check_cli_help_contains,
@@ -419,6 +421,8 @@ class Verifier:
             "file_exists": Verifier._check_file_exists,
             "stdout_contains": Verifier._check_stdout_contains,
             "stderr_contains": Verifier._check_stderr_contains,
+            "stream_separation": Verifier._check_stream_separation,
+            "json_lines_valid": Verifier._check_json_lines_valid,
             # Statistical (aggregate over workspace artifacts).
             "count_ge": Verifier._check_count_ge,
             "json_count_ge": Verifier._check_json_count_ge,
@@ -590,6 +594,155 @@ class Verifier:
         return self._pass(
             criterion,
             f"{module_name}.{symbol} has all required fields",
+        )
+
+    @staticmethod
+    def _extract_records(data: Any) -> list[Any] | None:
+        """Pull the list of records to round-trip out of a loaded fixture.
+
+        Accepts a bare top-level list, or a dict whose ``completed_tasks``
+        (the aggregated ``.codeprobe/results.json`` shape) or ``completed``
+        (the per-arm ``runs/<arm>/results.json`` shape written by
+        ``core.experiment.save_config_results``) key holds the list. Returns
+        ``None`` when no record list can be located so the caller can fail
+        loudly rather than silently round-trip zero records.
+        """
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("completed_tasks", "completed"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return value
+        return None
+
+    def _check_dataclass_roundtrip(
+        self, criterion: Criterion, _workspace: Path
+    ) -> CheckResult:
+        """Round-trip every record in a JSON fixture through a dataclass.
+
+        Loads ``fixture`` (project-relative), extracts its record list, and
+        for each record constructs ``module.symbol`` from the record's
+        known-field subset then re-serializes via ``dataclasses.asdict``.
+        Fails if any record cannot be constructed (e.g. a required field is
+        absent) or if any known field is dropped or altered by the
+        round-trip — the data-loss contract R16 exists to catch. Unknown
+        keys (newer-schema fields) are ignored, matching
+        ``core.experiment.load_config_results``.
+        """
+        params = criterion.params
+        module_name = params.get("module")
+        symbol = params.get("symbol")
+        fixture_rel = params.get("fixture")
+        if not module_name or not symbol or not fixture_rel:
+            return self._skip(criterion, "missing module/symbol/fixture params")
+        fixture_path = self._resolve_project_file(fixture_rel)
+        if not fixture_path.is_file():
+            return self._skip(criterion, f"fixture not found: {fixture_rel}")
+        try:
+            data = json.loads(fixture_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            return self._skip(criterion, f"fixture unreadable: {fixture_rel}: {exc}")
+        records = self._extract_records(data)
+        if records is None:
+            return self._fail(
+                criterion,
+                f"fixture {fixture_rel} has no record list "
+                "(expected a top-level list, or a 'completed_tasks'/'completed' key)",
+            )
+        if not records:
+            return self._fail(
+                criterion, f"fixture {fixture_rel} contains zero records to round-trip"
+            )
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError as exc:
+            return self._skip(criterion, f"cannot import {module_name}: {exc}")
+        cls = getattr(module, symbol, None)
+        if cls is None:
+            return self._fail(criterion, f"{module_name}.{symbol} not defined")
+        try:
+            field_names = {f.name for f in dataclasses.fields(cls)}
+        except TypeError:
+            return self._fail(criterion, f"{module_name}.{symbol} is not a dataclass")
+        for idx, rec in enumerate(records):
+            if not isinstance(rec, dict):
+                return self._fail(criterion, f"record {idx} is not a JSON object")
+            known = {k: v for k, v in rec.items() if k in field_names}
+            try:
+                obj = cls(**known)
+            except TypeError as exc:
+                label = rec.get("task_id", idx)
+                return self._fail(
+                    criterion,
+                    f"record {label!r} cannot construct {symbol}: {exc}",
+                )
+            roundtripped = dataclasses.asdict(obj)
+            lost = [k for k, v in known.items() if roundtripped.get(k) != v]
+            if lost:
+                label = rec.get("task_id", idx)
+                return self._fail(
+                    criterion,
+                    f"record {label!r} lost/altered fields on round-trip: {lost}",
+                )
+        return self._pass(
+            criterion,
+            f"all {len(records)} records round-trip through {symbol} without field loss",
+        )
+
+    def _check_yaml_field_equal(
+        self, criterion: Criterion, _workspace: Path
+    ) -> CheckResult:
+        """Assert a JSONPath-selected field is (un)equal across YAML files.
+
+        Parses each ``files`` entry with PyYAML, selects values via the same
+        minimal JSONPath the JSON handlers use (``$.jobs.*.runs-on`` etc.),
+        and — when ``must_match`` is truthy — requires every collected value
+        to be equal. A missing file skips (unevaluable), an empty selection
+        fails (the field the contract names is absent).
+        """
+        import yaml
+
+        params = criterion.params
+        files = params.get("files")
+        jsonpath = params.get("jsonpath", "")
+        must_match = bool(params.get("must_match", True))
+        if not isinstance(files, list) or not files:
+            return self._skip(criterion, "missing/invalid files param")
+        collected: list[Any] = []
+        for rel in files:
+            if not isinstance(rel, str):
+                return self._skip(criterion, f"non-string file entry: {rel!r}")
+            fp = self._resolve_project_file(rel)
+            if not fp.is_file():
+                return self._skip(criterion, f"file not found: {rel}")
+            try:
+                doc = yaml.safe_load(fp.read_text())
+            except yaml.YAMLError as exc:
+                return self._skip(criterion, f"yaml parse error in {rel}: {exc}")
+            selected = _jsonpath_select(doc, jsonpath)
+            if isinstance(selected, list):
+                collected.extend(selected)
+            elif selected is not None:
+                collected.append(selected)
+        if not collected:
+            return self._fail(
+                criterion, f"no values selected by {jsonpath!r} across {files}"
+            )
+        all_equal = all(v == collected[0] for v in collected)
+        if must_match:
+            if all_equal:
+                return self._pass(
+                    criterion,
+                    f"all {len(collected)} values equal ({collected[0]!r})",
+                )
+            distinct = sorted({repr(v) for v in collected})
+            return self._fail(criterion, f"values differ across {files}: {distinct}")
+        if not all_equal:
+            return self._pass(criterion, f"{len(collected)} values are not all equal")
+        return self._fail(
+            criterion,
+            f"all {len(collected)} values equal but must_match=false required difference",
         )
 
     def _introspect_via_subprocess(
@@ -891,6 +1044,104 @@ class Verifier:
         if candidate.exists():
             return self._pass(criterion, f"file present: {rel}")
         return self._fail(criterion, f"file missing: {rel}")
+
+    def _check_stream_separation(
+        self, criterion: Criterion, workspace: Path
+    ) -> CheckResult:
+        """Verify a command kept stdout and stderr honestly separated.
+
+        Reads the captured ``<id>.stdout`` artifact (missing → skip). Two
+        param shapes are supported, read generically:
+
+        - ``stdout_must_parse_as = "json"``: stdout must parse as a single
+          JSON document (warnings/logs belong on stderr, so any leaked log
+          line breaks the parse).
+        - ``stdout_must_not_contain = <s>``: the substring must be absent
+          from stdout (e.g. an ``INFO codeprobe`` log line that belongs on
+          stderr). A companion ``stderr_may_contain`` is permissive by
+          definition and asserts nothing.
+        """
+        params = criterion.params
+        stdout_file = workspace / f"{criterion.id}.stdout"
+        if not stdout_file.is_file():
+            return self._skip(criterion, f"stdout artifact missing: {stdout_file.name}")
+        stdout_text = stdout_file.read_text(errors="replace")
+
+        parse_as = params.get("stdout_must_parse_as")
+        if parse_as == "json":
+            stripped = stdout_text.strip()
+            if not stripped:
+                return self._fail(criterion, "stdout is empty; expected a JSON document")
+            try:
+                json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                return self._fail(
+                    criterion,
+                    f"stdout is not pure JSON ({exc}); leading bytes: {stripped[:120]!r}",
+                )
+            return self._pass(
+                criterion, "stdout parses as JSON (no warnings leaked onto stdout)"
+            )
+
+        must_not_contain = params.get("stdout_must_not_contain")
+        if must_not_contain is not None:
+            if str(must_not_contain) in stdout_text:
+                return self._fail(
+                    criterion,
+                    f"stdout contains {must_not_contain!r}; it belongs on stderr only",
+                )
+            return self._pass(criterion, f"{must_not_contain!r} absent from stdout")
+
+        return self._skip(
+            criterion,
+            "no stdout_must_parse_as or stdout_must_not_contain param",
+        )
+
+    def _check_json_lines_valid(
+        self, criterion: Criterion, workspace: Path
+    ) -> CheckResult:
+        """Every non-empty line on a channel must be a JSON object with keys.
+
+        Reads ``<id>.<channel>`` (``channel`` param, default ``stdout``;
+        missing artifact → skip). Each non-blank line must ``json.loads`` to
+        an object containing every entry of ``required_keys``. An artifact
+        that exists but holds no non-blank lines fails (the ``--log-format
+        json`` contract promised structured lines and emitted none).
+        """
+        params = criterion.params
+        channel = params.get("channel", "stdout")
+        required_keys = params.get("required_keys") or []
+        if channel not in ("stdout", "stderr"):
+            return self._skip(criterion, f"unsupported channel: {channel!r}")
+        artifact = workspace / f"{criterion.id}.{channel}"
+        if not artifact.is_file():
+            return self._skip(criterion, f"{channel} artifact missing: {artifact.name}")
+        lines = [ln for ln in artifact.read_text(errors="replace").splitlines() if ln.strip()]
+        if not lines:
+            return self._fail(
+                criterion, f"no non-empty lines on {channel}; expected JSON log lines"
+            )
+        for idx, line in enumerate(lines):
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError as exc:
+                return self._fail(
+                    criterion,
+                    f"{channel} line {idx} is not valid JSON ({exc}): {line[:120]!r}",
+                )
+            if not isinstance(obj, dict):
+                return self._fail(
+                    criterion, f"{channel} line {idx} is a JSON {type(obj).__name__}, not an object"
+                )
+            missing = [k for k in required_keys if k not in obj]
+            if missing:
+                return self._fail(
+                    criterion, f"{channel} line {idx} missing required keys: {missing}"
+                )
+        return self._pass(
+            criterion,
+            f"all {len(lines)} {channel} lines are JSON objects with {list(required_keys)}",
+        )
 
     # ------------------------------------------------ statistical handlers
 

@@ -50,13 +50,19 @@ class TestAction:
 # ---------------------------------------------------------------------------
 
 #: Check types handled by the Verifier that DO NOT need workspace artifacts.
+#: ``dataclass_roundtrip`` and ``yaml_field_equal`` join this set: like the
+#: other structural checks, their Verifier handlers read project files
+#: (a JSON fixture, workflow YAML) directly, so no Test Agent artifact is
+#: emitted for them.
 _STRUCTURAL_TYPES: frozenset[str] = frozenset(
     {
         "import_equals",
         "dataclass_has_fields",
+        "dataclass_roundtrip",
         "regex_present",
         "regex_absent",
         "pyproject_deps_bounded",
+        "yaml_field_equal",
     }
 )
 
@@ -68,13 +74,15 @@ _SAFE_ID_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
 #: Shell environment variable names must match this pattern.
 _SAFE_ENV_RE: re.Pattern[str] = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 
+#: Check types present in criteria.toml but absent from Verifier._handlers().
+#: ``log_level_matches`` remains here: a subprocess's effective logger level
+#: is not observable from ``--help`` (help exits before the CLI callback
+#: configures logging), so no honest behavioral handler exists yet — the
+#: criterion stays a ``no_handler`` skip, excluded from the denominator,
+#: until its contract is repointed at an observable signal (codeprobe-2s54).
 _HANDLERLESS_TYPES: frozenset[str] = frozenset(
     {
-        "stream_separation",
         "log_level_matches",
-        "json_lines_valid",
-        "dataclass_roundtrip",
-        "yaml_field_equal",
     }
 )
 
@@ -342,6 +350,11 @@ _EMITTERS: dict[str, _Emitter] = {
     "cli_stdout_contains": _emit_command_capture,
     "stdout_contains": _emit_command_capture,
     "stderr_contains": _emit_command_capture,
+    # Both capture a command's stdout+stderr into separate artifact files;
+    # their Verifier handlers read those streams (stream_separation checks
+    # they stayed separated, json_lines_valid parses one channel line-by-line).
+    "stream_separation": _emit_command_capture,
+    "json_lines_valid": _emit_command_capture,
     "cli_writes_file": _emit_cli_writes_file,
     "file_exists": _emit_file_exists,
     "count_ge": _emit_sync_action,

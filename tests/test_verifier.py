@@ -962,7 +962,7 @@ def test_no_handler_skip_reported_distinctly_from_eval_mode_skip(
             id = "NO-HANDLER-CRIT"
             description = "check_type with no registered Verifier handler"
             tier = "behavioral"
-            check_type = "stream_separation"
+            check_type = "log_level_matches"
             severity = "critical"
             prd_source = "fake.md#x"
             [criterion.params]
@@ -988,6 +988,307 @@ def test_no_handler_skip_reported_distinctly_from_eval_mode_skip(
     assert verdict["no_handler_criteria"] == [
         {"criterion_id": "NO-HANDLER-CRIT", "tier": "behavioral", "severity": "critical"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# dataclass_roundtrip (structural)
+# ---------------------------------------------------------------------------
+
+
+def _roundtrip_manifest(tmp_path: Path, fixture_rel: str) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent(f"""
+            [[criterion]]
+            id = "RT-1"
+            description = "results round-trip through CompletedTask"
+            tier = "structural"
+            check_type = "dataclass_roundtrip"
+            severity = "critical"
+            prd_source = "fake.md#R16"
+            [criterion.params]
+            module = "codeprobe.models.experiment"
+            symbol = "CompletedTask"
+            fixture = "{fixture_rel}"
+            """).strip()
+    )
+    return manifest
+
+
+def test_dataclass_roundtrip_passes_on_faithful_fixture(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "fx").mkdir()
+    (project / "fx" / "results.json").write_text(
+        json.dumps(
+            {
+                "completed": [
+                    {"task_id": "t1", "automated_score": 1.0, "cost_source": "cli"},
+                    {"task_id": "t2", "automated_score": 0.0, "extra_new_key": "ignored"},
+                ]
+            }
+        )
+    )
+    manifest = _roundtrip_manifest(project / "acceptance", "fx/results.json")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+    assert verdict["fail_count"] == 0
+
+
+def test_dataclass_roundtrip_fails_when_required_field_absent(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "fx").mkdir()
+    # No task_id / automated_score → CompletedTask cannot be constructed.
+    (project / "fx" / "results.json").write_text(
+        json.dumps({"completed_tasks": [{"status": "completed"}]})
+    )
+    manifest = _roundtrip_manifest(project / "acceptance", "fx/results.json")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    assert "cannot construct" in verdict["failures"][0]["evidence"]
+
+
+def test_dataclass_roundtrip_skips_when_fixture_missing(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    manifest = _roundtrip_manifest(project / "acceptance", "fx/does-not-exist.json")
+    v = Verifier(manifest, project_root=project)
+    result = next(
+        r for r in _criterion_results(v, tmp_path / "ws") if r["criterion_id"] == "RT-1"
+    )
+    assert result["result"] == RESULT_SKIP
+    assert "fixture not found" in result["evidence"]
+
+
+def test_dataclass_roundtrip_against_real_fixture(tmp_path: Path) -> None:
+    """The committed tests/fixtures/results.json round-trips through the real
+    CompletedTask — the exact contract OUT-ROUNDTRIP-002 encodes."""
+    project = Path(__file__).resolve().parent.parent
+    manifest = _roundtrip_manifest(tmp_path, "tests/fixtures/results.json")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+    assert verdict["fail_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# yaml_field_equal (structural)
+# ---------------------------------------------------------------------------
+
+
+def _yaml_equal_manifest(tmp_path: Path) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "YAML-EQ"
+            description = "both workflows use the same runner image"
+            tier = "structural"
+            check_type = "yaml_field_equal"
+            severity = "medium"
+            prd_source = "fake.md#ci"
+            [criterion.params]
+            files = ["wf/a.yml", "wf/b.yml"]
+            jsonpath = "$.jobs.*.runs-on"
+            must_match = true
+            """).strip()
+    )
+    return manifest
+
+
+def test_yaml_field_equal_passes_when_all_equal(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text(
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n  test:\n    runs-on: ubuntu-latest\n"
+    )
+    (project / "wf" / "b.yml").write_text(
+        "jobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+    )
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["pass_count"] == 1
+
+
+def test_yaml_field_equal_fails_when_images_differ(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n")
+    (project / "wf" / "b.yml").write_text("jobs:\n  publish:\n    runs-on: ubuntu-22.04\n")
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    verdict = v.run(tmp_path / "ws")
+    assert verdict["fail_count"] == 1
+    assert "differ" in verdict["failures"][0]["evidence"]
+
+
+def test_yaml_field_equal_skips_when_file_missing(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    (project / "acceptance").mkdir(parents=True)
+    (project / "wf").mkdir()
+    (project / "wf" / "a.yml").write_text("jobs:\n  build:\n    runs-on: ubuntu-latest\n")
+    # wf/b.yml absent.
+    manifest = _yaml_equal_manifest(project / "acceptance")
+    v = Verifier(manifest, project_root=project)
+    result = next(
+        r for r in _criterion_results(v, tmp_path / "ws") if r["criterion_id"] == "YAML-EQ"
+    )
+    assert result["result"] == RESULT_SKIP
+
+
+# ---------------------------------------------------------------------------
+# stream_separation (behavioral)
+# ---------------------------------------------------------------------------
+
+
+def _stream_manifest(tmp_path: Path, params_toml: str) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent(f"""
+            [[criterion]]
+            id = "STREAM"
+            description = "stdout/stderr stay separated"
+            tier = "behavioral"
+            check_type = "stream_separation"
+            severity = "critical"
+            prd_source = "fake.md#stderr"
+            [criterion.params]
+            {params_toml}
+            """).strip()
+    )
+    return manifest
+
+
+def test_stream_separation_json_stdout_pass_and_fail(tmp_path: Path) -> None:
+    manifest = _stream_manifest(
+        tmp_path, 'command = "x"\nstdout_must_parse_as = "json"\nwarning_channel = "stderr"'
+    )
+    v = Verifier(manifest)
+
+    ws_ok = tmp_path / "ok"
+    ws_ok.mkdir()
+    (ws_ok / "STREAM.stdout").write_text('{"ok": true}\n')
+    assert v.run(ws_ok)["pass_count"] == 1
+
+    ws_bad = tmp_path / "bad"
+    ws_bad.mkdir()
+    (ws_bad / "STREAM.stdout").write_text("WARNING: heads up\n{\"ok\": true}\n")
+    assert v.run(ws_bad)["fail_count"] == 1
+
+
+def test_stream_separation_not_contains_pass_and_fail(tmp_path: Path) -> None:
+    manifest = _stream_manifest(
+        tmp_path,
+        'command = "x"\nstdout_must_not_contain = "INFO codeprobe"\n'
+        'stderr_may_contain = "INFO codeprobe"',
+    )
+    v = Verifier(manifest)
+
+    ws_ok = tmp_path / "ok"
+    ws_ok.mkdir()
+    (ws_ok / "STREAM.stdout").write_text("pure results, no logs here\n")
+    assert v.run(ws_ok)["pass_count"] == 1
+
+    ws_bad = tmp_path / "bad"
+    ws_bad.mkdir()
+    (ws_bad / "STREAM.stdout").write_text("INFO codeprobe: leaked onto stdout\n")
+    assert v.run(ws_bad)["fail_count"] == 1
+
+
+def test_stream_separation_skips_when_stdout_missing(tmp_path: Path) -> None:
+    manifest = _stream_manifest(tmp_path, 'command = "x"\nstdout_must_parse_as = "json"')
+    v = Verifier(manifest)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = next(
+        r for r in _criterion_results(v, ws) if r["criterion_id"] == "STREAM"
+    )
+    assert result["result"] == RESULT_SKIP
+    assert "missing" in result["evidence"]
+
+
+# ---------------------------------------------------------------------------
+# json_lines_valid (behavioral)
+# ---------------------------------------------------------------------------
+
+
+def _json_lines_manifest(tmp_path: Path) -> Path:
+    manifest = tmp_path / "criteria.toml"
+    manifest.write_text(
+        textwrap.dedent("""
+            [[criterion]]
+            id = "JLINES"
+            description = "one valid JSON object per log line"
+            tier = "behavioral"
+            check_type = "json_lines_valid"
+            severity = "high"
+            prd_source = "fake.md#json-events"
+            [criterion.params]
+            command = "x"
+            channel = "stderr"
+            required_keys = ["level", "logger", "message"]
+            """).strip()
+    )
+    return manifest
+
+
+def test_json_lines_valid_pass(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text(
+        '{"level": "INFO", "logger": "codeprobe", "message": "started"}\n'
+        '{"level": "DEBUG", "logger": "codeprobe.mine", "message": "3 tasks"}\n'
+    )
+    assert v.run(ws)["pass_count"] == 1
+
+
+def test_json_lines_valid_fails_on_non_json_line(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text(
+        '{"level": "INFO", "logger": "codeprobe", "message": "ok"}\n'
+        "Traceback (most recent call last):\n"
+    )
+    verdict = v.run(ws)
+    assert verdict["fail_count"] == 1
+    assert "not valid JSON" in verdict["failures"][0]["evidence"]
+
+
+def test_json_lines_valid_fails_on_missing_required_key(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text('{"level": "INFO", "message": "no logger key"}\n')
+    verdict = v.run(ws)
+    assert verdict["fail_count"] == 1
+    assert "missing required keys" in verdict["failures"][0]["evidence"]
+
+
+def test_json_lines_valid_skips_when_channel_artifact_missing(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    result = next(r for r in _criterion_results(v, ws) if r["criterion_id"] == "JLINES")
+    assert result["result"] == RESULT_SKIP
+    assert "missing" in result["evidence"]
+
+
+def test_json_lines_valid_fails_when_channel_empty(tmp_path: Path) -> None:
+    v = Verifier(_json_lines_manifest(tmp_path))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "JLINES.stderr").write_text("\n  \n")
+    verdict = v.run(ws)
+    assert verdict["fail_count"] == 1
+    assert "no non-empty lines" in verdict["failures"][0]["evidence"]
 
 
 # ---------------------------------------------------------------------------
