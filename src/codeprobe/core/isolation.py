@@ -1021,6 +1021,11 @@ class WorktreeIsolation:
 
     def reset(self, workspace: Path) -> None:
         """Reset a worktree to clean state."""
+        # Multi-repo layouts are full git clones under workspace/repos/;
+        # ``git clean -fd`` refuses to remove nested git repos, so they
+        # must be removed explicitly or task N's repos/ leaks into task
+        # N+1 in the same slot.
+        cleanup_multi_repo_workspace(workspace)
         try:
             git_restore_clean(workspace)
         except subprocess.CalledProcessError as exc:

@@ -6,7 +6,6 @@ import logging
 import os
 import subprocess
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -35,7 +34,13 @@ from codeprobe.config.defaults import (
     use_v07_defaults,
 )
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.containment import (
+    DISCLOSURE,
+    resolve_containment,
+    set_active_plan,
+)
 from codeprobe.core.events import (
+    BudgetChecker,
     BudgetWarning,
     EventDispatcher,
     RunEvent,
@@ -54,6 +59,7 @@ from codeprobe.core.experiment import (
     save_config_results,
     save_experiment,
 )
+from codeprobe.core.isolation import _discover_experiment_dirs
 from codeprobe.core.mcp_policy import resolve_tool_policy
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
@@ -82,6 +88,120 @@ def _should_use_rich() -> bool:
     if os.environ.get("TERM") == "dumb":
         return False
     return True
+
+
+def _is_codeprobe_owned(rel_path: str, experiment_dir_names: frozenset[str]) -> bool:
+    """Return True when a porcelain status path is a codeprobe-owned artifact.
+
+    Codeprobe writes into ``.codeprobe/``, ``.codeprobe-worktrees*``,
+    ``runs/``, and top-level experiment directories (any directory holding
+    an ``experiment.json``). Untracked/modified entries under those paths
+    must never trigger the dirty-checkout refusal.
+    """
+    top = rel_path.split("/", 1)[0]
+    if top in (".codeprobe", "runs"):
+        return True
+    if top.startswith(".codeprobe-worktrees"):
+        return True
+    return top in experiment_dir_names
+
+
+def assert_clean_checkout(repo_root: Path, *, allow_dirty: bool = False) -> None:
+    """Hard-refuse ``codeprobe run`` on a dirty checkout (codeprobe-f7rl.1).
+
+    Trial worktrees are created detached from HEAD
+    (``codeprobe.core.isolation``), so any uncommitted change in *repo_root*
+    is invisible to every trial — the eval would measure a tree the customer
+    isn't looking at.
+
+    Raises
+    ------
+    DiagnosticError(NOT_A_GIT_REPO)
+        When *repo_root* is not a git work tree (or git cannot inspect it):
+        worktree isolation cannot function at all.
+    PrescriptiveError(DIRTY_CHECKOUT)
+        When the checkout has a tracked modification, staged change, or
+        untracked file outside codeprobe-owned dirs and *allow_dirty* is
+        False. With *allow_dirty* True, a one-line stderr disclosure is
+        emitted instead and the run proceeds.
+    """
+    try:
+        subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=normal"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+        stderr = getattr(exc, "stderr", "") or ""
+        raise DiagnosticError(
+            code="NOT_A_GIT_REPO",
+            message=(
+                f"{repo_root} is not a git work tree (or git cannot inspect "
+                "it), so worktree isolation cannot function. Run codeprobe "
+                "from inside a git repository: clone the repo, or git init "
+                "and commit first."
+            ),
+            diagnose_cmd=f"git -C {repo_root} rev-parse --is-inside-work-tree",
+            detail={"repo_root": str(repo_root), "git_stderr": stderr.strip()},
+        ) from exc
+
+    experiment_dir_names = frozenset(_discover_experiment_dirs(repo_root))
+    offending: list[str] = []
+    for line in status.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        rel = line[3:]
+        if " -> " in rel:  # rename entry: "XY orig -> dest"
+            rel = rel.split(" -> ", 1)[1]
+        rel = rel.strip().strip('"')
+        if not _is_codeprobe_owned(rel, experiment_dir_names):
+            offending.append(rel)
+
+    if not offending:
+        return
+
+    if allow_dirty:
+        click.echo(
+            f"--allow-dirty: {len(offending)} uncommitted change(s) in "
+            f"{repo_root} will NOT be visible to agents (worktrees are "
+            "created from HEAD).",
+            err=True,
+        )
+        return
+
+    shown = offending[:10]
+    remainder = len(offending) - len(shown)
+    listing = "\n  ".join(shown)
+    if remainder:
+        listing += f"\n  (and {remainder} more)"
+    raise PrescriptiveError(
+        code="DIRTY_CHECKOUT",
+        message=(
+            f"Refusing to run: {repo_root} has uncommitted changes:\n"
+            f"  {listing}\n"
+            "Worktrees are created from HEAD, so uncommitted changes are "
+            "excluded from every trial. Commit or stash first, or pass "
+            "--allow-dirty to run against HEAD anyway."
+        ),
+        next_try_flag="--allow-dirty",
+        next_try_value="",
+        detail={
+            "repo_root": str(repo_root),
+            "dirty_paths": shown,
+            "dirty_count": len(offending),
+        },
+    )
 
 
 def _format_task_status(score: float) -> str:
@@ -340,27 +460,6 @@ def _print_dry_run(estimate: DryRunEstimate) -> None:
     click.echo(f"  Estimated cost range:   ${cost_lo:.2f} - ${cost_hi:.2f}")
 
 
-_sandbox_lock = threading.Lock()
-_sandbox_refcount = 0
-
-
-def _acquire_sandbox() -> None:
-    """Increment sandbox ref-count and set env var (thread-safe)."""
-    global _sandbox_refcount  # noqa: PLW0603
-    with _sandbox_lock:
-        _sandbox_refcount += 1
-        os.environ["CODEPROBE_SANDBOX"] = "1"
-
-
-def _release_sandbox() -> None:
-    """Decrement sandbox ref-count; clear env var when last owner exits."""
-    global _sandbox_refcount  # noqa: PLW0603
-    with _sandbox_lock:
-        _sandbox_refcount = max(0, _sandbox_refcount - 1)
-        if _sandbox_refcount == 0:
-            os.environ.pop("CODEPROBE_SANDBOX", None)
-
-
 def show_prompt_and_exit(
     path: str,
     *,
@@ -501,6 +600,8 @@ def run_eval(
     config_parallel: int = 1,
     repeats: int = 1,
     dry_run: bool = False,
+    allow_dirty: bool = False,
+    uncontained: bool = False,
     log_format: str = "text",
     quiet: bool = False,
     force_plain: bool = False,
@@ -646,6 +747,27 @@ def run_eval(
 
         assert experiment is not None  # narrowed above; keep mypy happy
 
+        # Resolve to the git repo root — `path` may be an experiment subdir.
+        try:
+            repo_root = Path(
+                subprocess.run(
+                    ["git", "rev-parse", "--show-toplevel"],
+                    cwd=Path(path).resolve(),
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+            )
+        except (subprocess.CalledProcessError, OSError):
+            repo_root = Path(path).resolve()
+
+        # Dirty-checkout preflight (codeprobe-f7rl.1): worktrees detach from
+        # HEAD, so uncommitted work is invisible to every trial. Refuse hard
+        # before any adapter is resolved; --dry-run only estimates, so it is
+        # exempt.
+        if not dry_run:
+            assert_clean_checkout(repo_root, allow_dirty=allow_dirty)
+
         try:
             resolve(agent)
         except KeyError as exc:
@@ -718,20 +840,6 @@ def run_eval(
                     },
                 )
             check_arm_capabilities(cfg, arm_adapter, cli_max_turns=max_turns)
-
-        # Resolve to the git repo root — `path` may be an experiment subdir.
-        try:
-            repo_root = Path(
-                subprocess.run(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    cwd=Path(path).resolve(),
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                ).stdout.strip()
-            )
-        except (subprocess.CalledProcessError, OSError):
-            repo_root = Path(path).resolve()
 
         tasks_dir = exp_dir / experiment.tasks_dir
         repo_tasks = repo_root / ".codeprobe" / experiment.tasks_dir
@@ -818,6 +926,28 @@ def run_eval(
             _print_dry_run(estimate)
             return
 
+        # Containment gate (codeprobe-f7rl.3): a real run launches an
+        # autonomous agent with --dangerously-skip-permissions plus mined
+        # third-party test/verifier scripts. Outside a container this needs
+        # explicit --uncontained consent; refuse hard before any config
+        # dispatch. --dry-run only estimates, so it returns above without
+        # reaching this gate.
+        containment_plan = resolve_containment(uncontained)
+        set_active_plan(containment_plan)
+        if containment_plan.mode == "host-consented":
+            click.echo(f"--uncontained accepted: {DISCLOSURE}", err=True)
+        elif containment_plan.mode == "container":
+            engine_name = (
+                Path(containment_plan.engine).name
+                if containment_plan.engine
+                else "container engine"
+            )
+            click.echo(
+                "Containment: agent and mined test/verifier scripts execute "
+                f"in containers via {engine_name}.",
+                err=True,
+            )
+
         # Pre-create a shared Rich listener when running multiple configs in
         # parallel so a single Live context owns the terminal.
         shared_rich_listener: RichLiveListener | None = None
@@ -851,21 +981,29 @@ def run_eval(
             content_policy=trace_content_policy,
         )
 
+        # One budget ledger for the WHOLE experiment (codeprobe-f7rl.33):
+        # every config's billable spend lands in the same BudgetChecker, so
+        # --max-cost-usd caps the experiment, not each arm. execute_config
+        # registers it on each config's dispatcher (last-wins back-reference
+        # for warning routing; the halt signal is the checker's
+        # threading.Event and is dispatcher-independent).
+        experiment_budget_checker: BudgetChecker | None = None
+        if max_cost_usd is not None:
+            experiment_budget_checker = BudgetChecker(budget=max_cost_usd)
+
         def _run_config(exp_config: ExperimentConfig) -> tuple[str, list[CompletedTask]]:
             """Run a single config (called from thread pool or sequentially)."""
             perm = exp_config.permission_mode
 
             # Eval runs need agents to operate autonomously (write files, run
-            # commands). When the user hasn't explicitly chosen a permission mode,
-            # upgrade to dangerously_skip with CODEPROBE_SANDBOX=1 so the agent
-            # can work without interactive approval.  Uses ref-counted
-            # acquire/release so parallel config threads don't race on
-            # os.environ.
-            owns_sandbox = False
+            # commands). When the user hasn't explicitly chosen a permission
+            # mode, upgrade to dangerously_skip. WHERE that is allowed to
+            # execute was already decided once per run by the containment
+            # gate in ``run_eval`` (codeprobe.core.containment) — codeprobe
+            # never sets CODEPROBE_SANDBOX itself; that env var is a
+            # user-set consent signal only.
             if perm == "default":
                 perm = "dangerously_skip"
-                _acquire_sandbox()
-                owns_sandbox = True
 
             if perm not in ALLOWED_PERMISSION_MODES:
                 raise PrescriptiveError(
@@ -962,17 +1100,6 @@ def run_eval(
 
             click.echo(f"\nRunning config: {exp_config.label} ({len(task_dirs)} tasks)")
 
-            # Compute directories to exclude from git clean between sequential
-            # tasks so the experiment dir (untracked) isn't deleted.
-            _clean_excludes: tuple[str, ...] = ()
-            try:
-                rel = exp_dir.resolve().relative_to(repo_root)
-                top_dir = str(rel).split("/")[0]
-                if top_dir and top_dir != ".":
-                    _clean_excludes = (top_dir,)
-            except ValueError:
-                pass  # experiment dir is outside the repo
-
             dispatcher = EventDispatcher()
             if out_mode.mode == "ndjson":
                 # NDJSON mode: stream one ``record_type="event"`` per task to
@@ -1063,8 +1190,8 @@ def run_eval(
                     max_cost_usd=max_cost_usd,
                     parallel=parallel,
                     repeats=repeats,
-                    clean_excludes=_clean_excludes,
                     event_dispatcher=dispatcher,
+                    budget_checker=experiment_budget_checker,
                     preamble_resolver=preamble_resolver,
                     trace_recorder=trace_recorder,
                     config_max_turns_source=config_max_turns_source,
@@ -1078,8 +1205,6 @@ def run_eval(
 
             if interrupted:
                 partial = checkpoint_store.load_ids()
-                if owns_sandbox:
-                    _release_sandbox()
                 raise DiagnosticError(
                     code="INTERRUPTED",
                     message=(
@@ -1094,9 +1219,6 @@ def run_eval(
                         "config_label": exp_config.label,
                     },
                 )
-
-            if owns_sandbox:
-                _release_sandbox()
 
             save_config_results(exp_dir, exp_config.label, results)
 

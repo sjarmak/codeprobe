@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -361,6 +362,25 @@ class TestQuarantinedAdapterRefusal:
 
     def _experiment(self, tmp_path: Path, configs: list[dict]) -> Path:
         import json
+
+        # Quarantine refusal must fire even before the dirty-checkout gate
+        # sees a real repo (codeprobe-f7rl.1) — a clean commit here proves
+        # this is a quarantine refusal, not an unrelated NOT_A_GIT_REPO.
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(tmp_path)], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "user.email", "t@t.test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True
+        )
+        (tmp_path / ".gitkeep").write_text("")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "init"], check=True
+        )
 
         exp_dir = tmp_path / "experiment"
         exp_dir.mkdir()

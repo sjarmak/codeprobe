@@ -12,6 +12,11 @@ import pytest
 from codeprobe.analysis.report import Report
 from tests.conftest import FakeAdapter
 
+# run_experiment uses the experiment dir (not a git checkout) as repo_path;
+# every run path now requires a worktree slot (codeprobe-f7rl.2), so use the
+# passthrough isolation fake from tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("fake_worktree_isolation")
+
 
 def _make_experiment_dir(
     base: Path,

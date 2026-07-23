@@ -336,6 +336,30 @@
       "since": "0.11.0",
       "description": "An artifact_eval/dual-scored task is missing tests/ground_truth.json (and the legacy task-root ground_truth.json), so ArtifactScorer would score it verifier_error instead of a real result — typically a stale or interrupted `codeprobe mine` run.",
       "remediation_pattern": "Re-mine the repo to regenerate the oracle: `codeprobe mine <path> --dual-verify`."
+    },
+    {
+      "code": "DIRTY_CHECKOUT",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "The target checkout has uncommitted changes (tracked modification, staged change, or untracked file outside codeprobe-owned dirs). Trial worktrees are created from HEAD, so uncommitted changes would be excluded from every trial and the eval would measure a tree the user is not looking at.",
+      "remediation_pattern": "Commit or stash the changes, or re-run with `--allow-dirty` to accept that agents only see HEAD."
+    },
+    {
+      "code": "NOT_A_GIT_REPO",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "The run path does not resolve to a git work tree, so worktree isolation cannot function.",
+      "remediation_pattern": "Run codeprobe from inside a git repository: clone the repo, or `git init` and commit, then retry."
+    },
+    {
+      "code": "UNCONTAINED_REFUSED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "codeprobe run was invoked outside a detected container without explicit consent. A run executes an autonomous agent with --dangerously-skip-permissions plus mined third-party test/verifier scripts directly on this machine, with the invoking user's full filesystem, credential, and network access.",
+      "remediation_pattern": "Run inside a container (or set CODEPROBE_SANDBOX=1 yourself if your containment is not auto-detected), or re-run with `--uncontained` to accept host execution."
     }
   ]
 }

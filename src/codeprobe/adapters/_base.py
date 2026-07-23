@@ -4,22 +4,31 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from abc import abstractmethod
+from pathlib import Path
 
 from codeprobe.adapters.protocol import (
     AdapterSetupError,
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.core import containment
+from codeprobe.sandbox.agent_container import containerize_argv
+from codeprobe.sandbox.runner import DEFAULT_AGENT_IMAGE
 
-# Only these env vars are forwarded to agent subprocesses.
-# Keeps secrets (OPENAI_API_KEY, AWS_SECRET_*, etc.) out of the child
-# unless explicitly listed here.
+logger = logging.getLogger(__name__)
+
+# Only these env vars are forwarded to agent subprocesses, on EVERY
+# dispatch path (serial and parallel alike) — keeps secrets
+# (AWS_SECRET_ACCESS_KEY, unlisted API keys, etc.) out of the child and
+# guarantees serial and parallel arms see the same environment.
 _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
     {
         # System essentials
@@ -38,7 +47,7 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         "XDG_RUNTIME_DIR",
         "XDG_DATA_HOME",
         "XDG_CONFIG_HOME",
-        # Codeprobe sandbox signal (eval harness sets this)
+        # User-set containment consent signal (codeprobe never sets this)
         "CODEPROBE_SANDBOX",
         # Agent-specific API keys (required by the adapters)
         "ANTHROPIC_API_KEY",
@@ -59,8 +68,72 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         # Rust toolchain
         "CARGO_HOME",
         "RUSTUP_HOME",
+        # Corporate proxy / TLS trust — enterprise networks front all
+        # egress with a proxy and a private CA; without these the agent
+        # works serially (full-env inherit was the old behavior) but
+        # breaks under isolation. NODE_OPTIONS is deliberately excluded
+        # (arbitrary code-injection surface).
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+        # Anthropic gateway routing — enterprises fronting the Anthropic
+        # API (LLM gateways) set these; same works-serial/breaks-parallel
+        # failure class as the proxy vars.
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
     }
 )
+
+
+# Whitelist keys NOT forwarded into the agent container via ``-e KEY``
+# (codeprobe-f7rl.5). Only the slot worktree and the session config dir are
+# identity-mounted, so host-path-shaped values (toolchain roots, XDG/DBus
+# session paths, TMPDIR) would dangle inside the container, and forwarding
+# the host PATH/HOME would shadow the image's own toolchain.
+_CONTAINER_ENV_EXCLUDED: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_RUNTIME_DIR",
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+        "NODE_PATH",
+        "NPM_CONFIG_PREFIX",
+        "GOPATH",
+        "GOROOT",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        # CA-trust vars hold host filesystem paths that are not mounted
+        # into the container; a dangling SSL_CERT_FILE hard-fails TLS in
+        # most stacks. Proxy URL vars stay in the passthrough.
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+    }
+)
+
+# Env keys the agent container receives (``-e KEY`` passthrough): the
+# adapter whitelist minus the host-path-shaped exclusions above. Credentials
+# (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, ...) and locale/identity keys
+# survive; the value is copied by the engine from its client environment so
+# secrets never appear in the argv.
+_CONTAINER_ENV_KEYS: frozenset[str] = _ADAPTER_ENV_WHITELIST - _CONTAINER_ENV_EXCLUDED
 
 
 def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -85,6 +158,26 @@ def _decode_timeout_output(raw: str | bytes | None) -> str:
     if isinstance(raw, bytes):
         return raw.decode("utf-8", errors="replace")
     return raw
+
+
+def _remove_container(engine: str, name: str) -> None:
+    """Best-effort ``<engine> rm -f <name>`` after a client-side timeout.
+
+    ``subprocess.run(timeout=...)`` kills the engine client, not the
+    container; without this a hung agent container outlives the run.
+    Failures are logged, never raised — the caller is already unwinding a
+    TimeoutExpired and must return the partial AgentOutput.
+    """
+    try:
+        subprocess.run(  # noqa: S603 — argv list, no shell=True
+            [engine, "rm", "-f", name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.warning("failed to remove timed-out agent container %s", name)
 
 
 class BaseAdapter:
@@ -172,6 +265,46 @@ class BaseAdapter:
                     if candidate.startswith(tempfile.gettempdir()):
                         mcp_tmpfile = candidate
 
+        # Whitelist-filter unconditionally: serial dispatch (session_env is
+        # None) and adapters with no session isolation get the same
+        # filtered environment as parallel dispatch — never the full
+        # parent env.
+        run_env = _adapter_safe_env(session_env)
+
+        # Containerize the agent argv when the run resolved a "container"
+        # plan (codeprobe-f7rl.5). Sandboxed / host-consented / plan-less
+        # (library and test) callers keep the exact build_command argv.
+        container_engine: str | None = None
+        container_name: str | None = None
+        plan = containment.active_plan()
+        if plan is not None and plan.mode == "container" and plan.engine:
+            container_engine = plan.engine
+            container_name = f"codeprobe-agent-{uuid.uuid4().hex}"
+            # Only a per-slot session config dir (adapter.isolate_session)
+            # is ever mounted. The host-global CLAUDE_CONFIG_DIR is
+            # deliberately NOT a fallback: mounting the user's real config
+            # dir rw would hand the agent live credential/settings state.
+            # Without a session dir, credentials reach the container solely
+            # via the -e whitelist (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_
+            # TOKEN, ...), and CLAUDE_CONFIG_DIR is withheld from the -e
+            # passthrough so the container never receives a host path that
+            # is not mounted.
+            raw_config_dir = (session_env or {}).get("CLAUDE_CONFIG_DIR")
+            container_env_keys = set(_CONTAINER_ENV_KEYS)
+            if raw_config_dir is None:
+                container_env_keys.discard("CLAUDE_CONFIG_DIR")
+            cmd = containerize_argv(
+                cmd,
+                engine=container_engine,
+                workspace=Path(config.cwd) if config.cwd else Path.cwd(),
+                config_dir=Path(raw_config_dir) if raw_config_dir else None,
+                mcp_tmpfile=mcp_tmpfile,
+                env_keys=sorted(container_env_keys),
+                image=DEFAULT_AGENT_IMAGE,
+                name=container_name,
+                env=run_env,
+            )
+
         start = time.monotonic()
 
         try:
@@ -181,10 +314,13 @@ class BaseAdapter:
                 text=True,
                 timeout=config.timeout_seconds,
                 cwd=config.cwd,
-                env=_adapter_safe_env(session_env) if session_env else None,
+                env=run_env,
             )
         except subprocess.TimeoutExpired as exc:
             duration = time.monotonic() - start
+            if container_engine and container_name:
+                # The timeout killed the engine client, not the container.
+                _remove_container(container_engine, container_name)
             timeout_error = f"Agent timed out after {config.timeout_seconds}s"
 
             raw_stdout = _decode_timeout_output(exc.stdout)
@@ -202,10 +338,12 @@ class BaseAdapter:
                     merged_error = timeout_error
                     if parsed.error:
                         merged_error = f"{timeout_error}; {parsed.error}"
-                    # Rebuild via replace() so every telemetry field the
-                    # partial parse recovered survives — dropping fields
-                    # here previously lost e.g. a quota stub's category
-                    # inside a timed-out trial (codeprobe-f7rl.29). An
+                    # dataclasses.replace preserves every adapter-declared
+                    # field (error_category, error_terminal, tool_use_by_name,
+                    # num_turns, mcp_init, ...) by construction — dropping
+                    # fields here previously lost e.g. a quota stub's category
+                    # inside a timed-out trial, and a quota stub must still
+                    # halt the run (codeprobe-f7rl.29, codeprobe-f7rl.34). An
                     # adapter-declared category (quota) outranks the
                     # generic timeout classification.
                     return dataclasses.replace(

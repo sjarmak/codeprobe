@@ -248,12 +248,13 @@ def test_cli_mine_cross_repo(multi_repo_fixture: dict) -> None:
 
 
 @pytest.mark.integration
-def test_execute_multi_repo_task_pins_both_repos(
+def test_execute_multi_repo_task_never_mutates_primary(
     multi_repo_fixture: dict,
     tmp_path: Path,
 ) -> None:
-    """execute_task with additional_repos metadata lays out repos/secondary/
-    pinned to the ground_truth_commit^ (pre-merge state)."""
+    """execute_task with pin + additional_repos metadata acquires an owned
+    worktree — the primary checkout keeps its HEAD, content, and stays free
+    of repos/ (codeprobe-f7rl.2)."""
     from codeprobe.adapters.protocol import AgentConfig
     from tests.conftest import FakeAdapter
 
@@ -263,7 +264,7 @@ def test_execute_multi_repo_task_pins_both_repos(
     secondary_shas = multi_repo_fixture["secondary_shas"]
 
     # The "merge commit" is sha_c3 (modified public_api signature).
-    # execute_task should pin primary to sha_c3^ = sha_c2.
+    # execute_task pins the OWNED WORKTREE to sha_c3^ = sha_c2.
     merge_sha = primary_shas[2]
     sec_head = secondary_shas[1]
 
@@ -316,23 +317,24 @@ def test_execute_multi_repo_task_pins_both_repos(
     # The adapter should have been called (task ran)
     assert len(adapter.run_calls) == 1
 
-    # Primary should be pinned to merge_sha^ = sha_c2 (pre-merge state)
-    # Check that lib.py has public_api without the version param
-    lib_content = (primary / "lib.py").read_text()
-    assert "def public_api():" in lib_content, (
-        "Primary repo should be pinned to pre-merge state (no version param) "
-        f"but lib.py has: {lib_content}"
+    # The agent worked in an owned worktree, not the primary checkout.
+    prompt = adapter.run_calls[0][0]
+    assert str(primary) + ". Follow" not in prompt, (
+        "prompt references the primary checkout — task ran outside a worktree"
     )
 
-    # Secondary should be laid out under repos/secondary/
-    repos_secondary = primary / "repos" / "secondary"
-    assert repos_secondary.is_dir(), f"Expected repos/secondary/ at {repos_secondary}"
+    # Primary checkout untouched: still at merge_sha with post-merge content.
+    assert _head_sha(primary) == merge_sha, "primary HEAD was moved by the run"
+    lib_content = (primary / "lib.py").read_text()
+    assert "def public_api(version=2):" in lib_content, (
+        "primary lib.py no longer at post-merge state — the run mutated the "
+        f"primary checkout: {lib_content}"
+    )
 
-    # Secondary's consumer.py should exist and reference public_api
-    consumer = repos_secondary / "consumer.py"
-    assert consumer.is_file()
-    consumer_content = consumer.read_text()
-    assert "public_api" in consumer_content
+    # No multi-repo layout leaked into the primary checkout.
+    assert not (primary / "repos").exists(), (
+        "repos/ was laid out in the primary checkout instead of a worktree"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +390,9 @@ def test_execute_multi_repo_adapter_sees_pinned_state(
     }
     (task_dir / "metadata.json").write_text(json.dumps(metadata))
 
-    # Adapter that inspects workspace files during run()
+    # Adapter that inspects workspace files during run(). The workspace is
+    # the executor-owned worktree named in the prompt — never the primary
+    # checkout (codeprobe-f7rl.2).
     observed_state: dict = {}
 
     class InspectingAdapter:
@@ -413,9 +417,17 @@ def test_execute_multi_repo_adapter_sees_pinned_state(
             config: AgentConfig,
             session_env: dict[str, str] | None = None,
         ) -> AgentOutput:
-            # Read files from the workspace (primary repo root)
-            lib_path = primary / "lib.py"
-            consumer_path = primary / "repos" / "secondary" / "consumer.py"
+            import re
+
+            match = re.search(
+                r"You are working on the repository at (.+?)\. Follow", prompt
+            )
+            assert match is not None, f"no workspace in prompt: {prompt[:100]}"
+            workspace = Path(match.group(1))
+            observed_state["workspace"] = workspace
+
+            lib_path = workspace / "lib.py"
+            consumer_path = workspace / "repos" / "secondary" / "consumer.py"
 
             observed_state["lib_content"] = (
                 lib_path.read_text() if lib_path.is_file() else "NOT FOUND"
@@ -451,14 +463,25 @@ def test_execute_multi_repo_adapter_sees_pinned_state(
         task_result.completed.status != "error"
     ), f"Task failed: {task_result.completed.metadata}"
 
-    # Adapter observed pre-merge state in primary: public_api without version param
-    assert "def public_api():" in observed_state["lib_content"], (
-        "Primary lib.py should have def public_api(): (pre-merge, no version param), "
-        f"got: {observed_state['lib_content']}"
+    # The workspace was a worktree, not the primary checkout.
+    assert observed_state["workspace"] != primary, (
+        "adapter ran directly in the primary checkout"
     )
 
-    # Adapter saw consumer.py in repos/secondary/
+    # Adapter observed pre-merge state in the worktree: public_api without
+    # the version param.
+    assert "def public_api():" in observed_state["lib_content"], (
+        "workspace lib.py should have def public_api(): (pre-merge, no "
+        f"version param), got: {observed_state['lib_content']}"
+    )
+
+    # Adapter saw consumer.py in repos/secondary/ inside the worktree.
     assert observed_state[
         "consumer_exists"
     ], "repos/secondary/consumer.py should exist during adapter run"
     assert "public_api" in observed_state["consumer_content"]
+
+    # The primary checkout stayed at the post-merge state throughout.
+    assert _head_sha(primary) == primary_shas[2]
+    assert "def public_api(version=2):" in (primary / "lib.py").read_text()
+    assert not (primary / "repos").exists()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,95 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+
+
+class PassthroughIsolation:
+    """WorktreeIsolation stand-in whose slot IS the repo path.
+
+    execute_config/execute_task route every run through a worktree slot
+    (codeprobe-f7rl.2), which requires a real git checkout at repo_path.
+    Legacy tests built around a nonexistent repo path (``Path("/repo")``)
+    opt into this fake via the ``fake_worktree_isolation`` fixture: acquire()
+    hands back repo_path itself, reproducing the exact pre-worktree
+    semantics those tests were written against. The never-mutate-the-primary-
+    checkout property is proven separately with real repos in
+    tests/test_executor_worktree_safety.py.
+    """
+
+    def __init__(self, repo_path: Path, pool_size: int, namespace: str = "") -> None:
+        self._repo_path = repo_path
+
+    def acquire(self) -> Path:
+        return self._repo_path
+
+    def reset(self, workspace: Path) -> None:
+        pass
+
+    def release(self, workspace: Path) -> None:
+        pass
+
+    def cleanup(self) -> None:
+        pass
+
+
+@pytest.fixture
+def fake_worktree_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace the executor's WorktreeIsolation with PassthroughIsolation."""
+    monkeypatch.setattr(
+        "codeprobe.core.executor.WorktreeIsolation", PassthroughIsolation
+    )
+
+
+@pytest.fixture(autouse=True)
+def _containment_consent_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the containment gate deterministic across test hosts.
+
+    ``codeprobe run`` hard-refuses outside a container unless the user
+    consents (codeprobe-f7rl.3, ``codeprobe.core.containment``). Without
+    this fixture, run-path tests would pass inside Docker CI and fail on a
+    bare developer host. Setting the documented USER-set consent signal
+    simulates a contained environment suite-wide; the containment gate
+    tests explicitly delete it and monkeypatch
+    ``codeprobe.core.sandbox.is_sandboxed`` to exercise both refusal and
+    consent branches.
+    """
+    monkeypatch.setenv("CODEPROBE_SANDBOX", "1")
+
+
+@pytest.fixture(autouse=True)
+def _reset_containment_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Isolate the module-global containment plan between tests.
+
+    ``codeprobe run`` records its resolved plan via ``set_active_plan``
+    (codeprobe-f7rl.3) and scoring consults it when deciding whether host
+    execution needs consent (codeprobe-f7rl.4). Run-path tests would
+    otherwise leak a ``sandboxed`` plan into later scoring tests, flipping
+    them onto the missing-image refusal branch on hosts with a container
+    engine. monkeypatch restores the pre-test value even when a test sets
+    the plan through ``set_active_plan``.
+    """
+    from codeprobe.core import containment
+
+    monkeypatch.setattr(containment, "_active_plan", None)
+
+
+@pytest.fixture(autouse=True)
+def _no_container_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin public engine detection to "absent" so the suite is host-agnostic.
+
+    ``_run_in_sandbox`` (codeprobe-f7rl.4) and ``resolve_containment``
+    (codeprobe-f7rl.5) branch on
+    ``codeprobe.sandbox.runner.detect_engine``; without this pin the same
+    test run selects host or container execution depending on whether the
+    machine happens to have docker plus the scoring/agent images built
+    (verified failure: three tests/test_scoring.py assertions flipped once
+    ``codeprobe-scoring:0.12`` existed locally). Tests that exercise the
+    container branches monkeypatch ``detect_engine`` / ``image_available``
+    themselves, which overrides this pin; the docker-gated integration
+    tests in tests/sandbox/test_runner.py go through the private
+    ``_detect_engine`` and real subprocesses, so they are unaffected.
+    """
+    monkeypatch.setattr("codeprobe.sandbox.runner.detect_engine", lambda: None)
 
 
 @pytest.fixture(autouse=True)

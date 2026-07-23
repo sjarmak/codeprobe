@@ -313,9 +313,31 @@ class TestExecuteConfigQuarantinesSiblings:
         from codeprobe.core.executor import execute_config
         from codeprobe.models.experiment import ExperimentConfig
 
-        # Lay out repo/.codeprobe/experiment.json + tasks/task-001/
+        # Lay out repo/.codeprobe/experiment.json + tasks/task-001/. The repo
+        # must be a real git checkout: every run path now executes inside a
+        # worktree slot (codeprobe-f7rl.2).
         repo = tmp_path / "repo"
         repo.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+        for cfg in (["user.email", "t@t"], ["user.name", "t"]):
+            subprocess.run(
+                ["git", "config", *cfg], cwd=repo, check=True, capture_output=True
+            )
+        (repo / "README.md").write_text("seed\n")
+        subprocess.run(
+            ["git", "add", "README.md"], cwd=repo, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "seed"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
         active_exp = repo / ".codeprobe"
         active_exp.mkdir()
         (active_exp / "experiment.json").write_text("{}")

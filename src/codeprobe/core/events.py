@@ -225,6 +225,10 @@ class BudgetChecker:
     # -- properties --------------------------------------------------------
 
     @property
+    def budget(self) -> float:
+        return self._budget
+
+    @property
     def cumulative_cost(self) -> float:
         with self._lock:
             return self._cumulative_cost
@@ -243,25 +247,39 @@ class BudgetChecker:
             return
         if event.cost_usd is None:
             return
+        self.add_cost(event.cost_usd)
 
+    def add_cost(self, cost: float) -> None:
+        """Record billable *cost* directly — same threshold logic as
+        the ``TaskScored`` listener path.
+
+        Used by the no-dispatcher executor path, which has no event
+        stream to feed ``on_event``.  Threshold-crossing decisions are
+        taken under the lock so warnings fire exactly once even when
+        several dispatchers feed one shared checker concurrently
+        (``--config-parallel`` with an experiment-wide budget).
+        """
         with self._lock:
-            self._cumulative_cost += event.cost_usd
+            self._cumulative_cost += cost
             current = self._cumulative_cost
-
-        # 80% warning
-        if (
-            not self._warning_emitted
-            and current >= self._budget * self._warning_threshold
-        ):
-            self._warning_emitted = True
-            self._emit_warning(current, self._warning_threshold)
-
-        # 100% exceeded
-        if current >= self._budget:
-            self._exceeded.set()
-            if not self._exceeded_emitted:
+            # 80% warning
+            emit_warning = (
+                not self._warning_emitted
+                and current >= self._budget * self._warning_threshold
+            )
+            if emit_warning:
+                self._warning_emitted = True
+            # 100% exceeded
+            exceeded = current >= self._budget
+            emit_exceeded = exceeded and not self._exceeded_emitted
+            if emit_exceeded:
                 self._exceeded_emitted = True
-                self._emit_warning(current, 1.0)
+        if exceeded:
+            self._exceeded.set()
+        if emit_warning:
+            self._emit_warning(current, self._warning_threshold)
+        if emit_exceeded:
+            self._emit_warning(current, 1.0)
 
     # -- internal ----------------------------------------------------------
 

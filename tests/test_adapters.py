@@ -7,7 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codeprobe.adapters._base import BaseAdapter
+from codeprobe.adapters._base import (
+    _ADAPTER_ENV_WHITELIST,
+    BaseAdapter,
+    _adapter_safe_env,
+)
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.copilot import CopilotAdapter
 from codeprobe.adapters.protocol import (
@@ -305,18 +309,56 @@ class _StubAdapter(BaseAdapter):
 
 
 class TestBaseAdapterEnvWhitelist:
-    """Verify subprocess.run() env handling: inherit when no isolation, filter when isolated."""
+    """Verify subprocess.run() env is whitelist-filtered on every dispatch path."""
 
-    def test_inherits_full_env_without_session_env(self) -> None:
-        """Without session isolation, subprocess inherits the full parent env."""
+    def test_serial_dispatch_is_filtered_without_session_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """session_env=None (serial dispatch) still gets a whitelist-only env."""
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t")
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         with patch("subprocess.run", return_value=fake_result) as mock_run:
             adapter.run("test", config)
 
-        _, kwargs = mock_run.call_args
-        assert kwargs.get("env") is None, "env=None inherits parent process env"
+        env = mock_run.call_args[1]["env"]
+        assert isinstance(env, dict), "serial dispatch must not inherit the parent env"
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+
+    def test_safe_env_none_excludes_secrets_admits_proxy_ca_gateway(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s3cr3t")
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
+        monkeypatch.setenv("SSL_CERT_FILE", "/etc/corp/ca.pem")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-gw.corp/anthropic")
+
+        env = _adapter_safe_env(None)
+
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
+        assert env["SSL_CERT_FILE"] == "/etc/corp/ca.pem"
+        assert env["ANTHROPIC_BASE_URL"] == "https://llm-gw.corp/anthropic"
+
+    def test_whitelist_contains_proxy_ca_gateway_not_node_options(self) -> None:
+        expected = {
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+            "all_proxy",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "REQUESTS_CA_BUNDLE",
+            "CURL_CA_BUNDLE",
+            "NODE_EXTRA_CA_CERTS",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+        }
+        assert expected <= _ADAPTER_ENV_WHITELIST
+        assert "NODE_OPTIONS" not in _ADAPTER_ENV_WHITELIST
 
     def test_filters_env_with_session_env(self) -> None:
         """With session isolation, subprocess gets a filtered env."""
@@ -621,6 +663,84 @@ class TestTimeoutTelemetryExtraction:
             output = adapter.run("test", config)
         assert "timed out" in output.error
         assert output.exit_code == -1
+
+
+def test_timeout_preserves_adapter_telemetry() -> None:
+    """Timeout rebuild keeps every adapter-declared field (codeprobe-f7rl.34).
+
+    A timed-out trial with a partial stream (init event, two usage-bearing
+    assistant turns, a literal quota stub) must keep quota classification,
+    per-turn token sums, calculated cost, tool counts, and the MCP init
+    manifest — none of which survived the old field-by-field rebuild.
+    """
+    adapter = ClaudeAdapter()
+    config = AgentConfig(timeout_seconds=5)
+    stream_lines = [
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "tools": ["Read", "mcp__sourcegraph__keyword_search"],
+                "mcp_servers": [{"name": "sourcegraph", "status": "connected"}],
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": "claude-sonnet-4-6-20250514",
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 200,
+                        "cache_read_input_tokens": 500,
+                        "cache_creation_input_tokens": 100,
+                    },
+                    "content": [{"type": "tool_use", "name": "Read"}],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "model": "claude-sonnet-4-6-20250514",
+                    "usage": {
+                        "input_tokens": 2000,
+                        "output_tokens": 300,
+                        "cache_read_input_tokens": 1500,
+                        "cache_creation_input_tokens": 0,
+                    },
+                    "content": [{"type": "text", "text": "working..."}],
+                },
+            }
+        ),
+        "You've hit your session limit · resets 1:10pm",
+    ]
+    exc = subprocess.TimeoutExpired(cmd=["claude"], timeout=5)
+    exc.stdout = "\n".join(stream_lines)
+    exc.stderr = ""
+    with (
+        patch("subprocess.run", side_effect=exc),
+        patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
+    ):
+        output = adapter.run("test prompt", config)
+
+    assert "timed out" in output.error
+    assert "quota" in output.error
+    assert output.error_category == "quota"
+    assert output.exit_code == -1
+    assert output.input_tokens == 3000
+    assert output.output_tokens == 500
+    assert output.cache_read_tokens == 2000
+    assert output.cache_creation_tokens == 100
+    # sonnet rates (3.00, 15.00, 0.30, 3.75) per 1M tokens:
+    # (3000*3.00 + 500*15.00 + 2000*0.30 + 100*3.75) / 1e6
+    assert output.cost_usd == pytest.approx(0.017475)
+    assert output.cost_model == "per_token"
+    assert output.cost_source == "calculated"
+    assert output.tool_use_by_name == {"Read": 1}
+    assert output.mcp_init is not None
+    assert output.mcp_init.captured is True
 
 
 # -- BaseAdapter parse_output() ------------------------------------------------

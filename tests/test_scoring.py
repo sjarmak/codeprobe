@@ -423,7 +423,9 @@ class TestContinuousScorer:
         assert result.score == pytest.approx(0.5)
         assert result.passed is True
         assert result.error is None
-        assert result.details == {}
+        # No metrics keys — only the always-on containment disclosure
+        # (codeprobe-f7rl.4) is present.
+        assert result.details == {"sandbox_execution": "host"}
 
     def test_metrics_json_malformed_is_ignored(self, tmp_path: Path) -> None:
         """A broken metrics.json must not crash scoring or change the score."""
@@ -437,7 +439,9 @@ class TestContinuousScorer:
         result = ContinuousScorer().score("output", task_dir)
         assert result.score == pytest.approx(0.7)
         assert result.passed is True
-        assert result.details == {}
+        # Malformed metrics.json contributes nothing; only the containment
+        # disclosure key (codeprobe-f7rl.4) is present.
+        assert result.details == {"sandbox_execution": "host"}
 
     def test_metrics_json_unknown_keys_are_dropped(
         self, tmp_path: Path

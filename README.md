@@ -93,6 +93,54 @@ codeprobe run . --agent claude --max-cost-usd 5.00
 codeprobe interpret .         # rank configs, print a report
 ```
 
+`codeprobe run` refuses to start on a checkout with uncommitted changes (error
+code `DIRTY_CHECKOUT`): every trial executes in an isolated worktree created
+from HEAD, so uncommitted changes would be invisible to the agents. Commit or
+stash first, or pass `--allow-dirty` to accept that agents only see HEAD.
+
+`codeprobe run` also refuses to start outside a container (error code
+`UNCONTAINED_REFUSED`): a run executes an autonomous agent with
+`--dangerously-skip-permissions` plus mined third-party test/verifier scripts
+directly on this machine, with the invoking user's full filesystem,
+credential, and network access. Run inside a container (auto-detected), set
+`CODEPROBE_SANDBOX=1` yourself if your containment is not auto-detected, or
+pass `--uncontained` to accept host execution. codeprobe never sets
+`CODEPROBE_SANDBOX` on its own.
+
+Mined test/verifier scripts are third-party code. When docker or podman is on
+PATH and the scoring image is built, codeprobe executes every mined `test.sh`
+and verifier inside a `--network=none` container automatically; each trial's
+`scoring_details.sandbox_execution` records whether the verifier ran in
+`container` or `host` mode. Build the scoring image once from the repository
+root:
+
+```bash
+docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .
+```
+
+With an engine present but the image missing, scoring refuses host execution
+unless the run was started with `--uncontained`, and the error message repeats
+the build command above.
+
+The agent process is containerized the same way. With an engine on PATH and
+the agent image built, `codeprobe run` proceeds on a bare host with no
+`--uncontained` flag, and stderr discloses container mode. Each agent runs
+inside a `--network=bridge` container (the agent needs the model API) whose
+writable mounts are exactly the per-task worktree slot and, when parallel
+session isolation is active, that slot's session config dir. The primary
+checkout and the user's global config dir are never mounted; credentials
+reach the container through the environment whitelist (`ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, and similar). Build the agent image once from the
+repository root:
+
+```bash
+docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .
+```
+
+With an engine present but the agent image missing, `codeprobe run` still
+refuses (`UNCONTAINED_REFUSED`) and the error message repeats this build
+command.
+
 To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the
 comparison for you.

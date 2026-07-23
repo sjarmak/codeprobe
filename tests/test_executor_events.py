@@ -23,6 +23,11 @@ from codeprobe.core.executor import execute_config
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
+# These tests run execute_config against a nonexistent repo path; every run
+# path now requires a worktree slot (codeprobe-f7rl.2), so use the
+# passthrough isolation fake from tests/conftest.py.
+pytestmark = pytest.mark.usefixtures("fake_worktree_isolation")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -281,6 +286,55 @@ class TestBudgetCheckerIntegration:
         assert len(warnings) >= 1
         # First warning should be at 80% threshold
         assert warnings[0].threshold_pct == pytest.approx(0.8)
+
+    def test_shared_checker_warns_once_per_experiment(self, tmp_path: Path) -> None:
+        """With one checker shared across two arms, the 80% and 100%
+        warnings fire once for the EXPERIMENT, not once per arm
+        (codeprobe-f7rl.33)."""
+        from codeprobe.core.events import BudgetChecker
+
+        tasks_a = [_make_task_dir(tmp_path / "a", f"task-{i:03d}") for i in range(2)]
+        tasks_b = [_make_task_dir(tmp_path / "b", f"task-{i:03d}") for i in range(2)]
+        checker = BudgetChecker(budget=1.0)
+        agent_config = AgentConfig()
+
+        recorders: list[RecordingListener] = []
+        for label, tasks in (("arm-a", tasks_a), ("arm-b", tasks_b)):
+            adapter = FakeAdapter(
+                stdout="output", cost_usd=0.3, cost_model="per_token"
+            )
+            dispatcher = EventDispatcher()
+            recorder = RecordingListener()
+            dispatcher.register(recorder)
+            try:
+                execute_config(
+                    adapter=adapter,
+                    task_dirs=tasks,
+                    repo_path=Path("/repo"),
+                    experiment_config=ExperimentConfig(label=label),
+                    agent_config=agent_config,
+                    max_cost_usd=1.0,
+                    event_dispatcher=dispatcher,
+                    budget_checker=checker,
+                )
+            finally:
+                dispatcher.shutdown()
+            recorders.append(recorder)
+
+        # Arm A spends $0.60 (no threshold crossed). Arm B crosses 80% at
+        # $0.90 and 100% at $1.20 — exactly one warning each, experiment-wide.
+        warnings = [
+            e
+            for r in recorders
+            for e in r.events
+            if isinstance(e, BudgetWarning)
+        ]
+        assert sorted(w.threshold_pct for w in warnings) == [
+            pytest.approx(0.8),
+            pytest.approx(1.0),
+        ]
+        assert checker.is_exceeded
+        assert checker.cumulative_cost == pytest.approx(1.2)
 
 
 # ---------------------------------------------------------------------------

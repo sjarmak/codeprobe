@@ -11,10 +11,17 @@ exceeds will complete and rack up cost past the cap.
 The fix: configs run sequentially by default (config_parallel=1).
 Cross-config parallelism is opt-in via ``--config-parallel N`` so users
 who care about cost containment get correct behaviour by default.
+
+codeprobe-f7rl.33 adds the experiment-wide budget ledger: one
+``BudgetChecker`` shared by every arm, so concurrent arms stop together
+once cross-arm spend crosses ``--max-cost-usd``.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from click.testing import CliRunner
 
 
@@ -95,3 +102,65 @@ def test_config_parallel_clamped_to_config_count() -> None:
     config_parallel = 8
     n_configs = 1
     assert min(config_parallel, n_configs) == 1
+
+
+@pytest.mark.usefixtures("fake_worktree_isolation")
+def test_shared_budget_stops_both_arms_mid_experiment(tmp_path: Path) -> None:
+    """Concurrent arms (config_parallel=2) share one BudgetChecker: crossing
+    the cap mid-experiment stops BOTH arms, and the recorded spend
+    overshoots by at most config_parallel × parallel in-flight trials
+    (2 × 1 here) (codeprobe-f7rl.33).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from codeprobe.adapters.protocol import AgentConfig
+    from codeprobe.core.events import BudgetChecker
+    from codeprobe.core.executor import execute_config
+    from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+    from tests.conftest import FakeAdapter
+
+    def _make_task(base: Path, name: str) -> Path:
+        task_dir = base / name
+        task_dir.mkdir(parents=True)
+        (task_dir / "instruction.md").write_text("Fix the bug.")
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+        test_sh = tests_dir / "test.sh"
+        test_sh.write_text("#!/bin/bash\nexit 0\n")
+        test_sh.chmod(0o755)
+        return task_dir
+
+    budget = 1.0
+    per_trial = 0.5
+    tasks_per_arm = 6
+    checker = BudgetChecker(budget=budget)
+    agent_config = AgentConfig()
+
+    def _run_arm(label: str) -> list[CompletedTask]:
+        tasks = [
+            _make_task(tmp_path / label, f"task-{i:03d}")
+            for i in range(tasks_per_arm)
+        ]
+        adapter = FakeAdapter(
+            stdout="output", cost_usd=per_trial, cost_model="per_token"
+        )
+        return execute_config(
+            adapter=adapter,
+            task_dirs=tasks,
+            repo_path=Path("/repo"),
+            experiment_config=ExperimentConfig(label=label),
+            agent_config=agent_config,
+            max_cost_usd=budget,
+            budget_checker=checker,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(_run_arm, label) for label in ("arm-a", "arm-b")]
+        results = [f.result() for f in futures]
+
+    # Both arms stop well before finishing their 6 tasks.
+    assert all(len(r) < tasks_per_arm for r in results)
+    assert checker.is_exceeded
+    # Overshoot bound: the budget plus one in-flight trial per concurrent
+    # dispatch lane (config_parallel × parallel = 2 × 1).
+    assert checker.cumulative_cost <= budget + 2 * per_trial
