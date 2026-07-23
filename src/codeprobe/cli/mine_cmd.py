@@ -13,13 +13,19 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from codeprobe.mining.curator import CurationBackend
+    from codeprobe.mining.state import MineState
 from collections.abc import Callable
-from dataclasses import is_dataclass, replace
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 
 import click
 
+from codeprobe.cli.envelope import NextStep, WarningEntry
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
+from codeprobe.mining._lang import (
+    SUPPORTED_MINING_LANGUAGES,
+    detect_repo_language,
+)
 from codeprobe.mining.extractor import MineResult, RejectionBreakdown
 from codeprobe.mining.org_scale import OrgScaleMineResult
 from codeprobe.mining.org_scale_families import TaskFamily
@@ -30,9 +36,13 @@ from codeprobe.models.task import Task
 # ---------------------------------------------------------------------------
 
 _GIT_URL_PATTERN = re.compile(
-    r"^(?:https?://|git@)"  # https:// or git@
-    r"|^[\w.-]+/[\w.-]+$"  # owner/repo shorthand
+    r"^(?:https?://|git@|github:)"  # https://, git@, or explicit github: shorthand
 )
+
+# Shape of a bare ``owner/repo`` token. Used to validate the remainder of a
+# ``github:owner/repo`` argument and to recognize ambiguous bare tokens so
+# they get a prescriptive error instead of a silent clone.
+_SHORTHAND_SHAPE = re.compile(r"^[\w.-]+/[\w.-]+$")
 
 # Schemes we recognize as potentially-cloneable.  Anything else is rejected
 # with a "not a valid git URL" message before we reach git itself.
@@ -42,15 +52,35 @@ _ACCEPTED_GIT_URL_SCHEMES = frozenset(
 
 
 def _is_git_url(path_or_url: str) -> bool:
-    """Return True if the argument looks like a git URL or owner/repo shorthand."""
+    """Return True for explicit clone forms: https://, git@, or github:owner/repo."""
     return bool(_GIT_URL_PATTERN.match(path_or_url))
 
 
+def _is_shorthand_shaped(path: str) -> bool:
+    """Return True for bare ``owner/repo`` tokens (excluding ``./x`` / ``../x``)."""
+    if not _SHORTHAND_SHAPE.match(path):
+        return False
+    owner, _, repo = path.partition("/")
+    return owner not in (".", "..") and repo not in (".", "..")
+
+
 def _normalize_url(url: str) -> str:
-    """Expand owner/repo shorthand to a full GitHub URL."""
-    if "/" in url and not url.startswith(("https://", "http://", "git@")):
-        return f"https://github.com/{url}.git"
-    return url
+    """Expand explicit ``github:owner/repo`` shorthand to a full GitHub URL."""
+    if not url.startswith("github:"):
+        return url
+    shorthand = url[len("github:") :]
+    if not _SHORTHAND_SHAPE.match(shorthand):
+        raise PrescriptiveError(
+            code="INVALID_GIT_URL",
+            message=(
+                f"{url!r} is not a valid github: shorthand "
+                "(expected github:owner/repo)."
+            ),
+            next_try_flag="path-or-github-shorthand",
+            next_try_value="github:owner/repo",
+            detail={"url": url},
+        )
+    return f"https://github.com/{shorthand}.git"
 
 
 def _validate_git_url_shape(url: str) -> None:
@@ -87,8 +117,9 @@ def _validate_git_url_shape(url: str) -> None:
             next_try_value="",
             detail={"url": url, "scheme": parsed.scheme},
         )
-    # urlparse keeps the leading slash in .path, so a bare host has path=''
-    # and 'owner/repo' shorthand never reaches this function (see _is_git_url).
+    # urlparse keeps the leading slash in .path, so a bare host has path=''.
+    # 'github:owner/repo' shorthand is expanded to a full https URL before
+    # this function runs (see _normalize_url); bare 'owner/repo' never clones.
     if not parsed.netloc:
         raise PrescriptiveError(
             code="INVALID_GIT_URL",
@@ -137,10 +168,11 @@ def _validate_clone_url(url: str) -> None:
 def _clone_repo(url: str) -> Path:
     """Shallow-clone a repo into a temp directory. Returns the clone path.
 
-    Uses ``--filter=blob:none`` for a fast treeless clone. The temp directory
-    persists until the process exits (the user sees the path in output).
+    Uses ``--filter=blob:none`` for a fast treeless clone. Expects a full git
+    URL (callers expand ``github:owner/repo`` via :func:`_normalize_url`).
+    The temp directory persists until the process exits (the user sees the
+    path in output).
     """
-    url = _normalize_url(url)
     _validate_git_url_shape(url)
     _validate_clone_url(url)
     # Derive a directory name from the URL
@@ -250,14 +282,29 @@ _COUNT_PRESETS = {
     "3": ("Thorough (10-20)", 15),
 }
 
+# PR/MR narrative fetch shells the gh CLI, so it only works on GitHub.
+# Every other host mines commit-message narratives (--narrative-source
+# commits) — the choice surfaces below disclose that asymmetry.
+_NON_GITHUB_NOTE = "commit-message narratives only — PR/MR fetch is GitHub-only"
+
 _SOURCE_OPTIONS = {
     "1": ("Auto-detect", "auto"),
     "2": ("GitHub", "github"),
-    "3": ("GitLab", "gitlab"),
-    "4": ("Bitbucket", "bitbucket"),
-    "5": ("Azure DevOps", "azure"),
-    "6": ("Gitea/Forgejo", "gitea"),
+    "3": (f"GitLab ({_NON_GITHUB_NOTE})", "gitlab"),
+    "4": (f"Bitbucket ({_NON_GITHUB_NOTE})", "bitbucket"),
+    "5": (f"Azure DevOps ({_NON_GITHUB_NOTE})", "azure"),
+    "6": (f"Gitea/Forgejo ({_NON_GITHUB_NOTE})", "gitea"),
     "7": ("Local only", "local"),
+}
+
+# Human-facing display names for detected host keys (see
+# ``codeprobe.mining.sources._HOST_MAP`` plus the "self-hosted" bucket).
+_HOST_DISPLAY_NAMES = {
+    "gitlab": "GitLab",
+    "bitbucket": "Bitbucket",
+    "azure": "Azure DevOps",
+    "gitea": "Gitea/Forgejo",
+    "self-hosted": "Self-hosted",
 }
 
 
@@ -315,18 +362,30 @@ def _ask_source() -> str:
     """Phase 1: Ask which git host."""
     click.echo()
     click.echo("Git host?")
-    click.echo("  [1] Auto-detect")
-    click.echo("  [2] GitHub")
-    click.echo("  [3] GitLab")
-    click.echo("  [4] Bitbucket")
-    click.echo("  [5] Azure DevOps")
-    click.echo("  [6] Gitea/Forgejo")
-    click.echo("  [7] Local only")
+    for key, (label, _) in _SOURCE_OPTIONS.items():
+        click.echo(f"  [{key}] {label}")
     click.echo()
 
     choice = click.prompt("Select host", default="1", show_default=True)
     _, source = _SOURCE_OPTIONS.get(choice, _SOURCE_OPTIONS["1"])
     return source
+
+
+def _llm_plan_line(no_llm: bool) -> str:
+    """Disclose LLM usage and backend for the mining plan (decision 6).
+
+    No upfront dollar estimate is fabricated — the plan discloses that
+    calls will be metered; the summary reports actuals.
+    """
+    if no_llm:
+        return "disabled (--no-llm) — zero model calls"
+    from codeprobe.core.llm import LLMUnavailableError, _resolve_backend
+
+    try:
+        backend_name = _resolve_backend().name
+    except LLMUnavailableError:
+        return "no backend available — deterministic fallbacks, zero model calls"
+    return f"enabled (backend: {backend_name}) — calls metered, totals in summary"
 
 
 def _show_preflight(
@@ -337,6 +396,7 @@ def _show_preflight(
     min_files: int,
     bias: str,
     subsystems: tuple[str, ...],
+    no_llm: bool,
 ) -> bool:
     """Phase 2: Show pre-flight summary and confirm."""
     click.echo()
@@ -350,6 +410,7 @@ def _show_preflight(
     click.echo(f"  Min files:   {min_files} (biasing toward {bias} tasks)")
     if subsystems:
         click.echo(f"  Subsystems: {', '.join(subsystems)}")
+    click.echo(f"  LLM:         {_llm_plan_line(no_llm)}")
     click.echo("=" * 50)
     click.echo()
 
@@ -473,6 +534,33 @@ _REJECTION_HINTS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _rejection_payload(rejections: RejectionBreakdown | None) -> dict[str, int]:
+    """Shape a :class:`RejectionBreakdown` for the envelope ``data`` block.
+
+    ``None`` (mining found no merge-commit candidates at all) maps to an
+    all-zero breakdown so consumers always see the same keys.
+    """
+    r = rejections if rejections is not None else RejectionBreakdown()
+    return {
+        "quality": r.quality,
+        "min_files": r.min_files,
+        "subsystem": r.subsystem,
+        "extraction": r.extraction,
+        "total": r.total,
+    }
+
+
+def _dominant_rejection(rejections: RejectionBreakdown) -> tuple[str, str, str, int]:
+    """Return ``(reason, label, hint, count)`` for the highest rejection counter.
+
+    Ties resolve by :data:`_REJECTION_HINTS` order (``max`` keeps the first
+    entry it sees among equal-count winners).
+    """
+    counts = _rejection_payload(rejections)
+    reason, label, hint = max(_REJECTION_HINTS, key=lambda rh: counts[rh[0]])
+    return reason, label, hint, counts[reason]
+
+
 def _show_shortfall_notice(
     requested: int,
     mined: int,
@@ -487,22 +575,98 @@ def _show_shortfall_notice(
     if mined >= requested or rejections is None or rejections.total == 0:
         return
 
-    counts = {
-        "quality": rejections.quality,
-        "min_files": rejections.min_files,
-        "subsystem": rejections.subsystem,
-        "extraction": rejections.extraction,
-    }
-    # Dominant reason: highest count; ties resolved by _REJECTION_HINTS order
-    # (max returns the first entry it sees among equal-count winners).
-    reason, label, hint = max(_REJECTION_HINTS, key=lambda rh: counts[rh[0]])
+    _reason, label, hint, dominant_count = _dominant_rejection(rejections)
     click.echo(
         f"  ⚠ requested {requested}, mined {mined} "
         f"({rejections.total} candidate(s) filtered; "
-        f"most common: {counts[reason]} {label}). "
+        f"most common: {dominant_count} {label}). "
         f"To recover: {hint}."
     )
     click.echo()
+
+
+def _shortfall_warning(
+    requested: int,
+    mined: int,
+    rejections: RejectionBreakdown | None,
+) -> WarningEntry:
+    """Build the ``MINE_SHORTFALL`` warning carried on a shortfall envelope."""
+    payload = _rejection_payload(rejections)
+    if rejections is not None and rejections.total > 0:
+        _reason, label, _hint, dominant_count = _dominant_rejection(rejections)
+        breakdown = f"most common: {dominant_count} {label}"
+    else:
+        breakdown = "no merge-commit candidates found"
+    return WarningEntry(
+        code="MINE_SHORTFALL",
+        message=(
+            f"Requested {requested} task(s), mined {mined}: "
+            f"{payload['total']} candidate(s) filtered ({breakdown})."
+        ),
+        detail={"requested": requested, "mined": mined, "rejections": payload},
+    )
+
+
+def _shortfall_next_steps(
+    path_arg: str,
+    rejections: RejectionBreakdown | None,
+    min_quality: float,
+    min_files: int,
+) -> list[NextStep]:
+    """Map the dominant rejection filter to one executable remediation command.
+
+    Pure mechanical mapping from the existing rejection counters (ZFC): the
+    highest counter wins, ties resolve by :data:`_REJECTION_HINTS` order. No
+    candidates at all (or extraction-dominated rejection: merged PRs without
+    usable tests) routes to probe generation, which needs no PR history.
+    """
+    if rejections is None or rejections.total == 0:
+        return [
+            NextStep(
+                summary=(
+                    "No test-bearing merged PRs found; generate probe "
+                    "tasks instead"
+                ),
+                command=f"codeprobe mine {path_arg} --task-type micro_probe --json",
+            )
+        ]
+    reason, _label, _hint, _count = _dominant_rejection(rejections)
+    if reason == "quality":
+        return [
+            NextStep(
+                summary="Lower the quality floor",
+                command=(
+                    f"codeprobe mine {path_arg} "
+                    f"--min-quality {round(min_quality / 2, 2)} --json"
+                ),
+            )
+        ]
+    if reason == "min_files":
+        return [
+            NextStep(
+                summary="Lower --min-files",
+                command=(
+                    f"codeprobe mine {path_arg} "
+                    f"--min-files {max(1, min_files - 1)} --json"
+                ),
+            )
+        ]
+    if reason == "subsystem":
+        return [
+            NextStep(
+                summary="Broaden or drop --subsystem",
+                command=f"codeprobe mine {path_arg} --json",
+            )
+        ]
+    # extraction: merged PRs exist but carry no usable tests/metadata.
+    return [
+        NextStep(
+            summary=(
+                "Merged PRs lack usable tests; generate probe tasks instead"
+            ),
+            command=f"codeprobe mine {path_arg} --task-type micro_probe --json",
+        )
+    ]
 
 
 def _show_next_steps(
@@ -639,50 +803,191 @@ def _discover_and_select(
 _CURRENT_TASKS_DIR: Path | None = None
 
 
-def _clear_tasks_dir(repo_path: Path) -> Path:
-    """Clear stale tasks and return the tasks directory path.
+@dataclass(frozen=True)
+class _MineYield:
+    """Requested-vs-mined summary stashed by the SDLC mining paths.
 
+    Recorded in module state (next to ``_CURRENT_TASKS_DIR``) so the
+    terminal envelope in :func:`run_mine` can distinguish zero-yield /
+    shortfall mining from productive mining and derive remediation
+    ``next_steps`` from the rejection counters.
+    """
+
+    requested: int
+    mined: int
+    rejections: RejectionBreakdown | None
+
+
+_MINE_YIELD: _MineYield | None = None
+
+
+def _record_mine_yield(
+    requested: int,
+    mined: int,
+    rejections: RejectionBreakdown | None,
+) -> None:
+    """Stash the final requested/mined/rejections summary for the envelope."""
+    global _MINE_YIELD
+    _MINE_YIELD = _MineYield(
+        requested=requested, mined=mined, rejections=rejections
+    )
+
+
+def _clear_tasks_dir(repo_path: Path, *, preserve: bool = False) -> Path:
+    """Return the tasks directory path, clearing stale tasks unless *preserve*.
+
+    ``preserve=True`` (the ``--resume`` path) keeps partial output from an
+    interrupted mine in place so already-written task dirs survive.
     Records the path in module state so that the top-level ``run_mine``
-    handler can remove a partially-populated directory on Ctrl-C.
+    handler can name the partially-populated directory on Ctrl-C.
     """
     from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
 
     ensure_codeprobe_excluded(repo_path)
 
     tasks_dir = repo_path / ".codeprobe" / "tasks"
-    if tasks_dir.exists():
+    if not preserve and tasks_dir.exists():
         shutil.rmtree(tasks_dir)
     global _CURRENT_TASKS_DIR
     _CURRENT_TASKS_DIR = tasks_dir
     return tasks_dir
 
 
+def _existing_task_ids(tasks_dir: Path) -> set[str]:
+    """Return the ids of task dirs already present under *tasks_dir*.
+
+    A task dir is any subdirectory carrying an ``instruction.md`` — the
+    same shape the terminal envelope counts. Used on ``--resume`` so the
+    experiment records the union of preserved and newly mined tasks.
+    """
+    if not tasks_dir.is_dir():
+        return set()
+    return {
+        c.name
+        for c in tasks_dir.iterdir()
+        if c.is_dir() and (c / "instruction.md").is_file()
+    }
+
+
+def _mine_repo_hash(repo_path: Path) -> str:
+    """Deterministic MineState identity for *repo_path*.
+
+    Combines the origin remote URL (empty when absent), the current branch
+    ref (empty when undeterminable), and the resolved worktree root. The
+    interrupted invocation and its ``--resume`` hash identically, which is
+    what lets the resume find its state.
+    """
+    from codeprobe.paths import compute_repo_hash
+
+    def _git(*args: str) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_path), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+
+    remote = _git("remote", "get-url", "origin")
+    ref = _git("rev-parse", "--abbrev-ref", "HEAD")
+    return compute_repo_hash(remote, ref, str(repo_path.resolve()))
+
+
+def _open_mine_state(
+    repo_path: Path, tenant: str | None, resume: bool
+) -> MineState:
+    """Open the MineState store for an SDLC mine (every run, not just resume).
+
+    Fresh mines reset the store first: the tasks dir is being rebuilt from
+    scratch, so stale ``completed`` rows must not suppress re-mining. On
+    ``--resume`` with no prior state we warn and proceed fresh (no error).
+    """
+    from codeprobe.mining.state import MineState
+    from codeprobe.paths import DEFAULT_TENANT
+
+    state = MineState.open(
+        tenant_id=tenant or DEFAULT_TENANT,
+        repo_hash=_mine_repo_hash(repo_path),
+    )
+    if resume:
+        if not state.all_rows():
+            click.echo(
+                "Warning: --resume passed but no prior mining state exists "
+                "for this repo — mining fresh.",
+                err=True,
+            )
+    else:
+        state.reset()
+    return state
+
+
+_EXPERIMENT_CREATED: bool = False
+_EXPERIMENT_DIR: str | None = None
+
+
+def _pretty_output_active() -> bool:
+    """Return True when the resolved CLI output mode is pretty.
+
+    Reads the mode :func:`resolve_mode` stashed on the root click context.
+    Defaults to True when no mode was resolved (direct function calls in
+    tests) — plain-text echo is only harmful in envelope/NDJSON streams,
+    and those always resolve a mode first.
+    """
+    ctx = click.get_current_context(silent=True)
+    root = ctx
+    while root is not None and root.parent is not None:
+        root = root.parent
+    if root is not None and isinstance(root.obj, dict):
+        mode = root.obj.get("codeprobe_output_mode")
+        if mode is not None:
+            return getattr(mode, "mode", "pretty") == "pretty"
+    return True
+
+
 def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None:
     """Update the experiment's task_ids so ``run`` only executes these tasks.
 
-    If exactly one experiment exists under ``<repo>/.codeprobe/``, its
-    ``experiment.json`` is updated with the new task ID list.  When zero
-    or multiple experiments exist, this is a no-op (the user must scope
-    manually via ``--config``).
+    Resolves the experiment with the same lookup order ``run`` uses: a
+    direct ``.codeprobe/experiment.json`` first, then a single named
+    subdirectory. When no experiment exists, a default one is auto-created
+    (``ensure_default_experiment``) so the Quick Start ``mine -> run``
+    sequence needs no manual init. When multiple experiments exist this is
+    a no-op — never guess; the user must scope via ``--config``.
     """
-    from codeprobe.core.experiment import load_experiment, save_experiment
-
-    codeprobe_dir = repo_path / ".codeprobe"
-    if not codeprobe_dir.is_dir():
-        return
-
-    candidates = sorted(
-        d
-        for d in codeprobe_dir.iterdir()
-        if d.is_dir() and (d / "experiment.json").is_file()
+    from codeprobe.core.experiment import (
+        ensure_default_experiment,
+        find_experiment_candidates,
+        load_experiment,
+        save_experiment,
     )
-    if len(candidates) != 1:
+
+    global _EXPERIMENT_CREATED, _EXPERIMENT_DIR
+
+    candidates = find_experiment_candidates(repo_path)
+    if len(candidates) > 1:
         return
 
-    exp_dir = candidates[0]
+    created = not candidates
+    if created:
+        try:
+            exp_dir = ensure_default_experiment(repo_path)
+        except ValueError:  # defensive: only reachable on a concurrent write
+            return
+    else:
+        exp_dir = candidates[0]
+
     experiment = load_experiment(exp_dir)
     updated = replace(experiment, task_ids=tuple(sorted(task_ids)))
     save_experiment(exp_dir, updated)
+
+    _EXPERIMENT_CREATED = created
+    _EXPERIMENT_DIR = str(exp_dir)
+    if created and _pretty_output_active():
+        click.echo("Created default experiment at .codeprobe/experiment.json")
 
 
 def _suggest_path(missing: Path) -> str | None:
@@ -752,13 +1057,22 @@ def _looks_like_url(path: str) -> bool:
 
 
 def _resolve_repo_path(path: str) -> Path:
-    """Resolve a path or URL to a local repo directory.
+    """Resolve a local path, git URL, or ``github:owner/repo`` to a repo directory.
+
+    An existing filesystem path always wins: it is validated as a git repo
+    and never cloned. Cloning requires an explicit form (``https://``,
+    ``git@``, or ``github:owner/repo``); bare ``owner/repo`` tokens are
+    ambiguous and rejected with a prescriptive error naming both readings.
 
     Raises ``click.UsageError`` (exit 2) with actionable messages when the
     path does not exist, is not a directory, or is not a git repository.
     """
+    if Path(path).exists():
+        repo_path = Path(path).resolve()
+        _validate_git_repo(repo_path)
+        return repo_path
     if _is_git_url(path):
-        return _clone_repo(path)
+        return _clone_repo(_normalize_url(path))
     # URL-shaped inputs that our git-URL regex rejected (wrong scheme, etc.)
     # are routed through the URL validator so the user gets a URL-appropriate
     # error, not a confusing "Path does not exist".
@@ -772,19 +1086,28 @@ def _resolve_repo_path(path: str) -> Path:
             next_try_value="",
             detail={"path": path},
         )
-    repo_path = Path(path).resolve()
-    if not repo_path.exists():
-        suggestion = _suggest_path(repo_path)
-        hint = f" Did you mean: {suggestion}?" if suggestion else ""
+    if _is_shorthand_shaped(path):
         raise PrescriptiveError(
             code="INVALID_GIT_URL",
-            message=f"Path does not exist: {repo_path}.{hint}",
-            next_try_flag="paths-or-https-url",
-            next_try_value=suggestion or "",
-            detail={"path": str(repo_path), "suggestion": suggestion or ""},
+            message=(
+                f"{path!r} is not an existing local path. To clone from "
+                f"GitHub pass github:{path} or the full https URL; to mine "
+                "a local repo pass an existing path."
+            ),
+            next_try_flag="path-or-github-shorthand",
+            next_try_value=f"github:{path}",
+            detail={"path": path},
         )
-    _validate_git_repo(repo_path)
-    return repo_path
+    repo_path = Path(path).resolve()
+    suggestion = _suggest_path(repo_path)
+    hint = f" Did you mean: {suggestion}?" if suggestion else ""
+    raise PrescriptiveError(
+        code="INVALID_GIT_URL",
+        message=f"Path does not exist: {repo_path}.{hint}",
+        next_try_flag="paths-or-https-url",
+        next_try_value=suggestion or "",
+        detail={"path": str(repo_path), "suggestion": suggestion or ""},
+    )
 
 
 def _interactive_config(
@@ -835,28 +1158,35 @@ def _enrich_sdlc_tasks(
     no_llm: bool,
     enrich: bool,
 ) -> list[Task]:
-    """Apply LLM instruction generation or legacy enrichment to SDLC tasks."""
-    if not no_llm:
-        from codeprobe.core.llm import llm_available
+    """Apply LLM instruction generation or legacy enrichment to SDLC tasks.
+
+    ``no_llm`` wins over everything, including ``enrich``: --no-llm is a
+    zero-model-call guarantee, so tasks pass through untouched.
+    """
+    if no_llm:
+        return tasks
+
+    from codeprobe.core.llm import llm_available
+
+    if llm_available():
         from codeprobe.mining import generate_instructions
 
-        if llm_available():
-            click.echo("Generating instructions via LLM...")
-            return generate_instructions(
-                tasks,
-                pr_bodies=mine_result.pr_bodies,
-                changed_files_map=mine_result.changed_files_map,
-            )
-        click.echo(
-            "No LLM backend available — using regex fallback for instructions.\n"
-            "Install an LLM backend for better quality: "
-            "pip install codeprobe[anthropic]"
+        click.echo("Generating instructions via LLM...")
+        return generate_instructions(
+            tasks,
+            pr_bodies=mine_result.pr_bodies,
+            changed_files_map=mine_result.changed_files_map,
         )
-    elif enrich:
+    if enrich:
         from codeprobe.mining.extractor import enrich_tasks
 
         click.echo("Enriching low-quality tasks via LLM...")
         return enrich_tasks(tasks)
+    click.echo(
+        "No LLM backend available — using regex fallback for instructions.\n"
+        "Install an LLM backend for better quality: "
+        "pip install codeprobe[anthropic]"
+    )
     return tasks
 
 
@@ -913,6 +1243,28 @@ def _enrichment_status(tasks: list[Task], *, llm_attempted: bool) -> str:
     )
 
 
+def _format_llm_spend_line() -> str:
+    """Render the metered LLM spend for the summary block.
+
+    Figures are labeled ``calculated`` — this is computed spend, never
+    ``api_reported`` (cost_source vocabulary, adapters/protocol.py). A run
+    with zero calls (e.g. --no-llm) reads ``0``, making the zero-model-call
+    guarantee observable.
+    """
+    from codeprobe.core.llm import get_llm_spend
+
+    spend = get_llm_spend()
+    if spend.calls == 0:
+        return "0"
+    line = (
+        f"{spend.calls} (in={spend.input_tokens} out={spend.output_tokens} "
+        f"tokens, ~${spend.cost_usd:.4f} calculated"
+    )
+    if spend.cost_unknown_calls > 0:
+        line += f", {spend.cost_unknown_calls} call(s) with unknown cost"
+    return line + ")"
+
+
 def _print_summary_block(
     *,
     task_count: int,
@@ -941,6 +1293,7 @@ def _print_summary_block(
         click.echo(f"  Time elapsed:    {_format_elapsed(elapsed)}")
     if enrichment_status is not None:
         click.echo(f"  Instructions:    {enrichment_status}")
+    click.echo(f"  LLM calls:       {_format_llm_spend_line()}")
     click.echo(f"  Output:          {tasks_dir}")
     if suite_path is not None:
         click.echo(f"  Suite manifest:  {suite_path}")
@@ -971,6 +1324,54 @@ def _comprehension_generator_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _check_language_supported(language: str, task_type: str) -> None:
+    """Fail fast when *language* is outside the Py/Go/JS-TS mining matrix.
+
+    ``"unknown"`` never hard-fails: empty or docs-only repos are handled by
+    the existing zero-task paths. Comprehension mining is stricter — its
+    import-graph static analysis exists only for Python.
+
+    Raises :class:`DiagnosticError` (UNSUPPORTED_LANGUAGE); there is no
+    deterministic flag remedy, so PrescriptiveError does not apply.
+    """
+    if language == "unknown":
+        return
+    if language not in SUPPORTED_MINING_LANGUAGES:
+        raise DiagnosticError(
+            code="UNSUPPORTED_LANGUAGE",
+            message=(
+                "codeprobe mine supports Python, Go, and JavaScript/TypeScript "
+                f"repositories. Detected primary language: {language}. "
+                "Other languages produce zero tasks because test-command "
+                "generation exists only for the supported matrix."
+            ),
+            terminal=True,
+            diagnose_cmd="git ls-files | head",
+            detail={
+                "detected_language": language,
+                "supported": sorted(SUPPORTED_MINING_LANGUAGES),
+            },
+        )
+    if task_type == "architecture_comprehension" and language != "python":
+        raise DiagnosticError(
+            code="UNSUPPORTED_LANGUAGE",
+            message=(
+                "Comprehension mining is Python-only: it builds tasks from "
+                "import-graph static analysis of Python modules. Detected "
+                f"primary language: {language}. For Go or "
+                "JavaScript/TypeScript repositories use --goal quality "
+                "instead."
+            ),
+            terminal=True,
+            diagnose_cmd="git ls-files | head",
+            detail={
+                "detected_language": language,
+                "supported": ["python"],
+                "alternative": "--goal quality",
+            },
+        )
 
 
 def _suitability_warnings(
@@ -1398,6 +1799,8 @@ def _dispatch_by_task_type(
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
     sg_repo: str = "",
+    resume: bool = False,
+    tenant: str | None = None,
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
@@ -1410,6 +1813,11 @@ def _dispatch_by_task_type(
     ``org_scale_cross_repo`` is handled upstream via the ``--org-scale``
     flag path in :func:`run_mine` (it has a dedicated multi-repo scanning
     pipeline that doesn't share the single-repo dispatch surface here).
+
+    ``--resume`` only makes sense where SDLC merge mining records
+    MineState (the ``sdlc`` and ``mixed`` pipelines); probe and
+    comprehension generation is stateless, so *resume* on those paths is
+    rejected loudly rather than silently ignored.
     """
     from codeprobe.mining.task_types import TASK_TYPE_REGISTRY
 
@@ -1427,6 +1835,8 @@ def _dispatch_by_task_type(
         dual_verify=dual_verify,
         narrative_source=narrative_source,
         sg_repo=sg_repo,
+        resume=resume,
+        tenant=tenant,
     )
 
     def _sdlc() -> None:
@@ -1467,6 +1877,25 @@ def _dispatch_by_task_type(
         )
         _sdlc()
         return
+
+    # Probe and comprehension generation is stateless — there is no
+    # MineState to resume from. Refuse --resume rather than silently
+    # ignore it (codeprobe-f7rl.14).
+    if resume and info.dispatch_key in ("probe", "comprehension"):
+        raise PrescriptiveError(
+            code="MUTEX_FLAGS",
+            message=(
+                f"Cannot use --resume with task type {task_type}: only SDLC "
+                "merge mining records resumable state; probe and "
+                "comprehension tasks are regenerated from scratch. "
+                "Re-run without --resume."
+            ),
+            next_try_flag="--resume",
+            next_try_value="",
+            detail={
+                "conflicting_flags": ["--resume", f"--task-type {task_type}"],
+            },
+        )
 
     # Probes are statically generated: no PR diff for an artifact oracle, no
     # mined test command for a direct leg. Refuse --dual-verify rather than
@@ -1522,24 +1951,8 @@ def _dispatch_cross_repo(
     )
     from codeprobe.mining.writer import write_task_dir
 
-    # Resolve secondary repos
-    secondaries: list[Path] = []
-    for entry in cross_repo:
-        if _is_git_url(entry):
-            secondaries.append(_clone_repo(entry))
-        else:
-            rp = Path(entry).resolve()
-            if not rp.exists():
-                suggestion = _suggest_path(rp)
-                hint = f" Did you mean: {suggestion}?" if suggestion else ""
-                raise PrescriptiveError(
-                    code="INVALID_GIT_URL",
-                    message=f"--cross-repo path does not exist: {rp}.{hint}",
-                    next_try_flag="paths-or-https-url",
-                    next_try_value=suggestion or "",
-                    detail={"path": str(rp), "suggestion": suggestion or ""},
-                )
-            secondaries.append(rp)
+    # Resolve secondary repos (existing path wins; cloning needs an explicit form)
+    secondaries: list[Path] = [_resolve_repo_path(entry) for entry in cross_repo]
 
     # Select symbol resolver per --backend (default: auto).
     from codeprobe.mining.multi_repo import SymbolResolver
@@ -1730,6 +2143,8 @@ def _mine_tasks_with_progress(
     min_files: int,
     min_quality: float,
     subsystems: tuple[str, ...],
+    no_llm: bool = False,
+    state: MineState | None = None,
 ) -> MineResult:
     """Call :func:`mine_tasks` with a click.progressbar when stderr is a TTY.
 
@@ -1738,6 +2153,9 @@ def _mine_tasks_with_progress(
     internal search-limit (``count*4`` or ``count*8``), so it only tracks
     the per-PR scoring loop — the subsequent LLM enrichment and writing
     phases print their own progress messages.
+
+    *state* threads the resumable MineState store into the extractor so
+    per-commit progress is durable across Ctrl-C (see ``mine --resume``).
     """
     from codeprobe.mining import mine_tasks
 
@@ -1755,6 +2173,8 @@ def _mine_tasks_with_progress(
             min_files=min_files,
             min_quality=min_quality,
             subsystems=subsystems,
+            state=state,
+            no_llm=no_llm,
         )
 
     with click.progressbar(
@@ -1770,6 +2190,8 @@ def _mine_tasks_with_progress(
             min_quality=min_quality,
             subsystems=subsystems,
             progress=bar.update,
+            state=state,
+            no_llm=no_llm,
         )
 
 
@@ -1787,6 +2209,12 @@ def _resolve_narrative_source(
     * If the user passed ``--narrative-source`` explicitly, validate each
       name and return the parsed tuple.
     * If omitted and ``tasks_mined`` is True:
+        * When the detected host is neither GitHub nor local, raise a
+          :class:`PrescriptiveError` naming the GitHub-only limitation —
+          PR/MR narrative fetch shells the ``gh`` CLI, so probing a
+          GitLab/Bitbucket/Azure/Gitea remote would always come back
+          empty and produce a misleading "squash-only" diagnosis. No
+          ``gh`` subprocess is spawned on this path.
         * When ``pr_bodies`` contains at least one non-empty body, OR the
           ``gh`` CLI reports at least one merged PR, default to
           ``("pr",)`` (backward compat).
@@ -1802,6 +2230,7 @@ def _resolve_narrative_source(
     patching gymnastics).
     """
     from codeprobe.mining.sources import (
+        detect_source,
         has_pr_narratives,
         parse_narrative_selection,
         select_narrative_adapters,
@@ -1842,8 +2271,32 @@ def _resolve_narrative_source(
     if pr_bodies and any(body.strip() for body in pr_bodies.values()):
         return ("pr",)
 
+    # Non-GitHub remotes: PR/MR narrative fetch is gh-CLI-only, so the gh
+    # probe below would always report "no PRs" and we would emit the
+    # factually wrong "squash-only" diagnosis. Refuse honestly instead,
+    # without spawning any gh subprocess.
+    source = detect_source(repo_path)
+    if source.host not in ("github", "local"):
+        host_display = _HOST_DISPLAY_NAMES.get(source.host, source.host)
+        raise PrescriptiveError(
+            code="NARRATIVE_SOURCE_UNDETECTABLE",
+            message=(
+                "PR/MR narrative fetch is GitHub-only (it uses the gh CLI). "
+                f"Detected host: {source.host}. {host_display} merge-request "
+                "narratives are not fetched. Pass --narrative-source commits "
+                "to mine from commit messages instead — lower narrative "
+                "quality: no MR bodies or linked-issue context. Accepted "
+                "names: pr, commits, rfcs."
+            ),
+            next_try_flag="--narrative-source",
+            next_try_value="commits",
+            detail={"host": source.host},
+        )
+
     # Slower fallback: probe gh to see if the repo has PRs at all. Needed
     # when mining yielded tasks but every PR body happened to be empty.
+    # Only reached for github/local hosts, where the "squash-only or
+    # no-remote history" diagnosis below is accurate.
     if has_pr_narratives(repo_path):
         return ("pr",)
 
@@ -1862,15 +2315,18 @@ def _resolve_narrative_source(
     )
 
 
-def _resolve_sdlc_sg_repo(repo_path: Path, explicit_sg_repo: str) -> str:
-    """Derive ``sg_repo`` for SDLC mining.
+def _resolve_origin_sg_repo(repo_path: Path, explicit_sg_repo: str) -> str:
+    """Derive ``sg_repo`` from the repo's origin remote.
 
     Explicit ``--sg-repo`` wins. Otherwise we look up the repo's origin
     remote and convert it to the natural Sourcegraph identifier
     ``github.com/{owner}/{repo}`` so the Sourcegraph preamble's
-    ``repo:^{sg_repo}$`` filter matches the live repository (Q4: SDLC
-    tasks were silently shipping with empty ``sg_repo`` and unscoping the
-    agent's queries).
+    ``repo:^{sg_repo}$`` filter matches the live repository (Q4: tasks
+    were silently shipping with empty ``sg_repo`` and unscoping the
+    agent's queries). Used by both the SDLC and org-scale mining paths.
+
+    Returns ``""`` when the origin remote is missing or not a parsable
+    GitHub URL; callers decide whether that is fatal.
     """
     if explicit_sg_repo:
         return explicit_sg_repo
@@ -1917,20 +2373,35 @@ def _dispatch_sdlc(
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
     sg_repo: str = "",
+    resume: bool = False,
+    tenant: str | None = None,
 ) -> None:
-    """Run PR-based SDLC mining pipeline."""
+    """Run PR-based SDLC mining pipeline.
+
+    MineState is opened on every run — not just ``--resume`` — so per-commit
+    progress is durable and a later resume has state to pick up. On resume
+    the extractor skips commits already recorded ``completed`` and the
+    partial tasks dir is preserved instead of cleared.
+    """
     from codeprobe.mining import write_task_dir
 
-    mine_result = _mine_tasks_with_progress(
-        repo_path,
-        count=count,
-        source_hint=source,
-        min_files=min_files,
-        min_quality=min_quality,
-        subsystems=subsystems,
-    )
+    state = _open_mine_state(repo_path, tenant, resume)
+    try:
+        mine_result = _mine_tasks_with_progress(
+            repo_path,
+            count=count,
+            source_hint=source,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            state=state,
+        )
+    finally:
+        state.close()
     tasks = mine_result.tasks
-    effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
+    _record_mine_yield(count, len(tasks), mine_result.rejections)
+    effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
 
     if tasks:
         # INV1 loud-error guard: if mining produced tasks but no
@@ -1970,9 +2441,16 @@ def _dispatch_sdlc(
             mine_result = replace(mine_result, tasks=tasks)
 
     if not tasks:
-        click.echo(
-            "No suitable tasks found. Try a repo with merged PRs that include tests."
-        )
+        if resume:
+            click.echo(
+                "No new tasks mined on resume — commits already recorded as "
+                "completed were skipped and existing task output is preserved."
+            )
+        else:
+            click.echo(
+                "No suitable tasks found. Try a repo with merged PRs that "
+                "include tests."
+            )
         return
 
     if (
@@ -1992,7 +2470,8 @@ def _dispatch_sdlc(
 
     llm_used = _was_llm_used(no_llm)
 
-    tasks_dir = _clear_tasks_dir(repo_path)
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume)
+    preserved_ids = _existing_task_ids(tasks_dir) if resume else set()
     for task in tasks:
         write_task_dir(
             task,
@@ -2001,7 +2480,9 @@ def _dispatch_sdlc(
             ground_truth=mine_result.ground_truth_map.get(task.id),
         )
 
-    _record_task_ids_in_experiment(repo_path, [t.id for t in tasks])
+    _record_task_ids_in_experiment(
+        repo_path, sorted(preserved_ids | {t.id for t in tasks})
+    )
     _show_results_table(tasks)
     _show_shortfall_notice(count, len(tasks), mine_result.rejections)
     _finish_mine_output(
@@ -2251,8 +2732,15 @@ def _dispatch_mixed(
     dual_verify: bool = False,
     narrative_source: tuple[str, ...] = (),
     sg_repo: str = "",
+    resume: bool = False,
+    tenant: str | None = None,
 ) -> None:
-    """Run SDLC mining + probe generation, combining results."""
+    """Run SDLC mining + probe generation, combining results.
+
+    The SDLC half records MineState exactly like :func:`_dispatch_sdlc`;
+    on ``--resume`` completed merge commits are skipped and preserved task
+    dirs are kept. Probe generation is stateless and simply regenerates.
+    """
     from codeprobe.mining import write_task_dir as write_mining_task
     from codeprobe.probe.adapter import ProbeTaskAdapter
     from codeprobe.probe.generator import generate_probes
@@ -2261,22 +2749,29 @@ def _dispatch_mixed(
     sdlc_count = max(1, count // 2)
     probe_count = max(1, count - sdlc_count)
 
-    tasks_dir = _clear_tasks_dir(repo_path)
-    all_task_ids: list[str] = []
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume)
+    all_task_ids: list[str] = sorted(_existing_task_ids(tasks_dir)) if resume else []
     sdlc_tasks: list = []
 
     # SDLC mining (may produce 0 tasks on cold-start repos)
-    mine_result = _mine_tasks_with_progress(
-        repo_path,
-        count=sdlc_count,
-        source_hint=source,
-        min_files=min_files,
-        min_quality=min_quality,
-        subsystems=subsystems,
-    )
+    state = _open_mine_state(repo_path, tenant, resume)
+    try:
+        mine_result = _mine_tasks_with_progress(
+            repo_path,
+            count=sdlc_count,
+            source_hint=source,
+            min_files=min_files,
+            min_quality=min_quality,
+            subsystems=subsystems,
+            no_llm=no_llm,
+            state=state,
+        )
+    finally:
+        state.close()
     sdlc_tasks = mine_result.tasks
+    _record_mine_yield(sdlc_count, len(sdlc_tasks), mine_result.rejections)
     if sdlc_tasks:
-        effective_sg_repo = _resolve_sdlc_sg_repo(repo_path, sg_repo)
+        effective_sg_repo = _resolve_origin_sg_repo(repo_path, sg_repo)
         resolved_selection = _resolve_narrative_source(
             narrative_source,
             repo_path,
@@ -2315,13 +2810,20 @@ def _dispatch_mixed(
         all_task_ids.extend(p.name for p in probe_dirs)
 
     if not sdlc_tasks and not probes:
-        click.echo(
-            "No tasks generated. Try a repo with merged PRs or more "
-            "extractable symbols."
-        )
+        if resume and all_task_ids:
+            _record_task_ids_in_experiment(repo_path, sorted(set(all_task_ids)))
+            click.echo(
+                "No new tasks generated on resume — existing task output "
+                "is preserved."
+            )
+        else:
+            click.echo(
+                "No tasks generated. Try a repo with merged PRs or more "
+                "extractable symbols."
+            )
         return
 
-    _record_task_ids_in_experiment(repo_path, all_task_ids)
+    _record_task_ids_in_experiment(repo_path, sorted(set(all_task_ids)))
 
     # Show combined results
     if sdlc_tasks:
@@ -2453,6 +2955,7 @@ def run_mine(
     narrative_source: tuple[str, ...] = (),
     refresh_dir: str | None = None,
     accept_structural_change: bool = False,
+    resume: bool = False,
     explicit_set: frozenset[str] = frozenset(),
     profile_set: frozenset[str] = frozenset(),
     tenant: str | None = None,
@@ -2463,17 +2966,24 @@ def run_mine(
 ) -> None:
     """Mine eval tasks from a repository."""
     from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
-    from codeprobe.cli.envelope import WarningEntry as _WarningEntry
     from codeprobe.tenant_lock import acquire_tenant_lock
 
-    global _MINE_START_TIME
+    global _MINE_START_TIME, _EXPERIMENT_CREATED, _EXPERIMENT_DIR
+    global _CURRENT_TASKS_DIR, _MINE_YIELD
     _MINE_START_TIME = time.monotonic()
+    _EXPERIMENT_CREATED = False
+    _EXPERIMENT_DIR = None
+    # Reset per-invocation module state so a zero-yield mine cannot report
+    # a stale tasks dir or shortfall summary left over from a previous
+    # in-process invocation (CliRunner-based tests share module state).
+    _CURRENT_TASKS_DIR = None
+    _MINE_YIELD = None
 
     # Warnings that should ride along with the terminating envelope. The v0.7
     # defaults block below appends to this when the narrative-source resolver
     # fell back to the deterministic priority because no LLM backend was
     # available (PRD §13-T4 ZFC refactor).
-    _defaults_warnings: list[_WarningEntry] = []
+    _defaults_warnings: list[WarningEntry] = []
 
     # R4 tenant lock: serialize concurrent mine invocations in the same
     # tenant (same cwd + same $USER). On contention a DiagnosticError
@@ -2481,6 +2991,22 @@ def run_mine(
     _lock_cm = acquire_tenant_lock(tenant or "local", "mine")
     _lock_cm.__enter__()
     try:
+        # Zero the LLM spend ledger so the end-of-run summary and terminal
+        # envelope report exactly this invocation's metered calls (decision
+        # 6: cost provenance on every summary surface).
+        from codeprobe.core.llm import reset_llm_spend
+
+        reset_llm_spend()
+
+        # --no-llm hard guarantee: flip the process-wide gate so ANY code
+        # path that reaches call_llm fails loudly instead of spending quota,
+        # and llm_available() steers callers onto deterministic fallbacks.
+        # Reset in the finally below so state never leaks across invocations.
+        if no_llm:
+            from codeprobe.core.llm import set_no_llm_mode
+
+            set_no_llm_mode(True)
+
         _mine_mode = resolve_mode(
         "mine", json_flag, no_json_flag, json_lines_flag,
         )
@@ -2527,7 +3053,7 @@ def run_mine(
                         "llm-unavailable",
                     ):
                         _defaults_warnings.append(
-                            _WarningEntry(
+                            WarningEntry(
                                 code="LLM_UNAVAILABLE",
                                 message=(
                                     "Narrative-source was selected by the "
@@ -2555,6 +3081,22 @@ def run_mine(
                     err=True,
                 )
 
+
+        # --resume replays interrupted SDLC merge mining from MineState.
+        # --refresh re-mines a single existing task dir — there is nothing
+        # for resume to pick up there, so the combination is refused.
+        if resume and refresh_dir is not None:
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    "Cannot use --resume with --refresh: --refresh re-mines "
+                    "an existing task directory and records no resumable "
+                    "state. Re-run without --resume."
+                ),
+                next_try_flag="--resume",
+                next_try_value="",
+                detail={"conflicting_flags": ["--resume", "--refresh"]},
+            )
 
         # Refresh dispatch: runs before any other mining path so users don't
         # accidentally re-mine a whole tasks dir when they only meant to
@@ -2672,6 +3214,24 @@ def run_mine(
                 detail={"conflicting_flags": ["--dual-verify", conflicting]},
             )
 
+        # --resume only applies to single-repo SDLC merge mining: the
+        # org-scale and cross-repo pipelines record no MineState. Refuse
+        # loudly instead of silently ignoring the flag. Must run after
+        # resolve_effective_config: --goal mcp sets org_scale.
+        if resume and (org_scale or cross_repo):
+            conflicting = "--org-scale" if org_scale else "--cross-repo"
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    f"Cannot use --resume with {conflicting}: only single-repo "
+                    "SDLC merge mining records resumable state. Re-run "
+                    "without --resume."
+                ),
+                next_try_flag="--resume",
+                next_try_value="",
+                detail={"conflicting_flags": ["--resume", conflicting]},
+            )
+
         # AC1: when the default path '.' is used and cwd isn't a git repo, prompt
         # for a usable path rather than bailing out with a hard error. This is the
         # "guided flow for missing inputs" case — the user ran `codeprobe mine`
@@ -2688,6 +3248,13 @@ def run_mine(
                 )
 
         repo_path = _resolve_repo_path(path)
+
+        # Language gate (locked decision 5): the mining matrix is
+        # Python/Go/JS-TS, comprehension is Python-only. Fail fast before
+        # any PR scanning; "unknown" (empty/docs-only repos) stays with the
+        # existing zero-task paths.
+        repo_language = detect_repo_language(repo_path)
+        _check_language_supported(repo_language, task_type)
 
         # Non-blocking suitability check applies to every dispatch path
         # (cross-repo, org-scale, and the single-repo pipelines below).
@@ -2717,28 +3284,16 @@ def run_mine(
 
             if org_scale:
                 # Build repo_paths list: primary path + any --repos entries
+                # (existing path wins; cloning needs an explicit form).
+                # Every secondary repo passes the same language gate as the
+                # primary so an unsupported --repos entry fails fast too.
                 repo_paths = [repo_path]
-                for r in repos:
-                    if _is_git_url(r):
-                        repo_paths.append(_clone_repo(r))
-                    else:
-                        rp = Path(r).resolve()
-                        if not rp.exists():
-                            suggestion = _suggest_path(rp)
-                            hint = (
-                                f" Did you mean: {suggestion}?" if suggestion else ""
-                            )
-                            raise PrescriptiveError(
-                                code="INVALID_GIT_URL",
-                                message=f"--repos path does not exist: {rp}.{hint}",
-                                next_try_flag="paths-or-https-url",
-                                next_try_value=suggestion or "",
-                                detail={
-                                    "path": str(rp),
-                                    "suggestion": suggestion or "",
-                                },
-                            )
-                        repo_paths.append(rp)
+                for extra in repos:
+                    extra_path = _resolve_repo_path(extra)
+                    _check_language_supported(
+                        detect_repo_language(extra_path), task_type
+                    )
+                    repo_paths.append(extra_path)
                 _run_org_scale_mine(
                     repo_paths,
                     count=count,
@@ -2772,6 +3327,10 @@ def run_mine(
                 ) = _interactive_config(
                     count, source, min_files, subsystems, discover_subsystems, repo_path
                 )
+                # The interactive flow may have switched task_type (e.g. to
+                # comprehension); re-check it against the detected language
+                # BEFORE _resolve_task_type's fallbacks can mask the request.
+                _check_language_supported(repo_language, task_type)
 
             # Apply cold-start and comprehension-availability fallbacks
             task_type = _resolve_task_type(task_type, repo_path, source)
@@ -2791,7 +3350,8 @@ def run_mine(
             subsystems = tuple(s if s.endswith("/") else s + "/" for s in subsystems)
 
             if interactive and not _show_preflight(
-                repo_path, goal_name, count, source, min_files, bias, subsystems
+                repo_path, goal_name, count, source, min_files, bias, subsystems,
+                no_llm,
             ):
                 click.echo("Aborted.")
                 return
@@ -2815,15 +3375,16 @@ def run_mine(
                 dual_verify=dual_verify,
                 narrative_source=narrative_source,
                 sg_repo=sg_repo,
+                resume=resume,
+                tenant=tenant,
             )
         except KeyboardInterrupt as exc:
-            # AC3: clean up partial output and exit with the standard SIGINT code.
+            # Never destroy customer-side work (locked decision 3): the
+            # partial tasks dir survives so `mine --resume` can pick up
+            # where the interrupt landed. Exit with the standard SIGINT code.
             partial = _CURRENT_TASKS_DIR
             if partial is not None and partial.exists():
-                shutil.rmtree(partial, ignore_errors=True)
-                message = (
-                    f"Interrupted. Removed partial output at {partial}."
-                )
+                message = f"Interrupted. Partial output preserved at {partial}."
                 partial_path = str(partial)
             else:
                 message = "Interrupted."
@@ -2831,7 +3392,7 @@ def run_mine(
             raise DiagnosticError(
                 code="INTERRUPTED",
                 message=message,
-                diagnose_cmd="codeprobe mine ... --resume",
+                diagnose_cmd=f"codeprobe mine {path} --resume",
                 terminal=True,
                 exit_code=130,
                 detail={"partial_path": partial_path},
@@ -2852,19 +3413,68 @@ def run_mine(
                         for c in tasks_dir.iterdir()
                         if c.is_dir() and (c / "instruction.md").is_file()
                     )
+            from codeprobe.core.llm import get_llm_spend
+
+            _spend = get_llm_spend()
+            data: dict[str, Any] = {
+                "tasks_dir": tasks_dir_str,
+                "task_count": task_count,
+                "goal": goal,
+                "tenant": tenant,
+                "tenant_source": tenant_source,
+                "comprehension_consensus": _COMPREHENSION_CONSENSUS,
+                "experiment_created": _EXPERIMENT_CREATED,
+                "experiment_dir": _EXPERIMENT_DIR,
+                # Metered internal-judgment spend for this invocation.
+                # cost_source is always "calculated": backend-reported or
+                # tokens x pricing table, never api_reported provenance.
+                "llm_spend": {
+                    "calls": _spend.calls,
+                    "input_tokens": _spend.input_tokens,
+                    "output_tokens": _spend.output_tokens,
+                    "cost_usd": _spend.cost_usd,
+                    "cost_unknown_calls": _spend.cost_unknown_calls,
+                    "cost_source": "calculated",
+                },
+            }
+            # Zero-yield / shortfall honesty: mining executed correctly, so
+            # ok stays true and exit stays 0 (emptiness is data) — but the
+            # envelope must be distinguishable from productive mining. Fire
+            # on zero yield, or on a filtered shortfall (mined < requested
+            # with at least one rejection counter set — mirrors the pretty
+            # _show_shortfall_notice guard, so a --resume run that merely
+            # skipped completed commits stays silent).
+            envelope_warnings = list(_defaults_warnings)
+            shortfall_steps: list[NextStep] = []
+            mine_yield = _MINE_YIELD
+            if mine_yield is not None:
+                rejections = mine_yield.rejections
+                filtered_shortfall = (
+                    mine_yield.mined < mine_yield.requested
+                    and rejections is not None
+                    and rejections.total > 0
+                )
+                if task_count == 0 or filtered_shortfall:
+                    data["rejections"] = _rejection_payload(rejections)
+                    envelope_warnings.append(
+                        _shortfall_warning(
+                            mine_yield.requested, mine_yield.mined, rejections
+                        )
+                    )
+                    shortfall_steps = _shortfall_next_steps(
+                        path, rejections, min_quality, min_files
+                    )
             emit_envelope(
                 command="mine",
-                data={
-                    "tasks_dir": tasks_dir_str,
-                    "task_count": task_count,
-                    "goal": goal,
-                    "tenant": tenant,
-                    "tenant_source": tenant_source,
-                    "comprehension_consensus": _COMPREHENSION_CONSENSUS,
-                },
-                warnings=_defaults_warnings or None,
+                data=data,
+                warnings=envelope_warnings or None,
+                next_steps=shortfall_steps or None,
             )
     finally:
+        if no_llm:
+            from codeprobe.core.llm import set_no_llm_mode
+
+            set_no_llm_mode(False)
         _lock_cm.__exit__(None, None, None)
 
 
@@ -2952,10 +3562,31 @@ def _run_org_scale_mine(
             click.echo("No families selected. Aborted.")
             return
 
-    # Default sg_repo from primary repo name if not explicitly provided
+    # Derive sg_repo from the primary repo's origin remote when not
+    # explicitly provided. An empty value would silently disable the
+    # Sourcegraph leg (org_scale._get_sg_config returns disabled on empty
+    # sg_repo), corrupting the MCP-benefit comparison — refuse instead.
     effective_sg_repo = sg_repo
     if not effective_sg_repo and mcp_families:
-        effective_sg_repo = f"github.com/sg-evals/{repo_paths[0].name}"
+        effective_sg_repo = _resolve_origin_sg_repo(primary_repo, sg_repo)
+        if not effective_sg_repo:
+            from codeprobe.mining.sources import detect_source
+
+            raise PrescriptiveError(
+                code="SG_REPO_UNRESOLVED",
+                message=(
+                    "Could not derive the Sourcegraph repo identifier from "
+                    "the origin remote. MCP-family mining scopes Sourcegraph "
+                    "consensus queries by --sg-repo; an empty value silently "
+                    "disables the Sourcegraph leg (see "
+                    "org_scale._get_sg_config) and a wrong value corrupts "
+                    "the MCP-benefit comparison. "
+                    "Pass --sg-repo github.com/{owner}/{repo}."
+                ),
+                next_try_flag="--sg-repo",
+                next_try_value="github.com/<owner>/<repo>",
+                detail={"origin": detect_source(primary_repo).remote_url},
+            )
 
     result = mine_org_scale_tasks(
         repo_paths,

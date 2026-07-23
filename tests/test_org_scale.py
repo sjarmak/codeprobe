@@ -789,6 +789,7 @@ class TestLangModule:
         expected = {
             ".c",
             ".cpp",
+            ".cs",
             ".go",
             ".java",
             ".js",

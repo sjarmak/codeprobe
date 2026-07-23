@@ -28,7 +28,6 @@ from codeprobe.config.defaults import (
     resolve_narrative_source,
     resolve_out_calibrate,
     resolve_preamble,
-    resolve_sg_repo,
     resolve_sg_repo_from_origin,
     resolve_suite,
     resolve_task_type,
@@ -312,29 +311,6 @@ def test_resolve_mcp_families_wrong_goal() -> None:
         "quality", {"SOURCEGRAPH_TOKEN": "x"}, "sourcegraph"
     )
     assert value is False
-
-
-# ---------------------------------------------------------------------------
-# resolve_sg_repo
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "remote,expected",
-    [
-        ("https://github.com/numpy/numpy.git", "github.com/sg-evals/numpy"),
-        ("git@github.com:pytorch/pytorch.git", "github.com/sg-evals/pytorch"),
-        ("", ""),
-        (None, ""),
-    ],
-)
-def test_resolve_sg_repo(remote: str | None, expected: str) -> None:
-    value, source = resolve_sg_repo(remote)
-    assert value == expected
-    if expected:
-        assert source == "auto-detected"
-    else:
-        assert source == "default"
 
 
 # ---------------------------------------------------------------------------

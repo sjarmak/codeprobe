@@ -186,3 +186,131 @@ class TestInterpretSurfacesCheckpointScores:
         assert tasks[0]["checkpoint_scores"] == {"step1": 1.0, "step2": 0.5}
         # The CSV-helper field is stripped from the JSON view.
         assert "checkpoint_scores_csv" not in tasks[0]
+
+
+# ---------------------------------------------------------------------------
+# Interrupt envelope contract (codeprobe-f7rl.14): run's recovery guidance
+# must match its actual implicit checkpoint resume — there is no --resume
+# flag on run, so the printed command must never include one.
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(repo: Path) -> None:
+    import subprocess
+
+    repo.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "r@example.com"],
+        ["config", "user.name", "r"],
+    ):
+        subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True
+        )
+    (repo / "README.md").write_text("seed\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "README.md"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "seed"],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _setup_fake_experiment(repo: Path) -> Path:
+    exp_dir = repo / ".codeprobe" / "exp"
+    task_dir = exp_dir / "tasks" / "task-001"
+    tests_dir = task_dir / "tests"
+    tests_dir.mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("Do stuff.", encoding="utf-8")
+    test_sh = tests_dir / "test.sh"
+    test_sh.write_text("#!/bin/bash\nexit 0\n", encoding="utf-8")
+    test_sh.chmod(test_sh.stat().st_mode | stat.S_IXUSR)
+    (exp_dir / "experiment.json").write_text(
+        json.dumps(
+            {
+                "name": "exp",
+                "description": "interrupt contract test",
+                "tasks_dir": "tasks",
+                "task_ids": ["task-001"],
+                "configs": [
+                    {
+                        "label": "baseline",
+                        "agent": "fake",
+                        "model": None,
+                        "extra": {"timeout_seconds": 60},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return exp_dir
+
+
+class TestInterruptEnvelopeContract:
+    """INTERRUPTED from run points at plain re-invocation, not --resume."""
+
+    def test_interrupted_diagnose_cmd_has_no_resume_flag(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        from codeprobe.cli import run_cmd as run_cmd_mod
+        from codeprobe.cli.errors import DiagnosticError
+        from tests.conftest import FakeAdapter
+
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        exp_dir = _setup_fake_experiment(repo)
+        adapter = FakeAdapter(stdout="ok", cost_usd=0.0, duration=0.0)
+
+        with (
+            patch.object(run_cmd_mod, "resolve", return_value=adapter),
+            patch.object(
+                run_cmd_mod, "execute_config", side_effect=KeyboardInterrupt
+            ),
+        ):
+            with pytest.raises(DiagnosticError) as excinfo:
+                run_cmd_mod.run_eval(
+                    str(exp_dir),
+                    agent="fake",
+                    parallel=1,
+                    quiet=True,
+                    force_plain=True,
+                )
+
+        err = excinfo.value
+        assert err.code == "INTERRUPTED"
+        assert err.exit_code == 130
+        assert err.diagnose_cmd == f"codeprobe run {exp_dir}"
+        assert "--resume" not in err.diagnose_cmd
+        assert "resumes from checkpoint" in err.message
+
+    def test_reinvocation_resumes_from_checkpoint(self, tmp_path: Path) -> None:
+        """The printed guidance is true: re-running skips completed tasks."""
+        from unittest.mock import patch
+
+        from codeprobe.cli import run_cmd as run_cmd_mod
+        from tests.conftest import FakeAdapter
+
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        exp_dir = _setup_fake_experiment(repo)
+        adapter = FakeAdapter(stdout="ok", cost_usd=0.0, duration=0.0)
+
+        with patch.object(run_cmd_mod, "resolve", return_value=adapter):
+            run_cmd_mod.run_eval(
+                str(exp_dir), agent="fake", parallel=1, quiet=True, force_plain=True
+            )
+        first_calls = len(adapter.run_calls)
+        assert first_calls >= 1
+
+        with patch.object(run_cmd_mod, "resolve", return_value=adapter):
+            run_cmd_mod.run_eval(
+                str(exp_dir), agent="fake", parallel=1, quiet=True, force_plain=True
+            )
+        assert len(adapter.run_calls) == first_calls

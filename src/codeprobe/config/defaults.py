@@ -514,23 +514,12 @@ def _parse_github_owner_repo(remote_url: str | None) -> str:
     return f"{owner}/{name}"
 
 
-def resolve_sg_repo(remote_url: str | None) -> tuple[str, str]:
-    """Derive ``github.com/sg-evals/{repo_name}`` from the origin remote (Q3)."""
-    owner_repo = _parse_github_owner_repo(remote_url)
-    if not owner_repo:
-        return "", "default"
-    _, _, name = owner_repo.partition("/")
-    return f"github.com/sg-evals/{name}", "auto-detected"
-
-
 def resolve_sg_repo_from_origin(remote_url: str | None) -> str:
     """Derive ``github.com/{owner}/{repo}`` from the origin remote.
 
-    Unlike :func:`resolve_sg_repo` (which targets the ``sg-evals`` index used
-    by Sourcegraph synthetic eval mirrors), this returns the natural
-    Sourcegraph repo identifier matching the live GitHub URL — used by the
-    SDLC mining pipeline so ``metadata.sg_repo`` round-trips into the
-    Sourcegraph preamble's ``repo:^{repo}$`` filter.
+    Returns the natural Sourcegraph repo identifier matching the live
+    GitHub URL — used by the mining pipelines so ``metadata.sg_repo``
+    round-trips into the Sourcegraph preamble's ``repo:^{repo}$`` filter.
 
     Returns ``""`` when the URL is missing or unparsable; callers handle the
     empty value (and the preamble guard fails loudly downstream if a
@@ -689,7 +678,6 @@ __all__ = [
     "resolve_narrative_source",
     "resolve_out_calibrate",
     "resolve_preamble",
-    "resolve_sg_repo",
     "resolve_sg_repo_from_origin",
     "resolve_suite",
     "resolve_task_type",

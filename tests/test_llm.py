@@ -17,6 +17,7 @@ from codeprobe.core.llm import (
     LLMParseError,
     LLMRequest,
     LLMResponse,
+    LLMSpend,
     LLMUnavailableError,
     OpenAISDKBackend,
     _parse_envelope,
@@ -24,7 +25,9 @@ from codeprobe.core.llm import (
     call_claude,
     call_llm,
     claude_available,
+    get_llm_spend,
     llm_available,
+    reset_llm_spend,
 )
 
 # ---------------------------------------------------------------------------
@@ -363,3 +366,172 @@ class TestCallLLMBackwardCompat:
             response = call_llm(LLMRequest(prompt="hello", model="haiku"))
             assert response.text == "hello"
             assert response.backend == "claude-cli"
+
+
+# ---------------------------------------------------------------------------
+# No-LLM mode (--no-llm hard guarantee) tests
+# ---------------------------------------------------------------------------
+
+
+class TestNoLLMMode:
+    @pytest.fixture(autouse=True)
+    def _reset_no_llm_mode(self):
+        """Always restore the default so the gate never leaks across tests."""
+        yield
+        codeprobe.core.llm.set_no_llm_mode(False)
+
+    def test_llm_available_false_even_with_available_backend(self) -> None:
+        with patch("codeprobe.core.llm.shutil.which", return_value="/usr/bin/claude"):
+            assert llm_available() is True
+            codeprobe.core.llm.set_no_llm_mode(True)
+            assert llm_available() is False
+            assert claude_available() is False  # alias gated too
+
+    def test_call_llm_raises_even_with_available_backend(self) -> None:
+        codeprobe.core.llm.set_no_llm_mode(True)
+        with (
+            patch.dict("os.environ", {"CODEPROBE_LLM_BACKEND": "claude-cli"}),
+            patch("codeprobe.core.llm.shutil.which", return_value="/usr/bin/claude"),
+            patch("codeprobe.core.llm.subprocess.run") as mock_run,
+        ):
+            with pytest.raises(LLMUnavailableError, match="no-llm mode active"):
+                call_llm(LLMRequest(prompt="hello", model="haiku"))
+            with pytest.raises(LLMUnavailableError, match="no-llm mode active"):
+                call_claude(LLMRequest(prompt="hello", model="haiku"))
+            mock_run.assert_not_called()
+
+    def test_disable_restores_availability(self) -> None:
+        codeprobe.core.llm.set_no_llm_mode(True)
+        codeprobe.core.llm.set_no_llm_mode(False)
+        with patch("codeprobe.core.llm.shutil.which", return_value="/usr/bin/claude"):
+            assert llm_available() is True
+
+
+# ---------------------------------------------------------------------------
+# Spend ledger tests (codeprobe-f7rl.37)
+# ---------------------------------------------------------------------------
+
+
+class _StubBackend:
+    """Deterministic backend for ledger tests — returns a fixed response."""
+
+    name = "stub"
+
+    def __init__(
+        self,
+        response: LLMResponse | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._response = response
+        self._error = error
+
+    def available(self) -> bool:
+        return True
+
+    def call(self, request: LLMRequest) -> LLMResponse:
+        if self._error is not None:
+            raise self._error
+        assert self._response is not None
+        return self._response
+
+
+class TestSpendLedger:
+    @pytest.fixture(autouse=True)
+    def _clean_ledger(self):
+        """Zero the ledger before and after so tests never see stale spend."""
+        reset_llm_spend()
+        yield
+        reset_llm_spend()
+
+    def test_spend_ledger_accumulates(self) -> None:
+        """Two-thread hammer: calls/tokens/cost sum correctly under the lock."""
+        import threading
+
+        response = LLMResponse(
+            text="ok",
+            input_tokens=1000,
+            output_tokens=500,
+            cost_usd=0.05,
+            model="claude-haiku-4-5-20251001",
+            backend="stub",
+        )
+        stub = _StubBackend(response=response)
+        calls_per_thread = 25
+
+        def hammer() -> None:
+            for _ in range(calls_per_thread):
+                call_llm(LLMRequest(prompt="meter me"))
+
+        with patch("codeprobe.core.llm._resolve_backend", return_value=stub):
+            threads = [threading.Thread(target=hammer) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        spend = get_llm_spend()
+        assert spend.calls == 50
+        assert spend.input_tokens == 50_000
+        assert spend.output_tokens == 25_000
+        assert spend.cost_usd == pytest.approx(2.5)
+        assert spend.cost_unknown_calls == 0
+
+        # Unknown model with no reported cost: tokens still summed, cost
+        # flagged unknown rather than silently zeroed.
+        unknown = _StubBackend(
+            response=LLMResponse(
+                text="ok",
+                input_tokens=10,
+                output_tokens=5,
+                cost_usd=None,
+                model="mystery-model",
+                backend="stub",
+            )
+        )
+        with patch("codeprobe.core.llm._resolve_backend", return_value=unknown):
+            call_llm(LLMRequest(prompt="meter me"))
+
+        spend = get_llm_spend()
+        assert spend.calls == 51
+        assert spend.input_tokens == 50_010
+        assert spend.output_tokens == 25_005
+        assert spend.cost_usd == pytest.approx(2.5)
+        assert spend.cost_unknown_calls == 1
+
+        reset_llm_spend()
+        assert get_llm_spend() == LLMSpend()
+
+    def test_spend_ledger_calculates_cost_from_pricing_table(self) -> None:
+        """No backend-reported cost: derive from tokens x CLAUDE_PRICING."""
+        stub = _StubBackend(
+            response=LLMResponse(
+                text="ok",
+                input_tokens=1_000_000,
+                output_tokens=1_000_000,
+                cost_usd=None,
+                model="claude-haiku-4-5-20251001",
+                backend="stub",
+            )
+        )
+        with patch("codeprobe.core.llm._resolve_backend", return_value=stub):
+            call_llm(LLMRequest(prompt="meter me"))
+
+        spend = get_llm_spend()
+        assert spend.calls == 1
+        # haiku: $1.00/M input + $5.00/M output
+        assert spend.cost_usd == pytest.approx(6.0)
+        assert spend.cost_unknown_calls == 0
+
+    def test_call_llm_records_failed_calls(self) -> None:
+        """Backend failure increments calls only — no tokens, no cost."""
+        stub = _StubBackend(error=LLMExecutionError("boom"))
+        with patch("codeprobe.core.llm._resolve_backend", return_value=stub):
+            with pytest.raises(LLMExecutionError, match="boom"):
+                call_llm(LLMRequest(prompt="meter me"))
+
+        spend = get_llm_spend()
+        assert spend.calls == 1
+        assert spend.input_tokens == 0
+        assert spend.output_tokens == 0
+        assert spend.cost_usd == 0.0
+        assert spend.cost_unknown_calls == 0

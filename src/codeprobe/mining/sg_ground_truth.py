@@ -45,7 +45,7 @@ def enrich_ground_truth(
         defining_file: Repo-relative path where the symbol is defined.
         grep_files: Files already found by local grep.
         repo_sg_name: Sourcegraph repo identifier, e.g.
-            ``"github.com/sg-evals/numpy"``.
+            ``"github.com/numpy/numpy"``.
         sg_url: Sourcegraph instance URL.
 
     Returns:

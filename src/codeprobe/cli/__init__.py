@@ -246,7 +246,8 @@ def init(
     "cross_repo",
     multiple=True,
     metavar="REPO",
-    help="Additional repo (path or git URL) for cross-repo task mining. Can be passed multiple times.",
+    help="Additional repo (path, git URL, or github:owner/repo) for cross-repo "
+    "task mining. Can be passed multiple times.",
 )
 @click.option(
     "--advanced",
@@ -269,7 +270,9 @@ def init(
     "--source",
     default="auto",
     hidden=True,
-    help="Git host: github, gitlab, bitbucket, azure, gitea, local, auto.",
+    help="Git host: github, gitlab, bitbucket, azure, gitea, local, auto. "
+    "PR/MR narrative fetch is GitHub-only (gh CLI); other hosts mine "
+    "commit-message narratives via --narrative-source commits.",
 )
 @click.option(
     "--min-files",
@@ -310,7 +313,10 @@ def init(
     is_flag=True,
     default=False,
     hidden=True,
-    help="Skip LLM instruction generation; use regex fallback (for offline/CI).",
+    help=(
+        "Guarantees zero model calls; instruction generation uses the "
+        "regex fallback (for offline/CI)."
+    ),
 )
 @click.option(
     "--org-scale",
@@ -331,7 +337,8 @@ def init(
     multiple=True,
     default=(),
     hidden=True,
-    help="Repo paths or URLs for multi-repo org-scale mining. Repeatable.",
+    help="Repo paths, git URLs, or github:owner/repo for multi-repo org-scale "
+    "mining. Repeatable.",
 )
 @click.option(
     "--scan-timeout",
@@ -383,8 +390,8 @@ def init(
     default="",
     hidden=True,
     help="Sourcegraph repo identifier for ground truth enrichment "
-    "(e.g. github.com/sg-evals/numpy). Defaults to github.com/sg-evals/{repo_name} "
-    "when --mcp-families is used. Requires one of: SRC_ACCESS_TOKEN, "
+    "(e.g. github.com/numpy/numpy). Defaults to github.com/{owner}/{repo} "
+    "derived from the origin remote. Requires one of: SRC_ACCESS_TOKEN, "
     "SOURCEGRAPH_TOKEN, SOURCEGRAPH_ACCESS_TOKEN. With --mcp-families, missing "
     "auth is a hard error (no silent grep fallback).",
 )
@@ -506,6 +513,19 @@ def init(
         "history is reset to root at the new commit."
     ),
 )
+@click.option(
+    "--resume",
+    "resume",
+    is_flag=True,
+    default=False,
+    help=(
+        "Resume an interrupted mine: preserve previously written tasks and "
+        "skip merge commits already processed (recorded in this repo's "
+        "mining state). Applies to SDLC/mixed mining only; rejected for "
+        "org-scale, cross-repo, refresh, and probe/comprehension mining. "
+        "With no prior state, warns and mines fresh."
+    ),
+)
 @tenant_option(required=False)
 @click.pass_context
 def mine(
@@ -548,12 +568,24 @@ def mine(
     narrative_source: tuple[str, ...],
     refresh_dir: str | None,
     accept_structural_change: bool,
+    resume: bool,
     tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
 ) -> None:
     """Mine eval tasks from a repository's history.
+
+    PATH is an existing local repo (always mined in place, never cloned),
+    a full git URL (https:// or git@), or github:owner/repo to clone from
+    GitHub. Bare owner/repo without the github: prefix is rejected.
+
+    \b
+    Supported languages:
+      Python, Go, and JavaScript/TypeScript. Comprehension mining
+      (--goal navigation / --task-type architecture_comprehension) is
+      Python-only; use --goal quality for Go and JS/TS repos. Any other
+      primary language fails fast with UNSUPPORTED_LANGUAGE.
 
     Extracts real code-change tasks from merged PRs/MRs with ground truth,
     test scripts, and scoring rubrics. Use --goal to pick a use case:
@@ -702,6 +734,8 @@ def mine(
                 "json_lines_flag",
                 # tenant_id is identity, not a mining setting — never persist.
                 "tenant_id",
+                # resume is per-invocation recovery, not a mining setting.
+                "resume",
             }
         )
         values = {
@@ -836,6 +870,7 @@ def mine(
         narrative_source=narrative_source,
         refresh_dir=refresh_dir,
         accept_structural_change=accept_structural_change,
+        resume=resume,
         explicit_set=explicitly_set,
         profile_set=profile_set,
         tenant=mine_tenant,

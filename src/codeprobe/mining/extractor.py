@@ -987,6 +987,7 @@ def extract_task_from_merge(
     merge_title: str = "",
     pr_body: str = "",
     pr_labels: tuple[str, ...] = (),
+    no_llm: bool = False,
 ) -> tuple[Task, PRMetadata] | None:
     """Extract an eval task from a merge commit.
 
@@ -995,6 +996,8 @@ def extract_task_from_merge(
     ``pr_body`` / ``pr_labels`` are passed through to ``resolve_pr_metadata``
     so callers that already fetched the body via ``gh pr list`` avoid a
     second API round-trip.
+    ``no_llm=True`` skips the tool-benefit curator call entirely (the
+    --no-llm zero-model-call guarantee); the tool-benefit fields stay empty.
     Returns (task, pr_metadata) so callers can score against raw PR body.
     """
     if changed_files is None:
@@ -1066,15 +1069,21 @@ def extract_task_from_merge(
     # curator model call. The call must happen BEFORE the TaskMetadata(...)
     # constructor so the ZFC lint rule (scripts/lint_zfc.py) sees a model
     # invocation in scope when ``expected_tool_benefit`` is populated.
+    # Under --no-llm the judgment is skipped outright (zero-model-call
+    # guarantee) and the fields stay empty, matching the unavailable-LLM
+    # fallback of score_tool_benefit itself.
     from codeprobe.mcp.capabilities import CAPABILITIES
     from codeprobe.mining.curator_backends import score_tool_benefit
 
     capability_snapshot = tuple(sorted(CAPABILITIES.keys()))
-    expected_tool_benefit, tool_benefit_rationale = score_tool_benefit(
-        description,
-        tuple(changed_files),
-        capability_snapshot,
-    )
+    if no_llm:
+        expected_tool_benefit, tool_benefit_rationale = "", ""
+    else:
+        expected_tool_benefit, tool_benefit_rationale = score_tool_benefit(
+            description,
+            tuple(changed_files),
+            capability_snapshot,
+        )
 
     metadata = TaskMetadata(
         name=f"merge-{short_sha}",
@@ -1162,6 +1171,8 @@ def _collect_candidates(
     subsystems: tuple[str, ...],
     progress: Callable[[int], None] | None = None,
     state: MineState | None = None,
+    no_llm: bool = False,
+    prior_completed: frozenset[str] | None = None,
 ) -> tuple[
     list[tuple[float, int, Task]],
     dict[str, str],
@@ -1179,10 +1190,17 @@ def _collect_candidates(
     without coupling the mining core to Click.
 
     *state* optionally persists per-commit progress across runs: commits
-    already recorded as ``completed`` in the state store are skipped,
-    and each PR processed here transitions ``running`` ->
-    ``completed`` / ``interrupted`` accordingly (see
+    in the skip set are skipped, and each PR processed here transitions
+    ``running`` -> ``completed`` / ``interrupted`` accordingly (see
     :mod:`codeprobe.mining.state`).
+
+    *prior_completed* is the skip set to honor. Callers that invoke this
+    function more than once per mine — the min_files relaxation retry in
+    :func:`mine_tasks` — MUST snapshot ``state.completed_shas()`` before
+    the first pass and reuse it, otherwise SHAs rejected (and recorded
+    completed) by the first pass would be skipped by the retry that
+    exists precisely to re-examine them. ``None`` falls back to reading
+    the store directly.
     """
     candidates: list[tuple[float, int, Task]] = []
     pr_bodies: dict[str, str] = {}
@@ -1195,7 +1213,10 @@ def _collect_candidates(
     rejected_extraction = 0
     rejected_quality = 0
 
-    completed = state.completed_shas() if state is not None else frozenset()
+    if prior_completed is not None:
+        completed: frozenset[str] | set[str] = prior_completed
+    else:
+        completed = state.completed_shas() if state is not None else frozenset()
 
     for pr in prs:
         if progress is not None:
@@ -1208,12 +1229,7 @@ def _collect_candidates(
         if state is not None:
             state.record_running(pr.merge_commit)
         try:
-            try:
-                changed_files = _get_changed_files(pr.merge_commit, path)
-            except Exception as exc:
-                if state is not None:
-                    state.record_interrupted(pr.merge_commit, error=repr(exc))
-                raise
+            changed_files = _get_changed_files(pr.merge_commit, path)
             if len(changed_files) < min_files:
                 rejected_min_files += 1
                 continue
@@ -1231,6 +1247,7 @@ def _collect_candidates(
                 merge_title=pr.title,
                 pr_body=pr.body,
                 pr_labels=pr.labels,
+                no_llm=no_llm,
             )
             if result is None:
                 rejected_extraction += 1
@@ -1258,18 +1275,24 @@ def _collect_candidates(
             pr_bodies[task.id] = pr_meta.body
             changed_files_map[task.id] = changed_files
             merge_sha_map[task.id] = pr.merge_commit
-        finally:
-            # Record completed for the SHA regardless of reject/accept —
-            # "completed" here means "processed this run and made a
-            # deterministic decision", so resume can skip it. Exceptions
-            # inside the try body have already marked the SHA as
-            # interrupted above and re-raised; this finally won't
-            # overwrite that because the inner raise propagates past
-            # this line only when no interrupt record was taken (i.e.
-            # via ``continue`` paths, which do not raise).
+        except BaseException as exc:
+            # Any exception — including KeyboardInterrupt — means this SHA
+            # was NOT fully processed. Record it as interrupted so a
+            # ``--resume`` re-processes it instead of wrongly skipping it
+            # (the completed set is an allowlist; see module docstring in
+            # :mod:`codeprobe.mining.state`).
             if state is not None:
-                if state.status(pr.merge_commit) != "interrupted":
-                    state.record_completed(pr.merge_commit)
+                state.record_interrupted(pr.merge_commit, error=repr(exc))
+            raise
+        finally:
+            # Record completed for the SHA on every non-raising outcome —
+            # "completed" means "processed this run and made a deterministic
+            # decision", so resume can skip it. That covers both accepted
+            # candidates and the ``continue``-based rejections above; the
+            # ``except`` arm has already flipped raising SHAs off ``running``,
+            # so the status guard leaves them untouched.
+            if state is not None and state.status(pr.merge_commit) == "running":
+                state.record_completed(pr.merge_commit)
 
     rejections = RejectionBreakdown(
         min_files=rejected_min_files,
@@ -1305,6 +1328,7 @@ def mine_tasks(
     subsystems: tuple[str, ...] = (),
     progress: Callable[[int], None] | None = None,
     state: MineState | None = None,
+    no_llm: bool = False,
 ) -> MineResult:
     """Mine eval tasks from a repository.
 
@@ -1330,6 +1354,13 @@ def mine_tasks(
         logger.info("No merge commits found in %s", path)
         return MineResult(tasks=[], pr_bodies={}, changed_files_map={})
 
+    # Snapshot the skip set ONCE: the relaxation retry below must skip only
+    # commits completed by a PRIOR invocation, not the ones this pass just
+    # recorded while rejecting them at the stricter threshold.
+    prior_completed = (
+        frozenset(state.completed_shas()) if state is not None else frozenset()
+    )
+
     candidates, pr_bodies, changed_files_map, merge_sha_map, rejections = (
         _collect_candidates(
             prs,
@@ -1340,6 +1371,8 @@ def mine_tasks(
             subsystems,
             progress=progress,
             state=state,
+            no_llm=no_llm,
+            prior_completed=prior_completed,
         )
     )
 
@@ -1362,6 +1395,8 @@ def mine_tasks(
                     min_quality,
                     subsystems,
                     state=state,
+                    no_llm=no_llm,
+                    prior_completed=prior_completed,
                 )
             )
             if candidates:

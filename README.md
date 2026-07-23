@@ -240,7 +240,11 @@ Beyond the built-ins:
   `codeprobe.agents` entry-point group. See [docs/adapters.md](docs/adapters.md).
 
 Git hosts supported for mining: GitHub, GitLab, Bitbucket, Azure DevOps,
-Gitea/Forgejo, and local repositories.
+Gitea/Forgejo, and local repositories. PR/MR narrative fetch is GitHub-only
+(it shells the `gh` CLI): GitHub repos get full PR narratives (bodies, linked
+issues). GitLab, Bitbucket, Azure DevOps, Gitea/Forgejo, and self-hosted
+remotes mine merge commits with `--narrative-source commits` — lower
+narrative quality, since MR bodies and linked-issue context are not fetched.
 
 ## Methodology
 
@@ -362,6 +366,13 @@ mining, source-isolation modes, and aggregate bias detection lives in
   invent detail the history never had.
 - **Full clone required.** Mining needs complete merge history; a
   `git clone --depth 1` cannot be mined.
+- **Language matrix.** `codeprobe mine` supports **Python, Go, and
+  JavaScript/TypeScript** repositories — test-command generation exists only
+  for this matrix. Comprehension mining (`--goal navigation` / `--task-type
+  architecture_comprehension`) is **Python-only** (import-graph static
+  analysis); use `--goal quality` for Go and JS/TS repos. Any other primary
+  language fails fast with `UNSUPPORTED_LANGUAGE` before any PR scanning
+  starts.
 - **Telemetry varies by backend.** Cost, tokens, and tool counts are extracted
   only where the agent exposes them; missing values are tagged `unavailable`,
   not estimated silently.

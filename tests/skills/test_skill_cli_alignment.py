@@ -279,6 +279,9 @@ def test_error_codes_present_in_catalog(skill_path: Path) -> None:
     # regex.
     allowlist = {
         "RUBRIC_V1",
+        # Envelope *warning* code (WarningEntry.code), not an error code —
+        # the catalog schema only admits prescriptive/diagnostic error kinds.
+        "MINE_SHORTFALL",
         "CODEPROBE_JSON",
         "CODEPROBE_MAX_COST_USD",
         "CODEPROBE_PARALLEL",

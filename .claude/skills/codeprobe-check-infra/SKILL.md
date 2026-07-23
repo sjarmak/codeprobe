@@ -17,8 +17,9 @@ Splits into two primary subcommands: `drift` (capability snapshot vs live) and
 
 `doctor` gives the overall readiness state; `check-infra offline --json`
 pre-warms the credential-TTL surface so the agent can decide up front whether
-an offline run is viable. If the offline envelope reports `status == "error"`
-with `OFFLINE_PREFLIGHT_FAILED`, do NOT attempt an offline run before resolving.
+an offline run is viable. If the offline envelope reports `ok: false` with
+`error.code` of `OFFLINE_PREFLIGHT_FAILED`, do NOT attempt an offline run
+before resolving.
 
 ## Bare invocation
 
@@ -48,39 +49,62 @@ codeprobe check-infra offline --json --backend claude
 
 ## JSON fields to parse
 
+Top-level keys are exactly the `Envelope` dataclass fields in
+`src/codeprobe/cli/envelope.py`. Parse `ok`; on `false` inspect `error.code`
+(`error` is a single object, never an array).
+
 Drift:
 
 ```json
 {
-  "status": "ok" | "error",
+  "record_type": "envelope",
+  "ok": true,
   "command": "check-infra drift",
+  "version": "<codeprobe version>",
+  "schema_version": "1",
   "exit_code": 0,
   "data": {
+    "command_schema_version": "1",
     "task_dir": "<abs-path>",
-    "drift_detected": <bool>,
-    "snapshot_capabilities": [ "..." ],
-    "live_capabilities": [ "..." ],
+    "has_drift": false,
+    "snapshot_count": 4,
+    "live_count": 4,
     "added": [ "..." ],
     "removed": [ "..." ]
   },
-  "errors": [ { "code": "<CODE>", "message": "...", "remediation": "...", "terminal": <bool> } ]
+  "error": null,
+  "warnings": [],
+  "next_steps": []
 }
 ```
+
+Detected drift without `--allow-capability-drift` surfaces as `ok: false`
+with `error.code` of `CAPABILITY_DRIFT`, not as a `data` field.
 
 Offline:
 
 ```json
 {
-  "status": "ok" | "error",
+  "record_type": "envelope",
+  "ok": true,
   "command": "check-infra offline",
+  "version": "<codeprobe version>",
+  "schema_version": "1",
   "exit_code": 0,
   "data": {
-    "expected_run_duration_seconds": <int>,
-    "backends": [ { "name": "...", "ttl_seconds": <int | null>, "ok": <bool> } ]
+    "command_schema_version": "1",
+    "expected_run_duration": "2h",
+    "backend_filter": [ "claude" ]
   },
-  "errors": [ { "code": "<CODE>", "message": "...", "remediation": "...", "terminal": <bool> } ]
+  "error": null,
+  "warnings": [],
+  "next_steps": []
 }
 ```
+
+A TTL shortfall surfaces as `ok: false` with `error.code` of
+`OFFLINE_PREFLIGHT_FAILED`; the per-backend TTL detail rides on
+`error.detail`.
 
 ## Error handling
 

@@ -16,8 +16,9 @@ Design goals (R15 / INV2):
   repo-level ``fcntl.flock`` on ``<repo>/.git/codeprobe.lock``.
 
 The module intentionally keeps the public surface small: open, the five
-``record_*`` methods, ``completed_shas()``, ``startup_sweep()``, and
-``worktree_lock()``. Anything more is orchestration, not state.
+``record_*`` methods, ``completed_shas()``, ``startup_sweep()``,
+``reset()``, and ``worktree_lock()``. Anything more is orchestration,
+not state.
 """
 
 from __future__ import annotations
@@ -238,6 +239,24 @@ class MineState:
                 """,
                 (sha, error or None),
             )
+
+    def reset(self) -> int:
+        """Delete every recorded row. Returns the number of rows removed.
+
+        A fresh (non-``--resume``) mine starts from a clean slate so
+        ``completed`` rows from a previous run never suppress re-mining
+        the same commits.
+        """
+        with self._write():
+            cur = self._conn.execute("DELETE FROM commits")
+            affected = cur.rowcount if cur.rowcount is not None else 0
+        if affected:
+            logger.info(
+                "MineState reset: %d row(s) removed (db=%s)",
+                affected,
+                self._db_path,
+            )
+        return affected
 
     def startup_sweep(self) -> int:
         """Promote leftover ``running``/``pending`` rows to ``interrupted``.
