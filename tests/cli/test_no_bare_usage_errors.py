@@ -63,10 +63,8 @@ INITIAL_WHITELIST: frozenset[tuple[str, int]] = frozenset(
         # codeprobe-f7rl.32: interpret --format help expanded (html writes
         # the report file in every output mode): +10 → 1219.
         # codeprobe-f7rl.15: the __init__.py:1151 UsageError (experiment init
-        # --name check) migrated to a typed error, so its entry comes off;
-        # real net line number below, confirmed by running the lint test
-        # against the merged file.
-        ("src/codeprobe/cli/__init__.py", 1219),
+        # --name check) migrated to a typed error, so this entry came off
+        # entirely — __init__.py has zero bare-usage violations now.
         ("src/codeprobe/cli/_output_helpers.py", 109),
         ("src/codeprobe/cli/assess_cmd.py", 72),
         ("src/codeprobe/cli/assess_cmd.py", 75),
