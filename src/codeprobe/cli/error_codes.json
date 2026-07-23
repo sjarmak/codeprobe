@@ -456,6 +456,14 @@
       "since": "0.12.0",
       "description": "`codeprobe purge --yes` found a deletion candidate that resolves outside <PATH>/.codeprobe/ (typically a symlink inside a runs/ tree pointing at customer source). The purge aborted before deleting anything (fail closed). The refused paths are listed in `error.detail.refused`.",
       "remediation_pattern": "Inspect the listed paths (`ls -la <path>`), remove the escaping symlink manually, then re-run `codeprobe purge <path> --yes`."
+    },
+    {
+      "code": "INVALID_OUT_PATH",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.13.0",
+      "description": "The --out path passed to `mine`, `run`, or `interpret` has a parent directory that does not exist or is not writable, or (mine only) --out was combined with --refresh, whose existing task directory already is the output location.",
+      "remediation_pattern": "Pass a --out path whose parent directory already exists and is writable (mkdir -p it first if needed), and drop --out when using --refresh."
     }
   ]
 }

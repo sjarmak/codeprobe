@@ -250,6 +250,16 @@ def init(
     "task mining. Can be passed multiple times.",
 )
 @click.option(
+    "--out",
+    "out",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Write mined output to a custom directory instead of "
+    "<repo>/.codeprobe (tasks/ and experiment.json land under --out). "
+    "The parent directory must already exist. Rejected with --refresh, "
+    "whose existing task directory already is the output location.",
+)
+@click.option(
     "--advanced",
     is_flag=True,
     default=False,
@@ -540,6 +550,7 @@ def mine(
     list_profiles_flag: bool,
     count: int,
     cross_repo: tuple[str, ...],
+    out: str | None,
     source: str,
     min_files: int,
     min_quality: float,
@@ -736,6 +747,8 @@ def mine(
                 "tenant_id",
                 # resume is per-invocation recovery, not a mining setting.
                 "resume",
+                # out is a per-invocation output redirect, not a mining setting.
+                "out",
             }
         )
         values = {
@@ -842,6 +855,7 @@ def mine(
         task_type_override=task_type_override,
         count=count,
         cross_repo=cross_repo,
+        out=out,
         source=source,
         min_files=min_files,
         min_quality=min_quality,
@@ -1052,6 +1066,15 @@ def mine(
         "Accepts <N>s, <N>m, <N>h, <N>d."
     ),
 )
+@click.option(
+    "--out",
+    "out",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Write results (runs/<config>/results.json, checkpoints, trace.db) "
+    "to a custom directory instead of the experiment directory. The parent "
+    "directory must already exist. experiment.json itself is unaffected.",
+)
 @add_json_flags
 @tenant_option(required=False)
 @click.pass_context
@@ -1079,6 +1102,7 @@ def run(
     pristine_config: bool,
     offline: bool,
     offline_expected_run_duration: str,
+    out: str | None,
     tenant_id: str | None,
     json_flag: bool,
     no_json_flag: bool,
@@ -1145,6 +1169,7 @@ def run(
         pristine_config=pristine_config,
         offline=offline,
         offline_expected_run_duration=offline_expected_run_duration,
+        out=out,
         tenant=run_tenant,
         tenant_source=run_tenant_source,
         json_flag=json_flag,
@@ -1188,11 +1213,22 @@ def run(
         "scores are aligned to each commit in the task's history."
     ),
 )
+@click.option(
+    "--out",
+    "out",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write the report to a custom file path instead of the default "
+    "location (<experiment>_report.html in the experiment directory for "
+    "--format html; no file is written for text/json/csv unless --out is "
+    "given). The parent directory must already exist.",
+)
 def interpret(
     path: str,
     fmt: str,
     regression: bool,
     results_path: str | None,
+    out: str | None,
     json_flag: bool,
     no_json_flag: bool,
     json_lines_flag: bool,
@@ -1217,6 +1253,7 @@ def interpret(
     run_interpret(
         path,
         fmt=fmt,
+        out=out,
         json_flag=json_flag,
         no_json_flag=no_json_flag,
         json_lines_flag=json_lines_flag,

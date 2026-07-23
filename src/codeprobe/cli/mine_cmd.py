@@ -833,19 +833,28 @@ def _record_mine_yield(
     )
 
 
-def _clear_tasks_dir(repo_path: Path, *, preserve: bool = False) -> Path:
+def _clear_tasks_dir(
+    repo_path: Path, *, preserve: bool = False, out_dir: Path | None = None
+) -> Path:
     """Return the tasks directory path, clearing stale tasks unless *preserve*.
 
     ``preserve=True`` (the ``--resume`` path) keeps partial output from an
     interrupted mine in place so already-written task dirs survive.
     Records the path in module state so that the top-level ``run_mine``
     handler can name the partially-populated directory on Ctrl-C.
+
+    ``out_dir`` (``--out``) overrides the base directory tasks are written
+    under: ``<out_dir>/tasks`` instead of the default
+    ``<repo>/.codeprobe/tasks``. ``ensure_codeprobe_excluded`` still runs
+    against *repo_path* unconditionally — the repo's own ``.codeprobe/``
+    stays git-ignored even when output is redirected elsewhere.
     """
     from codeprobe.core.repo_hygiene import ensure_codeprobe_excluded
 
     ensure_codeprobe_excluded(repo_path)
 
-    tasks_dir = repo_path / ".codeprobe" / "tasks"
+    base_dir = out_dir if out_dir is not None else (repo_path / ".codeprobe")
+    tasks_dir = base_dir / "tasks"
     if not preserve and tasks_dir.exists():
         shutil.rmtree(tasks_dir)
     global _CURRENT_TASKS_DIR
@@ -948,7 +957,9 @@ def _pretty_output_active() -> bool:
     return True
 
 
-def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None:
+def _record_task_ids_in_experiment(
+    repo_path: Path, task_ids: list[str], out_dir: Path | None = None
+) -> None:
     """Update the experiment's task_ids so ``run`` only executes these tasks.
 
     Resolves the experiment with the same lookup order ``run`` uses: a
@@ -957,8 +968,14 @@ def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None
     (``ensure_default_experiment``) so the Quick Start ``mine -> run``
     sequence needs no manual init. When multiple experiments exist this is
     a no-op — never guess; the user must scope via ``--config``.
+
+    ``out_dir`` (``--out``) overrides where the experiment lives entirely:
+    ``<out_dir>/experiment.json`` instead of the repo's ``.codeprobe/``
+    candidates. This mirrors :func:`_clear_tasks_dir`'s ``out_dir`` handling
+    so tasks/ and experiment.json land under the same custom root.
     """
     from codeprobe.core.experiment import (
+        Experiment,
         ensure_default_experiment,
         find_experiment_candidates,
         load_experiment,
@@ -966,6 +983,23 @@ def _record_task_ids_in_experiment(repo_path: Path, task_ids: list[str]) -> None
     )
 
     global _EXPERIMENT_CREATED, _EXPERIMENT_DIR
+
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        created = not (out_dir / "experiment.json").is_file()
+        if created:
+            save_experiment(
+                out_dir,
+                Experiment(name="default", description="Auto-created by codeprobe"),
+            )
+        experiment = load_experiment(out_dir)
+        updated = replace(experiment, task_ids=tuple(sorted(task_ids)))
+        save_experiment(out_dir, updated)
+        _EXPERIMENT_CREATED = created
+        _EXPERIMENT_DIR = str(out_dir)
+        if created and _pretty_output_active():
+            click.echo(f"Created default experiment at {out_dir / 'experiment.json'}")
+        return
 
     candidates = find_experiment_candidates(repo_path)
     if len(candidates) > 1:
@@ -1801,6 +1835,7 @@ def _dispatch_by_task_type(
     sg_repo: str = "",
     resume: bool = False,
     tenant: str | None = None,
+    out_dir: Path | None = None,
 ) -> None:
     """Route to the correct generation pipeline based on *task_type*.
 
@@ -1837,6 +1872,7 @@ def _dispatch_by_task_type(
         sg_repo=sg_repo,
         resume=resume,
         tenant=tenant,
+        out_dir=out_dir,
     )
 
     def _sdlc() -> None:
@@ -1848,6 +1884,7 @@ def _dispatch_by_task_type(
             count=count,
             goal_name=goal_name,
             bias=bias,
+            out_dir=out_dir,
         )
 
     def _comprehension() -> None:
@@ -1857,6 +1894,7 @@ def _dispatch_by_task_type(
             goal_name=goal_name,
             bias=bias,
             dual_verify=dual_verify,
+            out_dir=out_dir,
         )
 
     def _mixed() -> None:
@@ -1926,6 +1964,7 @@ def _dispatch_cross_repo(
     goal_name: str,
     bias: str,
     backend: str = "auto",
+    out_dir: Path | None = None,
 ) -> None:
     """Dispatch cross-repo task mining.
 
@@ -2022,11 +2061,11 @@ def _dispatch_cross_repo(
         return
 
     tasks = list(result.tasks)
-    tasks_dir = _clear_tasks_dir(primary)
+    tasks_dir = _clear_tasks_dir(primary, out_dir=out_dir)
     for task in tasks:
         write_task_dir(task, tasks_dir, primary)
 
-    _record_task_ids_in_experiment(primary, [t.id for t in tasks])
+    _record_task_ids_in_experiment(primary, [t.id for t in tasks], out_dir=out_dir)
     _show_results_table(tasks)
     _finish_mine_output(
         tasks,
@@ -2375,6 +2414,7 @@ def _dispatch_sdlc(
     sg_repo: str = "",
     resume: bool = False,
     tenant: str | None = None,
+    out_dir: Path | None = None,
 ) -> None:
     """Run PR-based SDLC mining pipeline.
 
@@ -2470,7 +2510,7 @@ def _dispatch_sdlc(
 
     llm_used = _was_llm_used(no_llm)
 
-    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume)
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume, out_dir=out_dir)
     preserved_ids = _existing_task_ids(tasks_dir) if resume else set()
     for task in tasks:
         write_task_dir(
@@ -2481,7 +2521,7 @@ def _dispatch_sdlc(
         )
 
     _record_task_ids_in_experiment(
-        repo_path, sorted(preserved_ids | {t.id for t in tasks})
+        repo_path, sorted(preserved_ids | {t.id for t in tasks}), out_dir=out_dir
     )
     _show_results_table(tasks)
     _show_shortfall_notice(count, len(tasks), mine_result.rejections)
@@ -2503,6 +2543,7 @@ def _dispatch_probes(
     count: int,
     goal_name: str,
     bias: str,
+    out_dir: Path | None = None,
 ) -> None:
     """Generate micro-benchmark probe tasks."""
     from codeprobe.probe.adapter import ProbeTaskAdapter
@@ -2517,12 +2558,14 @@ def _dispatch_probes(
         )
         return
 
-    tasks_dir = _clear_tasks_dir(repo_path)
+    tasks_dir = _clear_tasks_dir(repo_path, out_dir=out_dir)
     created = ProbeTaskAdapter.convert_batch(
         probes, tasks_dir, repo_name=repo_path.name
     )
 
-    _record_task_ids_in_experiment(repo_path, [p.name for p in created])
+    _record_task_ids_in_experiment(
+        repo_path, [p.name for p in created], out_dir=out_dir
+    )
 
     click.echo()
     click.echo(f"Generated {len(created)} probe tasks:")
@@ -2554,6 +2597,7 @@ def _dispatch_comprehension(
     goal_name: str,
     bias: str,
     dual_verify: bool = False,
+    out_dir: Path | None = None,
 ) -> None:
     """Generate architecture comprehension tasks under two-backend consensus.
 
@@ -2597,7 +2641,7 @@ def _dispatch_comprehension(
     quarantined = [t for t in tasks if not consensus[t.id].agreed]
     commit = mine_time_commit(repo_path)
 
-    tasks_dir = _clear_tasks_dir(repo_path)
+    tasks_dir = _clear_tasks_dir(repo_path, out_dir=out_dir)
     quarantine_dir = tasks_dir.parent / "tasks_quarantined"
     _quarantine_comprehension_tasks(
         quarantined, specs, consensus, quarantine_dir
@@ -2641,7 +2685,7 @@ def _dispatch_comprehension(
     written_ids = {p.name for p in written}
     shipped = [t for t in shipped if t.id in written_ids]
 
-    _record_task_ids_in_experiment(repo_path, [t.id for t in shipped])
+    _record_task_ids_in_experiment(repo_path, [t.id for t in shipped], out_dir=out_dir)
     _show_results_table(shipped)
     _finish_mine_output(
         shipped,
@@ -2734,6 +2778,7 @@ def _dispatch_mixed(
     sg_repo: str = "",
     resume: bool = False,
     tenant: str | None = None,
+    out_dir: Path | None = None,
 ) -> None:
     """Run SDLC mining + probe generation, combining results.
 
@@ -2749,7 +2794,7 @@ def _dispatch_mixed(
     sdlc_count = max(1, count // 2)
     probe_count = max(1, count - sdlc_count)
 
-    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume)
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume, out_dir=out_dir)
     all_task_ids: list[str] = sorted(_existing_task_ids(tasks_dir)) if resume else []
     sdlc_tasks: list = []
 
@@ -2811,7 +2856,9 @@ def _dispatch_mixed(
 
     if not sdlc_tasks and not probes:
         if resume and all_task_ids:
-            _record_task_ids_in_experiment(repo_path, sorted(set(all_task_ids)))
+            _record_task_ids_in_experiment(
+                repo_path, sorted(set(all_task_ids)), out_dir=out_dir
+            )
             click.echo(
                 "No new tasks generated on resume — existing task output "
                 "is preserved."
@@ -2823,7 +2870,9 @@ def _dispatch_mixed(
             )
         return
 
-    _record_task_ids_in_experiment(repo_path, sorted(set(all_task_ids)))
+    _record_task_ids_in_experiment(
+        repo_path, sorted(set(all_task_ids)), out_dir=out_dir
+    )
 
     # Show combined results
     if sdlc_tasks:
@@ -2927,6 +2976,7 @@ def run_mine(
     task_type_override: str | None = None,
     count: int = 5,
     cross_repo: tuple[str, ...] = (),
+    out: str | None = None,
     source: str = "auto",
     min_files: int = 0,
     min_quality: float = 0.5,
@@ -2965,7 +3015,11 @@ def run_mine(
     json_lines_flag: bool = False,
 ) -> None:
     """Mine eval tasks from a repository."""
-    from codeprobe.cli._output_helpers import emit_envelope, resolve_mode
+    from codeprobe.cli._output_helpers import (
+        emit_envelope,
+        resolve_mode,
+        validate_out_path,
+    )
     from codeprobe.tenant_lock import acquire_tenant_lock
 
     global _MINE_START_TIME, _EXPERIMENT_CREATED, _EXPERIMENT_DIR
@@ -3010,6 +3064,21 @@ def run_mine(
         _mine_mode = resolve_mode(
         "mine", json_flag, no_json_flag, json_lines_flag,
         )
+
+        # --out (--refresh already IS its own output location: existing_task_dir).
+        if out is not None and refresh_dir is not None:
+            raise PrescriptiveError(
+                code="MUTEX_FLAGS",
+                message=(
+                    "Cannot use --out with --refresh: --refresh writes back "
+                    "into the existing task directory it refreshes, which "
+                    "already is the output location. Re-run without --out."
+                ),
+                next_try_flag="--refresh",
+                next_try_value="",
+                detail={"conflicting_flags": ["--out", "--refresh"]},
+            )
+        out_dir: Path | None = validate_out_path(out) if out is not None else None
 
         # v0.7 gate-on-context defaults — opt-in via CODEPROBE_DEFAULTS=v0.7.
         # Compute (goal, narrative_source) defaults from structural repo signals
@@ -3279,6 +3348,7 @@ def run_mine(
                     goal_name=goal_name,
                     bias=bias,
                     backend=backend,
+                    out_dir=out_dir,
                 )
                 return
 
@@ -3311,6 +3381,7 @@ def run_mine(
                     consensus_threshold=consensus_threshold,
                     consensus_mode=consensus_mode,
                     no_consensus=no_consensus,
+                    out_dir=out_dir,
                 )
                 return
 
@@ -3377,6 +3448,7 @@ def run_mine(
                 sg_repo=sg_repo,
                 resume=resume,
                 tenant=tenant,
+                out_dir=out_dir,
             )
         except KeyboardInterrupt as exc:
             # Never destroy customer-side work (locked decision 3): the
@@ -3501,6 +3573,7 @@ def _run_org_scale_mine(
     consensus_threshold: float = 0.8,
     consensus_mode: str = "intersection",
     no_consensus: bool = False,
+    out_dir: Path | None = None,
 ) -> None:
     """Mine org-scale comprehension tasks with oracle verification.
 
@@ -3634,7 +3707,7 @@ def _run_org_scale_mine(
         )
 
     # Write tasks
-    tasks_dir = _clear_tasks_dir(primary_repo)
+    tasks_dir = _clear_tasks_dir(primary_repo, out_dir=out_dir)
     for task in curated_tasks:
         write_task_dir(
             task,
@@ -3666,7 +3739,9 @@ def _run_org_scale_mine(
                 base_dir=quarantine_dir,
             )
 
-    _record_task_ids_in_experiment(primary_repo, [t.id for t in curated_tasks])
+    _record_task_ids_in_experiment(
+        primary_repo, [t.id for t in curated_tasks], out_dir=out_dir
+    )
 
     _show_org_scale_results(
         curated_tasks,
