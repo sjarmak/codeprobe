@@ -702,13 +702,17 @@ scorers, and human follow-up inspection.
 
 * `ScoreResult.verdict` — `correct` / `incorrect` /
   `verifier_error` / `inconclusive` / `None` (legacy / unmigrated).
+* `CompletedTask.verdict` — the typed copy used by validity and reward
+  aggregation.
 * `ScoreResult.materialized_via` — `in_place` / `git_apply` /
   `file_overlay`.
 * `completed.json#scoring_details["verdict"]` — same value.
 * `completed.json#scoring_details["materialized_via"]` — same.
 
-Aggregate consumers that want to distinguish agent failure from
-verifier failure should branch on `verdict`, not just `score`.
+Aggregate consumers classify `verifier_error` as an infrastructure failure:
+the trial is excluded from reward means, pass rates, and confidence intervals,
+and is surfaced in `infra_failure_count`. An `incorrect` verdict remains a
+valid scored failure.
 
 ## Turn cap
 

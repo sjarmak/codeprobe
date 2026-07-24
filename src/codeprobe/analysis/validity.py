@@ -121,13 +121,14 @@ def classify_trial(task: CompletedTask) -> TrialClass:
 
     Structural only — see the module docstring. The precedence is:
 
-    1. An infra ``error_category`` (``quota`` / ``timeout`` / ``system``) →
-       INFRA_FAILURE. This is the executor's own hard fault label, stamped ONLY
-       on rows that never produced a measurement (the scored path builds its
-       ``CompletedTask`` without an ``error_category`` at all), so it outranks
-       every other signal. Keeping it first is what makes ``is_infra_failure`` a
-       strict superset of ``is_quota_casualty`` — including the executor-stamped
-       quota rows whose ``status`` still reads ``completed`` (codeprobe-9jxx).
+    1. An infra ``error_category`` (``quota`` / ``timeout`` / ``system``) or
+       ``verdict == 'verifier_error'`` → INFRA_FAILURE. These are typed harness
+       fault signals, so they outrank every other signal. Keeping them first is
+       what makes ``is_infra_failure`` a strict superset of
+       ``is_quota_casualty`` — including executor-stamped quota rows whose
+       ``status`` still reads ``completed`` (codeprobe-9jxx) — and prevents a
+       completed scoring attempt with a broken verifier from becoming a real
+       0.0 measurement.
     2. Scoring ran end-to-end (``status == 'completed'`` or non-empty
        ``scoring_details``) → VALID, regardless of how low the score is.
     3. An adapter-declared terminal ``result_subtype``, or the executor's
@@ -149,6 +150,8 @@ def classify_trial(task: CompletedTask) -> TrialClass:
        infra-casualty label (crash, no result record, invalid model token).
     """
     if task.error_category in _INFRA_ERROR_CATEGORIES:
+        return TrialClass.INFRA_FAILURE
+    if task.verdict == "verifier_error":
         return TrialClass.INFRA_FAILURE
     if task.status == "completed" or task.scoring_details:
         return TrialClass.VALID

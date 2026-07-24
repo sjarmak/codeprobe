@@ -187,6 +187,9 @@ class CompletedTask:
     result_subtype: str | None = None
     duration_api_ms: int | None = None
     error_category: str | None = None
+    # Typed scoring outcome used by reward-population classification.
+    # ``None`` preserves legacy/unmigrated checkpoint compatibility.
+    verdict: str | None = None
     # Plain-dict form of the offered tool surface (codeprobe-9p6), as
     # produced by ``McpInitManifest.to_dict()``. None when the adapter had
     # no streaming transcript to parse. Stored as a dict (not the typed

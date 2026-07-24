@@ -449,6 +449,7 @@ def _score_in_sandbox(
             task_id=task_id,
             automated_score=score_result.score,
             status="completed",
+            verdict=score_result.verdict,
             scoring_details=_build_scoring_details(score_result),
             metadata=metadata,
             **output_fields,

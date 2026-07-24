@@ -65,6 +65,17 @@ def _scored_trial(task_id: str = "scored", score: float = 0.0) -> CompletedTask:
     )
 
 
+def _verdict_trial(verdict: str, task_id: str = "verdict") -> CompletedTask:
+    """A scored row whose typed verdict determines measurement validity."""
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=0.0,
+        status="completed",
+        verdict=verdict,
+        scoring_details={"passed": False, "verdict": verdict},
+    )
+
+
 def _genuine_terminal_failure(task_id: str = "maxturns") -> CompletedTask:
     """error_max_turns with no answer: a genuine 0.0, NOT infra.
 
@@ -134,6 +145,16 @@ class TestClassifyTrial:
         assert classify_trial(_scored_trial(score=0.0)) is TrialClass.VALID
         assert classify_trial(_scored_trial(score=0.08)) is TrialClass.VALID
         assert is_infra_failure(_scored_trial()) is False
+
+    def test_verifier_error_is_infra_but_incorrect_is_valid(self) -> None:
+        """A broken verifier is excluded; a genuine wrong answer remains."""
+        verifier_error = _verdict_trial("verifier_error")
+        incorrect = _verdict_trial("incorrect")
+
+        assert classify_trial(verifier_error) is TrialClass.INFRA_FAILURE
+        assert is_scorable_run(verifier_error) is False
+        assert classify_trial(incorrect) is TrialClass.VALID
+        assert is_scorable_run(incorrect) is True
 
     def test_error_max_turns_is_genuine_failure(self) -> None:
         """A terminal ``failed`` cap-hit is a genuine 0.0 that stays in the
@@ -668,6 +689,26 @@ def test_every_summary_surface_reports_the_infra_count() -> None:
 
     summary = summarize_config(ConfigResults(config="cfg", completed=tasks))
     assert summary.infra_failure_count == expected_infra
+
+
+def test_verifier_error_moves_all_summary_counts_in_step() -> None:
+    """The typed verdict reaches every existing reward/exclusion aggregate."""
+    from codeprobe.cli.run_cmd import build_run_envelope_summary
+    from codeprobe.core.experiment import _compute_summary
+
+    tasks = [_verdict_trial("verifier_error", "broken"), _verdict_trial("incorrect")]
+
+    envelope, _, _ = build_run_envelope_summary({"cfg": tasks})
+    assert envelope[0]["infra_failure_count"] == 1
+    assert envelope[0]["errored_count"] == 1
+    assert envelope[0]["scored_count"] == 1
+    assert envelope[0]["mean_score"] == 0.0
+
+    aggregate = _compute_summary(tasks)
+    assert aggregate["infra_failure_count"] == 1
+    assert aggregate["errored_count"] == 1
+    assert aggregate["tasks_completed"] == 2
+    assert aggregate["mean_automated_score"] == 0.0
 
 
 def test_exclusion_counts_nest_on_the_run_envelope() -> None:

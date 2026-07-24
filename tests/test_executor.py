@@ -536,6 +536,37 @@ def test_build_scoring_details_projects_score_result():
     assert minimal["materialized_via"] == "in_place"
 
 
+def test_execute_task_projects_score_result_verdict_to_typed_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The scoring boundary must not leave verdict only in an untyped dict."""
+
+    class _VerifierErrorScorer:
+        def score(self, *_args: object, **_kwargs: object) -> ScoreResult:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                scorer_family="binary_test",
+                verdict="verifier_error",
+            )
+
+    monkeypatch.setattr(
+        "codeprobe.core.executor.get_scorer",
+        lambda _reward_type: _VerifierErrorScorer(),
+    )
+    task_dir = _make_task(tmp_path / "task-verifier-error")
+
+    completed = execute_task(
+        FakeAdapter(stdout="answer"),
+        task_dir,
+        Path("/repo"),
+        AgentConfig(),
+    ).completed
+
+    assert completed.verdict == "verifier_error"
+    assert completed.scoring_details["verdict"] == "verifier_error"
+
+
 def test_execute_config_skips_checkpointed(tmp_path: Path):
     tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(3)]
     adapter = FakeAdapter(stdout="output")
