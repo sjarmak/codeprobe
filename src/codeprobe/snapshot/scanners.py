@@ -35,6 +35,10 @@ class ScannerUnavailableError(RuntimeError):
     """Raised when an external scanner binary is not installed on PATH."""
 
 
+class ScannerError(RuntimeError):
+    """Raised when a scanner cannot prove that transformed bytes are safe."""
+
+
 _LEGACY_EXCEPTION_ALIASES = {
     "ScannerUnavailable": "ScannerUnavailableError",
 }
@@ -164,6 +168,185 @@ def _safe_preview(secret: bytes, head: int = 4, tail: int = 2) -> str:
     return f"{s[:head]}...{s[-tail:]}"
 
 
+def _redact_findings(data: bytes, findings: list[Finding], scanner_name: str) -> bytes:
+    """Replace the union of structurally valid finding spans."""
+    spans: list[tuple[int, int]] = []
+    for index, finding in enumerate(findings):
+        if (
+            type(finding.start) is not int
+            or type(finding.end) is not int
+            or finding.start < 0
+            or finding.start >= finding.end
+            or finding.end > len(data)
+        ):
+            raise ScannerError(
+                f"{scanner_name} finding {index} has an invalid byte span"
+            )
+        spans.append((finding.start, finding.end))
+
+    if not spans:
+        return data
+
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged.append((start, end))
+
+    marker = f"[REDACTED:{scanner_name}]".encode()
+    out = data
+    for start, end in reversed(merged):
+        out = out[:start] + marker + out[end:]
+    return out
+
+
+def _line_column_span(
+    data: bytes,
+    *,
+    start_line: object,
+    end_line: object,
+    start_column: object,
+    end_column: object,
+    finding_index: int,
+) -> tuple[int, int]:
+    """Convert Gitleaks line/column coordinates to a byte slice."""
+    coordinates = (start_line, end_line, start_column, end_column)
+    if any(type(value) is not int or value <= 0 for value in coordinates):
+        raise ScannerError(
+            f"gitleaks finding {finding_index} has malformed coordinates"
+        )
+
+    line_starts = [0]
+    line_starts.extend(index + 1 for index, byte in enumerate(data) if byte == 10)
+    start_line_number = start_line
+    end_line_number = end_line
+    start_column_number = start_column
+    end_column_number = end_column
+    assert isinstance(start_line_number, int)
+    assert isinstance(end_line_number, int)
+    assert isinstance(start_column_number, int)
+    assert isinstance(end_column_number, int)
+    if (
+        start_line_number > len(line_starts)
+        or end_line_number > len(line_starts)
+        or end_line_number < start_line_number
+    ):
+        raise ScannerError(
+            f"gitleaks finding {finding_index} has out-of-range coordinates"
+        )
+
+    # Gitleaks' location calculation retains the preceding newline byte as
+    # its origin, so columns after line one carry one additional byte.
+    start_origin_offset = 1 if start_line_number > 1 else 0
+    end_origin_offset = 1 if end_line_number > 1 else 0
+    start = (
+        line_starts[start_line_number - 1]
+        + start_column_number
+        - 1
+        - start_origin_offset
+    )
+    end = (
+        line_starts[end_line_number - 1] + end_column_number - end_origin_offset
+    )
+    start_line_end = data.find(b"\n", line_starts[start_line_number - 1])
+    end_line_end = data.find(b"\n", line_starts[end_line_number - 1])
+    if start_line_end < 0:
+        start_line_end = len(data)
+    if end_line_end < 0:
+        end_line_end = len(data)
+    if start >= start_line_end or end > end_line_end or start >= end:
+        raise ScannerError(
+            f"gitleaks finding {finding_index} has out-of-range coordinates"
+        )
+    return start, end
+
+
+def _required_text_field(
+    entry: dict[str, object],
+    field_name: str,
+    *,
+    scanner_name: str,
+    finding_index: int,
+) -> str:
+    value = entry.get(field_name)
+    if not isinstance(value, str) or not value:
+        raise ScannerError(
+            f"{scanner_name} finding {finding_index} has malformed {field_name}"
+        )
+    return value
+
+
+def _encoded_tool_value(
+    value: str,
+    *,
+    scanner_name: str,
+    finding_index: int,
+) -> bytes:
+    try:
+        return value.encode()
+    except UnicodeEncodeError as exc:
+        raise ScannerError(
+            f"{scanner_name} finding {finding_index} has malformed text"
+        ) from exc
+
+
+def _trufflehog_reported_values(
+    entry: dict[str, object],
+    *,
+    finding_index: int,
+) -> list[bytes]:
+    raw_text = _required_text_field(
+        entry,
+        "Raw",
+        scanner_name="trufflehog",
+        finding_index=finding_index,
+    )
+    values = [
+        _encoded_tool_value(
+            raw_text,
+            scanner_name="trufflehog",
+            finding_index=finding_index,
+        )
+    ]
+
+    secret_parts_value = entry.get("SecretParts")
+    if secret_parts_value is not None and not isinstance(secret_parts_value, dict):
+        raise ScannerError(
+            f"trufflehog finding {finding_index} has malformed SecretParts"
+        )
+    secret_parts: list[bytes] = []
+    if isinstance(secret_parts_value, dict):
+        for key, value in secret_parts_value.items():
+            if not isinstance(key, str) or not key or not isinstance(value, str):
+                raise ScannerError(
+                    f"trufflehog finding {finding_index} has malformed SecretParts"
+                )
+            if value:
+                secret_parts.append(
+                    _encoded_tool_value(
+                        value,
+                        scanner_name="trufflehog",
+                        finding_index=finding_index,
+                    )
+                )
+    values.extend(secret_parts)
+
+    raw_v2_value = entry.get("RawV2")
+    if raw_v2_value is not None and not isinstance(raw_v2_value, str):
+        raise ScannerError(f"trufflehog finding {finding_index} has malformed RawV2")
+    if isinstance(raw_v2_value, str) and raw_v2_value and not secret_parts:
+        values.append(
+            _encoded_tool_value(
+                raw_v2_value,
+                scanner_name="trufflehog",
+                finding_index=finding_index,
+            )
+        )
+    return list(dict.fromkeys(values))
+
+
 @dataclass
 class GitleaksScanner:
     """Shells out to the ``gitleaks`` CLI.
@@ -189,11 +372,11 @@ class GitleaksScanner:
     def scan(self, data: bytes) -> list[Finding]:
         gitleaks = self._require()
         with tempfile.TemporaryDirectory() as td:
-            target = Path(td) / "blob.bin"
+            target = Path(td) / "blob"
             target.write_bytes(data)
             report = Path(td) / "report.json"
             # gitleaks exits non-zero when it finds secrets — this is expected.
-            subprocess.run(  # noqa: S603 - controlled path
+            proc = subprocess.run(  # noqa: S603 - controlled path
                 [
                     gitleaks,
                     "detect",
@@ -208,35 +391,65 @@ class GitleaksScanner:
                 capture_output=True,
                 check=False,
             )
+            if proc.returncode not in (0, 1):
+                raise ScannerError("gitleaks scan failed")
             if not report.exists():
-                return []
+                raise ScannerError("gitleaks scan failed without a report")
             try:
                 raw = json.loads(report.read_text())
-            except Exception:  # pragma: no cover - malformed report
-                return []
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+                raise ScannerError("gitleaks produced a malformed report") from exc
+        if not isinstance(raw, list):
+            raise ScannerError("gitleaks produced a malformed report")
+        if proc.returncode == 1 and not raw:
+            raise ScannerError("gitleaks scan failed without report findings")
         findings: list[Finding] = []
-        for entry in raw or []:
-            start = int(entry.get("StartColumn", 0))
-            end = int(entry.get("EndColumn", 0))
+        for index, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise ScannerError(f"gitleaks finding {index} is malformed")
+            start, end = _line_column_span(
+                data,
+                start_line=entry.get("StartLine"),
+                end_line=entry.get("EndLine"),
+                start_column=entry.get("StartColumn"),
+                end_column=entry.get("EndColumn"),
+                finding_index=index,
+            )
+            rule_id = _required_text_field(
+                entry,
+                "RuleID",
+                scanner_name=self.name,
+                finding_index=index,
+            )
+            match = _required_text_field(
+                entry,
+                "Match",
+                scanner_name=self.name,
+                finding_index=index,
+            )
+            match_bytes = _encoded_tool_value(
+                match,
+                scanner_name=self.name,
+                finding_index=index,
+            )
+            if data[start:end] != match_bytes:
+                raise ScannerError(
+                    f"gitleaks finding {index} does not match its byte span"
+                )
             findings.append(
                 Finding(
-                    rule_id=str(entry.get("RuleID", "gitleaks")),
+                    rule_id=rule_id,
                     start=start,
                     end=end,
-                    match_preview=_safe_preview(
-                        str(entry.get("Secret", "")).encode("utf-8")
-                    ),
+                    match_preview=_safe_preview(match_bytes),
                     scanner=self.name,
                 )
             )
         return findings
 
     def redact(self, data: bytes) -> bytes:
-        # gitleaks does not rewrite files; delegate redaction to the regex
-        # fallback so we always strip *something* recognizable. The canary gate
-        # ensures gitleaks actually detects its own planted canary before we
-        # ever get here.
-        return self._fallback.redact(data)
+        externally_redacted = _redact_findings(data, self.scan(data), self.name)
+        return self._fallback.redact(externally_redacted)
 
 
 @dataclass
@@ -258,37 +471,57 @@ class TrufflehogScanner:
     def scan(self, data: bytes) -> list[Finding]:
         trufflehog = self._require()
         with tempfile.TemporaryDirectory() as td:
-            target = Path(td) / "blob.bin"
+            target = Path(td) / "blob"
             target.write_bytes(data)
             proc = subprocess.run(  # noqa: S603 - controlled path
                 [trufflehog, "filesystem", "--json", str(target)],
                 capture_output=True,
                 check=False,
             )
+        if proc.returncode != 0:
+            raise ScannerError("trufflehog scan failed")
         findings: list[Finding] = []
-        for line in proc.stdout.splitlines():
+        for index, line in enumerate(proc.stdout.splitlines()):
             line = line.strip()
             if not line:
                 continue
             try:
                 entry = json.loads(line)
-            except Exception:
-                continue
-            findings.append(
-                Finding(
-                    rule_id=str(entry.get("DetectorName", "trufflehog")),
-                    start=0,
-                    end=0,
-                    match_preview=_safe_preview(
-                        str(entry.get("Raw", "")).encode("utf-8")
-                    ),
-                    scanner=self.name,
-                )
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise ScannerError("trufflehog produced malformed output") from exc
+            if not isinstance(entry, dict):
+                raise ScannerError(f"trufflehog finding {index} is malformed")
+            rule_id = _required_text_field(
+                entry,
+                "DetectorName",
+                scanner_name=self.name,
+                finding_index=index,
             )
+            for reported_value in _trufflehog_reported_values(
+                entry,
+                finding_index=index,
+            ):
+                start = data.find(reported_value)
+                if start < 0:
+                    raise ScannerError(
+                        f"trufflehog finding {index} cannot be mapped to source bytes"
+                    )
+                while start >= 0:
+                    findings.append(
+                        Finding(
+                            rule_id=rule_id,
+                            start=start,
+                            end=start + len(reported_value),
+                            match_preview=_safe_preview(reported_value),
+                            scanner=self.name,
+                        )
+                    )
+                    start = data.find(reported_value, start + len(reported_value))
         return findings
 
     def redact(self, data: bytes) -> bytes:
-        return self._fallback.redact(data)
+        externally_redacted = _redact_findings(data, self.scan(data), self.name)
+        return self._fallback.redact(externally_redacted)
 
 
 @dataclass

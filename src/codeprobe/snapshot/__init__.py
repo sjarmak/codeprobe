@@ -63,6 +63,7 @@ from codeprobe.snapshot.scanners import (
     MockScanner,
     PatternScanner,
     Scanner,
+    ScannerError,
     ScannerUnavailableError,
     TrufflehogScanner,
 )
@@ -116,6 +117,7 @@ __all__ = [
     "RedactionMode",
     "SNAPSHOT_SCHEMA_VERSION",
     "Scanner",
+    "ScannerError",
     "ScannerUnavailableError",
     "SnapshotManifest",
     "SymlinkEscapeError",

@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Literal
 
 from codeprobe.snapshot.canary import CanaryGate, CanaryResult
-from codeprobe.snapshot.scanners import PatternScanner, Scanner
+from codeprobe.snapshot.scanners import PatternScanner, Scanner, ScannerError
 
 RedactionMode = Literal["hashes-only", "contents", "secrets"]
 
@@ -252,6 +252,12 @@ def _redact_to_manifest(
         if need_scanner:
             assert effective_scanner is not None
             redacted = effective_scanner.redact(body)
+            residual_findings = effective_scanner.scan(redacted)
+            if residual_findings:
+                scanner_name = getattr(effective_scanner, "name", "unknown")
+                raise ScannerError(
+                    f"{scanner_name} still detected findings after redaction"
+                )
             target = files_out / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(redacted)
