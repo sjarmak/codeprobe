@@ -78,7 +78,11 @@ raise `UnsafeCandidatePathError`; the candidate is quarantined with
 reason `unsafe candidate path: …` and no LLM call is made, so host file
 contents can never reach the prompt or the logs. A path that escapes one
 configured root but lands inside another is legitimate and is read from
-the containing root.
+the containing root. If any candidate escapes the union of configured
+roots and no union-contained candidate is readable, the candidate is
+rejected; an absent path under another root cannot mask that escape.
+Resolution failures such as symlink loops and invalid paths are rejected
+through the same non-content error path.
 
 ### Single-backend fallback
 

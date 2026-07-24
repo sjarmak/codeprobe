@@ -576,6 +576,93 @@ class TestReadSnippetPathContainment:
                 [first, second], "../../secret.txt"
             )
 
+    def test_escape_is_not_masked_by_missing_path_in_another_root(
+        self, tmp_path: Path
+    ) -> None:
+        first = tmp_path / "one"
+        second = tmp_path / "two"
+        first.mkdir()
+        second.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (first / "candidate.py").symlink_to(secret)
+
+        with patch.object(oracle_curator, "call_claude") as mock_call:
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="candidate.py",
+                found_by="grep",
+                repo_paths=[first, second],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "unsafe candidate path" in vote.error
+        assert "TOP SECRET" not in vote.error
+        mock_call.assert_not_called()
+
+    def test_symlink_target_inside_another_root_is_read(
+        self, tmp_path: Path
+    ) -> None:
+        first = tmp_path / "one"
+        second = tmp_path / "two"
+        first.mkdir()
+        second.mkdir()
+        target = second / "actual.py"
+        target.write_text("from src.foo import Foo\n")
+        (first / "candidate.py").symlink_to(target)
+
+        snippet = oracle_curator._read_snippet(
+            [first, second], "candidate.py"
+        )
+
+        assert "import Foo" in snippet
+
+    def test_symlink_loop_returns_error_without_calling_model(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "loop.py").symlink_to("loop.py")
+
+        with patch.object(oracle_curator, "call_claude") as mock_call:
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="loop.py",
+                found_by="grep",
+                repo_paths=[repo],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "unsafe candidate path" in vote.error
+        mock_call.assert_not_called()
+
+    def test_nul_path_returns_error_without_calling_model(
+        self, tmp_path: Path
+    ) -> None:
+        with patch.object(oracle_curator, "call_claude") as mock_call:
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="bad\0.py",
+                found_by="grep",
+                repo_paths=[tmp_path],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "unsafe candidate path" in vote.error
+        mock_call.assert_not_called()
+
     def test_missing_but_contained_path_returns_empty(
         self, tmp_path: Path
     ) -> None:

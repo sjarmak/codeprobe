@@ -61,7 +61,7 @@ _MAX_SNIPPET_BYTES = 8000
 
 
 class UnsafeCandidatePathError(ValueError):
-    """Raised when a candidate path escapes every configured repo root.
+    """Raised when a candidate path escapes configured repo roots.
 
     Backend results are untrusted input: a candidate may be absolute, may
     contain ``..`` segments, or may name a symlink inside the repo that
@@ -333,12 +333,15 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
             f"absolute candidate path outside any repo root: {rel_path!r}"
         )
 
-    contained_in_a_root = False
-    for rp in repo_paths:
-        full = _resolve_within_root(rp, rel_path)
-        if full is None:
+    roots = tuple(
+        _resolve_candidate_path(root, rel_path) for root in repo_paths
+    )
+    escaped = False
+    for root in roots:
+        full = _resolve_candidate_path(root / rel_path, rel_path)
+        if not any(full.is_relative_to(allowed_root) for allowed_root in roots):
+            escaped = True
             continue
-        contained_in_a_root = True
         try:
             if not full.is_file():
                 continue
@@ -352,20 +355,21 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
             lines = lines[:_MAX_SNIPPET_LINES]
         return "\n".join(lines)
 
-    if repo_paths and not contained_in_a_root:
+    if escaped:
         raise UnsafeCandidatePathError(
-            f"candidate path escapes every repo root: {rel_path!r}"
+            f"candidate path escapes configured repo roots: {rel_path!r}"
         )
     return ""
 
 
-def _resolve_within_root(root: Path, rel_path: str) -> Path | None:
-    """Resolve *rel_path* only when it remains within *root*."""
-    resolved_root = root.resolve(strict=False)
-    candidate = (resolved_root / rel_path).resolve(strict=False)
-    if not candidate.is_relative_to(resolved_root):
-        return None
-    return candidate
+def _resolve_candidate_path(path: Path, rel_path: str) -> Path:
+    """Resolve *path*, translating expected path failures safely."""
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UnsafeCandidatePathError(
+            f"candidate path cannot be resolved safely: {rel_path!r}"
+        ) from exc
 
 
 def _curate_with_llm(
