@@ -14,9 +14,11 @@ from codeprobe.snapshot import (
     CanaryResult,
     Finding,
     MockScanner,
+    SnapshotManifest,
     SymlinkEscapeError,
     redact,
     safe_io,
+    write_snapshot,
 )
 from codeprobe.snapshot.scanners import Scanner, scanner_configuration_fingerprint
 
@@ -258,7 +260,7 @@ def test_redact_rejects_symlink_in_output_parent_path(
 
 @dataclass
 class _OutputSwapScanner:
-    """Swap ``files/`` after validation but before the old write path."""
+    """Swap ``files/`` after validation but before staged publication."""
 
     output: Path
     victim_dir: Path
@@ -506,3 +508,51 @@ def test_secure_output_directory_does_not_retain_one_fd_per_directory(
         output.ensure_path_unchanged()
 
     assert during - before < 16
+
+
+def test_public_snapshot_writer_cleans_partial_output_after_late_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "snapshot"
+    original_write = safe_io.SecureOutputDirectory.write_bytes
+
+    def write_then_fail(
+        directory: safe_io.SecureOutputDirectory,
+        relative_path: str,
+        data: bytes,
+    ) -> Path:
+        result = original_write(directory, relative_path, data)
+        if relative_path == "SNAPSHOT.json":
+            raise OSError("injected late failure")
+        return result
+
+    monkeypatch.setattr(
+        safe_io.SecureOutputDirectory,
+        "write_bytes",
+        write_then_fail,
+    )
+
+    with pytest.raises(OSError, match="injected late failure"):
+        write_snapshot(
+            SnapshotManifest(mode="hashes-only", source="test"),
+            output,
+        )
+
+    assert not output.exists()
+    assert list(tmp_path.glob(".snapshot.tmp-*")) == []
+
+
+def test_public_snapshot_writer_returns_published_absolute_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    result = write_snapshot(
+        SnapshotManifest(mode="hashes-only", source="test"),
+        Path("missing") / ".." / "snapshot",
+    )
+
+    assert result == tmp_path / "snapshot" / "SNAPSHOT.json"
+    assert result.is_file()

@@ -5,9 +5,8 @@ the manifest's source ``sha256``. For any non-trivial scanner that actually
 rewrites bytes, this produced a false "tampered" signal on every file.
 
 The fix writes a per-file ``redacted_body_sha256`` at redaction time and
-has the verifier compare against that field. The legacy fallback path is
-exercised by the existing tamper-detection tests (which use a passthrough
-scanner).
+has the verifier compare against that field. Content-bearing snapshots
+without this authenticated post-redaction hash now fail closed.
 """
 
 from __future__ import annotations

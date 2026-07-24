@@ -43,6 +43,7 @@ from codeprobe.snapshot.manifest import (
     build_extended_manifest,
     collect_dependencies,
     manifest_to_json_dict,
+    serialize_extended_manifest,
     write_extended_manifest,
 )
 from codeprobe.snapshot.redact import (
@@ -132,6 +133,7 @@ __all__ = [
     "manifest_to_json_dict",
     "preflight_symlink_containment",
     "redact",
+    "serialize_extended_manifest",
     "verify_snapshot",
     "verify_snapshot_extended",
     "write_extended_manifest",

@@ -39,7 +39,7 @@ from codeprobe.snapshot.manifest import (
     ExtendedManifest,
     build_extended_manifest,
     collect_dependencies,
-    manifest_to_json_dict,
+    serialize_extended_manifest,
 )
 from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
@@ -212,20 +212,17 @@ def _materialize_captured_layout(
     extended_manifest: ExtendedManifest,
     mode: RedactionMode,
     trials: dict[tuple[str, str], list[str]],
-) -> tuple[int, int]:
+) -> int:
     for subdirectory in _LAYOUT_SUBDIRS:
         output.ensure_directory(subdirectory)
     if mode != "hashes-only":
         output.ensure_directory("files")
 
     _write_materialized_bodies(prepared, output)
-    manifest_body = json.dumps(
-        manifest_to_json_dict(extended_manifest),
-        sort_keys=True,
-        indent=2,
-        separators=(",", ": "),
-    ).encode()
-    output.write_bytes("SNAPSHOT.json", manifest_body)
+    output.write_bytes(
+        "SNAPSHOT.json",
+        serialize_extended_manifest(extended_manifest),
+    )
 
     redacted_files = {
         relative_path.removeprefix("files/"): body
@@ -254,8 +251,7 @@ def _materialize_captured_layout(
                 output.write_bytes(f"{trace_root}/{relative}", body)
 
     output.ensure_path_unchanged()
-    count = len(trials)
-    return count, count
+    return len(trials)
 
 
 def _require_fairness_pass(
@@ -379,7 +375,7 @@ def create_snapshot(
         source_directories=(),
     )
     with staged_output_directory(out_dir) as output:
-        trace_count, export_trace_count = _materialize_captured_layout(
+        trial_count = _materialize_captured_layout(
             output,
             prepared,
             extended,
@@ -395,8 +391,8 @@ def create_snapshot(
         "files": len(prepared.manifest.files),
         "schema_version": extended.schema_version,
         "created_at": extended.created_at,
-        "traces": trace_count,
-        "export_traces": export_trace_count,
+        "traces": trial_count,
+        "export_traces": trial_count,
         "attestation_kind": (
             prepared.manifest.attestation.kind
             if prepared.manifest.attestation

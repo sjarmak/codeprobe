@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -837,3 +838,74 @@ def test_canary_proof_rejects_changed_external_scanner_config(
 
     with pytest.raises(CanaryProofInvalidError, match="configuration"):
         validate_canary_proof(proof, scanner)
+
+
+def test_external_scan_uses_proven_binary_and_config_after_validation_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "gitleaks"
+    original_executable = b"proven scanner executable"
+    executable.write_bytes(original_executable)
+    config = tmp_path / "gitleaks.toml"
+    original_config = "[allowlist]\n"
+    config.write_text(original_config)
+    scanner = GitleaksScanner()
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: str(executable),
+    )
+    monkeypatch.setenv("GITLEAKS_CONFIG", str(config))
+    proof = _passing_proof(scanner)
+    redact_module = importlib.import_module("codeprobe.snapshot.redact")
+    original_validate = redact_module.validate_canary_proof
+    invoked_executables: list[tuple[Path, bytes]] = []
+    invoked_configs: list[tuple[Path, str]] = []
+
+    def validate_then_replace(
+        supplied_proof: CanaryResult,
+        supplied_scanner: Scanner,
+    ) -> None:
+        original_validate(supplied_proof, supplied_scanner)
+        executable.write_bytes(b"replacement scanner executable")
+        config.write_text("[allowlist]\ndescription = 'replacement'\n")
+
+    def run(
+        args: Sequence[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        invoked_executable = Path(args[0])
+        invoked_executables.append(
+            (invoked_executable, invoked_executable.read_bytes())
+        )
+        environment = kwargs.get("env", os.environ)
+        assert isinstance(environment, Mapping)
+        invoked_config = Path(environment["GITLEAKS_CONFIG"])
+        invoked_configs.append((invoked_config, invoked_config.read_text()))
+        report = Path(args[args.index("-r") + 1])
+        report.write_text("[]")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(redact_module, "validate_canary_proof", validate_then_replace)
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.subprocess.run",
+        run,
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.txt").write_text("safe=true\n")
+
+    redact(
+        source,
+        "contents",
+        tmp_path / "snapshot",
+        scanner=scanner,
+        canary_proof=proof,
+        allow_source_in_export=True,
+    )
+
+    assert len(invoked_executables) == 2
+    assert all(path != executable for path, _body in invoked_executables)
+    assert all(body == original_executable for _path, body in invoked_executables)
+    assert all(path != config for path, _body in invoked_configs)
+    assert all(body == original_config for _path, body in invoked_configs)

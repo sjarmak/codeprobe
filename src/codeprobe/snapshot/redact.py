@@ -51,7 +51,12 @@ from codeprobe.snapshot.safe_io import (
     read_source_files,
     staged_output_directory,
 )
-from codeprobe.snapshot.scanners import PatternScanner, Scanner, ScannerError
+from codeprobe.snapshot.scanners import (
+    PatternScanner,
+    Scanner,
+    ScannerError,
+    pinned_scanner,
+)
 
 RedactionMode = Literal["hashes-only", "contents", "secrets"]
 
@@ -238,6 +243,28 @@ def _prepare_snapshot(
     effective_scanner = scanner if scanner is not None else (
         PatternScanner() if need_scanner else None
     )
+    with pinned_scanner(effective_scanner) as captured_scanner:
+        return _prepare_snapshot_with_scanner(
+            source_dir=source_dir,
+            mode=mode,
+            out_dir=out_dir,
+            effective_scanner=captured_scanner,
+            signing_key=signing_key,
+            canary_proof=canary_proof,
+        )
+
+
+def _prepare_snapshot_with_scanner(
+    *,
+    source_dir: Path,
+    mode: RedactionMode,
+    out_dir: Path,
+    effective_scanner: Scanner | None,
+    signing_key: str | None,
+    canary_proof: CanaryResult | None,
+) -> _PreparedSnapshot:
+    """Capture and transform source bytes with one pinned scanner runtime."""
+    need_scanner = mode in ("contents", "secrets")
 
     # contents/secrets modes both copy source-derived bodies into the
     # snapshot, so both must prove that the configured scanner can actually
@@ -387,13 +414,13 @@ def _attest(
 
 
 def write_snapshot(manifest: SnapshotManifest, out_dir: Path) -> Path:
-    """Serialize ``manifest`` to ``out_dir/SNAPSHOT.json`` and return the path."""
+    """Atomically publish ``out_dir/SNAPSHOT.json`` and return the path."""
 
-    out_dir = Path(out_dir)
-    with SecureOutputDirectory(out_dir) as output:
-        dest = _write_snapshot_to_output(manifest, output)
+    destination = Path(os.path.abspath(os.fspath(out_dir)))
+    with staged_output_directory(destination) as output:
+        _write_snapshot_to_output(manifest, output)
         output.ensure_path_unchanged()
-    return dest
+    return destination / _MANIFEST_NAME
 
 
 def _write_snapshot_to_output(

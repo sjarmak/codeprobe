@@ -80,6 +80,57 @@ def test_public_extended_manifest_writer_rejects_leaf_symlink(
     assert victim.read_text() == "do-not-overwrite\n"
 
 
+def test_public_extended_manifest_writer_cleans_partial_output_after_late_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "snapshot"
+    extended = build_extended_manifest(
+        SnapshotManifest(mode="hashes-only", source="test")
+    )
+    original_write = safe_io.SecureOutputDirectory.write_bytes
+
+    def write_then_fail(
+        directory: safe_io.SecureOutputDirectory,
+        relative_path: str,
+        data: bytes,
+    ) -> Path:
+        result = original_write(directory, relative_path, data)
+        if relative_path == "SNAPSHOT.json":
+            raise OSError("injected late failure")
+        return result
+
+    monkeypatch.setattr(
+        safe_io.SecureOutputDirectory,
+        "write_bytes",
+        write_then_fail,
+    )
+
+    with pytest.raises(OSError, match="injected late failure"):
+        write_extended_manifest(extended, output)
+
+    assert not output.exists()
+    assert list(tmp_path.glob(".snapshot.tmp-*")) == []
+
+
+def test_public_extended_manifest_writer_returns_published_absolute_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    extended = build_extended_manifest(
+        SnapshotManifest(mode="hashes-only", source="test")
+    )
+
+    result = write_extended_manifest(
+        extended,
+        Path("missing") / ".." / "snapshot",
+    )
+
+    assert result == tmp_path / "snapshot" / "SNAPSHOT.json"
+    assert result.is_file()
+
+
 def test_create_uses_captured_source_after_trial_directory_swap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

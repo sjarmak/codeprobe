@@ -32,7 +32,10 @@ import stat
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field, fields, is_dataclass
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from copy import deepcopy
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import IO, Any, Protocol, runtime_checkable
 
@@ -438,6 +441,7 @@ def _completed_external_scan(
     limits: ExternalScannerLimits,
     stdout: int | IO[Any],
     monitored_path: Path | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     if resource is None:
         raise ScannerError(
@@ -475,6 +479,7 @@ def _completed_external_scan(
                 preexec_fn=configure_child,
                 pass_fds=(pid_write_fd,),
                 start_new_session=True,
+                env=dict(environment) if environment is not None else None,
             )
         except subprocess.TimeoutExpired:
             execution_error = f"{scanner_name} scan timed out"
@@ -550,8 +555,15 @@ class GitleaksScanner:
     binary: str = "gitleaks"
     limits: ExternalScannerLimits = field(default_factory=ExternalScannerLimits)
     _fallback: PatternScanner = field(default_factory=PatternScanner)
+    _pinned_runtime: _PinnedExternalRuntime | None = field(
+        default=None,
+        repr=False,
+        metadata={"fingerprint": False},
+    )
 
     def _require(self) -> str:
+        if self._pinned_runtime is not None:
+            return self._pinned_runtime.executable
         path = shutil.which(self.binary)
         if path is None:
             raise ScannerUnavailableError(
@@ -582,6 +594,11 @@ class GitleaksScanner:
                 limits=self.limits,
                 stdout=subprocess.DEVNULL,
                 monitored_path=report,
+                environment=(
+                    self._pinned_runtime.environment
+                    if self._pinned_runtime is not None
+                    else None
+                ),
             )
             if proc.returncode not in (0, 1):
                 raise ScannerError("gitleaks scan failed")
@@ -666,8 +683,15 @@ class TrufflehogScanner:
     binary: str = "trufflehog"
     limits: ExternalScannerLimits = field(default_factory=ExternalScannerLimits)
     _fallback: PatternScanner = field(default_factory=PatternScanner)
+    _pinned_runtime: _PinnedExternalRuntime | None = field(
+        default=None,
+        repr=False,
+        metadata={"fingerprint": False},
+    )
 
     def _require(self) -> str:
+        if self._pinned_runtime is not None:
+            return self._pinned_runtime.executable
         path = shutil.which(self.binary)
         if path is None:
             raise ScannerUnavailableError(
@@ -685,6 +709,11 @@ class TrufflehogScanner:
                 [trufflehog, "filesystem", "--json", str(target)],
                 limits=self.limits,
                 stdout=stdout,
+                environment=(
+                    self._pinned_runtime.environment
+                    if self._pinned_runtime is not None
+                    else None
+                ),
             )
             stdout.seek(0)
             output = stdout.read(self.limits.max_output_bytes + 1)
@@ -813,55 +842,142 @@ def _stable_configuration_value(value: object) -> object:
             "fields": {
                 item.name: _stable_configuration_value(getattr(value, item.name))
                 for item in fields(value)
+                if item.metadata.get("fingerprint", True)
             },
         }
     raise ScannerError("scanner configuration cannot be fingerprinted safely")
 
 
-def _regular_file_sha256(path: Path) -> str:
+def _read_regular_file_bytes(path: Path) -> bytes:
     try:
-        file_fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        file_fd = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
     except OSError:
         raise ScannerError("external scanner identity cannot be read") from None
-    digest = hashlib.sha256()
     try:
         if not stat.S_ISREG(os.fstat(file_fd).st_mode):
             raise ScannerError("external scanner identity is not a regular file")
         with os.fdopen(file_fd, "rb") as source:
             file_fd = -1
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
+            return source.read()
     finally:
         if file_fd >= 0:
             os.close(file_fd)
-    return digest.hexdigest()
 
 
-def _external_runtime_identity(scanner: Scanner) -> dict[str, object] | None:
-    if not isinstance(scanner, (GitleaksScanner, TrufflehogScanner)):
-        return None
+@dataclass(frozen=True)
+class _ExternalRuntimeSnapshot:
+    identity: dict[str, object]
+    executable: bytes
+    environment: dict[str, str]
+    config_files: tuple[tuple[str, bytes], ...]
+
+
+@dataclass(frozen=True)
+class _PinnedExternalRuntime:
+    executable: str
+    environment: dict[str, str]
+    identity: dict[str, object]
+
+
+def _external_runtime_snapshot(scanner: Scanner) -> _ExternalRuntimeSnapshot:
+    assert isinstance(scanner, (GitleaksScanner, TrufflehogScanner))
     resolved = shutil.which(scanner.binary)
     if resolved is None:
         raise ScannerUnavailableError(
             f"{scanner.name} binary {scanner.binary!r} not found on PATH"
         )
-    environment: dict[str, object] = {}
+    executable_path = Path(resolved).resolve()
+    executable = _read_regular_file_bytes(executable_path)
+    environment = dict(os.environ)
+    environment_identity: dict[str, object] = {}
+    config_files: list[tuple[str, bytes]] = []
     prefix = f"{scanner.name.upper()}_"
-    for key, value in sorted(os.environ.items()):
+    for key, value in sorted(environment.items()):
         if not key.startswith(prefix):
             continue
         item: dict[str, object] = {
             "value_sha256": hashlib.sha256(value.encode()).hexdigest()
         }
         if os.path.isfile(value):
-            item["file_sha256"] = _regular_file_sha256(Path(value))
-        environment[key] = item
-    executable = Path(resolved)
-    return {
-        "resolved_path": str(executable.resolve()),
-        "sha256": _regular_file_sha256(executable),
-        "environment": environment,
-    }
+            config_body = _read_regular_file_bytes(Path(value).resolve())
+            item["file_sha256"] = hashlib.sha256(config_body).hexdigest()
+            config_files.append((key, config_body))
+        environment_identity[key] = item
+    return _ExternalRuntimeSnapshot(
+        identity={
+            "resolved_path": str(executable_path),
+            "sha256": hashlib.sha256(executable).hexdigest(),
+            "environment": environment_identity,
+        },
+        executable=executable,
+        environment=environment,
+        config_files=tuple(config_files),
+    )
+
+
+def _write_private_artifact(path: Path, body: bytes, mode: int) -> None:
+    file_fd = os.open(
+        path,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        mode,
+    )
+    try:
+        view = memoryview(body)
+        while view:
+            written = os.write(file_fd, view)
+            if written == 0:
+                raise ScannerError("pinned scanner artifact could not be written")
+            view = view[written:]
+    except OSError:
+        raise ScannerError("pinned scanner artifact could not be written") from None
+    finally:
+        os.close(file_fd)
+
+
+@contextmanager
+def pinned_scanner(scanner: Scanner | None) -> Iterator[Scanner | None]:
+    """Yield an external scanner bound to immutable private runtime artifacts."""
+    if not isinstance(scanner, (GitleaksScanner, TrufflehogScanner)):
+        yield scanner
+        return
+
+    snapshot = _external_runtime_snapshot(scanner)
+    with tempfile.TemporaryDirectory(prefix=f"codeprobe-{scanner.name}-") as temporary:
+        private_root = Path(temporary)
+        executable = private_root / "scanner"
+        _write_private_artifact(executable, snapshot.executable, 0o700)
+        environment = dict(snapshot.environment)
+        for index, (key, body) in enumerate(snapshot.config_files):
+            private_config = private_root / f"config-{index}"
+            _write_private_artifact(private_config, body, 0o600)
+            environment[key] = str(private_config)
+        runtime = _PinnedExternalRuntime(
+            executable=str(executable),
+            environment=environment,
+            identity=snapshot.identity,
+        )
+        yield replace(
+            scanner,
+            _fallback=deepcopy(scanner._fallback),
+            _pinned_runtime=runtime,
+        )
+
+
+def _external_runtime_identity(scanner: Scanner) -> dict[str, object] | None:
+    if not isinstance(scanner, (GitleaksScanner, TrufflehogScanner)):
+        return None
+    if scanner._pinned_runtime is not None:
+        return scanner._pinned_runtime.identity
+    return _external_runtime_snapshot(scanner).identity
 
 
 def scanner_configuration_fingerprint(scanner: Scanner) -> str:

@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from codeprobe.snapshot.redact import SnapshotManifest
-from codeprobe.snapshot.safe_io import SecureOutputDirectory
+from codeprobe.snapshot.safe_io import staged_output_directory
 
 __all__ = [
     "Dependencies",
@@ -36,6 +37,7 @@ __all__ = [
     "build_extended_manifest",
     "collect_dependencies",
     "manifest_to_json_dict",
+    "serialize_extended_manifest",
     "write_extended_manifest",
 ]
 
@@ -213,16 +215,20 @@ def manifest_to_json_dict(ext: ExtendedManifest) -> dict[str, Any]:
     return body
 
 
-def write_extended_manifest(ext: ExtendedManifest, snapshot_dir: Path) -> Path:
-    """Write ``SNAPSHOT.json`` to ``snapshot_dir`` and return the path."""
-    snapshot_dir = Path(snapshot_dir)
-    serialized = json.dumps(
+def serialize_extended_manifest(ext: ExtendedManifest) -> bytes:
+    """Return the canonical human-readable extended manifest bytes."""
+    return json.dumps(
         manifest_to_json_dict(ext),
         sort_keys=True,
         indent=2,
         separators=(",", ": "),
     ).encode()
-    with SecureOutputDirectory(snapshot_dir) as output:
-        target = output.write_bytes("SNAPSHOT.json", serialized)
+
+
+def write_extended_manifest(ext: ExtendedManifest, snapshot_dir: Path) -> Path:
+    """Atomically publish ``snapshot_dir/SNAPSHOT.json`` and return the path."""
+    destination = Path(os.path.abspath(os.fspath(snapshot_dir)))
+    with staged_output_directory(destination) as output:
+        output.write_bytes("SNAPSHOT.json", serialize_extended_manifest(ext))
         output.ensure_path_unchanged()
-    return target
+    return destination / "SNAPSHOT.json"
