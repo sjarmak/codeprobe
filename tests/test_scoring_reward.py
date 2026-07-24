@@ -19,6 +19,7 @@ fixtures so a future contract change has to face the canonical cases.
 from __future__ import annotations
 
 import json
+import shlex
 import stat
 from pathlib import Path
 
@@ -750,6 +751,58 @@ class TestOracleChecksFamily:
 
         assert result.scorer_family == "oracle_checks"
         assert result.score == pytest.approx(1.0)
+
+    @pytest.mark.parametrize(
+        ("stdout", "expected_score"),
+        [
+            ("garbage", 0.0),
+            ("[]", 0.0),
+            ('{"score": "0.5"}', 0.0),
+            ('{"score": true}', 0.0),
+            ('{"score": "NaN"}', 0.0),
+            ('{"score": NaN}', 0.0),
+            ('{"score": Infinity}', 0.0),
+            ('{"score": -Infinity}', 0.0),
+            ("", 1.0),
+        ],
+        ids=[
+            "garbage",
+            "non-object",
+            "non-numeric",
+            "boolean",
+            "nan-string",
+            "raw-nan",
+            "raw-infinity",
+            "raw-negative-infinity",
+            "empty",
+        ],
+    )
+    def test_registry_resolved_oracle_checks_enforces_stdout_contract(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        stdout: str,
+        expected_score: float,
+    ) -> None:
+        from codeprobe.core.scoring import get_scorer
+
+        script = "#!/bin/bash\n"
+        if stdout:
+            script += f"printf '%s' {shlex.quote(stdout)}\n"
+        script += "exit 0\n"
+        task_dir = _make_rubric_task(
+            tmp_path,
+            "rubric-registry-stdout",
+            [{"name": "strict", "weight": 1.0, "verifier": "strict.sh"}],
+            {"strict.sh": script},
+        )
+
+        result = get_scorer("oracle_checks").score("output", task_dir)
+
+        assert result.scorer_family == "oracle_checks"
+        assert result.score == expected_score
+        if stdout:
+            assert any("strict.sh" in record.message for record in caplog.records)
 
     def test_registry_resolves_oracle_checks(self) -> None:
         """``get_scorer("oracle_checks")`` returns an :class:`OracleChecksScorer`."""

@@ -595,6 +595,52 @@ class TestCheckpointScorer:
         assert result.passed is False
         assert any("garbage.sh" in record.message for record in caplog.records)
 
+    @pytest.mark.parametrize(
+        "stdout",
+        [
+            '{"score": true}',
+            '{"score": "0.5"}',
+            '{"score": "NaN"}',
+            '{"score": NaN}',
+            '{"score": Infinity}',
+            '{"score": -Infinity}',
+        ],
+        ids=[
+            "boolean",
+            "numeric-string",
+            "nan-string",
+            "raw-nan",
+            "raw-infinity",
+            "raw-negative-infinity",
+        ],
+    )
+    def test_verifier_rejects_non_numeric_or_non_finite_json_scores(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        stdout: str,
+    ) -> None:
+        task_dir = self._make_checkpoint_task(
+            tmp_path,
+            "cp-invalid-json-score",
+            [{"name": "cp1", "weight": 1.0, "verifier": "invalid-score.sh"}],
+            {
+                "invalid-score.sh": (
+                    "#!/bin/bash\n"
+                    f"printf '%s\\n' '{stdout}'\n"
+                    "exit 0\n"
+                )
+            },
+        )
+
+        result = CheckpointScorer().score("output", task_dir)
+
+        assert result.score == 0.0
+        assert result.passed is False
+        assert any(
+            "invalid-score.sh" in record.message for record in caplog.records
+        )
+
     def test_verifier_exit_zero_with_empty_stdout_scores_one(
         self, tmp_path: Path
     ) -> None:

@@ -114,20 +114,28 @@ All values live in `[0.0, 1.0]`. Reward computation is mechanical — no
 thresholds, no soft-clipping, no judgment. The family declares which
 formula to apply; the formula itself is pure arithmetic on the inputs.
 
-### `weighted_checkpoints` verifier stdout
+### Composite verifier stdout
 
-Checkpoint verifiers have two mutually exclusive result channels:
+`weighted_checkpoints` and `oracle_checks` use the same strict verifier
+stdout parser. Verifiers have two mutually exclusive result channels:
 
 * Non-empty stdout is the JSON channel. After surrounding whitespace is
-  removed, it must be one JSON object. Its `score` field is converted to a
-  number and clamped to `[0.0, 1.0]`; an omitted `score` defaults to `0.0`.
-  Invalid JSON, a non-object JSON value, or a non-numeric `score` logs a
-  warning naming the verifier and scores `0.0`, regardless of exit status.
+  removed, it must be one strict JSON object. Its `score` must be a finite
+  JSON number (not a boolean or numeric string) and is clamped to
+  `[0.0, 1.0]`; an omitted `score` defaults to `0.0`. Invalid JSON,
+  Python's non-standard `NaN` / `Infinity` constants, a non-object value,
+  or an invalid `score` logs a warning naming the verifier and scores
+  `0.0`, regardless of exit status.
 * Completely empty stdout is the legacy exit-code channel: exit `0` scores
   `1.0`, and a nonzero exit scores `0.0`.
 
 Verifier diagnostics therefore belong on stderr. A warning or other
 non-JSON text on stdout does not fall back to exit-code success.
+
+The generated comprehension `step2_answer_correct.sh` delegates to the
+artifact-scoring CLI. If that child exits nonzero, the wrapper emits the
+canonical zero-score JSON, exits nonzero, and writes only a fixed diagnostic
+with the child status to stderr; raw child stderr is not forwarded.
 
 ### Why F1 is the default for IR
 

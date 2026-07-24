@@ -61,6 +61,44 @@ def score_task_output(agent_output: str, task_dir: Path) -> ScoreResult:
     return BinaryScorer().score(agent_output, task_dir)
 
 
+def _reject_non_finite_json_constant(value: str) -> None:
+    """Reject Python's non-standard JSON constants."""
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _parse_composite_verifier_stdout(
+    stdout: str,
+    verifier_name: str,
+) -> float | None:
+    """Parse strict JSON score output, or return ``None`` for empty stdout."""
+    stripped = stdout.strip()
+    if not stripped:
+        return None
+
+    try:
+        data = json.loads(
+            stripped,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+        if not isinstance(data, dict):
+            raise TypeError("verifier JSON must be an object")
+        raw = data.get("score", 0.0)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise TypeError("verifier JSON score must be a number")
+        score = float(raw)
+        if not math.isfinite(score):
+            raise ValueError("verifier JSON score must be finite")
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "Verifier %s produced zero score due to invalid JSON stdout: %s",
+            verifier_name,
+            exc,
+        )
+        return _ZERO_SCORE
+
+    return max(0.0, min(1.0, score))
+
+
 # ---------------------------------------------------------------------------
 # BinaryScorer
 # ---------------------------------------------------------------------------
@@ -611,23 +649,12 @@ class CheckpointScorer:
             )
             return _ZERO_SCORE, run.execution_mode
 
-        # Non-empty stdout selects the JSON score channel. It must never fall
-        # through to exit-code success when parsing fails.
-        stdout = run.stdout.strip()
-        if stdout:
-            try:
-                data = json.loads(stdout)
-                if not isinstance(data, dict):
-                    raise TypeError("checkpoint JSON must be an object")
-                raw = float(data.get("score", 0.0))
-                return max(0.0, min(1.0, raw)), run.execution_mode
-            except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "Verifier %s produced zero score due to invalid JSON stdout: %s",
-                    verifier_path.name,
-                    exc,
-                )
-                return _ZERO_SCORE, run.execution_mode
+        parsed_score = _parse_composite_verifier_stdout(
+            run.stdout,
+            verifier_path.name,
+        )
+        if parsed_score is not None:
+            return parsed_score, run.execution_mode
 
         # Empty stdout uses the legacy exit-code contract. Non-zero is a
         # legitimate "verifier failed" signal (not a silent swallow);
@@ -672,8 +699,9 @@ class OracleChecksScorer:
        objects (``description`` is optional and ignored by the scorer).
 
     Verifier scripts live in ``tests/verifiers/`` (same layout as
-    ``CheckpointScorer``) and emit JSON on stdout: ``{"score": 0.0-1.0,
-    "passed": bool}``. Fallback: exit ``0`` → ``1.0``, nonzero → ``0.0``.
+    ``CheckpointScorer``). Non-empty stdout must be strict JSON:
+    ``{"score": 0.0-1.0, "passed": bool}``. Empty stdout falls back to
+    exit status: exit ``0`` → ``1.0``, nonzero → ``0.0``.
     """
 
     SCORER_FAMILY = "oracle_checks"
@@ -861,14 +889,12 @@ class OracleChecksScorer:
             )
             return _ZERO_SCORE, run.execution_mode
 
-        stdout = run.stdout.strip()
-        if stdout:
-            try:
-                data = json.loads(stdout)
-                raw = float(data.get("score", 0.0))
-                return max(0.0, min(1.0, raw)), run.execution_mode
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+        parsed_score = _parse_composite_verifier_stdout(
+            run.stdout,
+            verifier_path.name,
+        )
+        if parsed_score is not None:
+            return parsed_score, run.execution_mode
 
         if run.returncode == 0:
             return 1.0, run.execution_mode

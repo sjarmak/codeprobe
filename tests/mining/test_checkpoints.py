@@ -215,6 +215,39 @@ class TestSingleStepTasksHaveNoCheckpoints:
 class TestComprehensionCheckpoints:
     """Multi-step comprehension templates emit their own 2-step checkpoints."""
 
+    @staticmethod
+    def _run_step2_answer_correct(
+        tmp_path: Path,
+        module_source: str,
+    ) -> subprocess.CompletedProcess[str]:
+        task_dir = tmp_path / "task"
+        verifier_dir = task_dir / "tests" / "verifiers"
+        verifier_dir.mkdir(parents=True)
+        verifier = verifier_dir / "step2_answer_correct.sh"
+        verifier.write_text(
+            COMPREHENSION_CHECKPOINT_SCRIPTS["step2_answer_correct.sh"]
+        )
+        verifier.chmod(0o755)
+
+        fake_package = tmp_path / "fake-package"
+        scoring_package = fake_package / "codeprobe" / "core" / "scoring"
+        scoring_package.mkdir(parents=True)
+        for package_dir in (
+            fake_package / "codeprobe",
+            fake_package / "codeprobe" / "core",
+            scoring_package,
+        ):
+            (package_dir / "__init__.py").write_text("")
+        (scoring_package / "__main__.py").write_text(module_source)
+
+        return subprocess.run(
+            [str(verifier)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(fake_package)},
+        )
+
     def test_import_chain_gets_checkpoints(self) -> None:
         # Structural check on the generator-level contract: the multi-step
         # template set is exported and non-empty, and helpers return exactly
@@ -258,44 +291,51 @@ class TestComprehensionCheckpoints:
             "so the emitted script tracks the mine-time threshold."
         )
 
-    def test_step2_answer_correct_rejects_non_json_scorer_stdout(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        "scorer_stdout",
+        [
+            "warning: polluted stdout",
+            '{"score": NaN}',
+            '{"score": Infinity}',
+            '{"score": -Infinity}',
+        ],
+        ids=["garbage", "raw-nan", "raw-infinity", "raw-negative-infinity"],
+    )
+    def test_step2_answer_correct_rejects_non_standard_json_scorer_stdout(
+        self,
+        tmp_path: Path,
+        scorer_stdout: str,
     ) -> None:
-        """The generated verifier must not pass through polluted stdout."""
-        task_dir = tmp_path / "task"
-        verifier_dir = task_dir / "tests" / "verifiers"
-        verifier_dir.mkdir(parents=True)
-        verifier = verifier_dir / "step2_answer_correct.sh"
-        verifier.write_text(
-            COMPREHENSION_CHECKPOINT_SCRIPTS["step2_answer_correct.sh"]
-        )
-        verifier.chmod(0o755)
-
-        fake_package = tmp_path / "fake-package"
-        scoring_package = fake_package / "codeprobe" / "core" / "scoring"
-        scoring_package.mkdir(parents=True)
-        for package_dir in (
-            fake_package / "codeprobe",
-            fake_package / "codeprobe" / "core",
-            scoring_package,
-        ):
-            (package_dir / "__init__.py").write_text("")
-        (scoring_package / "__main__.py").write_text(
-            "print('warning: polluted stdout')\n"
-        )
-
-        run = subprocess.run(
-            [str(verifier)],
-            check=False,
-            capture_output=True,
-            text=True,
-            env={**os.environ, "PYTHONPATH": str(fake_package)},
+        """The generated verifier must not pass through invalid JSON."""
+        run = self._run_step2_answer_correct(
+            tmp_path,
+            f"print({scorer_stdout!r})\n",
         )
 
         assert run.returncode != 0
         payload = json.loads(run.stdout)
         assert payload["score"] == 0.0
         assert payload["passed"] is False
+
+    def test_step2_answer_correct_preserves_scorer_failure(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        secret = "ghp_" + "abcdefghijklmnopqrstuvwxyz1234567890"
+        run = self._run_step2_answer_correct(
+            tmp_path,
+            (
+                "import sys\n"
+                'print(\'{"score": 1.0, "passed": true}\')\n'
+                f"print('internal failure {secret}', file=sys.stderr)\n"
+                "raise SystemExit(8)\n"
+            ),
+        )
+
+        assert run.returncode != 0
+        assert json.loads(run.stdout) == {"score": 0.0, "passed": False}
+        assert "artifact scorer exited 8" in run.stderr
+        assert secret not in run.stderr
 
 
 class TestResolveCheckpointScripts:

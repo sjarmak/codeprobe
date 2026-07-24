@@ -86,13 +86,29 @@ COMPREHENSION_CHECKPOINT_SCRIPTS: dict[str, str] = {
         '# on stdout so CheckpointScorer reads a continuous score.\n'
         'SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
         'TASK_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"\n'
-        'OUT=$(python3 -m codeprobe.core.scoring --artifact "$TASK_DIR" 2>/dev/null || echo "")\n'
-        'if [ -z "$OUT" ]; then\n'
+        "set +e\n"
+        'OUT=$(python3 -m codeprobe.core.scoring --artifact "$TASK_DIR" 2>/dev/null)\n'
+        "STATUS=$?\n"
+        "set -e\n"
+        'if [ "$STATUS" -ne 0 ]; then\n'
+        "    printf 'step2_answer_correct: artifact scorer exited %s\\n' "
+        '"$STATUS" >&2\n'
         '    echo \'{"score": 0.0, "passed": false}\'\n'
         "    exit 1\n"
         "fi\n"
-        "if ! python3 -c 'import json,sys; json.load(sys.stdin)' "
+        'if [ -z "$OUT" ]; then\n'
+        "    echo 'step2_answer_correct: artifact scorer produced empty stdout' >&2\n"
+        '    echo \'{"score": 0.0, "passed": false}\'\n'
+        "    exit 1\n"
+        "fi\n"
+        "if ! python3 -c 'import json,math,sys; "
+        "reject=lambda value: (_ for _ in ()).throw(ValueError(value)); "
+        "data=json.load(sys.stdin,parse_constant=reject); "
+        'score=data.get("score",0.0) if isinstance(data,dict) else None; '
+        "valid=isinstance(score,(int,float)) and not isinstance(score,bool) "
+        "and math.isfinite(score); sys.exit(0 if valid else 1)' "
         '<<<"$OUT" 2>/dev/null; then\n'
+        "    echo 'step2_answer_correct: artifact scorer produced invalid JSON' >&2\n"
         '    echo \'{"score": 0.0, "passed": false}\'\n'
         "    exit 1\n"
         "fi\n"
