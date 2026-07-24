@@ -476,6 +476,166 @@ class TestReadSnippet:
         snippet = oracle_curator._read_snippet([tmp_path], "huge.py")
         assert len(snippet) <= oracle_curator._MAX_SNIPPET_BYTES
 
+    def test_reads_valid_nested_path(self, tmp_path: Path) -> None:
+        nested = tmp_path / "pkg" / "sub"
+        nested.mkdir(parents=True)
+        (nested / "mod.py").write_text("from src.foo import Foo\n")
+        snippet = oracle_curator._read_snippet(
+            [tmp_path], "pkg/sub/mod.py"
+        )
+        assert "import Foo" in snippet
+
+    def test_reads_from_second_root(self, tmp_path: Path) -> None:
+        first = tmp_path / "one"
+        second = tmp_path / "two"
+        first.mkdir()
+        second.mkdir()
+        (second / "b.py").write_text("from src.foo import Foo\n")
+        snippet = oracle_curator._read_snippet(
+            [first, second], "b.py"
+        )
+        assert "import Foo" in snippet
+
+
+class TestReadSnippetPathContainment:
+    """Backend-supplied candidate paths are untrusted (codeprobe-opp7)."""
+
+    def test_rejects_traversal_escape(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+
+        with pytest.raises(oracle_curator.UnsafeCandidatePathError):
+            oracle_curator._read_snippet([repo], "../secret.txt")
+
+    def test_rejects_absolute_path(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+
+        with pytest.raises(oracle_curator.UnsafeCandidatePathError):
+            oracle_curator._read_snippet([repo], str(secret))
+
+    def test_rejects_absolute_path_with_no_roots(self) -> None:
+        with pytest.raises(oracle_curator.UnsafeCandidatePathError):
+            oracle_curator._read_snippet([], "/etc/passwd")
+
+    def test_rejects_symlink_escape(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (repo / "leak.py").symlink_to(secret)
+
+        with pytest.raises(oracle_curator.UnsafeCandidatePathError):
+            oracle_curator._read_snippet([repo], "leak.py")
+
+    def test_rejection_message_excludes_file_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (tmp_path / "secret.txt").write_text("TOP SECRET")
+
+        with pytest.raises(
+            oracle_curator.UnsafeCandidatePathError
+        ) as excinfo:
+            oracle_curator._read_snippet([repo], "../secret.txt")
+        assert "TOP SECRET" not in str(excinfo.value)
+
+    def test_escape_from_one_root_still_reads_from_another(
+        self, tmp_path: Path
+    ) -> None:
+        # ``../two/b.py`` escapes ``one`` but lands inside ``tmp_path``,
+        # under the configured ``two`` root — that is a legitimate read.
+        first = tmp_path / "one"
+        first.mkdir()
+        second = tmp_path / "two"
+        second.mkdir()
+        (second / "b.py").write_text("from src.foo import Foo\n")
+
+        snippet = oracle_curator._read_snippet(
+            [first, second], "../two/b.py"
+        )
+        assert "import Foo" in snippet
+
+    def test_escape_from_every_root_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        repos = tmp_path / "repos"
+        first = repos / "one"
+        second = repos / "two"
+        first.mkdir(parents=True)
+        second.mkdir()
+        (tmp_path / "secret.txt").write_text("TOP SECRET")
+
+        with pytest.raises(oracle_curator.UnsafeCandidatePathError):
+            oracle_curator._read_snippet(
+                [first, second], "../../secret.txt"
+            )
+
+    def test_missing_but_contained_path_returns_empty(
+        self, tmp_path: Path
+    ) -> None:
+        assert oracle_curator._read_snippet([tmp_path], "gone.py") == ""
+
+    def test_unsafe_tier2_candidate_is_quarantined(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (tmp_path / "secret.txt").write_text("TOP SECRET")
+        results = [
+            _br("grep", ["a.py", "../secret.txt"]),
+            _br("ast", ["a.py"]),
+        ]
+
+        with patch.object(
+            oracle_curator, "llm_available", return_value=True
+        ), patch.object(oracle_curator, "call_claude") as mock_call:
+            out = curate_consensus(
+                backend_results=results,
+                symbol="Foo",
+                defining_file="src/foo.py",
+                repo_paths=[repo],
+                use_llm=True,
+            )
+
+        # No prompt was ever built for the escaping candidate.
+        mock_call.assert_not_called()
+        assert {it.path for it in out.items} == {"a.py"}
+        reasons = {p: r for p, r in out.quarantined}
+        assert "../secret.txt" in reasons
+        assert reasons["../secret.txt"].startswith("unsafe candidate path:")
+        assert "TOP SECRET" not in reasons["../secret.txt"]
+        assert out.llm_used is False
+
+    def test_llm_curator_returns_non_content_error_without_calling_model(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (tmp_path / "secret.txt").write_text("TOP SECRET")
+
+        with patch.object(oracle_curator, "call_claude") as mock_call:
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="../secret.txt",
+                found_by="grep",
+                repo_paths=[repo],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.error is not None
+        assert "unsafe candidate path" in vote.error
+        assert "TOP SECRET" not in vote.error
+        assert vote.llm_called is False
+        mock_call.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # CuratedOracle invariants

@@ -60,19 +60,33 @@ _MAX_SNIPPET_BYTES = 8000
 # ---------------------------------------------------------------------------
 
 
+class UnsafeCandidatePathError(ValueError):
+    """Raised when a candidate path escapes every configured repo root.
+
+    Backend results are untrusted input: a candidate may be absolute, may
+    contain ``..`` segments, or may name a symlink inside the repo that
+    points outside it. Reading any of those would leak host files into the
+    curator prompt, so the curator refuses the read and quarantines the
+    candidate. The message names the path only — never file contents.
+    """
+
+
 @dataclass(frozen=True)
 class CuratorVote:
     """Outcome of one LLM curator call for a tier-2 candidate file.
 
     ``keep`` is the model's verdict; ``rationale`` is a one-sentence
     justification. ``error`` is set when the call failed (LLM
-    unavailable, parse failure, timeout); in that case ``keep`` is
-    forced to ``False`` so the conservative path drops the candidate.
+    unavailable, unsafe candidate path, parse failure, timeout); in that
+    case ``keep`` is forced to ``False`` so the conservative path drops
+    the candidate. ``llm_called`` distinguishes failures rejected before
+    a prompt was built from failures during or after the model call.
     """
 
     keep: bool
     rationale: str = ""
     error: str | None = None
+    llm_called: bool = True
 
 
 @dataclass(frozen=True)
@@ -222,7 +236,6 @@ def curate_consensus(
             )
             continue
 
-        llm_called = True
         vote = _curate_with_llm(
             symbol=symbol,
             defining_file=defining_file,
@@ -231,8 +244,14 @@ def curate_consensus(
             repo_paths=repo_paths,
             timeout_seconds=llm_timeout_seconds,
         )
+        llm_called = llm_called or vote.llm_called
         if vote.error:
-            quarantined.append((path, f"LLM error: {vote.error}"))
+            reason = (
+                f"LLM error: {vote.error}"
+                if vote.llm_called
+                else vote.error
+            )
+            quarantined.append((path, reason))
         elif vote.keep:
             items.append(
                 CuratedItem(
@@ -300,9 +319,26 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
     (:data:`_MAX_SNIPPET_BYTES`) so the LLM prompt stays small and
     deterministic regardless of file size. Returns ``""`` when the file
     is not present in any of the supplied repos.
+
+    *rel_path* comes from a search backend and is therefore untrusted. It
+    must stay inside one of *repo_paths* after symlink resolution;
+    anything else raises :class:`UnsafeCandidatePathError` before any IO.
+
+    Raises:
+        UnsafeCandidatePathError: if *rel_path* is absolute, or resolves
+            outside every configured repo root.
     """
+    if Path(rel_path).is_absolute():
+        raise UnsafeCandidatePathError(
+            f"absolute candidate path outside any repo root: {rel_path!r}"
+        )
+
+    contained_in_a_root = False
     for rp in repo_paths:
-        full = rp / rel_path
+        full = _resolve_within_root(rp, rel_path)
+        if full is None:
+            continue
+        contained_in_a_root = True
         try:
             if not full.is_file():
                 continue
@@ -315,7 +351,21 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
         if len(lines) > _MAX_SNIPPET_LINES:
             lines = lines[:_MAX_SNIPPET_LINES]
         return "\n".join(lines)
+
+    if repo_paths and not contained_in_a_root:
+        raise UnsafeCandidatePathError(
+            f"candidate path escapes every repo root: {rel_path!r}"
+        )
     return ""
+
+
+def _resolve_within_root(root: Path, rel_path: str) -> Path | None:
+    """Resolve *rel_path* only when it remains within *root*."""
+    resolved_root = root.resolve(strict=False)
+    candidate = (resolved_root / rel_path).resolve(strict=False)
+    if not candidate.is_relative_to(resolved_root):
+        return None
+    return candidate
 
 
 def _curate_with_llm(
@@ -336,7 +386,16 @@ def _curate_with_llm(
     an error and the vote is forced to ``keep=False`` so quarantining
     is the conservative default.
     """
-    snippet = _read_snippet(repo_paths, candidate_path)
+    try:
+        snippet = _read_snippet(repo_paths, candidate_path)
+    except UnsafeCandidatePathError as exc:
+        error = f"unsafe candidate path: {exc}"
+        logger.warning("Oracle curator: %s", error)
+        return CuratorVote(
+            keep=False,
+            error=error,
+            llm_called=False,
+        )
     if not snippet:
         snippet = "(file not readable from any provided repo path)"
 

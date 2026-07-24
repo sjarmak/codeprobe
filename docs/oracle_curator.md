@@ -68,6 +68,18 @@ in the vendored weighted-F1 oracle than tier-1's `required`) and carry
 `via_llm_review=true` plus the model's rationale in the divergence
 report so reviewers can audit decisions after the fact.
 
+#### Candidate path containment
+
+Candidate paths come from search backends and are untrusted. Before any
+IO, `_read_snippet` requires the path to be relative and to stay inside
+one of the configured `repo_paths` after symlink resolution. Absolute
+paths, `..` escapes, and in-repo symlinks pointing outside the repo all
+raise `UnsafeCandidatePathError`; the candidate is quarantined with
+reason `unsafe candidate path: …` and no LLM call is made, so host file
+contents can never reach the prompt or the logs. A path that escapes one
+configured root but lands inside another is legitimate and is read from
+the containing root.
+
 ### Single-backend fallback
 
 When **only one backend is available** (`available == 1`) — for example
