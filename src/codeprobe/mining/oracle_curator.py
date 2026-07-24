@@ -31,7 +31,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import stat
 from collections.abc import Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -322,38 +325,36 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
 
     *rel_path* comes from a search backend and is therefore untrusted. It
     must stay inside one of *repo_paths* after symlink resolution;
-    anything else raises :class:`UnsafeCandidatePathError` before any IO.
+    anything else raises :class:`UnsafeCandidatePathError` before file
+    content is read.
 
     Raises:
-        UnsafeCandidatePathError: if *rel_path* is absolute, or resolves
-            outside every configured repo root.
+        UnsafeCandidatePathError: if *rel_path* cannot be resolved and
+            opened as a regular file under a configured repo root.
     """
     if Path(rel_path).is_absolute():
         raise UnsafeCandidatePathError(
             f"absolute candidate path outside any repo root: {rel_path!r}"
         )
 
-    roots = tuple(
-        _resolve_candidate_path(root, rel_path) for root in repo_paths
-    )
+    roots = tuple(_resolve_allowed_root(root, rel_path) for root in repo_paths)
     escaped = False
     for root in roots:
         full = _resolve_candidate_path(root / rel_path, rel_path)
-        if not any(full.is_relative_to(allowed_root) for allowed_root in roots):
+        if full is None:
+            continue
+        containing_root = next(
+            (
+                allowed_root
+                for allowed_root in roots
+                if full.is_relative_to(allowed_root)
+            ),
+            None,
+        )
+        if containing_root is None:
             escaped = True
             continue
-        try:
-            if not full.is_file():
-                continue
-            data = full.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if len(data) > _MAX_SNIPPET_BYTES:
-            data = data[:_MAX_SNIPPET_BYTES]
-        lines = data.splitlines()
-        if len(lines) > _MAX_SNIPPET_LINES:
-            lines = lines[:_MAX_SNIPPET_LINES]
-        return "\n".join(lines)
+        return _read_resolved_candidate(containing_root, full, rel_path)
 
     if escaped:
         raise UnsafeCandidatePathError(
@@ -362,14 +363,84 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
     return ""
 
 
-def _resolve_candidate_path(path: Path, rel_path: str) -> Path:
-    """Resolve *path*, translating expected path failures safely."""
+def _resolve_allowed_root(root: Path, rel_path: str) -> Path:
+    """Resolve a configured root, failing closed if it is unavailable."""
     try:
-        return path.resolve(strict=False)
+        return root.resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise UnsafeCandidatePathError(
             f"candidate path cannot be resolved safely: {rel_path!r}"
         ) from exc
+
+
+def _resolve_candidate_path(path: Path, rel_path: str) -> Path | None:
+    """Resolve an existing candidate, returning ``None`` when absent."""
+    try:
+        return path.resolve(strict=True)
+    except FileNotFoundError:
+        return None
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UnsafeCandidatePathError(
+            f"candidate path cannot be resolved safely: {rel_path!r}"
+        ) from exc
+
+
+def _read_resolved_candidate(
+    root: Path, candidate: Path, rel_path: str
+) -> str:
+    """Read *candidate* through no-follow descriptors anchored at *root*."""
+    parts = candidate.relative_to(root).parts
+    if not parts:
+        raise UnsafeCandidatePathError(
+            f"candidate path is not a regular file: {rel_path!r}"
+        )
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        with ExitStack() as descriptors:
+            directory_fd = os.open(root, directory_flags)
+            descriptors.callback(os.close, directory_fd)
+            for component in parts[:-1]:
+                directory_fd = os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=directory_fd,
+                )
+                descriptors.callback(os.close, directory_fd)
+            file_fd = os.open(
+                parts[-1],
+                file_flags,
+                dir_fd=directory_fd,
+            )
+            descriptors.callback(os.close, file_fd)
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                raise UnsafeCandidatePathError(
+                    f"candidate path is not a regular file: {rel_path!r}"
+                )
+            data = _read_bounded_bytes(file_fd)
+    except UnsafeCandidatePathError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UnsafeCandidatePathError(
+            f"candidate file cannot be opened safely: {rel_path!r}"
+        ) from exc
+
+    lines = data.decode("utf-8", errors="replace").splitlines()
+    return "\n".join(lines[:_MAX_SNIPPET_LINES])
+
+
+def _read_bounded_bytes(file_fd: int) -> bytes:
+    """Read at most the configured snippet byte cap from *file_fd*."""
+    chunks: tuple[bytes, ...] = ()
+    remaining = _MAX_SNIPPET_BYTES
+    while remaining:
+        chunk = os.read(file_fd, remaining)
+        if not chunk:
+            break
+        chunks = (*chunks, chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def _curate_with_llm(

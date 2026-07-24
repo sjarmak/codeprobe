@@ -82,7 +82,11 @@ the containing root. If any candidate escapes the union of configured
 roots and no union-contained candidate is readable, the candidate is
 rejected; an absent path under another root cannot mask that escape.
 Resolution failures such as symlink loops and invalid paths are rejected
-through the same non-content error path.
+through the same non-content error path. After containment resolution,
+the reader opens the resolved containing root and walks to the candidate
+with descriptor-relative, no-follow opens. It reads bounded bytes from
+the validated regular-file descriptor, so a concurrent path or symlink
+swap cannot redirect the read outside the configured roots.
 
 ### Single-backend fallback
 

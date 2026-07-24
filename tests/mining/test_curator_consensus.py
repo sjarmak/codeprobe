@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from codeprobe.core.llm import LLMRequest, LLMResponse
 from codeprobe.mining import oracle_curator
 from codeprobe.mining.consensus import BackendResult
 from codeprobe.mining.oracle_curator import (
@@ -661,6 +662,115 @@ class TestReadSnippetPathContainment:
         assert vote.llm_called is False
         assert vote.error is not None
         assert "unsafe candidate path" in vote.error
+        mock_call.assert_not_called()
+
+    def test_swap_to_external_symlink_never_reaches_model(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        candidate = repo / "candidate.py"
+        candidate.write_text("from src.foo import Foo\n")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        resolve_path = oracle_curator._resolve_candidate_path
+
+        def resolve_then_swap(
+            path: Path, rel_path: str
+        ) -> Path | None:
+            resolved = resolve_path(path, rel_path)
+            if path == candidate:
+                candidate.unlink()
+                candidate.symlink_to(secret)
+            return resolved
+
+        delivered_prompts: list[str] = []
+
+        def capture_prompt(request: LLMRequest) -> LLMResponse:
+            delivered_prompts.append(request.prompt)
+            return LLMResponse(
+                text=(
+                    '{"keep": false, "rationale": "not a reference"}'
+                )
+            )
+
+        with (
+            patch.object(
+                oracle_curator,
+                "_resolve_candidate_path",
+                side_effect=resolve_then_swap,
+            ),
+            patch.object(
+                oracle_curator,
+                "call_claude",
+                side_effect=capture_prompt,
+            ) as mock_call,
+        ):
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="candidate.py",
+                found_by="grep",
+                repo_paths=[repo],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "unsafe candidate path" in vote.error
+        assert delivered_prompts == []
+        assert "TOP SECRET" not in caplog.text
+        mock_call.assert_not_called()
+
+    def test_non_regular_candidate_never_reaches_model(
+        self, tmp_path: Path
+    ) -> None:
+        candidate = tmp_path / "candidate"
+        candidate.mkdir()
+
+        with patch.object(oracle_curator, "call_claude") as mock_call:
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="candidate",
+                found_by="grep",
+                repo_paths=[tmp_path],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "not a regular file" in vote.error
+        mock_call.assert_not_called()
+
+    def test_descriptor_open_error_never_reaches_model(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "candidate.py").write_text("safe content")
+
+        with (
+            patch.object(
+                oracle_curator.os,
+                "open",
+                side_effect=PermissionError("blocked"),
+            ),
+            patch.object(oracle_curator, "call_claude") as mock_call,
+        ):
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path="candidate.py",
+                found_by="grep",
+                repo_paths=[tmp_path],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "cannot be opened safely" in vote.error
         mock_call.assert_not_called()
 
     def test_missing_but_contained_path_returns_empty(
