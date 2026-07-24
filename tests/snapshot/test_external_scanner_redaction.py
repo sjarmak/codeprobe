@@ -5,29 +5,65 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import tempfile
+import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from codeprobe.snapshot import CANARY_DEFAULT, CanaryResult, redact
+from codeprobe.snapshot import (
+    CANARY_DEFAULT,
+    CanaryProofInvalidError,
+    CanaryResult,
+    redact,
+)
+from codeprobe.snapshot.canary import validate_canary_proof
 from codeprobe.snapshot.scanners import (
     ExternalScannerLimits,
+    Finding,
     GitleaksScanner,
+    Scanner,
     ScannerError,
     TrufflehogScanner,
+    _completed_external_scan,
+    scanner_configuration_fingerprint,
 )
 
 RunStub = Callable[..., subprocess.CompletedProcess[bytes]]
 
 
-def _passing_proof(scanner_name: str) -> CanaryResult:
+def _passing_proof(scanner: Scanner | str) -> CanaryResult:
+    effective_scanner = (
+        GitleaksScanner()
+        if scanner == "gitleaks"
+        else TrufflehogScanner()
+        if scanner == "trufflehog"
+        else scanner
+    )
+    assert not isinstance(effective_scanner, str)
+    finding = _canary_finding(effective_scanner.name)
     return CanaryResult(
         passed=True,
         canary=CANARY_DEFAULT,
-        scanner_name=scanner_name,
-        findings=[],
-        timestamp="2026-07-24T00:00:00+00:00",
+        scanner_name=effective_scanner.name,
+        findings=[finding],
+        timestamp=datetime.now(UTC).isoformat(),
+        scanner_fingerprint=scanner_configuration_fingerprint(effective_scanner),
+    )
+
+
+def _canary_finding(scanner_name: str) -> Finding:
+    blob = b"# planted canary block\npassword = '" + CANARY_DEFAULT.encode() + b"'\n"
+    start = blob.index(CANARY_DEFAULT.encode())
+    return Finding(
+        rule_id="test-canary",
+        start=start,
+        end=start + len(CANARY_DEFAULT.encode()),
+        match_preview="synthetic-canary",
+        scanner=scanner_name,
     )
 
 
@@ -110,7 +146,7 @@ def test_gitleaks_only_finding_is_redacted_and_rescanned_before_export(
     scanned_bodies: list[bytes] = []
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.shutil.which",
-        lambda _binary: "/test/gitleaks",
+        lambda _binary: sys.executable,
     )
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.subprocess.run",
@@ -149,7 +185,7 @@ def test_trufflehog_only_finding_is_redacted_and_rescanned_before_export(
     scanned_bodies: list[bytes] = []
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.shutil.which",
-        lambda _binary: "/test/trufflehog",
+        lambda _binary: sys.executable,
     )
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.subprocess.run",
@@ -212,7 +248,7 @@ def test_trufflehog_redacts_every_reported_secret_part(
 
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.shutil.which",
-        lambda _binary: "/test/trufflehog",
+        lambda _binary: sys.executable,
     )
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.subprocess.run",
@@ -359,7 +395,7 @@ def test_external_rescan_execution_failure_prevents_file_write(
     scanned_bodies: list[bytes] = []
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.shutil.which",
-        lambda _binary: "/test/gitleaks",
+        lambda _binary: sys.executable,
     )
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.subprocess.run",
@@ -406,7 +442,7 @@ def test_external_rescan_findings_prevent_file_write(
 
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.shutil.which",
-        lambda _binary: "/test/gitleaks",
+        lambda _binary: sys.executable,
     )
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.subprocess.run",
@@ -586,7 +622,7 @@ def test_external_timeout_leaves_no_snapshot_output(
 
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.shutil.which",
-        lambda _binary: "/test/gitleaks",
+        lambda _binary: sys.executable,
     )
     monkeypatch.setattr(
         "codeprobe.snapshot.scanners.subprocess.run",
@@ -595,15 +631,16 @@ def test_external_timeout_leaves_no_snapshot_output(
         ),
     )
 
+    scanner = GitleaksScanner(
+        limits=ExternalScannerLimits(timeout_seconds=0.01)
+    )
     with pytest.raises(ScannerError, match="timed out"):
         redact(
             source,
             "contents",
             output,
-            scanner=GitleaksScanner(
-                limits=ExternalScannerLimits(timeout_seconds=0.01)
-            ),
-            canary_proof=_passing_proof("gitleaks"),
+            scanner=scanner,
+            canary_proof=_passing_proof(scanner),
             allow_source_in_export=True,
         )
 
@@ -667,3 +704,136 @@ def test_deep_external_json_is_reported_as_generic_scanner_error(
     with pytest.raises(ScannerError, match="malformed") as exc_info:
         TrufflehogScanner().scan(b"opaque=value\n")
     assert exc_info.value.__context__ is None
+
+
+def test_external_stdout_is_killed_at_size_limit_during_execution() -> None:
+    limits = ExternalScannerLimits(max_output_bytes=4_096)
+    with tempfile.TemporaryFile() as output:
+        with pytest.raises(ScannerError, match="size limit"):
+            _completed_external_scan(
+                "test-scanner",
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(b'x' * 1_000_000)",
+                ],
+                limits=limits,
+                stdout=output,
+            )
+        assert os.fstat(output.fileno()).st_size <= limits.max_output_bytes + 1
+
+
+def test_external_report_is_killed_at_size_limit_during_execution(
+    tmp_path: Path,
+) -> None:
+    limits = ExternalScannerLimits(max_output_bytes=4_096)
+    report = tmp_path / "report.json"
+
+    with pytest.raises(ScannerError, match="size limit"):
+        _completed_external_scan(
+            "test-scanner",
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).write_bytes(b'x' * 1_000_000)",
+                str(report),
+            ],
+            limits=limits,
+            stdout=subprocess.DEVNULL,
+            monitored_path=report,
+        )
+
+    assert report.stat().st_size <= limits.max_output_bytes + 1
+
+
+def test_external_timeout_terminates_scanner_process_group(
+    tmp_path: Path,
+) -> None:
+    child_pid_path = tmp_path / "child.pid"
+    program = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+        "time.sleep(60)"
+    )
+
+    with pytest.raises(ScannerError, match="timed out"):
+        _completed_external_scan(
+            "test-scanner",
+            [sys.executable, "-c", program, str(child_pid_path)],
+            limits=ExternalScannerLimits(timeout_seconds=0.2),
+            stdout=subprocess.DEVNULL,
+        )
+
+    child_pid = int(child_pid_path.read_text())
+    deadline = time.monotonic() + 2
+    while _process_is_running(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not _process_is_running(child_pid)
+
+
+def _process_is_running(pid: int) -> bool:
+    try:
+        status = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return False
+    return status.split()[2] != "Z"
+
+
+def test_canary_proof_rejects_replaced_external_scanner_binary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "gitleaks-first"
+    second = tmp_path / "gitleaks-second"
+    first.write_bytes(b"first scanner executable")
+    second.write_bytes(b"replacement scanner executable")
+    scanner = GitleaksScanner()
+    active = first
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: str(active),
+    )
+    proof = CanaryResult(
+        passed=True,
+        canary=CANARY_DEFAULT,
+        scanner_name=scanner.name,
+        findings=[_canary_finding(scanner.name)],
+        timestamp=datetime.now(UTC).isoformat(),
+        scanner_fingerprint=scanner_configuration_fingerprint(scanner),
+    )
+
+    active = second
+
+    with pytest.raises(CanaryProofInvalidError, match="configuration"):
+        validate_canary_proof(proof, scanner)
+
+
+def test_canary_proof_rejects_changed_external_scanner_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "gitleaks"
+    executable.write_bytes(b"scanner executable")
+    config = tmp_path / "gitleaks.toml"
+    config.write_text("[allowlist]\n")
+    scanner = GitleaksScanner()
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: str(executable),
+    )
+    monkeypatch.setenv("GITLEAKS_CONFIG", str(config))
+    proof = CanaryResult(
+        passed=True,
+        canary=CANARY_DEFAULT,
+        scanner_name=scanner.name,
+        findings=[_canary_finding(scanner.name)],
+        timestamp=datetime.now(UTC).isoformat(),
+        scanner_fingerprint=scanner_configuration_fingerprint(scanner),
+    )
+
+    config.write_text("[allowlist]\ndescription = 'changed'\n")
+
+    with pytest.raises(CanaryProofInvalidError, match="configuration"):
+        validate_canary_proof(proof, scanner)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -202,8 +203,8 @@ def test_create_detects_manifest_replacement_after_secure_write(
         nonlocal swapped
         result = original_write(directory, relative_path, data)
         if relative_path == "SNAPSHOT.json":
-            (output / relative_path).unlink()
-            (output / relative_path).symlink_to(victim)
+            (directory.path / relative_path).unlink()
+            (directory.path / relative_path).symlink_to(victim)
             swapped = True
         return result
 
@@ -239,8 +240,11 @@ def test_create_detects_generated_symlink_replacement(
     ) -> Path:
         nonlocal swapped
         result = original_symlink(directory, relative_path, target)
-        (output / relative_path).unlink()
-        (output / relative_path).symlink_to(victim, target_is_directory=True)
+        (directory.path / relative_path).unlink()
+        (directory.path / relative_path).symlink_to(
+            victim,
+            target_is_directory=True,
+        )
         swapped = True
         return result
 
@@ -290,3 +294,124 @@ def test_create_rejects_symlinked_source_parent_before_fairness(
         )
 
     assert not output.exists()
+
+
+def test_create_cleans_staging_and_leaves_no_final_output_on_late_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _experiment(tmp_path)
+    output = tmp_path / "snapshot"
+    original_write = safe_io.SecureOutputDirectory.write_bytes
+
+    def fail_on_manifest(
+        directory: safe_io.SecureOutputDirectory,
+        relative_path: str,
+        data: bytes,
+    ) -> Path:
+        if relative_path == "SNAPSHOT.json":
+            raise OSError("injected late failure")
+        return original_write(directory, relative_path, data)
+
+    monkeypatch.setattr(
+        safe_io.SecureOutputDirectory,
+        "write_bytes",
+        fail_on_manifest,
+    )
+
+    with pytest.raises(OSError, match="injected late failure"):
+        create_snapshot(experiment, output)
+
+    assert not output.exists()
+    assert list(tmp_path.glob(".snapshot.tmp-*")) == []
+
+
+def test_create_rejects_existing_destination_without_modifying_it(
+    tmp_path: Path,
+) -> None:
+    experiment = _experiment(tmp_path)
+    output = tmp_path / "snapshot"
+    output.mkdir()
+    marker = output / "owned.txt"
+    marker.write_text("keep\n")
+
+    with pytest.raises(SymlinkEscapeError, match="already exists"):
+        create_snapshot(experiment, output)
+
+    assert marker.read_text() == "keep\n"
+    assert list(output.iterdir()) == [marker]
+
+
+def test_atomic_publication_does_not_replace_raced_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _experiment(tmp_path)
+    output = tmp_path / "snapshot"
+    original_publish = safe_io._rename_noreplace
+    raced_inode: int | None = None
+
+    def race_before_publish(
+        source_name: str,
+        destination_name: str,
+        *,
+        parent_fd: int,
+    ) -> None:
+        nonlocal raced_inode
+        os.mkdir(destination_name, dir_fd=parent_fd)
+        raced_inode = os.stat(
+            destination_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        ).st_ino
+        original_publish(
+            source_name,
+            destination_name,
+            parent_fd=parent_fd,
+        )
+
+    monkeypatch.setattr(safe_io, "_rename_noreplace", race_before_publish)
+
+    with pytest.raises(SymlinkEscapeError, match="already exists"):
+        create_snapshot(experiment, output)
+
+    assert raced_inode is not None
+    assert output.stat().st_ino == raced_inode
+
+
+def test_moved_staging_tree_is_erased_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _experiment(tmp_path)
+    output = tmp_path / "outputs" / "snapshot"
+    moved = tmp_path / "moved-stage"
+    original_write = safe_io.SecureOutputDirectory.write_bytes
+    moved_stage = False
+
+    def move_after_body(
+        directory: safe_io.SecureOutputDirectory,
+        relative_path: str,
+        data: bytes,
+    ) -> Path:
+        nonlocal moved_stage
+        result = original_write(directory, relative_path, data)
+        if not moved_stage and relative_path.startswith("summary/"):
+            directory.path.rename(moved)
+            moved_stage = True
+            raise OSError("injected failure after stage move")
+        return result
+
+    monkeypatch.setattr(
+        safe_io.SecureOutputDirectory,
+        "write_bytes",
+        move_after_body,
+    )
+
+    with pytest.raises((OSError, SymlinkEscapeError)):
+        create_snapshot(experiment, output)
+
+    assert moved_stage is True
+    assert not output.exists()
+    assert moved.is_dir()
+    assert list(moved.iterdir()) == []

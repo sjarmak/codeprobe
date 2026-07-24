@@ -100,10 +100,8 @@ def test_verify_detects_tamper_on_redacted_body(tmp_path: Path) -> None:
     assert str(victim) in result.offending_paths
 
 
-def test_legacy_snapshot_without_redacted_hash_falls_back(tmp_path: Path) -> None:
-    """If a manifest lacks redacted_body_sha256, the verifier falls back to
-    the source sha. A passthrough-scanner snapshot (bytes unchanged) must
-    still verify cleanly."""
+def test_content_snapshot_without_redacted_hash_fails_closed(tmp_path: Path) -> None:
+    """Content bodies without an authenticated post-redaction hash are unsafe."""
     exp = _make_experiment_with_secret(tmp_path)
     out = tmp_path / "snap"
 
@@ -117,8 +115,7 @@ def test_legacy_snapshot_without_redacted_hash_falls_back(tmp_path: Path) -> Non
         allow_source_in_export=True,
     )
 
-    # Simulate a legacy manifest: strip redacted_body_sha256 from every
-    # file entry. The verifier must fall back to source-sha comparison.
+    # Strip the post-redaction hashes; verification must fail closed.
     import json as _json
 
     manifest_path = out / "SNAPSHOT.json"
@@ -129,12 +126,5 @@ def test_legacy_snapshot_without_redacted_hash_falls_back(tmp_path: Path) -> Non
         _json.dumps(manifest, sort_keys=True, indent=2)
     )
 
-    # Because the scanner is passthrough, on-disk body hash == source hash,
-    # so the fallback path still verifies successfully.
-    #
-    # Note: the attestation's body_sha256 is computed over the manifest
-    # body excluding redacted_body_sha256 historically, so we don't check
-    # attestation-level pass/fail here — only the file-hash component.
     result = verify_snapshot_extended(out)
-    assert result.file_hashes_match is True
-    assert all("files/" not in p for p in result.offending_paths)
+    assert result.file_hashes_match is False

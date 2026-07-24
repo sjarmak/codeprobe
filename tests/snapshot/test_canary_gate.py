@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -19,7 +20,14 @@ import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli import main as cli_main
-from codeprobe.snapshot import CANARY_DEFAULT, CanaryFailedError, CanaryGate, MockScanner
+from codeprobe.snapshot import (
+    CANARY_DEFAULT,
+    CanaryFailedError,
+    CanaryGate,
+    GitleaksScanner,
+    MockScanner,
+    PatternScanner,
+)
 
 
 def test_canary_gate_passes_when_scanner_catches() -> None:
@@ -38,6 +46,13 @@ def test_canary_gate_fails_when_scanner_misses() -> None:
     assert result.passed is False
     with pytest.raises(CanaryFailedError):
         CanaryGate(MockScanner(hit_substrings=[])).require_pass_or_raise()
+
+
+@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks unavailable")
+def test_shipped_canary_is_detected_by_real_gitleaks() -> None:
+    result = CanaryGate(GitleaksScanner()).require_pass_or_raise()
+
+    assert result.passed is True
 
 
 def test_cli_secrets_without_proof_and_without_tty_exits_nonzero(
@@ -77,21 +92,7 @@ def test_cli_secrets_with_passing_proof_succeeds(tmp_path: Path) -> None:
     proof_path = tmp_path / "proof.json"
     proof_path.write_text(
         json.dumps(
-            {
-                "passed": True,
-                "canary": CANARY_DEFAULT,
-                "scanner_name": "mock",
-                "timestamp": "2026-04-22T00:00:00+00:00",
-                "findings": [
-                    {
-                        "rule_id": "mock-hit",
-                        "start": 0,
-                        "end": len(CANARY_DEFAULT),
-                        "match_preview": CANARY_DEFAULT[:6] + "...",
-                        "scanner": "mock",
-                    }
-                ],
-            }
+            CanaryGate(PatternScanner()).require_pass_or_raise().to_dict()
         )
     )
 

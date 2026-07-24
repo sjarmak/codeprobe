@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import os
+import secrets
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from types import TracebackType
@@ -155,12 +159,25 @@ def read_source_files(
                         "snapshot source directory changed during secure traversal"
                     ) from exc
                 try:
+                    opened_metadata = os.fstat(child_fd)
+                    if (
+                        metadata.st_dev,
+                        metadata.st_ino,
+                    ) != (
+                        opened_metadata.st_dev,
+                        opened_metadata.st_ino,
+                    ):
+                        raise SymlinkEscapeError(
+                            "snapshot source directory changed during secure traversal"
+                        )
                     walk(child_fd, relative_parts)
                 finally:
                     os.close(child_fd)
                 continue
             if not stat.S_ISREG(metadata.st_mode):
-                continue
+                raise SymlinkEscapeError(
+                    "snapshot source contains an unsupported special file"
+                )
             try:
                 file_fd = os.open(name, _FILE_READ_FLAGS, dir_fd=directory_fd)
             except OSError as exc:
@@ -172,6 +189,16 @@ def read_source_files(
                 if not stat.S_ISREG(opened_metadata.st_mode):
                     raise SymlinkEscapeError(
                         "snapshot source entry is not a regular file"
+                    )
+                if (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                ) != (
+                    opened_metadata.st_dev,
+                    opened_metadata.st_ino,
+                ):
+                    raise SymlinkEscapeError(
+                        "snapshot source file changed during secure traversal"
                     )
                 source = os.fdopen(file_fd, "rb")
                 file_fd = -1
@@ -218,8 +245,12 @@ def validate_source_tree(source_dir: Path) -> None:
                 ) from exc
             if stat.S_ISLNK(metadata.st_mode):
                 raise SymlinkEscapeError("snapshot source symlinks are unsupported")
-            if not stat.S_ISDIR(metadata.st_mode):
+            if stat.S_ISREG(metadata.st_mode):
                 continue
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise SymlinkEscapeError(
+                    "snapshot source contains an unsupported special file"
+                )
             try:
                 child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
             except OSError as exc:
@@ -227,6 +258,17 @@ def validate_source_tree(source_dir: Path) -> None:
                     "snapshot source directory changed during secure traversal"
                 ) from exc
             try:
+                opened_metadata = os.fstat(child_fd)
+                if (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                ) != (
+                    opened_metadata.st_dev,
+                    opened_metadata.st_ino,
+                ):
+                    raise SymlinkEscapeError(
+                        "snapshot source directory changed during secure traversal"
+                    )
                 walk(child_fd)
             finally:
                 os.close(child_fd)
@@ -296,15 +338,16 @@ def _validated_relative_parts(relative_path: str) -> tuple[str, ...]:
 class SecureOutputDirectory:
     """Exclusive writer rooted at a descriptor-pinned output directory."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, opened_fd: int | None = None) -> None:
         self.path = _absolute_path(path)
-        self._fd: int | None = None
+        self._fd = opened_fd
         self._directory_identities: dict[tuple[str, ...], tuple[int, int]] = {}
         self._file_identities: dict[tuple[str, ...], tuple[int, int]] = {}
         self._symlink_identities: dict[tuple[str, ...], tuple[int, int]] = {}
 
     def __enter__(self) -> SecureOutputDirectory:
-        _, self._fd = _open_directory(self.path, create=True)
+        if self._fd is None:
+            _, self._fd = _open_directory(self.path, create=True)
         return self
 
     def __exit__(
@@ -548,3 +591,162 @@ class SecureOutputDirectory:
                 raise SymlinkEscapeError(
                     "snapshot output symlink changed during secure write"
                 )
+
+
+def _path_identity(path: Path) -> tuple[int, int]:
+    _, path_fd = _open_directory(path, create=False)
+    try:
+        metadata = os.fstat(path_fd)
+        return metadata.st_dev, metadata.st_ino
+    finally:
+        os.close(path_fd)
+
+
+def _destination_exists(parent_fd: int, name: str) -> bool:
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise SymlinkEscapeError(
+            "snapshot output destination cannot be inspected securely"
+        ) from exc
+    return True
+
+
+def _remove_owned_directory(
+    parent_fd: int,
+    identity: tuple[int, int],
+) -> bool:
+    for name in os.listdir(parent_fd):
+        try:
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino) == identity
+        ):
+            os.rmdir(name, dir_fd=parent_fd)
+            return True
+    return False
+
+
+def _erase_directory_contents(directory_fd: int) -> None:
+    """Erase a pinned directory tree even if its pathname was moved."""
+    for name in os.listdir(directory_fd):
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(metadata.st_mode):
+            child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+            try:
+                opened = os.fstat(child_fd)
+                if (metadata.st_dev, metadata.st_ino) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                ):
+                    raise SymlinkEscapeError(
+                        "snapshot staging tree changed during secure cleanup"
+                    )
+                _erase_directory_contents(child_fd)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+
+
+def _rename_noreplace(
+    source_name: str,
+    destination_name: str,
+    *,
+    parent_fd: int,
+) -> None:
+    """Atomically publish without replacing a raced destination."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError:
+        raise SymlinkEscapeError(
+            "atomic no-replace snapshot publication is unsupported"
+        ) from None
+    result = renameat2(
+        parent_fd,
+        os.fsencode(source_name),
+        parent_fd,
+        os.fsencode(destination_name),
+        1,  # RENAME_NOREPLACE
+    )
+    if result == 0:
+        return
+    error_number = ctypes.get_errno()
+    if error_number == errno.EEXIST:
+        raise SymlinkEscapeError("snapshot output destination already exists")
+    if error_number in (errno.ENOSYS, errno.EINVAL):
+        raise SymlinkEscapeError(
+            "atomic no-replace snapshot publication is unsupported"
+        )
+    raise SymlinkEscapeError(
+        "snapshot output could not be published atomically"
+    ) from OSError(error_number, os.strerror(error_number))
+
+
+@contextmanager
+def staged_output_directory(final_path: Path) -> Iterator[SecureOutputDirectory]:
+    """Build an owned sibling tree and atomically publish it on success."""
+    final_absolute = _absolute_path(final_path)
+    if final_absolute == Path(os.sep) or not final_absolute.name:
+        raise SymlinkEscapeError("snapshot output destination is invalid")
+    parent_path = final_absolute.parent
+    _, parent_fd = _open_directory(parent_path, create=True)
+    parent_identity = os.fstat(parent_fd)
+    stage_name = f".{final_absolute.name}.tmp-{secrets.token_hex(12)}"
+    stage_created = False
+    stage_identity: tuple[int, int] | None = None
+    cleanup_fd = -1
+    try:
+        if _destination_exists(parent_fd, final_absolute.name):
+            raise SymlinkEscapeError("snapshot output destination already exists")
+        os.mkdir(stage_name, mode=0o700, dir_fd=parent_fd)
+        stage_created = True
+        stage_fd = os.open(stage_name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        cleanup_fd = os.dup(stage_fd)
+        stage_metadata = os.fstat(stage_fd)
+        stage_identity = (stage_metadata.st_dev, stage_metadata.st_ino)
+        stage_path = parent_path / stage_name
+        with SecureOutputDirectory(stage_path, opened_fd=stage_fd) as output:
+            yield output
+            output.ensure_path_unchanged()
+
+        if (parent_identity.st_dev, parent_identity.st_ino) != _path_identity(
+            parent_path
+        ):
+            raise SymlinkEscapeError(
+                "snapshot output parent changed before atomic publication"
+            )
+        _rename_noreplace(
+            stage_name,
+            final_absolute.name,
+            parent_fd=parent_fd,
+        )
+        stage_created = False
+    finally:
+        cleanup_error: BaseException | None = None
+        if stage_created:
+            try:
+                assert stage_identity is not None
+                assert cleanup_fd >= 0
+                _erase_directory_contents(cleanup_fd)
+                removed = _remove_owned_directory(parent_fd, stage_identity)
+                if not removed or os.fstat(cleanup_fd).st_nlink != 0:
+                    raise SymlinkEscapeError(
+                        "moved snapshot staging root could not be removed"
+                    )
+            except (OSError, SymlinkEscapeError) as exc:
+                cleanup_error = exc
+        if cleanup_fd >= 0:
+            os.close(cleanup_fd)
+        os.close(parent_fd)
+        if cleanup_error is not None:
+            raise SymlinkEscapeError(
+                "snapshot staging directory could not be cleaned securely"
+            ) from cleanup_error

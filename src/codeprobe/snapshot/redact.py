@@ -33,18 +33,23 @@ import hashlib
 import hmac
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from codeprobe.snapshot.canary import CanaryGate, CanaryResult
+from codeprobe.snapshot.canary import (
+    CanaryGate,
+    CanaryResult,
+    validate_canary_proof,
+)
 from codeprobe.snapshot.safe_io import (
     SecureOutputDirectory,
     SourceFile,
     SymlinkEscapeError,
     read_regular_file,
     read_source_files,
+    staged_output_directory,
 )
 from codeprobe.snapshot.scanners import PatternScanner, Scanner, ScannerError
 
@@ -76,6 +81,16 @@ class FileEntry:
 
 
 @dataclass(frozen=True)
+class LayoutEntry:
+    """One authenticated path in an extended snapshot output tree."""
+
+    path: str
+    kind: Literal["directory", "file", "symlink"]
+    sha256: str | None = None
+    target: str | None = None
+
+
+@dataclass(frozen=True)
 class Attestation:
     """HMAC or unsigned attestation stored on the manifest."""
 
@@ -97,6 +112,7 @@ class SnapshotManifest:
     files: list[FileEntry] = field(default_factory=list)
     attestation: Attestation | None = None
     canary_result: dict[str, object] | None = None
+    layout: list[LayoutEntry] | None = None
 
     def to_dict(self) -> dict[str, object]:
         body: dict[str, object] = {
@@ -106,6 +122,8 @@ class SnapshotManifest:
         }
         if self.canary_result is not None:
             body["canary_result"] = self.canary_result
+        if self.layout is not None:
+            body["layout"] = [asdict(entry) for entry in self.layout]
         if self.attestation is not None:
             body["attestation"] = asdict(self.attestation)
         return body
@@ -179,7 +197,12 @@ def redact(
         canary_proof=canary_proof,
         allow_source_in_export=allow_source_in_export,
     )
-    with SecureOutputDirectory(Path(out_dir)) as output:
+    prepared = replace(
+        prepared,
+        source_files=(),
+        source_directories=(),
+    )
+    with staged_output_directory(Path(out_dir)) as output:
         _write_materialized_bodies(prepared, output)
         output.ensure_path_unchanged()
         _write_snapshot_to_output(prepared.manifest, output)
@@ -224,11 +247,8 @@ def _prepare_snapshot(
     canary_record: CanaryResult | None = None
     if mode in ("contents", "secrets"):
         if canary_proof is not None:
-            if not canary_proof.passed:
-                raise PermissionError(
-                    f"mode={mode!r} requires a passing canary_proof; "
-                    f"received failed proof from scanner {canary_proof.scanner_name!r}"
-                )
+            assert effective_scanner is not None
+            validate_canary_proof(canary_proof, effective_scanner)
             canary_record = canary_proof
         else:
             if effective_scanner is None:
@@ -318,6 +338,8 @@ def _canonical_body_bytes(manifest: SnapshotManifest) -> bytes:
     }
     if manifest.canary_result is not None:
         payload["canary_result"] = manifest.canary_result
+    if manifest.layout is not None:
+        payload["layout"] = [asdict(entry) for entry in manifest.layout]
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -394,6 +416,21 @@ def verify_snapshot(
     """Recompute the body hash and — if HMAC-signed — verify the signature."""
 
     snapshot_dir = Path(snapshot_dir)
+    raw, load_error = _load_snapshot_json(snapshot_dir)
+    if raw is None:
+        return VerificationResult(
+            ok=False,
+            reason=load_error or "manifest schema is invalid",
+            body_sha256_matches=False,
+            signature_matches=None,
+        )
+    return _verify_snapshot_data(raw, signing_key=signing_key)
+
+
+def _load_snapshot_json(
+    snapshot_dir: Path,
+) -> tuple[dict[str, object] | None, str | None]:
+    """Load one bounded, no-follow manifest for all verification passes."""
     manifest_path = snapshot_dir / _MANIFEST_NAME
     try:
         manifest_body = read_regular_file(
@@ -402,21 +439,99 @@ def verify_snapshot(
             max_bytes=_MAX_MANIFEST_BYTES,
         )
     except (FileNotFoundError, SymlinkEscapeError):
-        return VerificationResult(
-            ok=False,
-            reason=f"missing or unsafe manifest: {manifest_path}",
-            body_sha256_matches=False,
-            signature_matches=None,
-        )
+        return None, f"missing or unsafe manifest: {manifest_path}"
     try:
         raw = json.loads(manifest_body)
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
-        return VerificationResult(
-            ok=False,
-            reason="manifest is malformed",
-            body_sha256_matches=False,
-            signature_matches=None,
+        return None, "manifest is malformed"
+    if not isinstance(raw, dict):
+        return None, "manifest schema is invalid: root must be an object"
+    return raw, None
+
+
+def _manifest_from_raw(raw: dict[str, object]) -> SnapshotManifest:
+    mode = raw.get("mode")
+    source = raw.get("source")
+    raw_files = raw.get("files")
+    if mode not in ("hashes-only", "contents", "secrets"):
+        raise ValueError("mode is invalid")
+    if not isinstance(source, str) or not isinstance(raw_files, list):
+        raise ValueError("source or files field is invalid")
+
+    files: list[FileEntry] = []
+    for raw_file in raw_files:
+        if not isinstance(raw_file, dict):
+            raise ValueError("files entries must be objects")
+        path = raw_file.get("path")
+        sha256 = raw_file.get("sha256")
+        size = raw_file.get("size")
+        redacted_body = raw_file.get("redacted_body")
+        redacted_sha = raw_file.get("redacted_body_sha256")
+        if (
+            not isinstance(path, str)
+            or not isinstance(sha256, str)
+            or type(size) is not int
+            or size < 0
+            or (redacted_body is not None and not isinstance(redacted_body, str))
+            or (redacted_sha is not None and not isinstance(redacted_sha, str))
+        ):
+            raise ValueError("files entry fields are invalid")
+        files.append(
+            FileEntry(
+                path=path,
+                sha256=sha256,
+                size=size,
+                redacted_body=redacted_body,
+                redacted_body_sha256=redacted_sha,
+            )
         )
+
+    canary_result = raw.get("canary_result")
+    if canary_result is not None and not isinstance(canary_result, dict):
+        raise ValueError("canary_result is invalid")
+    raw_layout = raw.get("layout")
+    layout: list[LayoutEntry] | None = None
+    if raw_layout is not None:
+        if not isinstance(raw_layout, list):
+            raise ValueError("layout is invalid")
+        layout = []
+        for raw_entry in raw_layout:
+            if not isinstance(raw_entry, dict):
+                raise ValueError("layout entry is invalid")
+            layout_path = raw_entry.get("path")
+            kind = raw_entry.get("kind")
+            sha256 = raw_entry.get("sha256")
+            target = raw_entry.get("target")
+            if (
+                not isinstance(layout_path, str)
+                or kind not in ("directory", "file", "symlink")
+                or (sha256 is not None and not isinstance(sha256, str))
+                or (target is not None and not isinstance(target, str))
+            ):
+                raise ValueError("layout entry fields are invalid")
+            layout.append(
+                LayoutEntry(
+                    path=layout_path,
+                    kind=kind,
+                    sha256=sha256,
+                    target=target,
+                )
+            )
+    return SnapshotManifest(
+        mode=mode,
+        source=source,
+        files=files,
+        canary_result=canary_result,
+        layout=layout,
+    )
+
+
+def _verify_snapshot_data(
+    raw: dict[str, object],
+    *,
+    signing_key: str | None,
+) -> VerificationResult:
+    """Verify already-loaded manifest data without reopening its path."""
     attestation = raw.get("attestation")
     if not isinstance(attestation, dict):
         return VerificationResult(
@@ -426,28 +541,15 @@ def verify_snapshot(
             signature_matches=None,
         )
 
-    files = [
-        FileEntry(
-            path=str(f.get("path", "")),
-            sha256=str(f.get("sha256", "")),
-            size=int(f.get("size", 0)),
-            redacted_body=(
-                str(f["redacted_body"]) if f.get("redacted_body") is not None else None
-            ),
-            redacted_body_sha256=(
-                str(f["redacted_body_sha256"])
-                if f.get("redacted_body_sha256") is not None
-                else None
-            ),
+    try:
+        recomputed = _manifest_from_raw(raw)
+    except (TypeError, ValueError):
+        return VerificationResult(
+            ok=False,
+            reason="manifest schema is invalid",
+            body_sha256_matches=False,
+            signature_matches=None,
         )
-        for f in raw.get("files", [])
-    ]
-    recomputed = SnapshotManifest(
-        mode=str(raw.get("mode", "hashes-only")),  # type: ignore[arg-type]
-        source=str(raw.get("source", "")),
-        files=files,
-        canary_result=raw.get("canary_result"),
-    )
     body = _canonical_body_bytes(recomputed)
     body_sha = hashlib.sha256(body).hexdigest()
     expected_body = str(attestation.get("body_sha256", ""))
@@ -491,6 +593,7 @@ def verify_snapshot(
 __all__ = [
     "Attestation",
     "FileEntry",
+    "LayoutEntry",
     "PUBLISHABLE_DEFAULT",
     "RedactionMode",
     "SIGNING_KEY_ENV",

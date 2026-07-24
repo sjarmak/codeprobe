@@ -30,6 +30,7 @@ from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
     CanaryFailedError,
     CanaryGate,
+    CanaryProofInvalidError,
     load_canary_proof,
 )
 from codeprobe.snapshot.create import (
@@ -320,6 +321,7 @@ def create_cmd(
         except (
             PermissionError,
             CanaryFailedError,
+            CanaryProofInvalidError,
             ScannerUnavailableError,
             FileNotFoundError,
             SymlinkEscapeError,

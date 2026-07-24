@@ -21,17 +21,25 @@ path and ZFC forbids model calls here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import IO, Any, Protocol, runtime_checkable
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - unavailable on non-POSIX platforms
+    resource = None  # type: ignore[assignment]
 
 
 class ScannerUnavailableError(RuntimeError):
@@ -234,15 +242,19 @@ def _redact_findings(data: bytes, findings: list[Finding], scanner_name: str) ->
             merged.append((start, end))
 
     marker = f"[REDACTED:{scanner_name}]".encode()
-    out = data
-    for start, end in reversed(merged):
-        out = out[:start] + marker + out[end:]
-    return out
+    redacted_parts: list[bytes] = []
+    cursor = 0
+    for start, end in merged:
+        redacted_parts.extend((data[cursor:start], marker))
+        cursor = end
+    redacted_parts.append(data[cursor:])
+    return b"".join(redacted_parts)
 
 
 def _line_column_span(
     data: bytes,
     *,
+    line_starts: list[int],
     start_line: object,
     end_line: object,
     start_column: object,
@@ -256,8 +268,6 @@ def _line_column_span(
             f"gitleaks finding {finding_index} has malformed coordinates"
         )
 
-    line_starts = [0]
-    line_starts.extend(index + 1 for index, byte in enumerate(data) if byte == 10)
     start_line_number = start_line
     end_line_number = end_line
     start_column_number = start_column
@@ -288,12 +298,16 @@ def _line_column_span(
     end = (
         line_starts[end_line_number - 1] + end_column_number - end_origin_offset
     )
-    start_line_end = data.find(b"\n", line_starts[start_line_number - 1])
-    end_line_end = data.find(b"\n", line_starts[end_line_number - 1])
-    if start_line_end < 0:
-        start_line_end = len(data)
-    if end_line_end < 0:
-        end_line_end = len(data)
+    start_line_end = (
+        line_starts[start_line_number] - 1
+        if start_line_number < len(line_starts)
+        else len(data)
+    )
+    end_line_end = (
+        line_starts[end_line_number] - 1
+        if end_line_number < len(line_starts)
+        else len(data)
+    )
     if start >= start_line_end or end > end_line_end or start >= end:
         raise ScannerError(
             f"gitleaks finding {finding_index} has out-of-range coordinates"
@@ -423,26 +437,103 @@ def _completed_external_scan(
     *,
     limits: ExternalScannerLimits,
     stdout: int | IO[Any],
+    monitored_path: Path | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    timed_out = False
-    execution_failed = False
-    try:
-        return subprocess.run(  # noqa: S603 - scanner path is resolved from PATH
-            args,
-            stdout=stdout,
-            stderr=subprocess.DEVNULL,
-            timeout=limits.timeout_seconds,
-            check=False,
+    if resource is None:
+        raise ScannerError(
+            f"{scanner_name} cannot enforce live output limits on this platform"
         )
-    except subprocess.TimeoutExpired:
-        timed_out = True
+
+    output_limit = limits.max_output_bytes + 1
+
+    pid_read_fd, pid_write_fd = os.pipe()
+
+    def configure_child() -> None:
+        assert resource is not None
+        _, hard_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+        effective_limit = (
+            output_limit
+            if hard_limit == resource.RLIM_INFINITY
+            else min(output_limit, hard_limit)
+        )
+        resource.setrlimit(
+            resource.RLIMIT_FSIZE,
+            (effective_limit, hard_limit),
+        )
+        os.write(pid_write_fd, str(os.getpid()).encode())
+
+    execution_error: str | None = None
+    process_group_id: int | None = None
+    try:
+        try:
+            completed = subprocess.run(  # noqa: S603 - resolved scanner executable
+                args,
+                stdout=stdout,
+                stderr=subprocess.DEVNULL,
+                timeout=limits.timeout_seconds,
+                check=False,
+                preexec_fn=configure_child,
+                pass_fds=(pid_write_fd,),
+                start_new_session=True,
+            )
+        except subprocess.TimeoutExpired:
+            execution_error = f"{scanner_name} scan timed out"
+        except OSError:
+            execution_error = f"{scanner_name} scan failed to execute"
+    finally:
+        os.close(pid_write_fd)
+        try:
+            raw_pid = os.read(pid_read_fd, 32)
+            if raw_pid:
+                process_group_id = int(raw_pid)
+        finally:
+            os.close(pid_read_fd)
+    if process_group_id is not None:
+        _terminate_process_group(process_group_id)
+    if execution_error is not None:
+        raise ScannerError(execution_error)
+
+    output_size = 0
+    if not isinstance(stdout, int):
+        try:
+            output_size = os.fstat(stdout.fileno()).st_size
+        except (AttributeError, OSError):
+            raise ScannerError(
+                f"{scanner_name} scan output could not be measured"
+            ) from None
+    if monitored_path is not None:
+        try:
+            output_size = max(output_size, monitored_path.stat().st_size)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise ScannerError(
+                f"{scanner_name} scan output could not be measured"
+            ) from None
+    if output_size > limits.max_output_bytes:
+        raise ScannerError(f"{scanner_name} output exceeded its size limit")
+    return completed
+
+
+def _terminate_process_group(process_group_id: int) -> None:
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
     except OSError:
-        execution_failed = True
-    if timed_out:
-        raise ScannerError(f"{scanner_name} scan timed out")
-    if execution_failed:
-        raise ScannerError(f"{scanner_name} scan failed to execute")
-    raise AssertionError("external scanner execution reached an invalid state")
+        raise ScannerError("external scanner process group could not be terminated")
+    for _ in range(10):
+        try:
+            os.killpg(process_group_id, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.01)
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        raise ScannerError("external scanner process group could not be terminated")
 
 
 @dataclass
@@ -490,6 +581,7 @@ class GitleaksScanner:
                 ],
                 limits=self.limits,
                 stdout=subprocess.DEVNULL,
+                monitored_path=report,
             )
             if proc.returncode not in (0, 1):
                 raise ScannerError("gitleaks scan failed")
@@ -513,11 +605,16 @@ class GitleaksScanner:
         if proc.returncode == 1 and not raw:
             raise ScannerError("gitleaks scan failed without report findings")
         findings: list[Finding] = []
+        line_starts = [0]
+        line_starts.extend(
+            index + 1 for index, byte in enumerate(data) if byte == 10
+        )
         for index, entry in enumerate(raw):
             if not isinstance(entry, dict):
                 raise ScannerError(f"gitleaks finding {index} is malformed")
             start, end = _line_column_span(
                 data,
+                line_starts=line_starts,
                 start_line=entry.get("StartLine"),
                 end_line=entry.get("EndLine"),
                 start_column=entry.get("StartColumn"),
@@ -690,3 +787,102 @@ class MockScanner:
         for needle in self._needles():
             out = out.replace(needle, b"[REDACTED:mock-hit]")
         return out
+
+
+def _stable_configuration_value(value: object) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, bytes):
+        return {"bytes": value.hex()}
+    if isinstance(value, Path):
+        return {"path": str(value)}
+    if isinstance(value, re.Pattern):
+        pattern = value.pattern
+        encoded = pattern.hex() if isinstance(pattern, bytes) else pattern
+        return {"pattern": encoded, "flags": value.flags}
+    if isinstance(value, (list, tuple)):
+        return [_stable_configuration_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _stable_configuration_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            "class": f"{type(value).__module__}.{type(value).__qualname__}",
+            "fields": {
+                item.name: _stable_configuration_value(getattr(value, item.name))
+                for item in fields(value)
+            },
+        }
+    raise ScannerError("scanner configuration cannot be fingerprinted safely")
+
+
+def _regular_file_sha256(path: Path) -> str:
+    try:
+        file_fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        raise ScannerError("external scanner identity cannot be read") from None
+    digest = hashlib.sha256()
+    try:
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise ScannerError("external scanner identity is not a regular file")
+        with os.fdopen(file_fd, "rb") as source:
+            file_fd = -1
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+    return digest.hexdigest()
+
+
+def _external_runtime_identity(scanner: Scanner) -> dict[str, object] | None:
+    if not isinstance(scanner, (GitleaksScanner, TrufflehogScanner)):
+        return None
+    resolved = shutil.which(scanner.binary)
+    if resolved is None:
+        raise ScannerUnavailableError(
+            f"{scanner.name} binary {scanner.binary!r} not found on PATH"
+        )
+    environment: dict[str, object] = {}
+    prefix = f"{scanner.name.upper()}_"
+    for key, value in sorted(os.environ.items()):
+        if not key.startswith(prefix):
+            continue
+        item: dict[str, object] = {
+            "value_sha256": hashlib.sha256(value.encode()).hexdigest()
+        }
+        if os.path.isfile(value):
+            item["file_sha256"] = _regular_file_sha256(Path(value))
+        environment[key] = item
+    executable = Path(resolved)
+    return {
+        "resolved_path": str(executable.resolve()),
+        "sha256": _regular_file_sha256(executable),
+        "environment": environment,
+    }
+
+
+def scanner_configuration_fingerprint(scanner: Scanner) -> str:
+    """Return a stable digest binding a canary proof to scanner configuration."""
+    explicit = getattr(scanner, "configuration_fingerprint", None)
+    if callable(explicit):
+        value = explicit()
+        if not isinstance(value, str) or not value:
+            raise ScannerError("scanner configuration fingerprint is invalid")
+        payload: object = {"explicit": value}
+    else:
+        payload = _stable_configuration_value(scanner)
+    runtime_identity = _external_runtime_identity(scanner)
+    if runtime_identity is not None:
+        payload = {
+            "configuration": payload,
+            "runtime_identity": runtime_identity,
+        }
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()

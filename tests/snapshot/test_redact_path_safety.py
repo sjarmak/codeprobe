@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from codeprobe.snapshot import (
     redact,
     safe_io,
 )
+from codeprobe.snapshot.scanners import Scanner, scanner_configuration_fingerprint
 
 
 def _source(tmp_path: Path) -> Path:
@@ -26,13 +28,25 @@ def _source(tmp_path: Path) -> Path:
     return source
 
 
-def _passing_proof(scanner_name: str = "mock") -> CanaryResult:
+def _passing_proof(scanner: Scanner | None = None) -> CanaryResult:
+    effective_scanner = scanner if scanner is not None else MockScanner()
+    blob = b"# planted canary block\npassword = '" + CANARY_DEFAULT.encode() + b"'\n"
+    start = blob.index(CANARY_DEFAULT.encode())
     return CanaryResult(
         passed=True,
         canary=CANARY_DEFAULT,
-        scanner_name=scanner_name,
-        findings=[],
-        timestamp="2026-07-24T00:00:00+00:00",
+        scanner_name=effective_scanner.name,
+        findings=[
+            Finding(
+                rule_id="test-canary",
+                start=start,
+                end=start + len(CANARY_DEFAULT.encode()),
+                match_preview="synthetic-canary",
+                scanner=effective_scanner.name,
+            )
+        ],
+        timestamp=datetime.now(UTC).isoformat(),
+        scanner_fingerprint=scanner_configuration_fingerprint(effective_scanner),
     )
 
 
@@ -103,6 +117,90 @@ def test_source_file_swap_to_symlink_is_blocked_by_no_follow_open(
     monkeypatch.setattr(safe_io.os, "open", swap_before_open)
 
     with pytest.raises(SymlinkEscapeError):
+        redact(source, "hashes-only", output)
+
+    assert swapped is True
+    assert not output.exists()
+
+
+def test_source_file_identity_swap_to_regular_hardlink_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path)
+    source_file = source / "config.txt"
+    displaced = source / "original.txt"
+    victim = tmp_path / "outside-secret.txt"
+    victim.write_text("outside-secret\n")
+    output = tmp_path / "snapshot"
+    original_open = safe_io.os.open
+    swapped = False
+
+    def swap_before_open(
+        path: str | bytes | int,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if (
+            not swapped
+            and path == source_file.name
+            and dir_fd is not None
+            and flags & safe_io.os.O_NOFOLLOW
+            and not flags & safe_io.os.O_DIRECTORY
+        ):
+            source_file.rename(displaced)
+            source_file.hardlink_to(victim)
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safe_io.os, "open", swap_before_open)
+
+    with pytest.raises(SymlinkEscapeError, match="changed"):
+        redact(source, "hashes-only", output)
+
+    assert swapped is True
+    assert not output.exists()
+
+
+def test_source_directory_identity_swap_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _source(tmp_path)
+    nested = source / "nested"
+    nested.mkdir()
+    (nested / "inside.txt").write_text("inside\n")
+    displaced = source / "original-nested"
+    output = tmp_path / "snapshot"
+    original_open = safe_io.os.open
+    swapped = False
+
+    def swap_before_open(
+        path: str | bytes | int,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if (
+            not swapped
+            and path == nested.name
+            and dir_fd is not None
+            and flags & safe_io.os.O_DIRECTORY
+        ):
+            nested.rename(displaced)
+            nested.mkdir()
+            (nested / "replacement.txt").write_text("replacement\n")
+            swapped = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safe_io.os, "open", swap_before_open)
+
+    with pytest.raises(SymlinkEscapeError, match="changed"):
         redact(source, "hashes-only", output)
 
     assert swapped is True
@@ -195,7 +293,7 @@ def test_redact_output_parent_swap_cannot_redirect_file_write(
             "contents",
             output,
             scanner=scanner,
-            canary_proof=_passing_proof(scanner.name),
+            canary_proof=_passing_proof(scanner),
             allow_source_in_export=True,
         )
 
@@ -226,7 +324,7 @@ def test_output_leaf_swap_is_blocked_by_exclusive_no_follow_open(
             and flags & safe_io.os.O_EXCL
             and dir_fd is not None
         ):
-            (output / "files" / "config.txt").symlink_to(victim)
+            (Path(f"/proc/self/fd/{dir_fd}") / "config.txt").symlink_to(victim)
             swapped = True
         return original_open(path, flags, mode, dir_fd=dir_fd)
 
@@ -264,8 +362,8 @@ def test_output_root_swap_cannot_split_bodies_from_manifest(
         nonlocal swapped
         result = original_write(directory, relative_path, data)
         if relative_path == "files/config.txt":
-            output.rename(displaced)
-            output.mkdir()
+            directory.path.rename(displaced)
+            directory.path.mkdir()
             swapped = True
         return result
 
@@ -311,8 +409,8 @@ def test_output_subdirectory_swap_cannot_redirect_later_body(
         nonlocal swapped
         result = original_write(directory, relative_path, data)
         if relative_path == "files/config.txt":
-            (output / "files").rename(displaced_files)
-            victim_files.rename(output / "files")
+            (directory.path / "files").rename(displaced_files)
+            victim_files.rename(directory.path / "files")
             swapped = True
         return result
 
@@ -356,8 +454,8 @@ def test_output_leaf_replacement_after_write_is_detected(
         nonlocal swapped
         result = original_write(directory, relative_path, data)
         if relative_path == "files/config.txt":
-            (output / relative_path).unlink()
-            (output / relative_path).symlink_to(victim)
+            (directory.path / relative_path).unlink()
+            (directory.path / relative_path).symlink_to(victim)
             swapped = True
         return result
 

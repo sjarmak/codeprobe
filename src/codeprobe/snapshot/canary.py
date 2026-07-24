@@ -13,16 +13,25 @@ planted span. No LLM involved.
 
 from __future__ import annotations
 
+import hmac
 import json
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from codeprobe.snapshot.scanners import Finding, Scanner
+from codeprobe.snapshot.safe_io import SymlinkEscapeError, read_regular_file
+from codeprobe.snapshot.scanners import (
+    Finding,
+    Scanner,
+    scanner_configuration_fingerprint,
+)
 
 # A distinctive, never-otherwise-present-in-real-data string. We deliberately
 # embed it as source here — it is NOT a secret, just a sentinel.
-CANARY_DEFAULT: str = "CODEPROBE_CANARY_7f3e9b2a8d1c5e4f_test_token"
+CANARY_DEFAULT: str = "ghp_" + "9Qk2Lm7Np4Rs8Tv1" + "Wx5Yz3Ab6Cd0EfGh2Jk9"
+CANARY_PROOF_MAX_AGE = timedelta(hours=24)
+CANARY_PROOF_FUTURE_TOLERANCE = timedelta(minutes=5)
+CANARY_PROOF_MAX_BYTES = 1024 * 1024
 
 
 class CanaryFailedError(RuntimeError):
@@ -73,6 +82,7 @@ class CanaryResult:
     scanner_name: str
     findings: list[Finding]
     timestamp: str
+    scanner_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -80,6 +90,7 @@ class CanaryResult:
             "canary": self.canary,
             "scanner_name": self.scanner_name,
             "timestamp": self.timestamp,
+            "scanner_fingerprint": self.scanner_fingerprint,
             "findings": [asdict(f) for f in self.findings],
         }
 
@@ -93,35 +104,19 @@ class CanaryGate:
 
     def prove(self) -> CanaryResult:
         """Plant the canary and run the scanner against it."""
-        blob = (
-            b"# planted canary block\n"
-            b"password = '" + self.canary.encode("utf-8") + b"'\n"
-        )
+        blob = _canary_blob(self.canary)
         findings = self.scanner.scan(blob)
-        passed = any(self.canary.encode("utf-8") in blob[f.start : f.end]
-                     or self.canary in f.match_preview
-                     or _canary_overlaps(f, self.canary, blob)
-                     for f in findings)
-        # Fallback: if the scanner reports *any* finding at all that covers
-        # the planted span, count that as a catch. A scanner with custom rule
-        # IDs may not expose the raw secret, so we also accept any finding
-        # whose [start,end] overlaps the known canary offset.
-        if not passed and findings:
-            canary_bytes = self.canary.encode("utf-8")
-            idx = blob.find(canary_bytes)
-            if idx >= 0:
-                canary_end = idx + len(canary_bytes)
-                for f in findings:
-                    if f.end > idx and f.start < canary_end:
-                        passed = True
-                        break
-        return CanaryResult(
-            passed=passed,
+        result = CanaryResult(
+            passed=bool(findings),
             canary=self.canary,
             scanner_name=getattr(self.scanner, "name", "unknown"),
             findings=list(findings),
             timestamp=datetime.now(UTC).isoformat(),
+            scanner_fingerprint=scanner_configuration_fingerprint(self.scanner),
         )
+        if result.passed:
+            _require_detection_evidence(result)
+        return result
 
     def require_pass_or_raise(self) -> CanaryResult:
         result = self.prove()
@@ -143,6 +138,96 @@ def _canary_overlaps(finding: Finding, canary: str, blob: bytes) -> bool:
     return finding.end > idx and finding.start < canary_end
 
 
+def _canary_blob(canary: str) -> bytes:
+    return (
+        b"# planted canary block\n"
+        b"password = '" + canary.encode("utf-8") + b"'\n"
+    )
+
+
+def _require_detection_evidence(proof: CanaryResult) -> None:
+    blob = _canary_blob(proof.canary)
+    if not proof.findings:
+        raise CanaryProofInvalidError(
+            "canary proof has no detection evidence"
+        )
+    for finding in proof.findings:
+        if (
+            not isinstance(finding, Finding)
+            or not isinstance(finding.rule_id, str)
+            or not finding.rule_id
+            or not isinstance(finding.scanner, str)
+            or finding.scanner != proof.scanner_name
+            or type(finding.start) is not int
+            or type(finding.end) is not int
+            or finding.start < 0
+            or finding.end > len(blob)
+            or finding.start >= finding.end
+        ):
+            raise CanaryProofInvalidError(
+                "canary proof detection evidence is malformed"
+            )
+    if not any(
+        _canary_overlaps(finding, proof.canary, blob)
+        for finding in proof.findings
+    ):
+        raise CanaryProofInvalidError(
+            "canary proof detection evidence does not cover the planted canary"
+        )
+
+
+def validate_canary_proof(
+    proof: CanaryResult,
+    scanner: Scanner,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Fail closed unless a proof is fresh and bound to this exact scanner."""
+    proof_strings = (
+        proof.canary,
+        proof.scanner_name,
+        proof.scanner_fingerprint,
+        proof.timestamp,
+    )
+    if (
+        not isinstance(proof.passed, bool)
+        or any(not isinstance(value, str) or not value for value in proof_strings)
+    ):
+        raise CanaryProofInvalidError("canary proof is malformed")
+    if not proof.passed:
+        raise CanaryProofInvalidError("canary proof is marked passed=False")
+    if proof.canary != CANARY_DEFAULT:
+        raise CanaryProofInvalidError(
+            "canary proof does not cover the currently shipped canary"
+        )
+    _require_detection_evidence(proof)
+    scanner_name = getattr(scanner, "name", "unknown")
+    expected_fingerprint = scanner_configuration_fingerprint(scanner)
+    if proof.scanner_name != scanner_name or not hmac.compare_digest(
+        proof.scanner_fingerprint,
+        expected_fingerprint,
+    ):
+        raise CanaryProofInvalidError(
+            "canary proof scanner configuration does not match the active scanner"
+        )
+    try:
+        proved_at = datetime.fromisoformat(proof.timestamp)
+    except ValueError:
+        raise CanaryProofInvalidError(
+            "canary proof timestamp is malformed"
+        ) from None
+    if proved_at.tzinfo is None:
+        raise CanaryProofInvalidError("canary proof timestamp must include a timezone")
+    current = now if now is not None else datetime.now(UTC)
+    proved_at = proved_at.astimezone(UTC)
+    if proved_at > current + CANARY_PROOF_FUTURE_TOLERANCE:
+        raise CanaryProofInvalidError("canary proof timestamp is in the future")
+    if current - proved_at > CANARY_PROOF_MAX_AGE:
+        raise CanaryProofInvalidError(
+            "canary proof is stale; run the configured scanner canary gate again"
+        )
+
+
 def load_canary_proof(path: Path) -> CanaryResult:
     """Load a previously-recorded canary proof from disk.
 
@@ -151,28 +236,88 @@ def load_canary_proof(path: Path) -> CanaryResult:
     feed a failed proof into :func:`codeprobe.snapshot.redact.redact`. The
     CLI performs its own belt-and-suspenders check on top of this.
     """
-    raw = json.loads(Path(path).read_text())
-    findings = [
-        Finding(
-            rule_id=str(f.get("rule_id", "unknown")),
-            start=int(f.get("start", 0)),
-            end=int(f.get("end", 0)),
-            match_preview=str(f.get("match_preview", "")),
-            scanner=str(f.get("scanner", raw.get("scanner_name", "unknown"))),
+    proof_path = Path(path)
+    try:
+        body = read_regular_file(
+            proof_path.parent,
+            proof_path.name,
+            max_bytes=CANARY_PROOF_MAX_BYTES,
         )
-        for f in raw.get("findings", [])
-    ]
-    result = CanaryResult(
-        passed=bool(raw.get("passed", False)),
-        canary=str(raw.get("canary", CANARY_DEFAULT)),
-        scanner_name=str(raw.get("scanner_name", "unknown")),
-        findings=findings,
-        timestamp=str(raw.get("timestamp", "")),
-    )
-    if not result.passed:
+    except (FileNotFoundError, OSError, SymlinkEscapeError):
+        raise CanaryProofInvalidError(
+            f"canary proof at {path} cannot be read securely"
+        ) from None
+    try:
+        raw = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        raise CanaryProofInvalidError(
+            f"canary proof at {path} is malformed"
+        ) from None
+    if not isinstance(raw, dict) or not isinstance(raw.get("passed"), bool):
+        raise CanaryProofInvalidError(
+            f"canary proof at {path} is malformed"
+        )
+    if not raw["passed"]:
+        scanner_name = raw.get("scanner_name", "unknown")
         raise CanaryProofInvalidError(
             f"canary proof at {path} has passed=False (scanner="
-            f"{result.scanner_name!r}); refusing to load it as a passing "
-            f"proof."
+            f"{scanner_name!r}); refusing to load it as a passing proof."
         )
+    try:
+        canary = _required_string(raw, "canary")
+        scanner_name = _required_string(raw, "scanner_name")
+        timestamp = _required_string(raw, "timestamp")
+        scanner_fingerprint = _required_string(raw, "scanner_fingerprint")
+        raw_findings = raw["findings"]
+        if not isinstance(raw_findings, list):
+            raise TypeError
+        findings = [_parse_finding(value) for value in raw_findings]
+    except (KeyError, TypeError):
+        raise CanaryProofInvalidError(
+            f"canary proof at {path} is malformed"
+        ) from None
+    result = CanaryResult(
+        passed=True,
+        canary=canary,
+        scanner_name=scanner_name,
+        findings=findings,
+        timestamp=timestamp,
+        scanner_fingerprint=scanner_fingerprint,
+    )
+    if result.canary != CANARY_DEFAULT:
+        raise CanaryProofInvalidError(
+            f"canary proof at {path} does not cover the currently shipped canary"
+        )
+    _require_detection_evidence(result)
     return result
+
+
+def _required_string(raw: dict[str, object], key: str) -> str:
+    value = raw[key]
+    if not isinstance(value, str) or not value:
+        raise TypeError
+    return value
+
+
+def _parse_finding(value: object) -> Finding:
+    if not isinstance(value, dict):
+        raise TypeError
+    rule_id = _required_string(value, "rule_id")
+    match_preview = _required_string(value, "match_preview")
+    scanner = _required_string(value, "scanner")
+    start = value["start"]
+    end = value["end"]
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+    ):
+        raise TypeError
+    return Finding(
+        rule_id=rule_id,
+        start=start,
+        end=end,
+        match_preview=match_preview,
+        scanner=scanner,
+    )

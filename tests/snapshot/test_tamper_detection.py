@@ -15,6 +15,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from codeprobe.snapshot import (
     CANARY_DEFAULT,
     MockScanner,
@@ -183,3 +185,179 @@ def test_verify_does_not_follow_manifest_symlink(tmp_path: Path) -> None:
     assert result.ok is False
     assert result.base.ok is False
     assert "manifest" in result.base.reason
+
+
+def test_verify_rejects_missing_declared_content_body(tmp_path: Path) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(
+        experiment,
+        snapshot,
+        mode="contents",
+        scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+        allow_source_in_export=True,
+    )
+    missing = snapshot / "files" / "baseline" / "task_0001" / "result.json"
+    missing.unlink()
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.file_hashes_match is False
+    assert str(missing) in result.offending_paths
+
+
+def test_verify_rejects_tampered_publishable_trace_copy(tmp_path: Path) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(
+        experiment,
+        snapshot,
+        mode="contents",
+        scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+        allow_source_in_export=True,
+    )
+    tampered = (
+        snapshot / "export" / "traces" / "baseline" / "task_0001" / "result.json"
+    )
+    tampered.write_text("tampered\n")
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.file_hashes_match is False
+    assert str(tampered) in result.offending_paths
+
+
+def test_verify_rejects_unmanifested_publishable_trace_body(tmp_path: Path) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(
+        experiment,
+        snapshot,
+        mode="contents",
+        scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+        allow_source_in_export=True,
+    )
+    injected = snapshot / "export" / "traces" / "baseline" / "task_0001" / "extra"
+    injected.write_text("not authenticated\n")
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.file_hashes_match is False
+    assert str(injected) in result.offending_paths
+
+
+@pytest.mark.parametrize(
+    "relative_parent",
+    [
+        "files/baseline/task_0001",
+        "traces/baseline/task_0001",
+        "export/traces/baseline/task_0001",
+    ],
+)
+def test_verify_rejects_unmanifested_fifo(
+    tmp_path: Path,
+    relative_parent: str,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(
+        experiment,
+        snapshot,
+        mode="contents",
+        scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+        allow_source_in_export=True,
+    )
+    injected = snapshot / relative_parent / "extra.fifo"
+    os.mkfifo(injected)
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.file_hashes_match is False
+
+
+def test_verify_rejects_tampered_summary_file(tmp_path: Path) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(experiment, snapshot)
+    summary = snapshot / "summary" / "rewards.json"
+    summary.write_text('{"entries": ["tampered"]}\n')
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert str(summary) in result.offending_paths
+
+
+def test_verify_rejects_unexpected_top_level_file(tmp_path: Path) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(experiment, snapshot)
+    extra = snapshot / "unexpected.txt"
+    extra.write_text("not declared\n")
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert str(extra) in result.offending_paths
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "traces/baseline/empty-task",
+        "export/traces/baseline/empty-task",
+    ],
+)
+def test_verify_rejects_missing_empty_trial_layout_entry(
+    tmp_path: Path,
+    relative_path: str,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    (experiment / "baseline" / "empty-task").mkdir()
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(experiment, snapshot)
+    missing = snapshot / relative_path
+    if missing.is_symlink():
+        missing.unlink()
+    else:
+        missing.rmdir()
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert str(missing) in result.offending_paths
+
+
+def test_verify_rejects_hashes_only_trace_link_to_wrong_internal_target(
+    tmp_path: Path,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(experiment, snapshot)
+    link = snapshot / "traces" / "baseline" / "task_0001"
+    link.unlink()
+    link.symlink_to("../../summary", target_is_directory=True)
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.symlinks_contained is False
+    assert str(link) in result.offending_paths
+
+
+def test_verify_invalid_manifest_schema_returns_structured_failure(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "SNAPSHOT.json").write_text("[]")
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.base.ok is False
+    assert "schema" in result.reason
