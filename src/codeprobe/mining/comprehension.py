@@ -102,8 +102,7 @@ COMPREHENSION_CHECKPOINT_SCRIPTS: dict[str, str] = {
         "    exit 1\n"
         "fi\n"
         "if ! python3 -c 'import json,math,sys; "
-        "reject=lambda value: (_ for _ in ()).throw(ValueError(value)); "
-        "data=json.load(sys.stdin,parse_constant=reject); "
+        "data=json.load(sys.stdin,parse_constant=lambda _: sys.exit(1)); "
         'score=data.get("score",0.0) if isinstance(data,dict) else None; '
         "valid=isinstance(score,(int,float)) and not isinstance(score,bool) "
         "and math.isfinite(score); sys.exit(0 if valid else 1)' "
