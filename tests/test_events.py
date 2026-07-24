@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -17,6 +17,8 @@ from codeprobe.core.events import (
     RunStarted,
     TaskScored,
     TaskStarted,
+    effective_run_counts,
+    effective_task_verdict,
 )
 
 # ---------------------------------------------------------------------------
@@ -80,6 +82,23 @@ class TestEventCreation:
         assert ev.cost_usd == 0.5
         assert ev.automated_score == 0.8
 
+    def test_effective_task_verdict_falls_back_to_nested_legacy_value(self) -> None:
+        event = replace(
+            _make_task_scored(),
+            scoring_details={"verdict": "verifier_error"},
+        )
+
+        assert effective_task_verdict(event) == "verifier_error"
+
+    def test_effective_task_verdict_prefers_top_level_value(self) -> None:
+        event = replace(
+            _make_task_scored(),
+            verdict="incorrect",
+            scoring_details={"verdict": "verifier_error"},
+        )
+
+        assert effective_task_verdict(event) == "incorrect"
+
     def test_budget_warning(self) -> None:
         ev = BudgetWarning(
             cumulative_cost=8.0, budget=10.0, threshold_pct=0.8, timestamp=3.0
@@ -97,6 +116,34 @@ class TestEventCreation:
             timestamp=4.0,
         )
         assert ev.completed_count == 9
+
+    def test_effective_run_counts_derive_legacy_scored_denominator(self) -> None:
+        event = RunFinished(
+            total_tasks=3,
+            completed_count=2,
+            mean_score=0.5,
+            total_cost=0.0,
+            total_duration=1.0,
+            config_label="legacy",
+            timestamp=4.0,
+        )
+
+        assert effective_run_counts(event) == (2, 0)
+
+    def test_effective_run_counts_preserve_explicit_all_infra_counts(self) -> None:
+        event = RunFinished(
+            total_tasks=2,
+            completed_count=2,
+            mean_score=0.0,
+            total_cost=0.0,
+            total_duration=1.0,
+            config_label="infra",
+            timestamp=4.0,
+            scored_count=0,
+            infra_failure_count=2,
+        )
+
+        assert effective_run_counts(event) == (0, 2)
 
     @pytest.mark.parametrize(
         "event",

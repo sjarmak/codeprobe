@@ -83,8 +83,25 @@ class RunFinished:
     total_duration: float
     config_label: str
     timestamp: float
-    scored_count: int = 0
-    infra_failure_count: int = 0
+    scored_count: int | None = None
+    infra_failure_count: int | None = None
+
+
+def effective_task_verdict(event: TaskScored) -> str | None:
+    """Return a task verdict with compatibility for legacy nested payloads."""
+    if event.verdict is not None:
+        return event.verdict
+    if not isinstance(event.scoring_details, dict):
+        return None
+    nested_verdict = event.scoring_details.get("verdict")
+    return nested_verdict if isinstance(nested_verdict, str) else None
+
+
+def effective_run_counts(event: RunFinished) -> tuple[int, int]:
+    """Return explicit run counts or derive the legacy scored denominator."""
+    if event.scored_count is None and event.infra_failure_count is None:
+        return event.completed_count, 0
+    return event.scored_count or 0, event.infra_failure_count or 0
 
 
 # ---------------------------------------------------------------------------

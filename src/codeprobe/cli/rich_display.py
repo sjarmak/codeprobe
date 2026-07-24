@@ -28,6 +28,8 @@ from codeprobe.core.events import (
     RunStarted,
     TaskScored,
     TaskStarted,
+    effective_run_counts,
+    effective_task_verdict,
 )
 
 if TYPE_CHECKING:
@@ -137,10 +139,7 @@ class RichLiveListener:
         return f"{score:.2f}"
 
     def _handle_task_scored(self, event: TaskScored) -> None:
-        verdict = event.verdict
-        if verdict is None and isinstance(event.scoring_details, dict):
-            nested_verdict = event.scoring_details.get("verdict")
-            verdict = nested_verdict if isinstance(nested_verdict, str) else None
+        verdict = effective_task_verdict(event)
         is_infra = verdict == "verifier_error"
         status = self._format_score(event.automated_score, verdict)
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
@@ -179,14 +178,15 @@ class RichLiveListener:
         self._refresh()
 
     def _handle_run_finished(self, event: RunFinished) -> None:
+        scored_count, infra_failure_count = effective_run_counts(event)
         all_done = False
         with self._lock:
             self._active_count -= 1
             if event.config_label in self._configs:
                 state = self._configs[event.config_label]
                 state.finished = True
-                state.scored_count = event.scored_count
-                state.infra_failure_count = event.infra_failure_count
+                state.scored_count = scored_count
+                state.infra_failure_count = infra_failure_count
                 state.mean_score = event.mean_score
                 state.total_duration = event.total_duration
             all_done = self._active_count <= 0

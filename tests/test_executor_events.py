@@ -581,6 +581,8 @@ class TestPlainTextListener:
         )
         captured = capsys.readouterr()
         assert "Finished: 5/5 tasks" in captured.out
+        assert "5 scored" in captured.out
+        assert "0 infra" in captured.out
         assert "mean score 0.80" in captured.out
         assert "$0.50" in captured.out
 

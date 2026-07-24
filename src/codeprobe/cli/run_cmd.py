@@ -49,6 +49,8 @@ from codeprobe.core.events import (
     RunEvent,
     RunFinished,
     TaskScored,
+    effective_run_counts,
+    effective_task_verdict,
 )
 from codeprobe.core.executor import (
     DryRunEstimate,
@@ -281,7 +283,8 @@ class PlainTextListener:
 
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
-            status = _format_task_status(event.automated_score, event.verdict)
+            verdict = effective_task_verdict(event)
+            status = _format_task_status(event.automated_score, verdict)
             dual_suffix = format_dual_suffix(event.scoring_details)
             click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s){dual_suffix}")
         elif isinstance(event, BudgetWarning):
@@ -291,9 +294,10 @@ class PlainTextListener:
             )
             sys.stderr.flush()
         elif isinstance(event, RunFinished):
+            scored_count, infra_failure_count = effective_run_counts(event)
             click.echo(
                 f"  Finished: {event.completed_count}/{event.total_tasks} tasks, "
-                f"{event.scored_count} scored, {event.infra_failure_count} infra, "
+                f"{scored_count} scored, {infra_failure_count} infra, "
                 f"mean score {event.mean_score:.2f}, "
                 f"total cost ${event.total_cost:.2f}"
             )
@@ -310,15 +314,16 @@ class NdjsonStdoutListener:
 
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
+            verdict = effective_task_verdict(event)
             emit_event(
                 {
                     "event": "task_done",
                     "task_id": event.task_id,
                     "score": event.automated_score,
-                    "verdict": event.verdict,
+                    "verdict": verdict,
                     "outcome": (
                         "infra_failure"
-                        if event.verdict == "verifier_error"
+                        if verdict == "verifier_error"
                         else "scored"
                     ),
                     "duration_seconds": event.duration_seconds,

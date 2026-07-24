@@ -9,13 +9,14 @@ single-score format when ``scoring_details`` is ``None``.
 from __future__ import annotations
 
 import io
+import json
 import time
 
 import pytest
 from rich.console import Console
 
 from codeprobe.cli.rich_display import RichLiveListener
-from codeprobe.cli.run_cmd import PlainTextListener
+from codeprobe.cli.run_cmd import NdjsonStdoutListener, PlainTextListener
 from codeprobe.core.events import RunFinished, RunStarted, TaskScored
 
 
@@ -58,7 +59,6 @@ class TestPlainTextListenerDual:
             _make_task_scored(
                 task_id="broken",
                 automated_score=0.0,
-                verdict="verifier_error",
                 scoring_details={"passed": False, "verdict": "verifier_error"},
             )
         )
@@ -66,6 +66,40 @@ class TestPlainTextListenerDual:
         output = capsys.readouterr().out
         assert "broken: INFRA" in output
         assert "FAIL" not in output
+
+    def test_top_level_verdict_takes_precedence_over_nested_value(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        event = _make_task_scored(
+            task_id="incorrect",
+            automated_score=0.0,
+            verdict="incorrect",
+            scoring_details={"verdict": "verifier_error"},
+        )
+
+        PlainTextListener().on_event(event)
+        NdjsonStdoutListener().on_event(event)
+
+        lines = capsys.readouterr().out.splitlines()
+        assert "incorrect: FAIL" in lines[0]
+        payload = json.loads(lines[1])
+        assert payload["verdict"] == "incorrect"
+        assert payload["outcome"] == "scored"
+
+    def test_ndjson_nested_verifier_error_is_infra_failure(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        NdjsonStdoutListener().on_event(
+            _make_task_scored(
+                task_id="broken",
+                automated_score=0.0,
+                scoring_details={"verdict": "verifier_error"},
+            )
+        )
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["verdict"] == "verifier_error"
+        assert payload["outcome"] == "infra_failure"
 
     def test_without_scoring_details_uses_legacy_format(
         self, capsys: pytest.CaptureFixture[str]
@@ -163,7 +197,6 @@ class TestRichLiveListenerDual:
                 _make_task_scored(
                     task_id="broken",
                     automated_score=0.0,
-                    verdict="verifier_error",
                     scoring_details={"passed": False, "verdict": "verifier_error"},
                 )
             )
@@ -212,6 +245,27 @@ class TestRichLiveListenerDual:
         assert "mean score 1.00" in rendered
         assert "1 scored" in rendered
         assert "1 infra" in rendered
+
+    def test_finished_summary_derives_legacy_scored_denominator(self) -> None:
+        listener, output = _make_rich_listener()
+        _start_run(listener, total=2)
+        listener.on_event(_make_task_scored(task_id="first", automated_score=1.0))
+        listener.on_event(_make_task_scored(task_id="second", automated_score=0.0))
+        listener.on_event(
+            RunFinished(
+                total_tasks=2,
+                completed_count=2,
+                mean_score=0.5,
+                total_cost=0.02,
+                total_duration=3.0,
+                config_label="cfg",
+                timestamp=time.time(),
+            )
+        )
+
+        rendered = output.getvalue()
+        assert "2 scored" in rendered
+        assert "0 infra" in rendered
 
     def test_without_scoring_details_uses_legacy_format(self) -> None:
         listener, _ = _make_rich_listener()
