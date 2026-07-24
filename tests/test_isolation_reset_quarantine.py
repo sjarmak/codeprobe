@@ -270,6 +270,36 @@ class TestPoolAccounting:
         finally:
             pool.cleanup()
 
+    def test_nested_repo_cleanup_failure_quarantines_slot(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A nested clone that cannot be removed leaves the slot contaminated."""
+        repo = _make_repo(tmp_path)
+        pool = WorktreeIsolation(repo, pool_size=2, namespace="qn2f")
+        try:
+            dirty = pool.acquire()
+            (dirty / "repos").mkdir()
+
+            def _raise_busy(path: object) -> None:
+                raise OSError(f"busy: {path}")
+
+            with monkeypatch.context() as context:
+                context.setattr(
+                    "codeprobe.core.isolation.shutil.rmtree",
+                    _raise_busy,
+                )
+                with pytest.raises(WorktreeResetError):
+                    pool.release(dirty)
+
+            assert dirty in pool.quarantined
+            clean = pool.acquire()
+            assert clean != dirty
+            pool.release(clean)
+        finally:
+            pool.cleanup()
+
 
 class TestTwoTrialRegression:
     """End-to-end: trial one contaminates a slot, trial two can't inherit it."""
@@ -321,16 +351,15 @@ class TestTwoTrialRegression:
         # genuine agent failures or silent zeros scored in a dirty workspace.
         assert len(results) == len(tasks)
         classes = [classify_trial(r) for r in results]
-        assert classes.count(TrialClass.VALID) == 1, "the good trial was lost"
-        assert classes.count(TrialClass.INFRA_FAILURE) == 2, (
-            "trials killed by the dead pool must read as infra failures, "
-            "not as genuine agent failures or missing rows"
+        assert classes.count(TrialClass.INFRA_FAILURE) == 3, (
+            "the reset-failed trial and the trials killed by the dead pool "
+            "must all read as infra failures"
         )
 
         summary = build_run_envelope_summary({"baseline": results})[0][0]
         assert summary["tasks"] == 3
-        assert summary["infra_failure_count"] == 2
-        assert summary["scored_count"] == 1
+        assert summary["infra_failure_count"] == 3
+        assert summary["scored_count"] == 0
 
 
 class _SlowAdapter(FakeAdapter):
@@ -370,6 +399,7 @@ class TestCancelledTrialsAreNotRecorded:
         # pool_size=2 so the single failing reset quarantines one slot without
         # exhausting the pool — the halt, not a dead pool, ends the run.
         pool = _FailingResetIsolation(repo, pool_size=2)
+        runs_dir = tmp_path / "runs"
 
         try:
             results = execute_config(
@@ -380,9 +410,28 @@ class TestCancelledTrialsAreNotRecorded:
                 agent_config=AgentConfig(),
                 parallel=2,
                 isolation=pool,
+                runs_dir=runs_dir,
             )
         finally:
             pool.cleanup()
+
+        reset_failures = [
+            result
+            for result in results
+            if result.metadata.get("isolation_reset_failed")
+        ]
+        assert len(reset_failures) == 1
+        reset_failure = reset_failures[0]
+        assert reset_failure.status == "error"
+        assert reset_failure.error_category == "system"
+        assert classify_trial(reset_failure) is TrialClass.INFRA_FAILURE
+        assert (
+            runs_dir / reset_failure.task_id / "agent_output.txt"
+        ).read_text() == "output"
+
+        summary = build_run_envelope_summary({"baseline": results})[0][0]
+        assert summary["infra_failure_count"] == 1
+        assert summary["scored_count"] == len(results) - 1
 
         # Validity sentinel, kept independent of the guard under test: a
         # cancelled trial never invokes the adapter whether or not the guard

@@ -1381,13 +1381,15 @@ def execute_config(
         )
         owns_isolation = True
 
-    def _release_slot(wt: Path, task_result: TaskResult | None) -> None:
+    def _release_slot(
+        wt: Path,
+        task_result: TaskResult | None,
+    ) -> TaskResult | None:
         """Return *wt* to the pool, recording a quarantine if it fails.
 
         Never raises: the trial that just ran produced valid output and must
-        survive. The failure is recorded on that trial's metadata and on the
-        run-level flag ``_should_halt`` reads, so no later trial is scored
-        against a shrunken pool.
+        survive. The affected result is replaced with a typed infrastructure
+        error, and the run-level flag halts later trials.
         """
         nonlocal isolation_failed
         try:
@@ -1396,7 +1398,19 @@ def execute_config(
             isolation_failed = True
             logger.error("[%s] %s", experiment_config.label, exc)
             if task_result is not None:
-                task_result.completed.metadata["isolation_reset_failed"] = str(exc)
+                message = str(exc)
+                completed = dataclasses.replace(
+                    task_result.completed,
+                    status="error",
+                    error_category="system",
+                    metadata={
+                        **task_result.completed.metadata,
+                        "error": message,
+                        "isolation_reset_failed": message,
+                    },
+                )
+                return dataclasses.replace(task_result, completed=completed)
+        return task_result
 
     def _run_in_slot(
         task_dir: Path,
@@ -1422,7 +1436,6 @@ def execute_config(
                 )
             )
         wt = active_isolation.acquire()
-        task_result: TaskResult | None = None
         try:
             sess_env = precomputed_session_env
             if sess_env is None and session_namespace is not None:
@@ -1443,9 +1456,12 @@ def execute_config(
                 worktree_path=wt,
                 session_env=sess_env,
             )
-            return task_result
-        finally:
-            _release_slot(wt, task_result)
+        except BaseException:
+            _release_slot(wt, None)
+            raise
+        released_result = _release_slot(wt, task_result)
+        assert released_result is not None
+        return released_result
 
     with quarantine_cm:
         try:
@@ -1553,6 +1569,12 @@ def execute_config(
                                     _budget_msg(_budget_halt_message())
                                 for f in future_to_work:
                                     f.cancel()
+                                # Preserve current budget/quota semantics:
+                                # their first terminal row ends collection.
+                                # Isolation keeps draining already-running
+                                # work so completed trial output is not lost.
+                                if quota_exhausted or _budget_exceeded():
+                                    break
                 finally:
                     _cleanup_session_namespace(adapter, session_namespace)
         finally:

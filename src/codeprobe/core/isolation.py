@@ -931,6 +931,7 @@ def cleanup_multi_repo_workspace(workspace: Path) -> None:
         shutil.rmtree(repos_root)
     except OSError as exc:
         logger.warning("Failed to remove %s: %s", repos_root, exc)
+        raise
 
 
 class IsolationError(RuntimeError):
@@ -1101,8 +1102,8 @@ class WorktreeIsolation:
         # ``git clean -fd`` refuses to remove nested git repos, so they
         # must be removed explicitly or task N's repos/ leaks into task
         # N+1 in the same slot.
-        cleanup_multi_repo_workspace(workspace)
         try:
+            cleanup_multi_repo_workspace(workspace)
             git_restore_clean(workspace)
         except (subprocess.CalledProcessError, OSError) as exc:
             raise WorktreeResetError(workspace, exc) from exc
