@@ -58,6 +58,7 @@ from codeprobe.snapshot.redact import (
 )
 from codeprobe.snapshot.scanners import (
     DEFAULT_PATTERNS,
+    ExternalScannerLimits,
     Finding,
     GitleaksScanner,
     MockScanner,
@@ -108,6 +109,7 @@ __all__ = [
     "Dependencies",
     "ExtendedManifest",
     "ExtendedVerificationResult",
+    "ExternalScannerLimits",
     "FileEntry",
     "Finding",
     "GitleaksScanner",

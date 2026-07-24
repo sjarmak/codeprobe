@@ -19,7 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from codeprobe.snapshot.fairness import (
     FairnessLeak,
@@ -27,6 +27,11 @@ from codeprobe.snapshot.fairness import (
     check_fairness,
 )
 from codeprobe.snapshot.redact import VerificationResult, verify_snapshot
+from codeprobe.snapshot.safe_io import (
+    SymlinkEscapeError,
+    read_regular_file,
+    read_source_files,
+)
 
 __all__ = [
     "ExtendedVerificationResult",
@@ -144,16 +149,32 @@ def _verify_file_hashes(snapshot_dir: Path) -> tuple[bool, list[str]]:
     they are not tamper-checked here.
     """
     manifest_path = snapshot_dir / "SNAPSHOT.json"
-    if not manifest_path.exists():
+    try:
+        manifest_body = read_regular_file(
+            snapshot_dir,
+            "SNAPSHOT.json",
+            max_bytes=16 * 1024 * 1024,
+        )
+        manifest = json.loads(manifest_body)
+    except (
+        FileNotFoundError,
+        SymlinkEscapeError,
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        RecursionError,
+    ):
         return False, [str(manifest_path)]
-
-    manifest = json.loads(manifest_path.read_text())
     files_dir = snapshot_dir / "files"
     if not files_dir.is_dir():
         # hashes-only snapshot: nothing to recheck — attestation alone
         # covers tamper detection for the manifest body.
         return True, []
 
+    try:
+        _, body_files, _ = read_source_files(files_dir)
+    except (FileNotFoundError, SymlinkEscapeError):
+        return False, [str(files_dir)]
+    bodies = {source_file.relative_path: source_file.body for source_file in body_files}
     offenders: list[str] = []
     for entry in manifest.get("files", []):
         rel = entry.get("path")
@@ -162,15 +183,22 @@ def _verify_file_hashes(snapshot_dir: Path) -> tuple[bool, list[str]]:
         if not isinstance(rel, str) or not isinstance(expected_src, str):
             offenders.append(str(rel))
             continue
+        relative_path = PurePosixPath(rel)
+        if relative_path.is_absolute() or any(
+            part in ("", ".", "..") for part in relative_path.parts
+        ):
+            offenders.append(rel)
+            continue
         candidate = files_dir / rel
-        if not candidate.is_file():
+        body = bodies.get(rel)
+        if body is None:
             # The manifest references a file that no on-disk body exists
             # for. In content modes this is a genuine problem, but because
             # legacy hashes-only and partial snapshots can reach this path,
             # we treat a missing-body as "not a tamper signal" and let the
             # attestation-level body_sha256 catch manifest-level corruption.
             continue
-        actual = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        actual = hashlib.sha256(body).hexdigest()
         if isinstance(expected_redacted, str) and expected_redacted:
             # Preferred path: we have a hash of the bytes actually written
             # to disk after scanner redaction, so any single-byte tamper is

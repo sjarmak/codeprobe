@@ -22,13 +22,16 @@ path and ZFC forbids model calls here.
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import IO, Any, Protocol, runtime_checkable
 
 
 class ScannerUnavailableError(RuntimeError):
@@ -37,6 +40,41 @@ class ScannerUnavailableError(RuntimeError):
 
 class ScannerError(RuntimeError):
     """Raised when a scanner cannot prove that transformed bytes are safe."""
+
+
+DEFAULT_EXTERNAL_SCANNER_TIMEOUT_SECONDS = 60.0
+DEFAULT_EXTERNAL_SCANNER_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+DEFAULT_EXTERNAL_SCANNER_MAX_LINE_BYTES = 512 * 1024
+DEFAULT_EXTERNAL_SCANNER_MAX_FINDINGS = 10_000
+
+
+@dataclass(frozen=True)
+class ExternalScannerLimits:
+    """Resource ceilings applied to every external scanner invocation."""
+
+    timeout_seconds: float = DEFAULT_EXTERNAL_SCANNER_TIMEOUT_SECONDS
+    max_output_bytes: int = DEFAULT_EXTERNAL_SCANNER_MAX_OUTPUT_BYTES
+    max_line_bytes: int = DEFAULT_EXTERNAL_SCANNER_MAX_LINE_BYTES
+    max_findings: int = DEFAULT_EXTERNAL_SCANNER_MAX_FINDINGS
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+        ):
+            raise ValueError("external scanner timeout must be positive")
+        integer_limits = (
+            self.max_output_bytes,
+            self.max_line_bytes,
+            self.max_findings,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in integer_limits
+        ):
+            raise ValueError("external scanner limits must be positive")
 
 
 _LEGACY_EXCEPTION_ALIASES = {
@@ -286,10 +324,19 @@ def _encoded_tool_value(
 ) -> bytes:
     try:
         return value.encode()
-    except UnicodeEncodeError as exc:
-        raise ScannerError(
-            f"{scanner_name} finding {finding_index} has malformed text"
-        ) from exc
+    except UnicodeEncodeError:
+        pass
+    raise ScannerError(
+        f"{scanner_name} finding {finding_index} has malformed text"
+    )
+
+
+def _load_external_json(payload: bytes, malformed_message: str) -> object:
+    try:
+        return json.loads(payload)
+    except (json.JSONDecodeError, RecursionError, UnicodeDecodeError):
+        pass
+    raise ScannerError(malformed_message)
 
 
 def _trufflehog_reported_values(
@@ -347,6 +394,57 @@ def _trufflehog_reported_values(
     return list(dict.fromkeys(values))
 
 
+def _read_bounded_file(path: Path, max_bytes: int) -> bytes:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    file_fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise ScannerError("external scanner report is not a regular file")
+        source = os.fdopen(file_fd, "rb")
+        file_fd = -1
+        with source:
+            content = source.read(max_bytes + 1)
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+    if len(content) > max_bytes:
+        raise ScannerError("external scanner output exceeded its size limit")
+    return content
+
+
+def _completed_external_scan(
+    scanner_name: str,
+    args: list[str],
+    *,
+    limits: ExternalScannerLimits,
+    stdout: int | IO[Any],
+) -> subprocess.CompletedProcess[bytes]:
+    timed_out = False
+    execution_failed = False
+    try:
+        return subprocess.run(  # noqa: S603 - scanner path is resolved from PATH
+            args,
+            stdout=stdout,
+            stderr=subprocess.DEVNULL,
+            timeout=limits.timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    except OSError:
+        execution_failed = True
+    if timed_out:
+        raise ScannerError(f"{scanner_name} scan timed out")
+    if execution_failed:
+        raise ScannerError(f"{scanner_name} scan failed to execute")
+    raise AssertionError("external scanner execution reached an invalid state")
+
+
 @dataclass
 class GitleaksScanner:
     """Shells out to the ``gitleaks`` CLI.
@@ -359,6 +457,7 @@ class GitleaksScanner:
 
     name: str = "gitleaks"
     binary: str = "gitleaks"
+    limits: ExternalScannerLimits = field(default_factory=ExternalScannerLimits)
     _fallback: PatternScanner = field(default_factory=PatternScanner)
 
     def _require(self) -> str:
@@ -376,7 +475,8 @@ class GitleaksScanner:
             target.write_bytes(data)
             report = Path(td) / "report.json"
             # gitleaks exits non-zero when it finds secrets — this is expected.
-            proc = subprocess.run(  # noqa: S603 - controlled path
+            proc = _completed_external_scan(
+                self.name,
                 [
                     gitleaks,
                     "detect",
@@ -388,19 +488,28 @@ class GitleaksScanner:
                     "-r",
                     str(report),
                 ],
-                capture_output=True,
-                check=False,
+                limits=self.limits,
+                stdout=subprocess.DEVNULL,
             )
             if proc.returncode not in (0, 1):
                 raise ScannerError("gitleaks scan failed")
-            if not report.exists():
-                raise ScannerError("gitleaks scan failed without a report")
             try:
-                raw = json.loads(report.read_text())
-            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
-                raise ScannerError("gitleaks produced a malformed report") from exc
+                report_bytes = _read_bounded_file(
+                    report,
+                    self.limits.max_output_bytes,
+                )
+            except FileNotFoundError:
+                raise ScannerError("gitleaks scan failed without a report")
+            except OSError:
+                raise ScannerError("gitleaks produced an unreadable report") from None
+            raw = _load_external_json(
+                report_bytes,
+                "gitleaks produced a malformed report",
+            )
         if not isinstance(raw, list):
             raise ScannerError("gitleaks produced a malformed report")
+        if len(raw) > self.limits.max_findings:
+            raise ScannerError("gitleaks exceeded its finding limit")
         if proc.returncode == 1 and not raw:
             raise ScannerError("gitleaks scan failed without report findings")
         findings: list[Finding] = []
@@ -458,6 +567,7 @@ class TrufflehogScanner:
 
     name: str = "trufflehog"
     binary: str = "trufflehog"
+    limits: ExternalScannerLimits = field(default_factory=ExternalScannerLimits)
     _fallback: PatternScanner = field(default_factory=PatternScanner)
 
     def _require(self) -> str:
@@ -470,25 +580,36 @@ class TrufflehogScanner:
 
     def scan(self, data: bytes) -> list[Finding]:
         trufflehog = self._require()
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory() as td, tempfile.TemporaryFile() as stdout:
             target = Path(td) / "blob"
             target.write_bytes(data)
-            proc = subprocess.run(  # noqa: S603 - controlled path
+            proc = _completed_external_scan(
+                self.name,
                 [trufflehog, "filesystem", "--json", str(target)],
-                capture_output=True,
-                check=False,
+                limits=self.limits,
+                stdout=stdout,
             )
+            stdout.seek(0)
+            output = stdout.read(self.limits.max_output_bytes + 1)
         if proc.returncode != 0:
             raise ScannerError("trufflehog scan failed")
+        if len(output) > self.limits.max_output_bytes:
+            raise ScannerError("trufflehog output exceeded its size limit")
         findings: list[Finding] = []
-        for index, line in enumerate(proc.stdout.splitlines()):
+        report_count = 0
+        for index, line in enumerate(output.splitlines()):
+            if len(line) > self.limits.max_line_bytes:
+                raise ScannerError("trufflehog output exceeded its line size limit")
             line = line.strip()
             if not line:
                 continue
-            try:
-                entry = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise ScannerError("trufflehog produced malformed output") from exc
+            report_count += 1
+            if report_count > self.limits.max_findings:
+                raise ScannerError("trufflehog exceeded its finding limit")
+            entry = _load_external_json(
+                line,
+                "trufflehog produced malformed output",
+            )
             if not isinstance(entry, dict):
                 raise ScannerError(f"trufflehog finding {index} is malformed")
             rule_id = _required_text_field(
@@ -507,6 +628,8 @@ class TrufflehogScanner:
                         f"trufflehog finding {index} cannot be mapped to source bytes"
                     )
                 while start >= 0:
+                    if len(findings) >= self.limits.max_findings:
+                        raise ScannerError("trufflehog exceeded its finding limit")
                     findings.append(
                         Finding(
                             rule_id=rule_id,

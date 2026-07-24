@@ -10,6 +10,7 @@ Both must cause ``verify_snapshot_extended`` to return ``ok=False``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -121,3 +122,64 @@ def test_untampered_snapshot_verifies_clean(tmp_path: Path) -> None:
     assert result.file_hashes_match is True
     assert result.symlinks_contained is True
     assert result.base.body_sha256_matches is True
+
+
+def test_verify_rejects_manifest_body_path_escape(tmp_path: Path) -> None:
+    victim = tmp_path / "victim.txt"
+    victim.write_text("outside-secret\n")
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "files").mkdir(parents=True)
+    victim_hash = hashlib.sha256(victim.read_bytes()).hexdigest()
+    files = [
+        {
+            "path": "../../victim.txt",
+            "sha256": victim_hash,
+            "size": victim.stat().st_size,
+            "redacted_body": None,
+            "redacted_body_sha256": victim_hash,
+        }
+    ]
+    body = {
+        "mode": "contents",
+        "source": "untrusted",
+        "files": files,
+    }
+    body_bytes = json.dumps(
+        body,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    manifest = {
+        **body,
+        "attestation": {
+            "kind": "unsigned",
+            "signature": "",
+            "body_sha256": hashlib.sha256(body_bytes).hexdigest(),
+            "redaction_mode": "contents",
+            "scanner_name": "untrusted",
+            "canary": None,
+            "timestamp": "2026-07-24T00:00:00+00:00",
+        },
+    }
+    (snapshot / "SNAPSHOT.json").write_text(json.dumps(manifest))
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.file_hashes_match is False
+    assert "../../victim.txt" in result.offending_paths
+
+
+def test_verify_does_not_follow_manifest_symlink(tmp_path: Path) -> None:
+    source = _make_experiment(tmp_path)
+    external = tmp_path / "external"
+    create_snapshot(source, external)
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "SNAPSHOT.json").symlink_to(external / "SNAPSHOT.json")
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is False
+    assert result.base.ok is False
+    assert "manifest" in result.base.reason

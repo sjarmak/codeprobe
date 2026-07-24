@@ -46,15 +46,35 @@ def test_preflight_raises_on_escaping_symlink(tmp_path: Path) -> None:
         preflight_symlink_containment(exp)
 
 
-def test_preflight_accepts_internal_symlinks(tmp_path: Path) -> None:
-    """A symlink whose target is inside the experiment root must be accepted."""
+def test_preflight_rejects_internal_symlinks(tmp_path: Path) -> None:
+    """Contained links are rejected because they remain swap-race capable."""
     exp = _make_experiment(tmp_path)
     target = exp / "baseline" / "task_0001" / "result.json"
     alias = exp / "baseline" / "result_alias.json"
     os.symlink(os.path.relpath(target, alias.parent), alias)
 
-    # No exception.
-    preflight_symlink_containment(exp)
+    with pytest.raises(SymlinkEscapeError, match="unsupported"):
+        preflight_symlink_containment(exp)
+
+
+def test_preflight_rejects_symlinked_root(tmp_path: Path) -> None:
+    outside = _make_experiment(tmp_path)
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SymlinkEscapeError, match="symlink"):
+        preflight_symlink_containment(linked_root)
+
+
+def test_preflight_rejects_symlinked_parent(tmp_path: Path) -> None:
+    outside_parent = tmp_path / "outside-parent"
+    outside_parent.mkdir()
+    experiment = _make_experiment(outside_parent)
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(outside_parent, target_is_directory=True)
+
+    with pytest.raises(SymlinkEscapeError, match="symlink"):
+        preflight_symlink_containment(linked_parent / experiment.name)
 
 
 def test_create_aborts_on_escaping_symlink(tmp_path: Path) -> None:

@@ -11,9 +11,10 @@ The CSB layout emitted for every snapshot:
 
 Containment and safety invariants:
 
-- Before any output is written, every symlink under ``experiment_dir`` is
-  resolved. If a target escapes ``experiment_dir``, :class:`SymlinkEscapeError`
-  is raised and no bytes are written.
+- Before any output is written, source symlinks are rejected by preflight and
+  every regular file is captured through descriptor-relative, no-follow
+  opens. In-place creation is likewise rejected before layout creation
+  because it cannot preserve this immutable capture boundary.
 - Symlinks created *inside* the snapshot are always relative paths rooted at
   the snapshot directory. Moving the snapshot (tar → move → untar) does not
   invalidate any link.
@@ -26,22 +27,30 @@ Containment and safety invariants:
 from __future__ import annotations
 
 import json
-import shutil
+import os
+import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from codeprobe.snapshot.canary import CanaryResult
 from codeprobe.snapshot.manifest import (
+    ExtendedManifest,
     build_extended_manifest,
     collect_dependencies,
-    write_extended_manifest,
+    manifest_to_json_dict,
 )
 from codeprobe.snapshot.redact import (
     PUBLISHABLE_DEFAULT,
     RedactionMode,
-    SnapshotManifest,
-    _redact_to_manifest,
+    _prepare_snapshot,
+    _PreparedSnapshot,
+    _write_materialized_bodies,
+)
+from codeprobe.snapshot.safe_io import (
+    SecureOutputDirectory,
+    SymlinkEscapeError,
+    validate_source_tree,
 )
 from codeprobe.snapshot.scanners import Scanner
 
@@ -52,10 +61,6 @@ __all__ = [
     "create_snapshot",
     "preflight_symlink_containment",
 ]
-
-
-class SymlinkEscapeError(RuntimeError):
-    """Raised when a symlink target would escape the containing root."""
 
 
 class FairnessLeakError(RuntimeError):
@@ -91,185 +96,113 @@ _SUMMARY_FILES: tuple[str, ...] = ("rewards.json", "aggregate.json", "timing.jso
 
 
 def preflight_symlink_containment(root: Path) -> None:
-    """Walk ``root``; raise :class:`SymlinkEscapeError` on any escaping link.
+    """Reject source symlinks before snapshot output is allocated.
 
-    ``root`` and every symlink target are resolved via :meth:`Path.resolve`
-    before comparison, so relative links are handled correctly. A symlink to
-    ``../../etc`` will resolve outside ``root`` and be rejected.
+    Secure capture intentionally accepts only regular files and directories.
+    Even a currently-contained link can be swapped after a path-level
+    containment check, so callers must materialize aliases before snapshot
+    creation.
     """
-    root = Path(root)
-    if not root.exists():
-        raise FileNotFoundError(f"preflight root does not exist: {root}")
-    root_resolved = root.resolve()
-    for entry in root.rglob("*"):
-        if not entry.is_symlink():
-            continue
-        try:
-            target_resolved = (entry.parent / entry.readlink()).resolve()
-        except OSError as exc:
-            raise SymlinkEscapeError(
-                f"cannot resolve symlink {entry} → {exc}"
-            ) from exc
-        if not _is_within(target_resolved, root_resolved):
-            raise SymlinkEscapeError(
-                f"symlink {entry} → {target_resolved} escapes root {root_resolved}"
-            )
+    validate_source_tree(Path(root))
 
 
-def _is_within(path: Path, root: Path) -> bool:
-    """Return True when ``path`` is equal to or nested under ``root``."""
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# CSB layout scaffolding
-# ---------------------------------------------------------------------------
-
-
-def _ensure_layout(snapshot_dir: Path) -> CsbLayout:
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    for sub in _LAYOUT_SUBDIRS:
-        (snapshot_dir / sub).mkdir(parents=True, exist_ok=True)
-    return CsbLayout(
-        snapshot_dir=snapshot_dir,
-        summary_dir=snapshot_dir / "summary",
-        traces_dir=snapshot_dir / "traces",
-        export_dir=snapshot_dir / "export",
-        export_traces_dir=snapshot_dir / "export" / "traces",
-    )
-
-
-def _write_empty_summary(layout: CsbLayout) -> None:
-    """Write placeholder summary files when the experiment dir lacks them.
-
-    Each file gets an ``{"entries": []}`` body so downstream consumers can
-    load without handling missing-file edge cases.
-    """
-    for name in _SUMMARY_FILES:
-        target = layout.summary_dir / name
-        if target.exists():
-            continue
-        target.write_text(json.dumps({"entries": []}, indent=2))
-
-
-def _populate_summary(layout: CsbLayout, experiment_dir: Path) -> None:
-    """Copy summary/*.json from ``experiment_dir/summary/`` when available.
-
-    Falls back to empty-but-valid placeholders (``{"entries": []}``) for any
-    summary file that does not already exist in the source experiment.
-    """
-    src_summary = experiment_dir / "summary"
-    if src_summary.is_dir():
-        for name in _SUMMARY_FILES:
-            src = src_summary / name
-            if src.is_file():
-                shutil.copy2(src, layout.summary_dir / name)
-    _write_empty_summary(layout)
-
-
-def _iter_trial_dirs(experiment_dir: Path) -> list[tuple[str, str, Path]]:
-    """Yield ``(config, task_id, path)`` for every trial under ``experiment_dir``.
-
-    An ``experiment_dir`` is expected to be structured as
-    ``experiment_dir/<config>/<task_id>/...``. We accept any directory whose
-    grandparent is ``experiment_dir`` as a trial; that keeps us tolerant to
-    differing layouts (best effort; empty results are fine).
-    """
-    # Skip any top-level name we may have emitted into this directory so an
-    # in-place snapshot (experiment_dir == out_dir) does not recursively
-    # re-ingest its own output. Derived from _LAYOUT_SUBDIRS so any future
-    # addition to the CSB layout is picked up automatically.
+def _captured_trial_files(
+    prepared: _PreparedSnapshot,
+) -> dict[tuple[str, str], list[tuple[str, bytes]]]:
     skip_names = {"SNAPSHOT.json", "files"} | {
         sub.split("/", 1)[0] for sub in _LAYOUT_SUBDIRS
     }
-
-    trials: list[tuple[str, str, Path]] = []
-    for config_dir in sorted(experiment_dir.iterdir()):
-        if not config_dir.is_dir():
+    trials: dict[tuple[str, str], list[tuple[str, bytes]]] = {}
+    for directory in prepared.source_directories:
+        parts = PurePosixPath(directory).parts
+        if len(parts) >= 2 and parts[0] not in skip_names:
+            trials.setdefault((parts[0], parts[1]), [])
+    for source_file in prepared.source_files:
+        parts = PurePosixPath(source_file.relative_path).parts
+        if len(parts) < 3 or parts[0] in skip_names:
             continue
-        if config_dir.name in skip_names:
-            continue
-        for task_dir in sorted(config_dir.iterdir()):
-            if task_dir.is_dir():
-                trials.append((config_dir.name, task_dir.name, task_dir))
+        trial = (parts[0], parts[1])
+        relative = PurePosixPath(*parts[2:]).as_posix()
+        trials.setdefault(trial, []).append((relative, source_file.body))
     return trials
 
 
-def _populate_traces(
-    layout: CsbLayout,
-    experiment_dir: Path,
-    use_symlinks: bool,
-) -> int:
-    """Populate ``traces/{config}/{task_id}/`` entries.
+def _materialize_captured_layout(
+    output: SecureOutputDirectory,
+    prepared: _PreparedSnapshot,
+    extended_manifest: ExtendedManifest,
+    mode: RedactionMode,
+) -> tuple[int, int]:
+    for subdirectory in _LAYOUT_SUBDIRS:
+        output.ensure_directory(subdirectory)
 
-    Returns the number of trials linked or copied.
+    _write_materialized_bodies(prepared, output)
+    manifest_body = json.dumps(
+        manifest_to_json_dict(extended_manifest),
+        sort_keys=True,
+        indent=2,
+        separators=(",", ": "),
+    ).encode()
+    output.write_bytes("SNAPSHOT.json", manifest_body)
 
-    When ``use_symlinks`` is True (the default for ``hashes-only`` mode), we
-    create *relative* symlinks rooted at the snapshot directory, each
-    pointing into ``export/traces/`` inside the same snapshot. This keeps
-    the snapshot self-contained: it can be tar-moved across filesystem
-    prefixes without breaking any trace link.
+    redacted_files = {
+        relative_path.removeprefix("files/"): body
+        for relative_path, body in prepared.materialized_bodies
+    }
+    empty_summary = json.dumps({"entries": []}, indent=2).encode()
+    for name in _SUMMARY_FILES:
+        body = redacted_files.get(f"summary/{name}", empty_summary)
+        output.write_bytes(f"summary/{name}", body)
 
-    When ``use_symlinks`` is False (content/secret modes), we copy instead
-    of linking so the snapshot remains usable when the export tree is
-    scrubbed, compressed, or published separately.
-    """
-    count = 0
-    _ = experiment_dir  # unused; iteration drives off export_traces_dir below.
-    for config_dir in sorted(layout.export_traces_dir.iterdir()) if layout.export_traces_dir.exists() else []:
-        if not config_dir.is_dir():
-            continue
-        for task_dir in sorted(config_dir.iterdir()):
-            if not task_dir.is_dir():
-                continue
-            config = config_dir.name
-            task_id = task_dir.name
-            dest = layout.traces_dir / config / task_id
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if dest.exists() or dest.is_symlink():
-                continue
-            if use_symlinks:
-                rel = _relative_symlink_target(
-                    link_parent=dest.parent,
-                    target=task_dir,
-                )
-                dest.symlink_to(rel)
-            else:
-                shutil.copytree(task_dir, dest)
-            count += 1
-    return count
+    trials = _captured_trial_files(prepared)
+    for (config, task_id), files in sorted(trials.items()):
+        export_root = f"export/traces/{config}/{task_id}"
+        output.ensure_directory(export_root)
+        trace_root = f"traces/{config}/{task_id}"
+        if mode == "hashes-only":
+            output.symlink(
+                trace_root,
+                f"../../export/traces/{config}/{task_id}",
+            )
+        else:
+            output.ensure_directory(trace_root)
+            for relative, _source_body in files:
+                source_relative = f"{config}/{task_id}/{relative}"
+                body = redacted_files[source_relative]
+                output.write_bytes(f"{export_root}/{relative}", body)
+                output.write_bytes(f"{trace_root}/{relative}", body)
 
-
-def _populate_export_traces(
-    layout: CsbLayout,
-    experiment_dir: Path,
-) -> int:
-    """Populate ``export/traces/{config}/{task_id}/`` with publish-safe copies."""
-    count = 0
-    for config, task_id, source in _iter_trial_dirs(experiment_dir):
-        dest = layout.export_traces_dir / config / task_id
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            continue
-        shutil.copytree(source, dest)
-        count += 1
-    return count
+    output.ensure_path_unchanged()
+    count = len(trials)
+    return count, count
 
 
-def _relative_symlink_target(link_parent: Path, target: Path) -> Path:
-    """Compute a relative path from ``link_parent`` to ``target``.
+def _require_fairness_pass(
+    prepared: _PreparedSnapshot,
+    fairness_repo_root: Path | None,
+) -> None:
+    from codeprobe.snapshot.fairness import check_fairness
 
-    ``link_parent`` is the directory that will contain the symlink. The
-    returned path, when resolved relative to ``link_parent``, yields
-    ``target``.
-    """
-    import os
-
-    return Path(os.path.relpath(target, start=link_parent))
+    with tempfile.TemporaryDirectory() as temporary:
+        staged_root = Path(temporary) / "source"
+        with SecureOutputDirectory(staged_root) as staged:
+            for source_file in prepared.source_files:
+                staged.write_bytes(source_file.relative_path, source_file.body)
+            staged.ensure_path_unchanged()
+        repo_root = fairness_repo_root if fairness_repo_root else staged_root
+        fairness_result = check_fairness(
+            task_roots=[staged_root],
+            repo_root=repo_root,
+        )
+    if not fairness_result.ok:
+        raise FairnessLeakError(
+            f"Class E fairness scan found {len(fairness_result.leaks)} "
+            f"leak(s) across {fairness_result.tasks_scanned} task(s); "
+            "refusing to publish snapshot. "
+            f"First leak: token={fairness_result.leaks[0].token!r} "
+            f"location={fairness_result.leaks[0].location!r} "
+            f"task_id={fairness_result.leaks[0].task_id!r}."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -301,42 +234,22 @@ def create_snapshot(
     Use ``fairness_repo_root`` to point the static scan at a different repo
     (typically the codeprobe checkout); when None, ``experiment_dir`` is
     scanned for agent-facing files.
+
+    For fail-closed descriptor semantics, ``experiment_dir`` must be a
+    symlink-free tree and must differ from ``out_dir``. Unsupported inputs are
+    rejected before any output directory is created.
     """
     experiment_dir = Path(experiment_dir)
     out_dir = Path(out_dir)
-
-    # Fail-loud preflight: reject any escaping symlink before we allocate
-    # output directories so a malicious experiment can't half-populate a
-    # snapshot.
-    preflight_symlink_containment(experiment_dir)
-
-    if fairness_check:
-        # Lazy import to avoid pulling the QA stack into snapshot.create's
-        # import cycle when callers don't opt into fairness scanning.
-        from codeprobe.snapshot.fairness import check_fairness
-
-        repo_root = fairness_repo_root if fairness_repo_root else experiment_dir
-        fairness_result = check_fairness(
-            task_roots=[experiment_dir],
-            repo_root=repo_root,
+    if os.path.abspath(experiment_dir) == os.path.abspath(out_dir):
+        raise SymlinkEscapeError(
+            "in-place snapshot creation is unsupported by secure snapshot I/O"
         )
-        if not fairness_result.ok:
-            raise FairnessLeakError(
-                f"Class E fairness scan found {len(fairness_result.leaks)} "
-                f"leak(s) across {fairness_result.tasks_scanned} task(s); "
-                "refusing to publish snapshot. "
-                f"First leak: token={fairness_result.leaks[0].token!r} "
-                f"location={fairness_result.leaks[0].location!r} "
-                f"task_id={fairness_result.leaks[0].task_id!r}."
-            )
 
-    layout = _ensure_layout(out_dir)
-
-    # r14 redaction produces the in-memory manifest plus (for content modes)
-    # the ``files/`` subtree on disk. We intentionally use the internal
-    # "no write" variant so the r18 extension layer can compose the full
-    # manifest and serialize ``SNAPSHOT.json`` exactly once.
-    base_manifest: SnapshotManifest = _redact_to_manifest(
+    # Capture and scan the full source through pinned, no-follow descriptors
+    # before creating output. Layout population consumes only these captured
+    # bytes, so a post-preflight source swap cannot redirect later copies.
+    prepared = _prepare_snapshot(
         source_dir=experiment_dir,
         mode=mode,
         out_dir=out_dir,
@@ -345,36 +258,37 @@ def create_snapshot(
         canary_proof=canary_proof,
         allow_source_in_export=allow_source_in_export,
     )
+    if fairness_check:
+        _require_fairness_pass(prepared, fairness_repo_root)
 
     # Extend with R18 schema_version + created_at + dependencies and write
     # the combined manifest to disk. The r14 attestation body is built from
     # the base manifest's canonical payload (excluding R18 fields), so the
     # attestation signature remains valid alongside the extended block.
     deps = collect_dependencies()
-    extended = build_extended_manifest(base_manifest, dependencies=deps)
-    write_extended_manifest(extended, out_dir)
-
-    # Layout population — best-effort; an experiment_dir that lacks the
-    # expected structure yields empty summaries and zero trace entries.
-    # Order matters: export/traces/ must exist before traces/ is populated,
-    # because traces/ symlinks or copies it (self-contained snapshot).
-    _populate_summary(layout, experiment_dir)
-    export_trace_count = _populate_export_traces(layout, experiment_dir)
-    use_symlinks = mode == "hashes-only"
-    trace_count = _populate_traces(layout, experiment_dir, use_symlinks=use_symlinks)
+    extended = build_extended_manifest(prepared.manifest, dependencies=deps)
+    with SecureOutputDirectory(out_dir) as output:
+        trace_count, export_trace_count = _materialize_captured_layout(
+            output,
+            prepared,
+            extended,
+            mode,
+        )
 
     # Status payload returned to the CLI (and suitable for direct tests).
     return {
         "status": "ok",
-        "mode": base_manifest.mode,
+        "mode": prepared.manifest.mode,
         "out": str(out_dir.resolve()),
-        "files": len(base_manifest.files),
+        "files": len(prepared.manifest.files),
         "schema_version": extended.schema_version,
         "created_at": extended.created_at,
         "traces": trace_count,
         "export_traces": export_trace_count,
         "attestation_kind": (
-            base_manifest.attestation.kind if base_manifest.attestation else "missing"
+            prepared.manifest.attestation.kind
+            if prepared.manifest.attestation
+            else "missing"
         ),
         "dependencies": {
             "mcp_tools": len(extended.dependencies.mcp_tools),

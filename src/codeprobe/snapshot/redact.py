@@ -39,6 +39,13 @@ from pathlib import Path
 from typing import Literal
 
 from codeprobe.snapshot.canary import CanaryGate, CanaryResult
+from codeprobe.snapshot.safe_io import (
+    SecureOutputDirectory,
+    SourceFile,
+    SymlinkEscapeError,
+    read_regular_file,
+    read_source_files,
+)
 from codeprobe.snapshot.scanners import PatternScanner, Scanner, ScannerError
 
 RedactionMode = Literal["hashes-only", "contents", "secrets"]
@@ -50,6 +57,7 @@ PUBLISHABLE_DEFAULT: RedactionMode = "hashes-only"
 SIGNING_KEY_ENV = "CODEPROBE_SIGNING_KEY"
 _MANIFEST_NAME = "SNAPSHOT.json"
 _FILES_SUBDIR = "files"
+_MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,14 @@ class VerificationResult:
     signature_matches: bool | None  # None if unsigned
 
 
+@dataclass(frozen=True)
+class _PreparedSnapshot:
+    manifest: SnapshotManifest
+    materialized_bodies: tuple[tuple[str, bytes], ...]
+    source_files: tuple[SourceFile, ...]
+    source_directories: tuple[str, ...]
+
+
 def redact(
     source_dir: Path,
     mode: RedactionMode,
@@ -154,7 +170,7 @@ def redact(
         The manifest also written to disk as ``SNAPSHOT.json``.
     """
 
-    manifest = _redact_to_manifest(
+    prepared = _prepare_snapshot(
         source_dir=source_dir,
         mode=mode,
         out_dir=out_dir,
@@ -163,11 +179,15 @@ def redact(
         canary_proof=canary_proof,
         allow_source_in_export=allow_source_in_export,
     )
-    write_snapshot(manifest, Path(out_dir))
-    return manifest
+    with SecureOutputDirectory(Path(out_dir)) as output:
+        _write_materialized_bodies(prepared, output)
+        output.ensure_path_unchanged()
+        _write_snapshot_to_output(prepared.manifest, output)
+        output.ensure_path_unchanged()
+    return prepared.manifest
 
 
-def _redact_to_manifest(
+def _prepare_snapshot(
     source_dir: Path,
     mode: RedactionMode,
     out_dir: Path,
@@ -175,25 +195,14 @@ def _redact_to_manifest(
     signing_key: str | None = None,
     canary_proof: CanaryResult | None = None,
     allow_source_in_export: bool = False,
-) -> SnapshotManifest:
-    """Produce a :class:`SnapshotManifest` without writing ``SNAPSHOT.json``.
+) -> _PreparedSnapshot:
+    """Build the manifest and transformed bodies without creating output.
 
-    This is the internal variant used by :func:`create_snapshot` so a single
-    ``write_extended_manifest`` call can serialise the fully-composed manifest
-    (r14 base + R18 extension) exactly once. External callers should continue
-    to use :func:`redact` which preserves the historical
-    "redact + write SNAPSHOT.json" contract.
-
-    The ``files/`` subtree (in content modes) is still written here because
-    the redacted-body hashes need to be computed from the bytes that were
-    actually materialised on disk.
+    Scanner, source-containment, and rescan failures therefore occur before
+    any output directory or file is created.
     """
     source_dir = Path(source_dir)
     out_dir = Path(out_dir)
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise FileNotFoundError(
-            f"snapshot source_dir does not exist or is not a directory: {source_dir}"
-        )
     if mode not in ("hashes-only", "contents", "secrets"):
         raise ValueError(f"unknown redaction mode: {mode!r}")
     if mode in ("contents", "secrets") and not allow_source_in_export:
@@ -229,23 +238,15 @@ def _redact_to_manifest(
                 )
             canary_record = CanaryGate(effective_scanner).require_pass_or_raise()
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    files_out = out_dir / _FILES_SUBDIR
-    if need_scanner:
-        files_out.mkdir(parents=True, exist_ok=True)
-
+    source_absolute, source_files, source_directories = read_source_files(
+        source_dir,
+        output_dir=out_dir,
+    )
     files: list[FileEntry] = []
-    for abs_path in sorted(_walk_files(source_dir)):
-        rel = abs_path.relative_to(source_dir).as_posix()
-        # Always skip re-ingesting our own output if the user passed out_dir
-        # inside source_dir.
-        try:
-            abs_path.relative_to(out_dir.resolve())
-            continue
-        except ValueError:
-            pass
-
-        body = abs_path.read_bytes()
+    materialized_bodies: list[tuple[str, bytes]] = []
+    for source_file in source_files:
+        rel = source_file.relative_path
+        body = source_file.body
         sha = hashlib.sha256(body).hexdigest()
         entry = FileEntry(path=rel, sha256=sha, size=len(body))
 
@@ -258,9 +259,9 @@ def _redact_to_manifest(
                 raise ScannerError(
                     f"{scanner_name} still detected findings after redaction"
                 )
-            target = files_out / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(redacted)
+            materialized_bodies.append(
+                ((Path(_FILES_SUBDIR) / rel).as_posix(), redacted)
+            )
             redacted_sha = hashlib.sha256(redacted).hexdigest()
             entry = FileEntry(
                 path=rel,
@@ -274,7 +275,7 @@ def _redact_to_manifest(
     scanner_name = getattr(effective_scanner, "name", None) if effective_scanner else None
     manifest = SnapshotManifest(
         mode=mode,
-        source=str(source_dir.resolve()),
+        source=str(source_absolute),
         files=files,
         canary_result=canary_record.to_dict() if canary_record is not None else None,
     )
@@ -287,15 +288,20 @@ def _redact_to_manifest(
     )
     manifest.attestation = attestation
 
-    return manifest
+    return _PreparedSnapshot(
+        manifest=manifest,
+        materialized_bodies=tuple(materialized_bodies),
+        source_files=tuple(source_files),
+        source_directories=tuple(source_directories),
+    )
 
 
-def _walk_files(root: Path) -> list[Path]:
-    out: list[Path] = []
-    for p in root.rglob("*"):
-        if p.is_file():
-            out.append(p)
-    return out
+def _write_materialized_bodies(
+    prepared: _PreparedSnapshot,
+    output: SecureOutputDirectory,
+) -> None:
+    for relative_path, body in prepared.materialized_bodies:
+        output.write_bytes(relative_path, body)
 
 
 def _canonical_body_bytes(manifest: SnapshotManifest) -> bytes:
@@ -362,12 +368,23 @@ def write_snapshot(manifest: SnapshotManifest, out_dir: Path) -> Path:
     """Serialize ``manifest`` to ``out_dir/SNAPSHOT.json`` and return the path."""
 
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    dest = out_dir / _MANIFEST_NAME
-    dest.write_text(
-        json.dumps(manifest.to_dict(), sort_keys=True, indent=2, separators=(",", ": "))
-    )
+    with SecureOutputDirectory(out_dir) as output:
+        dest = _write_snapshot_to_output(manifest, output)
+        output.ensure_path_unchanged()
     return dest
+
+
+def _write_snapshot_to_output(
+    manifest: SnapshotManifest,
+    output: SecureOutputDirectory,
+) -> Path:
+    serialized = json.dumps(
+        manifest.to_dict(),
+        sort_keys=True,
+        indent=2,
+        separators=(",", ": "),
+    ).encode()
+    return output.write_bytes(_MANIFEST_NAME, serialized)
 
 
 def verify_snapshot(
@@ -378,14 +395,28 @@ def verify_snapshot(
 
     snapshot_dir = Path(snapshot_dir)
     manifest_path = snapshot_dir / _MANIFEST_NAME
-    if not manifest_path.exists():
+    try:
+        manifest_body = read_regular_file(
+            snapshot_dir,
+            _MANIFEST_NAME,
+            max_bytes=_MAX_MANIFEST_BYTES,
+        )
+    except (FileNotFoundError, SymlinkEscapeError):
         return VerificationResult(
             ok=False,
-            reason=f"missing manifest: {manifest_path}",
+            reason=f"missing or unsafe manifest: {manifest_path}",
             body_sha256_matches=False,
             signature_matches=None,
         )
-    raw = json.loads(manifest_path.read_text())
+    try:
+        raw = json.loads(manifest_body)
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+        return VerificationResult(
+            ok=False,
+            reason="manifest is malformed",
+            body_sha256_matches=False,
+            signature_matches=None,
+        )
     attestation = raw.get("attestation")
     if not isinstance(attestation, dict):
         return VerificationResult(
@@ -464,6 +495,7 @@ __all__ = [
     "RedactionMode",
     "SIGNING_KEY_ENV",
     "SnapshotManifest",
+    "SymlinkEscapeError",
     "VerificationResult",
     "redact",
     "verify_snapshot",

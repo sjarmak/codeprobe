@@ -10,6 +10,20 @@ No LLM is invoked anywhere in the redaction path. All scanning is done by
 deterministic tools: `gitleaks`, `trufflehog`, or user-configurable regex
 patterns via the built-in `PatternScanner`.
 
+## Filesystem safety
+
+Snapshot creation captures source files through descriptor-relative,
+no-follow opens before allocating the output tree. The source must contain
+only regular files and directories: both external and currently-contained
+symlinks are rejected because their targets can change after a path-level
+containment check. Materialize any aliases before creating a snapshot.
+
+The source and output directories must differ; in-place creation is rejected
+before any layout files are written. Output parents and leaves are created
+through pinned directory descriptors with exclusive, no-follow file opens.
+If an output path or directory is replaced during creation, the operation
+fails rather than continuing through the replacement.
+
 ## Scope
 
 This document covers the **export boundary only** (`codeprobe snapshot

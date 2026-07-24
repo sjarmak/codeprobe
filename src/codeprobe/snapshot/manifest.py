@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from codeprobe.snapshot.redact import SnapshotManifest
+from codeprobe.snapshot.safe_io import SecureOutputDirectory
 
 __all__ = [
     "Dependencies",
@@ -215,14 +216,13 @@ def manifest_to_json_dict(ext: ExtendedManifest) -> dict[str, Any]:
 def write_extended_manifest(ext: ExtendedManifest, snapshot_dir: Path) -> Path:
     """Write ``SNAPSHOT.json`` to ``snapshot_dir`` and return the path."""
     snapshot_dir = Path(snapshot_dir)
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
-    target = snapshot_dir / "SNAPSHOT.json"
-    target.write_text(
-        json.dumps(
-            manifest_to_json_dict(ext),
-            sort_keys=True,
-            indent=2,
-            separators=(",", ": "),
-        )
-    )
+    serialized = json.dumps(
+        manifest_to_json_dict(ext),
+        sort_keys=True,
+        indent=2,
+        separators=(",", ": "),
+    ).encode()
+    with SecureOutputDirectory(snapshot_dir) as output:
+        target = output.write_bytes("SNAPSHOT.json", serialized)
+        output.ensure_path_unchanged()
     return target
