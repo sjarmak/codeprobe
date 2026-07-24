@@ -85,8 +85,11 @@ Resolution failures such as symlink loops and invalid paths are rejected
 through the same non-content error path. After containment resolution,
 the reader opens the resolved containing root and walks to the candidate
 with descriptor-relative, no-follow opens. It reads bounded bytes from
-the validated regular-file descriptor, so a concurrent path or symlink
-swap cannot redirect the read outside the configured roots.
+the validated regular-file descriptor. Validation snapshots the device,
+inode, and file type of the selected root, each canonical directory, and
+the final regular file; every opened descriptor must match that snapshot.
+Concurrent file, directory, root, or symlink replacement is therefore
+rejected before bytes can reach the prompt.
 
 ### Single-backend fallback
 

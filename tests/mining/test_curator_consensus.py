@@ -13,7 +13,7 @@ available) so the tier-2 quarantine path is covered.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from unittest.mock import patch
 
@@ -501,6 +501,66 @@ class TestReadSnippet:
 class TestReadSnippetPathContainment:
     """Backend-supplied candidate paths are untrusted (codeprobe-opp7)."""
 
+    @staticmethod
+    def _assert_post_validation_swap_rejected(
+        *,
+        repo: Path,
+        candidate_path: str,
+        swap: Callable[[], None],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        candidate = repo / candidate_path
+        resolve_path = oracle_curator._resolve_candidate_path
+
+        def resolve_then_swap(
+            path: Path,
+            allowed_roots: tuple[Path, ...],
+            rel_path: str,
+        ) -> oracle_curator._CandidateResolution | None:
+            resolved = resolve_path(path, allowed_roots, rel_path)
+            if path == candidate:
+                swap()
+            return resolved
+
+        delivered_prompts: list[str] = []
+
+        def capture_prompt(request: LLMRequest) -> LLMResponse:
+            delivered_prompts.append(request.prompt)
+            return LLMResponse(
+                text=(
+                    '{"keep": false, "rationale": "not a reference"}'
+                )
+            )
+
+        with (
+            patch.object(
+                oracle_curator,
+                "_resolve_candidate_path",
+                side_effect=resolve_then_swap,
+            ),
+            patch.object(
+                oracle_curator,
+                "call_claude",
+                side_effect=capture_prompt,
+            ) as mock_call,
+        ):
+            vote = oracle_curator._curate_with_llm(
+                symbol="Foo",
+                defining_file="src/foo.py",
+                candidate_path=candidate_path,
+                found_by="grep",
+                repo_paths=[repo],
+                timeout_seconds=30,
+            )
+
+        assert vote.keep is False
+        assert vote.llm_called is False
+        assert vote.error is not None
+        assert "unsafe candidate path" in vote.error
+        assert delivered_prompts == []
+        assert "TOP SECRET" not in caplog.text
+        mock_call.assert_not_called()
+
     def test_rejects_traversal_escape(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -664,6 +724,70 @@ class TestReadSnippetPathContainment:
         assert "unsafe candidate path" in vote.error
         mock_call.assert_not_called()
 
+    def test_regular_file_replacement_never_reaches_model(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        candidate = repo / "candidate.py"
+        candidate.write_text("from src.foo import Foo\n")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+
+        def replace_candidate() -> None:
+            candidate.unlink()
+            secret.rename(candidate)
+
+        self._assert_post_validation_swap_rejected(
+            repo=repo,
+            candidate_path="candidate.py",
+            swap=replace_candidate,
+            caplog=caplog,
+        )
+
+    def test_directory_replacement_never_reaches_model(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repo = tmp_path / "repo"
+        nested = repo / "nested"
+        nested.mkdir(parents=True)
+        (nested / "candidate.py").write_text("safe content")
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        (attacker / "candidate.py").write_text("TOP SECRET")
+
+        def replace_directory() -> None:
+            nested.rename(tmp_path / "validated-nested")
+            attacker.rename(nested)
+
+        self._assert_post_validation_swap_rejected(
+            repo=repo,
+            candidate_path="nested/candidate.py",
+            swap=replace_directory,
+            caplog=caplog,
+        )
+
+    def test_root_replacement_never_reaches_model(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "candidate.py").write_text("safe content")
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        (attacker / "candidate.py").write_text("TOP SECRET")
+
+        def replace_root() -> None:
+            repo.rename(tmp_path / "validated-repo")
+            attacker.rename(repo)
+
+        self._assert_post_validation_swap_rejected(
+            repo=repo,
+            candidate_path="candidate.py",
+            swap=replace_root,
+            caplog=caplog,
+        )
+
     def test_swap_to_external_symlink_never_reaches_model(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -676,9 +800,11 @@ class TestReadSnippetPathContainment:
         resolve_path = oracle_curator._resolve_candidate_path
 
         def resolve_then_swap(
-            path: Path, rel_path: str
-        ) -> Path | None:
-            resolved = resolve_path(path, rel_path)
+            path: Path,
+            allowed_roots: tuple[Path, ...],
+            rel_path: str,
+        ) -> oracle_curator._CandidateResolution | None:
+            resolved = resolve_path(path, allowed_roots, rel_path)
             if path == candidate:
                 candidate.unlink()
                 candidate.symlink_to(secret)

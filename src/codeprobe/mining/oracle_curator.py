@@ -93,6 +93,31 @@ class CuratorVote:
 
 
 @dataclass(frozen=True)
+class _PathIdentity:
+    """Immutable identity and file type captured during validation."""
+
+    device: int
+    inode: int
+    file_type: int
+
+
+@dataclass(frozen=True)
+class _CandidateSnapshot:
+    """Validated descriptor-walk path and identities under an allowed root."""
+
+    root: Path
+    parts: tuple[str, ...]
+    identities: tuple[_PathIdentity, ...]
+
+
+@dataclass(frozen=True)
+class _CandidateResolution:
+    """Resolved candidate with a snapshot when it is union-contained."""
+
+    snapshot: _CandidateSnapshot | None
+
+
+@dataclass(frozen=True)
 class CuratedItem:
     """A single curated ground-truth file with per-file provenance.
 
@@ -340,21 +365,17 @@ def _read_snippet(repo_paths: Sequence[Path], rel_path: str) -> str:
     roots = tuple(_resolve_allowed_root(root, rel_path) for root in repo_paths)
     escaped = False
     for root in roots:
-        full = _resolve_candidate_path(root / rel_path, rel_path)
-        if full is None:
-            continue
-        containing_root = next(
-            (
-                allowed_root
-                for allowed_root in roots
-                if full.is_relative_to(allowed_root)
-            ),
-            None,
+        resolution = _resolve_candidate_path(
+            root / rel_path,
+            roots,
+            rel_path,
         )
-        if containing_root is None:
+        if resolution is None:
+            continue
+        if resolution.snapshot is None:
             escaped = True
             continue
-        return _read_resolved_candidate(containing_root, full, rel_path)
+        return _read_resolved_candidate(resolution.snapshot, rel_path)
 
     if escaped:
         raise UnsafeCandidatePathError(
@@ -373,10 +394,14 @@ def _resolve_allowed_root(root: Path, rel_path: str) -> Path:
         ) from exc
 
 
-def _resolve_candidate_path(path: Path, rel_path: str) -> Path | None:
-    """Resolve an existing candidate, returning ``None`` when absent."""
+def _resolve_candidate_path(
+    path: Path,
+    allowed_roots: tuple[Path, ...],
+    rel_path: str,
+) -> _CandidateResolution | None:
+    """Resolve and snapshot a candidate, returning ``None`` when absent."""
     try:
-        return path.resolve(strict=True)
+        candidate = path.resolve(strict=True)
     except FileNotFoundError:
         return None
     except (OSError, RuntimeError, ValueError) as exc:
@@ -384,40 +409,62 @@ def _resolve_candidate_path(path: Path, rel_path: str) -> Path | None:
             f"candidate path cannot be resolved safely: {rel_path!r}"
         ) from exc
 
+    containing_root = next(
+        (
+            root
+            for root in allowed_roots
+            if candidate.is_relative_to(root)
+        ),
+        None,
+    )
+    if containing_root is None:
+        return _CandidateResolution(snapshot=None)
+    return _CandidateResolution(
+        snapshot=_capture_candidate_snapshot(
+            containing_root,
+            candidate,
+            rel_path,
+        ),
+    )
+
 
 def _read_resolved_candidate(
-    root: Path, candidate: Path, rel_path: str
+    snapshot: _CandidateSnapshot, rel_path: str
 ) -> str:
-    """Read *candidate* through no-follow descriptors anchored at *root*."""
-    parts = candidate.relative_to(root).parts
-    if not parts:
-        raise UnsafeCandidatePathError(
-            f"candidate path is not a regular file: {rel_path!r}"
-        )
-
+    """Read a candidate only when every descriptor matches its snapshot."""
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     file_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         with ExitStack() as descriptors:
-            directory_fd = os.open(root, directory_flags)
+            directory_fd = os.open(snapshot.root, directory_flags)
             descriptors.callback(os.close, directory_fd)
-            for component in parts[:-1]:
+            _require_identity(
+                directory_fd,
+                snapshot.identities[0],
+                rel_path,
+            )
+            for index, component in enumerate(
+                snapshot.parts[:-1],
+                start=1,
+            ):
                 directory_fd = os.open(
                     component,
                     directory_flags,
                     dir_fd=directory_fd,
                 )
                 descriptors.callback(os.close, directory_fd)
+                _require_identity(
+                    directory_fd,
+                    snapshot.identities[index],
+                    rel_path,
+                )
             file_fd = os.open(
-                parts[-1],
+                snapshot.parts[-1],
                 file_flags,
                 dir_fd=directory_fd,
             )
             descriptors.callback(os.close, file_fd)
-            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
-                raise UnsafeCandidatePathError(
-                    f"candidate path is not a regular file: {rel_path!r}"
-                )
+            _require_identity(file_fd, snapshot.identities[-1], rel_path)
             data = _read_bounded_bytes(file_fd)
     except UnsafeCandidatePathError:
         raise
@@ -428,6 +475,66 @@ def _read_resolved_candidate(
 
     lines = data.decode("utf-8", errors="replace").splitlines()
     return "\n".join(lines[:_MAX_SNIPPET_LINES])
+
+
+def _capture_candidate_snapshot(
+    root: Path,
+    candidate: Path,
+    rel_path: str,
+) -> _CandidateSnapshot:
+    """Capture immutable identities for root, components, and final file."""
+    parts = candidate.relative_to(root).parts
+    if not parts:
+        raise UnsafeCandidatePathError(
+            f"candidate path is not a regular file: {rel_path!r}"
+        )
+
+    paths = (root,) + tuple(
+        root.joinpath(*parts[:index])
+        for index in range(1, len(parts) + 1)
+    )
+    try:
+        identities = tuple(
+            _identity(path.stat(follow_symlinks=False)) for path in paths
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise UnsafeCandidatePathError(
+            f"candidate path cannot be validated safely: {rel_path!r}"
+        ) from exc
+
+    if any(
+        not stat.S_ISDIR(identity.file_type)
+        for identity in identities[:-1]
+    ) or not stat.S_ISREG(identities[-1].file_type):
+        raise UnsafeCandidatePathError(
+            f"candidate path is not a regular file: {rel_path!r}"
+        )
+    return _CandidateSnapshot(
+        root=root,
+        parts=parts,
+        identities=identities,
+    )
+
+
+def _identity(result: os.stat_result) -> _PathIdentity:
+    """Return the stable identity fields used to bind validation to reads."""
+    return _PathIdentity(
+        device=result.st_dev,
+        inode=result.st_ino,
+        file_type=stat.S_IFMT(result.st_mode),
+    )
+
+
+def _require_identity(
+    file_fd: int,
+    expected: _PathIdentity,
+    rel_path: str,
+) -> None:
+    """Reject an opened descriptor that differs from validation."""
+    if _identity(os.fstat(file_fd)) != expected:
+        raise UnsafeCandidatePathError(
+            f"candidate path changed after validation: {rel_path!r}"
+        )
 
 
 def _read_bounded_bytes(file_fd: int) -> bytes:
