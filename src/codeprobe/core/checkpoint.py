@@ -14,7 +14,8 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from codeprobe.models.experiment import CompletedTask
+from codeprobe.analysis.stats import is_scorable_run
+from codeprobe.models.experiment import CompletedTask, completed_task_from_dict
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +91,14 @@ class CheckpointStore:
     def load_ids(self) -> set[tuple[str, int]]:
         """Return the (task_id, repeat_index) pairs to skip on resume.
 
-        Keeps ``'completed'`` and ``'failed'`` rows; ``'error'`` rows are
-        retried (taxonomy: ``CompletedTask.status``). The positive-form
-        predicate means an unknown status falls into the retry path —
-        the conservative default.
+        Keeps scorable ``'completed'`` and ``'failed'`` rows. Infrastructure
+        casualties, including a completed scorer row whose verifier failed,
+        are retried.
         """
-        rows = self._conn.execute(
-            "SELECT task_id, repeat_index FROM checkpoints "
-            "WHERE config_name = ? AND status IN ('completed', 'failed')",
-            (self._config_name,),
-        ).fetchall()
-        return {(row[0], row[1]) for row in rows}
+        return {
+            (entry["task_id"], entry.get("repeat_index", 0))
+            for entry in self.load_entries()
+        }
 
     def load_entries(self) -> list[dict]:
         """Return checkpoint entries for this config as dicts.
@@ -124,20 +122,20 @@ class CheckpointStore:
             result_data = json.loads(result_json) if result_json else {}
             if result_data and "task_id" in result_data:
                 # Full CompletedTask stored — use it directly
-                entries.append(result_data)
+                entry = result_data
             else:
                 # Legacy row — minimal fields only
                 repeat_index = row[6] if len(row) > 6 else 0
-                entries.append(
-                    {
-                        "task_id": row[0],
-                        "automated_score": row[1],
-                        "completed_at": row[2],
-                        "metadata": json.loads(row[3]) if row[3] else {},
-                        "status": row[4],
-                        "repeat_index": repeat_index,
-                    }
-                )
+                entry = {
+                    "task_id": row[0],
+                    "automated_score": row[1],
+                    "completed_at": row[2],
+                    "metadata": json.loads(row[3]) if row[3] else {},
+                    "status": row[4],
+                    "repeat_index": repeat_index,
+                }
+            if is_scorable_run(completed_task_from_dict(entry)):
+                entries.append(entry)
         return entries
 
     def close(self) -> None:

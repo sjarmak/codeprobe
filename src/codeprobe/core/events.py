@@ -59,6 +59,7 @@ class TaskScored:
     error: str | None
     timestamp: float
     scoring_details: dict = field(default_factory=dict)
+    verdict: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,8 @@ class RunFinished:
     total_duration: float
     config_label: str
     timestamp: float
+    scored_count: int = 0
+    infra_failure_count: int = 0
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from codeprobe.core.events import (
     TaskStarted,
 )
 from codeprobe.core.executor import execute_config
+from codeprobe.core.scoring import ScoreResult
 from codeprobe.models.experiment import CompletedTask, ExperimentConfig
 from tests.conftest import FakeAdapter, SequentialCostAdapter
 
@@ -206,6 +207,62 @@ class TestEventOrder:
         assert rf.completed_count == 2
         assert rf.total_cost == pytest.approx(0.20, abs=0.01)
         assert rf.total_duration == pytest.approx(6.0, abs=0.5)
+
+    def test_verifier_error_is_excluded_from_live_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tasks = [
+            _make_task_dir(tmp_path, "broken"),
+            _make_task_dir(tmp_path, "correct"),
+        ]
+        score_results = iter(
+            [
+                ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    scorer_family="binary_test",
+                    verdict="verifier_error",
+                ),
+                ScoreResult(
+                    score=1.0,
+                    passed=True,
+                    scorer_family="binary_test",
+                    verdict="correct",
+                ),
+            ]
+        )
+
+        class _SequenceScorer:
+            def score(self, *_args: object, **_kwargs: object) -> ScoreResult:
+                return next(score_results)
+
+        scorer = _SequenceScorer()
+        monkeypatch.setattr(
+            "codeprobe.core.executor.get_scorer", lambda _reward_type: scorer
+        )
+        dispatcher = EventDispatcher()
+        recorder = RecordingListener()
+        dispatcher.register(recorder)
+        try:
+            execute_config(
+                adapter=FakeAdapter(stdout="output"),
+                task_dirs=tasks,
+                repo_path=Path("/repo"),
+                experiment_config=ExperimentConfig(label="verdicts"),
+                agent_config=AgentConfig(),
+                event_dispatcher=dispatcher,
+            )
+        finally:
+            dispatcher.shutdown()
+
+        scored = [event for event in recorder.events if isinstance(event, TaskScored)]
+        finished = next(
+            event for event in recorder.events if isinstance(event, RunFinished)
+        )
+        assert scored[0].verdict == "verifier_error"
+        assert finished.mean_score == 1.0
+        assert finished.scored_count == 1
+        assert finished.infra_failure_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +512,35 @@ class TestPlainTextListener:
         assert "task-001: PASS" in captured.out
         assert "task-002: FAIL" in captured.out
 
+    def test_task_scored_prints_verifier_error_as_infra(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from codeprobe.cli.run_cmd import PlainTextListener
+
+        PlainTextListener().on_event(
+            TaskScored(
+                task_id="broken",
+                config_label="test",
+                automated_score=0.0,
+                duration_seconds=1.0,
+                cost_usd=None,
+                input_tokens=None,
+                output_tokens=None,
+                cache_read_tokens=None,
+                cache_creation_tokens=None,
+                cost_model="unknown",
+                cost_source="unavailable",
+                error="verifier failed",
+                timestamp=time.time(),
+                verdict="verifier_error",
+                scoring_details={"verdict": "verifier_error"},
+            )
+        )
+
+        output = capsys.readouterr().out
+        assert "broken: INFRA" in output
+        assert "FAIL" not in output
+
     def test_budget_warning_prints_to_stderr(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -497,6 +583,30 @@ class TestPlainTextListener:
         assert "Finished: 5/5 tasks" in captured.out
         assert "mean score 0.80" in captured.out
         assert "$0.50" in captured.out
+
+    def test_run_finished_prints_scorable_and_infra_counts(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from codeprobe.cli.run_cmd import PlainTextListener
+
+        PlainTextListener().on_event(
+            RunFinished(
+                total_tasks=2,
+                completed_count=2,
+                mean_score=1.0,
+                total_cost=0.1,
+                total_duration=2.0,
+                config_label="test",
+                timestamp=time.time(),
+                scored_count=1,
+                infra_failure_count=1,
+            )
+        )
+
+        output = capsys.readouterr().out
+        assert "mean score 1.00" in output
+        assert "1 scored" in output
+        assert "1 infra" in output
 
 
 # ---------------------------------------------------------------------------

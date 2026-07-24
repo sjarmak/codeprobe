@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from codeprobe.adapters.protocol import AdapterQuotaError
+from codeprobe.analysis.stats import partition_reward_population
+from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.events import (
     BudgetChecker,
@@ -60,7 +62,11 @@ from codeprobe.core.turn_cap import (
     resolve_turn_cap,
     resolve_turn_cap_family,
 )
-from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+from codeprobe.models.experiment import (
+    CompletedTask,
+    ExperimentConfig,
+    completed_task_from_dict,
+)
 
 if TYPE_CHECKING:
     from codeprobe.adapters.protocol import AgentAdapter, AgentConfig, AgentOutput
@@ -1022,22 +1028,12 @@ def _restore_checkpointed(
     """
     if checkpoint_store is None:
         return set(), []
-    # Generic over the dataclass fields so a field added to CompletedTask
-    # can never be silently dropped on resume (codeprobe-8up; previously
-    # ``tool_use_by_name`` was hand-mapped out of existence here). Keys
-    # absent from older checkpoint entries fall back to field defaults;
-    # unknown keys from newer schemas are ignored.
-    field_names = {f.name for f in dataclasses.fields(CompletedTask)}
     ids: set[tuple[str, int]] = set()
     results: list[CompletedTask] = []
     for entry in checkpoint_store.load_entries():
         repeat_index = entry.get("repeat_index", 0)
         ids.add((entry["task_id"], repeat_index))
-        results.append(
-            CompletedTask(
-                **{k: v for k, v in entry.items() if k in field_names}
-            )
-        )
+        results.append(completed_task_from_dict(entry))
     return ids, results
 
 
@@ -1301,6 +1297,7 @@ def execute_config(
                     error=result.metadata.get("error") if result.metadata else None,
                     timestamp=time.time(),
                     scoring_details=dict(result.scoring_details),
+                    verdict=result.verdict,
                 )
             )
 
@@ -1534,8 +1531,10 @@ def execute_config(
     # Emit RunFinished event with summary stats
     if event_dispatcher is not None:
         completed_count = len(results)
-        scores = [r.automated_score for r in results]
+        reward_results, _, _ = partition_reward_population(results)
+        scores = [r.automated_score for r in reward_results]
         mean_score = sum(scores) / len(scores) if scores else 0.0
+        infra_failure_count = sum(1 for result in results if is_infra_failure(result))
         total_cost = sum(
             r.cost_usd
             for r in results
@@ -1551,6 +1550,8 @@ def execute_config(
                 total_duration=total_duration,
                 config_label=experiment_config.label,
                 timestamp=time.time(),
+                scored_count=len(reward_results),
+                infra_failure_count=infra_failure_count,
             )
         )
 

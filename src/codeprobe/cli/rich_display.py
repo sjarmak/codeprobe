@@ -41,8 +41,12 @@ class _ConfigState:
     label: str
     total_tasks: int = 0
     tasks_completed: int = 0
+    scored_count: int = 0
+    infra_failure_count: int = 0
     passed: int = 0
     total_cost: float = 0.0
+    mean_score: float = 0.0
+    total_duration: float = 0.0
     durations: list[float] = field(default_factory=list)
     current_task: str = ""
     task_rows: list[tuple[str, str, str, str, str]] = field(default_factory=list)
@@ -123,7 +127,9 @@ class RichLiveListener:
         self._refresh()
 
     @staticmethod
-    def _format_score(score: float) -> str:
+    def _format_score(score: float, verdict: str | None = None) -> str:
+        if verdict == "verifier_error":
+            return "INFRA"
         if score >= 1.0:
             return "PASS"
         if score <= 0.0:
@@ -131,7 +137,12 @@ class RichLiveListener:
         return f"{score:.2f}"
 
     def _handle_task_scored(self, event: TaskScored) -> None:
-        status = self._format_score(event.automated_score)
+        verdict = event.verdict
+        if verdict is None and isinstance(event.scoring_details, dict):
+            nested_verdict = event.scoring_details.get("verdict")
+            verdict = nested_verdict if isinstance(nested_verdict, str) else None
+        is_infra = verdict == "verifier_error"
+        status = self._format_score(event.automated_score, verdict)
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
         duration_str = f"{event.duration_seconds:.1f}s"
         dual_suffix = format_dual_suffix(event.scoring_details)
@@ -139,8 +150,12 @@ class RichLiveListener:
         with self._lock:
             state = self._get_or_create_config(event.config_label)
             state.tasks_completed += 1
-            if score_passed(event.automated_score, event.scoring_details):
-                state.passed += 1
+            if is_infra:
+                state.infra_failure_count += 1
+            else:
+                state.scored_count += 1
+                if score_passed(event.automated_score, event.scoring_details):
+                    state.passed += 1
             state.durations.append(event.duration_seconds)
             if event.cost_usd is not None:
                 state.total_cost += event.cost_usd
@@ -168,7 +183,12 @@ class RichLiveListener:
         with self._lock:
             self._active_count -= 1
             if event.config_label in self._configs:
-                self._configs[event.config_label].finished = True
+                state = self._configs[event.config_label]
+                state.finished = True
+                state.scored_count = event.scored_count
+                state.infra_failure_count = event.infra_failure_count
+                state.mean_score = event.mean_score
+                state.total_duration = event.total_duration
             all_done = self._active_count <= 0
 
         if all_done and self._live is not None:
@@ -181,18 +201,14 @@ class RichLiveListener:
             with self._lock:
                 for label in self._config_order:
                     state = self._configs[label]
-                    total_dur = sum(state.durations)
-                    mean_score = (
-                        (state.passed / state.tasks_completed)
-                        if state.tasks_completed > 0
-                        else 0.0
-                    )
                     self._console.print(
                         f"[bold]Finished {state.label}:[/bold] "
                         f"{state.tasks_completed}/{state.total_tasks} tasks, "
-                        f"mean score {mean_score:.2f}, "
+                        f"{state.scored_count} scored, "
+                        f"{state.infra_failure_count} infra, "
+                        f"mean score {state.mean_score:.2f}, "
                         f"total cost ${state.total_cost:.2f}, "
-                        f"duration {total_dur:.1f}s"
+                        f"duration {state.total_duration:.1f}s"
                     )
         else:
             self._refresh()
@@ -218,6 +234,8 @@ class RichLiveListener:
         """
         completed = state.tasks_completed
         total = state.total_tasks
+        scored = state.scored_count
+        infra = state.infra_failure_count
         passed = state.passed
         durations = list(state.durations)
         current = state.current_task
@@ -236,15 +254,18 @@ class RichLiveListener:
         table.add_column("Value", width=30)
 
         # Progress
-        table.add_row("Progress", f"{completed}/{total} tasks")
+        table.add_row(
+            "Progress",
+            f"{completed}/{total} tasks ({scored} scored, {infra} infra)",
+        )
 
         # Pass rate
-        if completed > 0:
-            rate = (passed / completed) * 100
+        if scored > 0:
+            rate = (passed / scored) * 100
             rate_style = "green" if rate >= 80 else "yellow" if rate >= 50 else "red"
             table.add_row(
                 "Pass rate",
-                Text(f"{rate:.0f}% ({passed}/{completed})", style=rate_style),
+                Text(f"{rate:.0f}% ({passed}/{scored})", style=rate_style),
             )
         else:
             table.add_row("Pass rate", "-")
@@ -278,7 +299,13 @@ class RichLiveListener:
             table.add_section()
             visible_rows = rows[-10:]
             for task_id, status, duration, _task_cost, dual_suffix in visible_rows:
-                status_style = "green" if status == "PASS" else "red"
+                status_style = (
+                    "green"
+                    if status == "PASS"
+                    else "yellow"
+                    if status == "INFRA"
+                    else "red"
+                )
                 table.add_row(
                     Text(status, style=status_style),
                     f"{task_id}  {duration}{dual_suffix}",

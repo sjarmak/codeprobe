@@ -169,6 +169,49 @@ class TestJsonLineListener:
         assert data["cost_usd"] is None
         assert data["error"] is None
 
+    def test_verifier_error_and_run_counts_are_serialized(self) -> None:
+        buf = io.StringIO()
+        listener = JsonLineListener(file=buf)
+        listener.on_event(
+            TaskScored(
+                task_id="broken",
+                config_label="c",
+                automated_score=0.0,
+                duration_seconds=1.0,
+                cost_usd=None,
+                input_tokens=None,
+                output_tokens=None,
+                cache_read_tokens=None,
+                cache_creation_tokens=None,
+                cost_model="unknown",
+                cost_source="unavailable",
+                error="verifier failed",
+                timestamp=0.0,
+                verdict="verifier_error",
+            )
+        )
+        listener.on_event(
+            RunFinished(
+                total_tasks=2,
+                completed_count=2,
+                mean_score=1.0,
+                total_cost=0.0,
+                total_duration=2.0,
+                config_label="c",
+                timestamp=1.0,
+                scored_count=1,
+                infra_failure_count=1,
+            )
+        )
+
+        task_payload, run_payload = [
+            json.loads(line) for line in buf.getvalue().splitlines()
+        ]
+        assert task_payload["verdict"] == "verifier_error"
+        assert run_payload["mean_score"] == 1.0
+        assert run_payload["scored_count"] == 1
+        assert run_payload["infra_failure_count"] == 1
+
     def test_graceful_skip_on_serialization_error(self) -> None:
         """If asdict or json.dumps raises, the listener must not crash."""
         buf = io.StringIO()

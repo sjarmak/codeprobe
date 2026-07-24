@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import html
 import json
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 
 from codeprobe.analysis.stats import summarize_completed_tasks
-from codeprobe.models.experiment import CompletedTask
+from codeprobe.models.experiment import CompletedTask, completed_task_from_dict
 
 PER_TRIAL_FILE = "per_trial.json"
 EXPLORER_FILE = "explorer.html"
@@ -199,17 +199,15 @@ def compute_validity_flags(trial: dict) -> list[str]:
 
 def _trial_to_completed_task(trial: dict) -> CompletedTask:
     """Build a CompletedTask from a per_trial dict for stat reuse."""
-    field_names = {f.name for f in fields(CompletedTask)}
     mapped: dict = {}
     for key, value in trial.items():
         target = _PER_TRIAL_TO_TASK.get(key, key)
-        if target in field_names:
-            mapped[target] = value
+        mapped[target] = value
     # automated_score is required; fall back to score when reward is absent.
     if "automated_score" not in mapped:
         mapped["automated_score"] = trial.get("score", 0.0) or 0.0
     mapped.setdefault("task_id", str(trial.get("task_id", "")))
-    return CompletedTask(**mapped)
+    return completed_task_from_dict(mapped)
 
 
 def build_arm_summaries(trials: list[dict]) -> list[ArmSummary]:

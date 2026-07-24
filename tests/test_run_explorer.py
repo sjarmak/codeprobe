@@ -119,6 +119,27 @@ class TestArmSummaries:
         assert s.flag_counts.get("error") == 1
         assert s.total == 2  # one flagged + one clean
 
+    def test_legacy_scoring_details_verdict_is_excluded(self) -> None:
+        trials = [
+            _trial(
+                task_id="broken",
+                reward=0.0,
+                score=0.0,
+                scoring_details={"passed": False, "verdict": "verifier_error"},
+            ),
+            _trial(
+                task_id="wrong",
+                reward=1.0,
+                score=1.0,
+                verdict="incorrect",
+                scoring_details={"passed": True, "verdict": "incorrect"},
+            ),
+        ]
+
+        summary = build_arm_summaries(trials)[0]
+
+        assert summary.mean_reward == 1.0
+
 
 # ---------------------------------------------------------------------------
 # HTML generation (A1, A2, A5)

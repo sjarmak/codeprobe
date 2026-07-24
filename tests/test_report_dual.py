@@ -253,6 +253,22 @@ class TestJsonReportDual:
         for t in single_tasks:
             assert t["scoring_details"] == {}
 
+    def test_json_task_rows_include_typed_verdict(self) -> None:
+        task = CompletedTask(
+            task_id="broken",
+            automated_score=0.0,
+            verdict="verifier_error",
+            scoring_details={"passed": False, "verdict": "verifier_error"},
+        )
+        report = generate_report(
+            "verdict-exp",
+            [ConfigResults(config="cfg", completed=[task])],
+        )
+
+        data = json.loads(format_json_report(report))
+
+        assert data["tasks"][0]["verdict"] == "verifier_error"
+
 
 # ---------------------------------------------------------------------------
 # Mixed-config column unification (text + HTML must have same column schema)

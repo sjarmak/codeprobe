@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -412,6 +413,48 @@ class TestFailedStatusResume:
         assert len(entries) == 1
         assert entries[0]["task_id"] == "t-caphit"
         assert entries[0]["status"] == "failed"
+
+    def test_verifier_errors_are_not_retained_for_resume(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "checkpoint.db"
+        store = CheckpointStore(db_path, config_name="default")
+        store.append(
+            CompletedTask(
+                task_id="new-broken",
+                automated_score=0.0,
+                verdict="verifier_error",
+                scoring_details={"passed": False, "verdict": "verifier_error"},
+            )
+        )
+        store.append(
+            CompletedTask(
+                task_id="legacy-broken",
+                automated_score=0.0,
+                scoring_details={"passed": False, "verdict": "verifier_error"},
+            )
+        )
+        store.append(
+            CompletedTask(
+                task_id="wrong",
+                automated_score=0.0,
+                verdict="incorrect",
+                scoring_details={"passed": False, "verdict": "incorrect"},
+            )
+        )
+
+        with sqlite3.connect(db_path) as conn:
+            (raw_json,) = conn.execute(
+                "SELECT result_json FROM checkpoints WHERE task_id = ?",
+                ("legacy-broken",),
+            ).fetchone()
+            legacy = json.loads(raw_json)
+            legacy.pop("verdict")
+            conn.execute(
+                "UPDATE checkpoints SET result_json = ? WHERE task_id = ?",
+                (json.dumps(legacy), "legacy-broken"),
+            )
+
+        assert store.load_ids() == {("wrong", 0)}
+        assert [entry["task_id"] for entry in store.load_entries()] == ["wrong"]
 
     def test_mixed_halt_resume_retries_only_infra_error(
         self, tmp_path: Path

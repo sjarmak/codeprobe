@@ -22,6 +22,7 @@ from codeprobe.models.experiment import (
     ConfigResults,
     Experiment,
     ExperimentConfig,
+    completed_task_from_dict,
 )
 
 
@@ -231,13 +232,55 @@ def test_config_results_roundtrip_preserves_all_fields(tmp_path: Path):
         result_subtype="error_max_turns",
         duration_api_ms=1854321,
         error_category="agent",
-        scoring_details={"passed": False, "error": None},
+        verdict="incorrect",
+        scoring_details={"passed": False, "error": None, "verdict": "incorrect"},
         metadata={"error": "Reached maximum number of turns (90)"},
     )
     save_config_results(exp_dir, "baseline", [original])
 
     loaded = load_config_results(exp_dir, "baseline").completed[0]
     assert loaded == original
+
+
+def test_load_config_results_backfills_legacy_verdict(tmp_path: Path) -> None:
+    exp_dir = create_experiment_dir(tmp_path, _sample_experiment())
+    results_path = exp_dir / "runs" / "baseline" / "results.json"
+    results_path.write_text(
+        json.dumps(
+            {
+                "config": "baseline",
+                "completed": [
+                    {
+                        "task_id": "legacy",
+                        "automated_score": 0.0,
+                        "status": "completed",
+                        "scoring_details": {
+                            "passed": False,
+                            "verdict": "verifier_error",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_config_results(exp_dir, "baseline").completed[0]
+
+    assert loaded.verdict == "verifier_error"
+
+
+def test_completed_task_from_dict_prefers_top_level_verdict() -> None:
+    loaded = completed_task_from_dict(
+        {
+            "task_id": "new",
+            "automated_score": 0.0,
+            "verdict": "incorrect",
+            "scoring_details": {"verdict": "verifier_error"},
+        }
+    )
+
+    assert loaded.verdict == "incorrect"
 
 
 def test_load_config_results_missing_raises(tmp_path: Path):

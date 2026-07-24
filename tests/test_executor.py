@@ -949,6 +949,52 @@ def test_execute_config_retries_error_checkpointed(tmp_path: Path):
     assert results[0].automated_score == 1.0
 
 
+def test_execute_config_retries_verifier_error_checkpoint(
+    tmp_path: Path,
+) -> None:
+    tasks = [
+        _make_task(tmp_path / "broken", passing=True),
+        _make_task(tmp_path / "wrong", passing=True),
+    ]
+    adapter = FakeAdapter(stdout="output")
+    exp_config = ExperimentConfig(label="baseline")
+
+    from codeprobe.core.checkpoint import CheckpointStore
+
+    store = CheckpointStore(tmp_path / "checkpoint.db", config_name="baseline")
+    store.append(
+        CompletedTask(
+            task_id="broken",
+            automated_score=0.0,
+            verdict="verifier_error",
+            scoring_details={"passed": False, "verdict": "verifier_error"},
+        )
+    )
+    store.append(
+        CompletedTask(
+            task_id="wrong",
+            automated_score=0.0,
+            verdict="incorrect",
+            scoring_details={"passed": False, "verdict": "incorrect"},
+        )
+    )
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=exp_config,
+        agent_config=AgentConfig(),
+        checkpoint_store=store,
+    )
+
+    assert len(adapter.run_calls) == 1
+    by_id = {result.task_id: result for result in results}
+    assert by_id["broken"].automated_score == 1.0
+    assert by_id["broken"].verdict == "correct"
+    assert by_id["wrong"].verdict == "incorrect"
+
+
 def test_execute_config_none_cost_not_accumulated(tmp_path: Path):
     """Tasks where cost_usd is None (per_token but None shouldn't happen, but
     cost_usd=None with unknown model) are skipped in accumulation."""

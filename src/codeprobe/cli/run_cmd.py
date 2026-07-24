@@ -206,8 +206,10 @@ def assert_clean_checkout(repo_root: Path, *, allow_dirty: bool = False) -> None
     )
 
 
-def _format_task_status(score: float) -> str:
+def _format_task_status(score: float, verdict: str | None = None) -> str:
     """Format score as PASS/FAIL for binary or as a numeric score for partial."""
+    if verdict == "verifier_error":
+        return "INFRA"
     if score >= 1.0:
         return "PASS"
     if score <= 0.0:
@@ -265,7 +267,7 @@ def build_run_envelope_summary(
 
 def _on_task_complete(result: CompletedTask) -> None:
     """Print task result to stdout (legacy callback, kept for backward compat)."""
-    status = _format_task_status(result.automated_score)
+    status = _format_task_status(result.automated_score, result.verdict)
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
 
 
@@ -279,7 +281,7 @@ class PlainTextListener:
 
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
-            status = _format_task_status(event.automated_score)
+            status = _format_task_status(event.automated_score, event.verdict)
             dual_suffix = format_dual_suffix(event.scoring_details)
             click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s){dual_suffix}")
         elif isinstance(event, BudgetWarning):
@@ -291,6 +293,7 @@ class PlainTextListener:
         elif isinstance(event, RunFinished):
             click.echo(
                 f"  Finished: {event.completed_count}/{event.total_tasks} tasks, "
+                f"{event.scored_count} scored, {event.infra_failure_count} infra, "
                 f"mean score {event.mean_score:.2f}, "
                 f"total cost ${event.total_cost:.2f}"
             )
@@ -312,6 +315,12 @@ class NdjsonStdoutListener:
                     "event": "task_done",
                     "task_id": event.task_id,
                     "score": event.automated_score,
+                    "verdict": event.verdict,
+                    "outcome": (
+                        "infra_failure"
+                        if event.verdict == "verifier_error"
+                        else "scored"
+                    ),
                     "duration_seconds": event.duration_seconds,
                     "cost_usd": getattr(event, "cost_usd", None),
                 }

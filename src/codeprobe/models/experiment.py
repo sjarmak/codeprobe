@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 
@@ -197,6 +198,17 @@ class CompletedTask:
     mcp_init: dict | None = None
     scoring_details: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
+
+
+def completed_task_from_dict(data: Mapping[str, Any]) -> CompletedTask:
+    """Reconstruct a task while migrating the legacy nested verdict."""
+    field_names = {item.name for item in fields(CompletedTask)}
+    values = {key: value for key, value in data.items() if key in field_names}
+    if not isinstance(values.get("verdict"), str):
+        details = values.get("scoring_details")
+        if isinstance(details, dict) and isinstance(details.get("verdict"), str):
+            values["verdict"] = details["verdict"]
+    return CompletedTask(**values)
 
 
 @dataclass(frozen=True)

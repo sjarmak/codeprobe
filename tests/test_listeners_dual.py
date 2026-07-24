@@ -16,7 +16,7 @@ from rich.console import Console
 
 from codeprobe.cli.rich_display import RichLiveListener
 from codeprobe.cli.run_cmd import PlainTextListener
-from codeprobe.core.events import RunStarted, TaskScored
+from codeprobe.core.events import RunFinished, RunStarted, TaskScored
 
 
 def _make_task_scored(
@@ -24,6 +24,7 @@ def _make_task_scored(
     task_id: str = "t1",
     automated_score: float = 0.7,
     scoring_details: dict | None = None,
+    verdict: str | None = None,
 ) -> TaskScored:
     return TaskScored(
         task_id=task_id,
@@ -40,6 +41,7 @@ def _make_task_scored(
         error=None,
         timestamp=time.time(),
         scoring_details=scoring_details,
+        verdict=verdict,
     )
 
 
@@ -49,6 +51,22 @@ def _make_task_scored(
 
 
 class TestPlainTextListenerDual:
+    def test_verifier_error_uses_infra_status(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        PlainTextListener().on_event(
+            _make_task_scored(
+                task_id="broken",
+                automated_score=0.0,
+                verdict="verifier_error",
+                scoring_details={"passed": False, "verdict": "verifier_error"},
+            )
+        )
+
+        output = capsys.readouterr().out
+        assert "broken: INFRA" in output
+        assert "FAIL" not in output
+
     def test_without_scoring_details_uses_legacy_format(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -137,6 +155,64 @@ def _render_display_to_str(listener: RichLiveListener) -> str:
 
 
 class TestRichLiveListenerDual:
+    def test_verifier_error_uses_infra_status_and_denominator(self) -> None:
+        listener, _ = _make_rich_listener()
+        _start_run(listener, total=1)
+        try:
+            listener.on_event(
+                _make_task_scored(
+                    task_id="broken",
+                    automated_score=0.0,
+                    verdict="verifier_error",
+                    scoring_details={"passed": False, "verdict": "verifier_error"},
+                )
+            )
+            rendered = _render_display_to_str(listener)
+        finally:
+            if listener._live is not None:  # type: ignore[attr-defined]
+                listener._live.stop()  # type: ignore[attr-defined]
+
+        assert "INFRA" in rendered
+        assert "0 scored, 1 infra" in rendered
+
+    def test_finished_summary_uses_run_finished_reward_population(self) -> None:
+        listener, output = _make_rich_listener()
+        _start_run(listener, total=2)
+        listener.on_event(
+            _make_task_scored(
+                task_id="broken",
+                automated_score=0.0,
+                verdict="verifier_error",
+                scoring_details={"passed": False, "verdict": "verifier_error"},
+            )
+        )
+        listener.on_event(
+            _make_task_scored(
+                task_id="correct",
+                automated_score=1.0,
+                verdict="correct",
+                scoring_details={"passed": True, "verdict": "correct"},
+            )
+        )
+        listener.on_event(
+            RunFinished(
+                total_tasks=2,
+                completed_count=2,
+                mean_score=1.0,
+                total_cost=0.02,
+                total_duration=3.0,
+                config_label="cfg",
+                timestamp=time.time(),
+                scored_count=1,
+                infra_failure_count=1,
+            )
+        )
+
+        rendered = output.getvalue()
+        assert "mean score 1.00" in rendered
+        assert "1 scored" in rendered
+        assert "1 infra" in rendered
+
     def test_without_scoring_details_uses_legacy_format(self) -> None:
         listener, _ = _make_rich_listener()
         _start_run(listener)

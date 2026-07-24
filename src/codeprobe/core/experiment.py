@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from collections.abc import Sequence
-from dataclasses import asdict, fields, replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from codeprobe.analysis.stats import is_quota_casualty, is_scorable_run
@@ -24,6 +24,7 @@ from codeprobe.models.experiment import (
 from codeprobe.models.experiment import (
     ExperimentConfig as ExperimentConfig,
 )
+from codeprobe.models.experiment import completed_task_from_dict
 
 logger = logging.getLogger(__name__)
 
@@ -390,14 +391,7 @@ def load_config_results(exp_dir: Path, config_label: str) -> ConfigResults:
 
     data = json.loads(path.read_text(encoding="utf-8"))
 
-    # Generic over the dataclass fields so a field added to CompletedTask
-    # can never be silently dropped on load (codeprobe-8up); unknown keys
-    # from newer schemas are ignored, absent keys fall back to defaults.
-    field_names = {f.name for f in fields(CompletedTask)}
-    completed = [
-        CompletedTask(**{k: v for k, v in t.items() if k in field_names})
-        for t in data.get("completed", [])
-    ]
+    completed = [completed_task_from_dict(t) for t in data.get("completed", [])]
 
     return ConfigResults(config=data["config"], completed=completed)
 

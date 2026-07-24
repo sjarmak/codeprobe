@@ -712,7 +712,13 @@ scorers, and human follow-up inspection.
 Aggregate consumers classify `verifier_error` as an infrastructure failure:
 the trial is excluded from reward means, pass rates, and confidence intervals,
 and is surfaced in `infra_failure_count`. An `incorrect` verdict remains a
-valid scored failure.
+valid scored failure. Loaders backfill the typed field from legacy
+`scoring_details["verdict"]` rows, and checkpoint resume retries verifier
+failures instead of retaining their invalid measurements.
+
+Live run events follow the same population: `TaskScored.verdict` identifies
+the infrastructure row, while `RunFinished.scored_count`,
+`infra_failure_count`, and `mean_score` describe the scorable denominator.
 
 ## Turn cap
 

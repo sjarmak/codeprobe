@@ -787,6 +787,7 @@ def _build_task_rows(report: Report) -> list[dict]:
                     "repeat": task.repeat_index + 1,
                     "score": task.automated_score,
                     "pass": 1 if task_passed(task) else 0,
+                    "verdict": task.verdict,
                     "duration_sec": task.duration_seconds,
                     "cost_usd": task.cost_usd,
                     "cost_source": task.cost_source,
