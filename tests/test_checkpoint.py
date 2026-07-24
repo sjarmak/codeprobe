@@ -422,7 +422,7 @@ class TestFailedStatusResume:
                 task_id="new-broken",
                 automated_score=0.0,
                 verdict="verifier_error",
-                scoring_details={"passed": False, "verdict": "verifier_error"},
+                scoring_details={"passed": False},
             )
         )
         store.append(
@@ -437,7 +437,7 @@ class TestFailedStatusResume:
                 task_id="wrong",
                 automated_score=0.0,
                 verdict="incorrect",
-                scoring_details={"passed": False, "verdict": "incorrect"},
+                scoring_details={"passed": False},
             )
         )
 

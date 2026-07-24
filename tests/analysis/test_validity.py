@@ -72,7 +72,7 @@ def _verdict_trial(verdict: str, task_id: str = "verdict") -> CompletedTask:
         automated_score=0.0,
         status="completed",
         verdict=verdict,
-        scoring_details={"passed": False, "verdict": verdict},
+        scoring_details={"passed": False},
     )
 
 

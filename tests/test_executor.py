@@ -967,7 +967,7 @@ def test_execute_config_retries_verifier_error_checkpoint(
             task_id="broken",
             automated_score=0.0,
             verdict="verifier_error",
-            scoring_details={"passed": False, "verdict": "verifier_error"},
+            scoring_details={"passed": False},
         )
     )
     store.append(
@@ -975,7 +975,7 @@ def test_execute_config_retries_verifier_error_checkpoint(
             task_id="wrong",
             automated_score=0.0,
             verdict="incorrect",
-            scoring_details={"passed": False, "verdict": "incorrect"},
+            scoring_details={"passed": False},
         )
     )
 
