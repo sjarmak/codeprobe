@@ -466,11 +466,11 @@ class CheckpointScorer:
        ``[[checkpoints]]`` via :class:`~codeprobe.models.task.Checkpoint`)
     2. ``tests/checkpoints.json`` on disk (legacy format)
 
-    Verifier scripts live in ``tests/verifiers/`` and emit JSON on stdout:
-    ``{"score": 0.0-1.0, "passed": bool}``
+    Verifier scripts live in ``tests/verifiers/``. Non-empty stdout must be
+    JSON: ``{"score": 0.0-1.0, "passed": bool}``.
 
-    Fallback: exit 0 = {score: 1.0, passed: true},
-              exit nonzero = {score: 0.0, passed: false}
+    Empty-stdout fallback: exit 0 = {score: 1.0, passed: true},
+                           exit nonzero = {score: 0.0, passed: false}
     """
 
     _WEIGHT_TOLERANCE = 1e-6
@@ -611,18 +611,27 @@ class CheckpointScorer:
             )
             return _ZERO_SCORE, run.execution_mode
 
-        # Try to parse JSON from stdout
+        # Non-empty stdout selects the JSON score channel. It must never fall
+        # through to exit-code success when parsing fails.
         stdout = run.stdout.strip()
         if stdout:
             try:
                 data = json.loads(stdout)
+                if not isinstance(data, dict):
+                    raise TypeError("checkpoint JSON must be an object")
                 raw = float(data.get("score", 0.0))
                 return max(0.0, min(1.0, raw)), run.execution_mode
-            except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "Verifier %s produced zero score due to invalid JSON stdout: %s",
+                    verifier_path.name,
+                    exc,
+                )
+                return _ZERO_SCORE, run.execution_mode
 
-        # Fallback: exit code. Non-zero is a legitimate "verifier failed"
-        # signal (not a silent swallow); returncode is the loud channel.
+        # Empty stdout uses the legacy exit-code contract. Non-zero is a
+        # legitimate "verifier failed" signal (not a silent swallow);
+        # returncode is the loud channel.
         if run.returncode == 0:
             return 1.0, run.execution_mode
         return _ZERO_SCORE, run.execution_mode

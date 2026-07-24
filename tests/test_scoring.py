@@ -578,6 +578,39 @@ class TestCheckpointScorer:
         assert result.score == 0.0
         assert result.passed is False
 
+    def test_verifier_exit_zero_with_garbage_stdout_scores_zero(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Non-empty stdout claims the JSON channel and must parse."""
+        task_dir = self._make_checkpoint_task(
+            tmp_path,
+            "cp-garbage-stdout",
+            [{"name": "cp1", "weight": 1.0, "verifier": "garbage.sh"}],
+            {"garbage.sh": "#!/bin/bash\necho 'warning: polluted stdout'\nexit 0\n"},
+        )
+
+        result = CheckpointScorer().score("output", task_dir)
+
+        assert result.score == 0.0
+        assert result.passed is False
+        assert any("garbage.sh" in record.message for record in caplog.records)
+
+    def test_verifier_exit_zero_with_empty_stdout_scores_one(
+        self, tmp_path: Path
+    ) -> None:
+        """Empty stdout preserves the documented exit-code fallback."""
+        task_dir = self._make_checkpoint_task(
+            tmp_path,
+            "cp-empty-stdout",
+            [{"name": "cp1", "weight": 1.0, "verifier": "empty.sh"}],
+            {"empty.sh": "#!/bin/bash\nexit 0\n"},
+        )
+
+        result = CheckpointScorer().score("output", task_dir)
+
+        assert result.score == 1.0
+        assert result.passed is True
+
     def test_missing_checkpoints_json(self, tmp_path: Path) -> None:
         task_dir = tmp_path / "cp-no-json"
         task_dir.mkdir(parents=True)

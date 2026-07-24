@@ -91,6 +91,11 @@ COMPREHENSION_CHECKPOINT_SCRIPTS: dict[str, str] = {
         '    echo \'{"score": 0.0, "passed": false}\'\n'
         "    exit 1\n"
         "fi\n"
+        "if ! python3 -c 'import json,sys; json.load(sys.stdin)' "
+        '<<<"$OUT" 2>/dev/null; then\n'
+        '    echo \'{"score": 0.0, "passed": false}\'\n'
+        "    exit 1\n"
+        "fi\n"
         'echo "$OUT"\n'
     ),
 }

@@ -13,6 +13,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -255,6 +257,45 @@ class TestComprehensionCheckpoints:
             "step2_scope_correct.sh should embed the current PASS_THRESHOLD "
             "so the emitted script tracks the mine-time threshold."
         )
+
+    def test_step2_answer_correct_rejects_non_json_scorer_stdout(
+        self, tmp_path: Path
+    ) -> None:
+        """The generated verifier must not pass through polluted stdout."""
+        task_dir = tmp_path / "task"
+        verifier_dir = task_dir / "tests" / "verifiers"
+        verifier_dir.mkdir(parents=True)
+        verifier = verifier_dir / "step2_answer_correct.sh"
+        verifier.write_text(
+            COMPREHENSION_CHECKPOINT_SCRIPTS["step2_answer_correct.sh"]
+        )
+        verifier.chmod(0o755)
+
+        fake_package = tmp_path / "fake-package"
+        scoring_package = fake_package / "codeprobe" / "core" / "scoring"
+        scoring_package.mkdir(parents=True)
+        for package_dir in (
+            fake_package / "codeprobe",
+            fake_package / "codeprobe" / "core",
+            scoring_package,
+        ):
+            (package_dir / "__init__.py").write_text("")
+        (scoring_package / "__main__.py").write_text(
+            "print('warning: polluted stdout')\n"
+        )
+
+        run = subprocess.run(
+            [str(verifier)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(fake_package)},
+        )
+
+        assert run.returncode != 0
+        payload = json.loads(run.stdout)
+        assert payload["score"] == 0.0
+        assert payload["passed"] is False
 
 
 class TestResolveCheckpointScripts:
