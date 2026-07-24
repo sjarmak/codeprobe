@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import hashlib
 import os
 import secrets
 import stat
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePath
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 
 
 class SymlinkEscapeError(RuntimeError):
@@ -27,6 +28,30 @@ class SourceFile:
 
 
 MAX_SOURCE_CAPTURE_BYTES = 256 * 1024 * 1024
+MAX_SNAPSHOT_INVENTORY_BYTES = (
+    4 * MAX_SOURCE_CAPTURE_BYTES + 16 * 1024 * 1024
+)
+DEFAULT_INVENTORY_CAPTURE_BYTES = 16 * 1024 * 1024
+_INVENTORY_CHUNK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class InventoryEntry:
+    """One descriptor-captured snapshot path and its structural evidence."""
+
+    relative_path: str
+    kind: str
+    sha256: str | None = None
+    target: str | None = None
+    body: bytes | None = None
+
+
+@dataclass(frozen=True)
+class TreeInventory:
+    """Immutable descriptor-relative inventory of one snapshot tree."""
+
+    root: Path
+    entries: Mapping[str, InventoryEntry]
 
 
 _DIRECTORY_FLAGS = (
@@ -50,7 +75,7 @@ _SECURE_PRIMITIVES_SUPPORTED = (
     and all(hasattr(os, flag) for flag in ("O_DIRECTORY", "O_NOFOLLOW"))
     and all(
         function in os.supports_dir_fd
-        for function in (os.open, os.mkdir, os.stat, os.symlink)
+        for function in (os.open, os.mkdir, os.readlink, os.stat, os.symlink)
     )
     and os.stat in os.supports_follow_symlinks
     and os.listdir in os.supports_fd
@@ -225,6 +250,212 @@ def read_source_files(
     finally:
         os.close(source_fd)
     return source_absolute, files, directories
+
+
+def _inventory_regular_file(
+    directory_fd: int,
+    name: str,
+    expected: os.stat_result,
+    relative_path: str,
+    *,
+    capture: bool,
+    max_capture_bytes: int,
+    max_file_bytes: int,
+) -> tuple[InventoryEntry, int]:
+    try:
+        file_fd = os.open(
+            name,
+            _FILE_READ_FLAGS | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=directory_fd,
+        )
+    except OSError as exc:
+        raise SymlinkEscapeError(
+            "snapshot file changed during secure inventory"
+        ) from exc
+    try:
+        opened = os.fstat(file_fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or _inventory_version(expected) != _inventory_version(opened)
+        ):
+            raise SymlinkEscapeError(
+                "snapshot file changed during secure inventory"
+            )
+        digest = hashlib.sha256()
+        captured: list[bytes] | None = [] if capture else None
+        file_bytes = 0
+        while True:
+            chunk = os.read(file_fd, _INVENTORY_CHUNK_BYTES)
+            if not chunk:
+                break
+            file_bytes += len(chunk)
+            if file_bytes > max_file_bytes:
+                raise SymlinkEscapeError(
+                    "snapshot tree exceeds the inventory size limit"
+                )
+            digest.update(chunk)
+            if captured is not None:
+                captured.append(chunk)
+                if file_bytes > max_capture_bytes:
+                    raise SymlinkEscapeError(
+                        "captured snapshot file exceeds its size limit"
+                    )
+        if _inventory_version(opened) != _inventory_version(os.fstat(file_fd)):
+            raise SymlinkEscapeError(
+                "snapshot file changed during secure inventory"
+            )
+        return (
+            InventoryEntry(
+                relative_path=relative_path,
+                kind="file",
+                sha256=digest.hexdigest(),
+                body=b"".join(captured) if captured is not None else None,
+            ),
+            file_bytes,
+        )
+    finally:
+        os.close(file_fd)
+
+
+def _inventory_version(metadata: os.stat_result) -> tuple[int, ...]:
+    """Return fields that change when an inventoried entry is replaced or edited."""
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _inventory_symlink(
+    directory_fd: int,
+    name: str,
+    expected: os.stat_result,
+    relative_path: str,
+) -> InventoryEntry:
+    try:
+        target = os.readlink(name, dir_fd=directory_fd)
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except OSError as exc:
+        raise SymlinkEscapeError(
+            "snapshot symlink changed during secure inventory"
+        ) from exc
+    if _inventory_version(expected) != _inventory_version(current):
+        raise SymlinkEscapeError(
+            "snapshot symlink changed during secure inventory"
+        )
+    return InventoryEntry(
+        relative_path=relative_path,
+        kind="symlink",
+        target=target,
+    )
+
+
+def _open_inventory_directory(
+    directory_fd: int,
+    name: str,
+    expected: os.stat_result,
+) -> int:
+    try:
+        child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=directory_fd)
+    except OSError as exc:
+        raise SymlinkEscapeError(
+            "snapshot directory changed during secure inventory"
+        ) from exc
+    if _inventory_version(expected) == _inventory_version(os.fstat(child_fd)):
+        return child_fd
+    os.close(child_fd)
+    raise SymlinkEscapeError(
+        "snapshot directory changed during secure inventory"
+    )
+
+
+def inventory_tree(
+    root: Path,
+    *,
+    capture_paths: frozenset[str] = frozenset(),
+    max_capture_bytes: int = DEFAULT_INVENTORY_CAPTURE_BYTES,
+) -> TreeInventory:
+    """Scan and hash a tree once through pinned, no-follow descriptors."""
+    if max_capture_bytes <= 0:
+        raise ValueError("inventory capture limit must be positive")
+    root_absolute, root_fd = _open_directory(root, create=False)
+    entries: list[InventoryEntry] = []
+    total_bytes = 0
+
+    def walk(directory_fd: int, parent_parts: tuple[str, ...]) -> None:
+        nonlocal total_bytes
+        directory_version = _inventory_version(os.fstat(directory_fd))
+        for name in sorted(os.listdir(directory_fd)):
+            relative_parts = (*parent_parts, name)
+            relative_path = PurePath(*relative_parts).as_posix()
+            try:
+                metadata = os.stat(
+                    name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise SymlinkEscapeError(
+                    "snapshot tree changed during secure inventory"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                entries.append(
+                    _inventory_symlink(
+                        directory_fd,
+                        name,
+                        metadata,
+                        relative_path,
+                    )
+                )
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                entries.append(
+                    InventoryEntry(relative_path=relative_path, kind="directory")
+                )
+                child_fd = _open_inventory_directory(
+                    directory_fd,
+                    name,
+                    metadata,
+                )
+                try:
+                    walk(child_fd, relative_parts)
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                entries.append(
+                    InventoryEntry(relative_path=relative_path, kind="special")
+                )
+                continue
+            file_entry, file_bytes = _inventory_regular_file(
+                directory_fd,
+                name,
+                metadata,
+                relative_path,
+                capture=relative_path in capture_paths,
+                max_capture_bytes=max_capture_bytes,
+                max_file_bytes=MAX_SNAPSHOT_INVENTORY_BYTES - total_bytes,
+            )
+            total_bytes += file_bytes
+            entries.append(file_entry)
+        if directory_version != _inventory_version(os.fstat(directory_fd)):
+            raise SymlinkEscapeError(
+                "snapshot directory changed during secure inventory"
+            )
+
+    try:
+        walk(root_fd, ())
+    finally:
+        os.close(root_fd)
+    return TreeInventory(
+        root=root_absolute,
+        entries=MappingProxyType(
+            {entry.relative_path: entry for entry in entries}
+        ),
+    )
 
 
 def validate_source_tree(source_dir: Path) -> None:

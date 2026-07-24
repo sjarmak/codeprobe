@@ -434,6 +434,28 @@ def _read_bounded_file(path: Path, max_bytes: int) -> bytes:
     return content
 
 
+def _enforce_line_limit(
+    payload: bytes,
+    max_line_bytes: int,
+    *,
+    scanner_name: str,
+) -> None:
+    line_start = 0
+    for offset, byte in enumerate(payload):
+        if byte != 10:
+            continue
+        line_end = (
+            offset - 1
+            if offset > line_start and payload[offset - 1] == 13
+            else offset
+        )
+        if line_end - line_start > max_line_bytes:
+            raise ScannerError(f"{scanner_name} exceeded its line size limit")
+        line_start = offset + 1
+    if len(payload) - line_start > max_line_bytes:
+        raise ScannerError(f"{scanner_name} exceeded its line size limit")
+
+
 def _completed_external_scan(
     scanner_name: str,
     args: list[str],
@@ -584,6 +606,7 @@ class GitleaksScanner:
                     gitleaks,
                     "detect",
                     "--no-git",
+                    "--ignore-gitleaks-allow",
                     "-s",
                     str(target),
                     "--report-format",
@@ -611,6 +634,11 @@ class GitleaksScanner:
                 raise ScannerError("gitleaks scan failed without a report")
             except OSError:
                 raise ScannerError("gitleaks produced an unreadable report") from None
+            _enforce_line_limit(
+                report_bytes,
+                self.limits.max_line_bytes,
+                scanner_name=self.name,
+            )
             raw = _load_external_json(
                 report_bytes,
                 "gitleaks produced a malformed report",
@@ -848,33 +876,70 @@ def _stable_configuration_value(value: object) -> object:
     raise ScannerError("scanner configuration cannot be fingerprinted safely")
 
 
-def _read_regular_file_bytes(path: Path) -> bytes:
+_SCANNER_ARTIFACT_CHUNK_BYTES = 1024 * 1024
+
+
+def _stream_regular_file(
+    source_path: Path,
+    destination_path: Path | None = None,
+    *,
+    destination_mode: int = 0o600,
+) -> str:
+    """Hash a regular file while optionally copying it in bounded chunks."""
     try:
-        file_fd = os.open(
-            path,
+        source_fd = os.open(
+            source_path,
             os.O_RDONLY
             | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
         )
     except OSError:
         raise ScannerError("external scanner identity cannot be read") from None
+    destination_fd = -1
+    digest = hashlib.sha256()
     try:
-        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
             raise ScannerError("external scanner identity is not a regular file")
-        with os.fdopen(file_fd, "rb") as source:
-            file_fd = -1
-            return source.read()
+        if destination_path is not None:
+            destination_fd = os.open(
+                destination_path,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                destination_mode,
+            )
+        while True:
+            chunk = os.read(source_fd, _SCANNER_ARTIFACT_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+            if destination_fd < 0:
+                continue
+            view = memoryview(chunk)
+            while view:
+                written = os.write(destination_fd, view)
+                if written == 0:
+                    raise ScannerError(
+                        "pinned scanner artifact could not be written"
+                    )
+                view = view[written:]
+    except OSError:
+        raise ScannerError("pinned scanner artifact could not be captured") from None
     finally:
-        if file_fd >= 0:
-            os.close(file_fd)
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        os.close(source_fd)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
-class _ExternalRuntimeSnapshot:
+class _CapturedExternalRuntime:
     identity: dict[str, object]
-    executable: bytes
+    executable: str
     environment: dict[str, str]
-    config_files: tuple[tuple[str, bytes], ...]
 
 
 @dataclass(frozen=True)
@@ -884,7 +949,10 @@ class _PinnedExternalRuntime:
     identity: dict[str, object]
 
 
-def _external_runtime_snapshot(scanner: Scanner) -> _ExternalRuntimeSnapshot:
+def _capture_external_runtime(
+    scanner: Scanner,
+    private_root: Path | None = None,
+) -> _CapturedExternalRuntime:
     assert isinstance(scanner, (GitleaksScanner, TrufflehogScanner))
     resolved = shutil.which(scanner.binary)
     if resolved is None:
@@ -892,11 +960,16 @@ def _external_runtime_snapshot(scanner: Scanner) -> _ExternalRuntimeSnapshot:
             f"{scanner.name} binary {scanner.binary!r} not found on PATH"
         )
     executable_path = Path(resolved).resolve()
-    executable = _read_regular_file_bytes(executable_path)
+    private_executable = private_root / "scanner" if private_root is not None else None
+    executable_sha = _stream_regular_file(
+        executable_path,
+        private_executable,
+        destination_mode=0o700,
+    )
     environment = dict(os.environ)
     environment_identity: dict[str, object] = {}
-    config_files: list[tuple[str, bytes]] = []
     prefix = f"{scanner.name.upper()}_"
+    config_index = 0
     for key, value in sorted(environment.items()):
         if not key.startswith(prefix):
             continue
@@ -904,43 +977,30 @@ def _external_runtime_snapshot(scanner: Scanner) -> _ExternalRuntimeSnapshot:
             "value_sha256": hashlib.sha256(value.encode()).hexdigest()
         }
         if os.path.isfile(value):
-            config_body = _read_regular_file_bytes(Path(value).resolve())
-            item["file_sha256"] = hashlib.sha256(config_body).hexdigest()
-            config_files.append((key, config_body))
+            private_config = (
+                private_root / f"config-{config_index}"
+                if private_root is not None
+                else None
+            )
+            item["file_sha256"] = _stream_regular_file(
+                Path(value).resolve(),
+                private_config,
+            )
+            if private_config is not None:
+                environment[key] = str(private_config)
+            config_index += 1
         environment_identity[key] = item
-    return _ExternalRuntimeSnapshot(
+    return _CapturedExternalRuntime(
         identity={
             "resolved_path": str(executable_path),
-            "sha256": hashlib.sha256(executable).hexdigest(),
+            "sha256": executable_sha,
             "environment": environment_identity,
         },
-        executable=executable,
+        executable=str(
+            private_executable if private_executable is not None else executable_path
+        ),
         environment=environment,
-        config_files=tuple(config_files),
     )
-
-
-def _write_private_artifact(path: Path, body: bytes, mode: int) -> None:
-    file_fd = os.open(
-        path,
-        os.O_WRONLY
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-        mode,
-    )
-    try:
-        view = memoryview(body)
-        while view:
-            written = os.write(file_fd, view)
-            if written == 0:
-                raise ScannerError("pinned scanner artifact could not be written")
-            view = view[written:]
-    except OSError:
-        raise ScannerError("pinned scanner artifact could not be written") from None
-    finally:
-        os.close(file_fd)
 
 
 @contextmanager
@@ -950,20 +1010,13 @@ def pinned_scanner(scanner: Scanner | None) -> Iterator[Scanner | None]:
         yield scanner
         return
 
-    snapshot = _external_runtime_snapshot(scanner)
     with tempfile.TemporaryDirectory(prefix=f"codeprobe-{scanner.name}-") as temporary:
         private_root = Path(temporary)
-        executable = private_root / "scanner"
-        _write_private_artifact(executable, snapshot.executable, 0o700)
-        environment = dict(snapshot.environment)
-        for index, (key, body) in enumerate(snapshot.config_files):
-            private_config = private_root / f"config-{index}"
-            _write_private_artifact(private_config, body, 0o600)
-            environment[key] = str(private_config)
+        capture = _capture_external_runtime(scanner, private_root)
         runtime = _PinnedExternalRuntime(
-            executable=str(executable),
-            environment=environment,
-            identity=snapshot.identity,
+            executable=capture.executable,
+            environment=capture.environment,
+            identity=capture.identity,
         )
         yield replace(
             scanner,
@@ -977,7 +1030,7 @@ def _external_runtime_identity(scanner: Scanner) -> dict[str, object] | None:
         return None
     if scanner._pinned_runtime is not None:
         return scanner._pinned_runtime.identity
-    return _external_runtime_snapshot(scanner).identity
+    return _capture_external_runtime(scanner).identity
 
 
 def scanner_configuration_fingerprint(scanner: Scanner) -> str:

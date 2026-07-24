@@ -68,6 +68,11 @@ SIGNING_KEY_ENV = "CODEPROBE_SIGNING_KEY"
 _MANIFEST_NAME = "SNAPSHOT.json"
 _FILES_SUBDIR = "files"
 _MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+_EXTENDED_ATTESTATION_KEYS = (
+    "schema_version",
+    "created_at",
+    "dependencies",
+)
 
 
 @dataclass(frozen=True)
@@ -150,6 +155,8 @@ class _PreparedSnapshot:
     materialized_bodies: tuple[tuple[str, bytes], ...]
     source_files: tuple[SourceFile, ...]
     source_directories: tuple[str, ...]
+    scanner_name: str | None
+    canary: str | None
 
 
 def redact(
@@ -198,12 +205,20 @@ def redact(
         mode=mode,
         out_dir=out_dir,
         scanner=scanner,
-        signing_key=signing_key,
         canary_proof=canary_proof,
         allow_source_in_export=allow_source_in_export,
     )
     prepared = replace(
         prepared,
+        manifest=replace(
+            prepared.manifest,
+            attestation=_attest(
+                manifest=prepared.manifest,
+                signing_key=_resolve_signing_key(signing_key),
+                scanner_name=prepared.scanner_name,
+                canary=prepared.canary,
+            ),
+        ),
         source_files=(),
         source_directories=(),
     )
@@ -220,7 +235,6 @@ def _prepare_snapshot(
     mode: RedactionMode,
     out_dir: Path,
     scanner: Scanner | None = None,
-    signing_key: str | None = None,
     canary_proof: CanaryResult | None = None,
     allow_source_in_export: bool = False,
 ) -> _PreparedSnapshot:
@@ -249,7 +263,6 @@ def _prepare_snapshot(
             mode=mode,
             out_dir=out_dir,
             effective_scanner=captured_scanner,
-            signing_key=signing_key,
             canary_proof=canary_proof,
         )
 
@@ -260,7 +273,6 @@ def _prepare_snapshot_with_scanner(
     mode: RedactionMode,
     out_dir: Path,
     effective_scanner: Scanner | None,
-    signing_key: str | None,
     canary_proof: CanaryResult | None,
 ) -> _PreparedSnapshot:
     """Capture and transform source bytes with one pinned scanner runtime."""
@@ -327,19 +339,13 @@ def _prepare_snapshot_with_scanner(
         canary_result=canary_record.to_dict() if canary_record is not None else None,
     )
 
-    attestation = _attest(
-        manifest=manifest,
-        signing_key=_resolve_signing_key(signing_key),
-        scanner_name=scanner_name,
-        canary=canary_record.canary if canary_record else None,
-    )
-    manifest.attestation = attestation
-
     return _PreparedSnapshot(
         manifest=manifest,
         materialized_bodies=tuple(materialized_bodies),
         source_files=tuple(source_files),
         source_directories=tuple(source_directories),
+        scanner_name=scanner_name,
+        canary=canary_record.canary if canary_record else None,
     )
 
 
@@ -351,7 +357,10 @@ def _write_materialized_bodies(
         output.write_bytes(relative_path, body)
 
 
-def _canonical_body_bytes(manifest: SnapshotManifest) -> bytes:
+def _canonical_body_bytes(
+    manifest: SnapshotManifest,
+    extended_fields: dict[str, object] | None = None,
+) -> bytes:
     """Deterministic serialization of the manifest body (pre-signature).
 
     The body intentionally excludes the attestation signature field itself
@@ -367,6 +376,8 @@ def _canonical_body_bytes(manifest: SnapshotManifest) -> bytes:
         payload["canary_result"] = manifest.canary_result
     if manifest.layout is not None:
         payload["layout"] = [asdict(entry) for entry in manifest.layout]
+    if extended_fields is not None:
+        payload.update(extended_fields)
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -384,8 +395,9 @@ def _attest(
     signing_key: str | None,
     scanner_name: str | None,
     canary: str | None,
+    extended_fields: dict[str, object] | None = None,
 ) -> Attestation:
-    body = _canonical_body_bytes(manifest)
+    body = _canonical_body_bytes(manifest, extended_fields)
     body_sha = hashlib.sha256(body).hexdigest()
     timestamp = datetime.now(UTC).isoformat()
 
@@ -467,6 +479,13 @@ def _load_snapshot_json(
         )
     except (FileNotFoundError, SymlinkEscapeError):
         return None, f"missing or unsafe manifest: {manifest_path}"
+    return _parse_snapshot_json(manifest_body)
+
+
+def _parse_snapshot_json(
+    manifest_body: bytes,
+) -> tuple[dict[str, object] | None, str | None]:
+    """Parse already-captured manifest bytes without reopening the path."""
     try:
         raw = json.loads(manifest_body)
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
@@ -570,6 +589,7 @@ def _verify_snapshot_data(
 
     try:
         recomputed = _manifest_from_raw(raw)
+        extended_fields = _attested_extended_fields(raw)
     except (TypeError, ValueError):
         return VerificationResult(
             ok=False,
@@ -577,7 +597,7 @@ def _verify_snapshot_data(
             body_sha256_matches=False,
             signature_matches=None,
         )
-    body = _canonical_body_bytes(recomputed)
+    body = _canonical_body_bytes(recomputed, extended_fields)
     body_sha = hashlib.sha256(body).hexdigest()
     expected_body = str(attestation.get("body_sha256", ""))
     body_ok = hmac.compare_digest(body_sha, expected_body)
@@ -615,6 +635,32 @@ def _verify_snapshot_data(
         body_sha256_matches=body_ok,
         signature_matches=sig_ok,
     )
+
+
+def _attested_extended_fields(
+    raw: dict[str, object],
+) -> dict[str, object] | None:
+    present = [key in raw for key in _EXTENDED_ATTESTATION_KEYS]
+    if not any(present):
+        return None
+    if not all(present):
+        raise ValueError("extended attestation fields are incomplete")
+    schema_version = raw["schema_version"]
+    created_at = raw["created_at"]
+    dependencies = raw["dependencies"]
+    if (
+        not isinstance(schema_version, str)
+        or not schema_version
+        or not isinstance(created_at, str)
+        or not created_at
+        or not isinstance(dependencies, dict)
+    ):
+        raise ValueError("extended attestation fields are invalid")
+    return {
+        "schema_version": schema_version,
+        "created_at": created_at,
+        "dependencies": dependencies,
+    }
 
 
 __all__ = [

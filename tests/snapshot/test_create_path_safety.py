@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from pathlib import Path
 
@@ -171,6 +172,34 @@ def test_create_uses_captured_source_after_trial_directory_swap(
     assert swapped is True
     assert (exported / "result.json").read_text() == '{"ok": true}\n'
     assert not (exported / "secret.txt").exists()
+
+
+def test_create_attests_only_the_final_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _experiment(tmp_path)
+    redact_module = importlib.import_module("codeprobe.snapshot.redact")
+    original_redact_attest = redact_module._attest
+    original_create_attest = create_module._attest
+    calls = 0
+
+    def count_redact_attestation(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original_redact_attest(*args, **kwargs)
+
+    def count_create_attestation(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original_create_attest(*args, **kwargs)
+
+    monkeypatch.setattr(redact_module, "_attest", count_redact_attestation)
+    monkeypatch.setattr(create_module, "_attest", count_create_attestation)
+
+    create_snapshot(experiment, tmp_path / "snapshot")
+
+    assert calls == 1
 
 
 def test_create_rejects_in_place_snapshot_before_writing_layout(

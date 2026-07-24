@@ -16,7 +16,7 @@ No LLM is invoked — all checks are mechanical IO + sha256.
 
 from __future__ import annotations
 
-import hashlib
+import posixpath
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -25,16 +25,17 @@ from codeprobe.snapshot.fairness import (
     FairnessResult,
     check_fairness,
 )
+from codeprobe.snapshot.manifest import SNAPSHOT_SCHEMA_VERSION
 from codeprobe.snapshot.redact import (
+    _MAX_MANIFEST_BYTES,
     VerificationResult,
-    _load_snapshot_json,
+    _parse_snapshot_json,
     _verify_snapshot_data,
 )
 from codeprobe.snapshot.safe_io import (
-    MAX_SOURCE_CAPTURE_BYTES,
     SymlinkEscapeError,
-    read_regular_file,
-    read_source_files,
+    TreeInventory,
+    inventory_tree,
 )
 
 __all__ = [
@@ -79,9 +80,28 @@ def verify_snapshot_extended(
     tree self-contained and relocatable.
     """
     snapshot_dir = Path(snapshot_dir)
-    snapshot_resolved = snapshot_dir.resolve()
+    try:
+        inventory = inventory_tree(
+            snapshot_dir,
+            capture_paths=frozenset({"SNAPSHOT.json"}),
+        )
+    except (FileNotFoundError, SymlinkEscapeError):
+        return _inventory_failure(snapshot_dir)
 
-    manifest, load_error = _load_snapshot_json(snapshot_dir)
+    manifest_entry = inventory.entries.get("SNAPSHOT.json")
+    manifest: dict[str, object] | None
+    load_error: str | None
+    if (
+        manifest_entry is None
+        or manifest_entry.kind != "file"
+        or manifest_entry.body is None
+        or len(manifest_entry.body) > _MAX_MANIFEST_BYTES
+    ):
+        manifest, load_error = None, (
+            f"missing or unsafe manifest: {snapshot_dir / 'SNAPSHOT.json'}"
+        )
+    else:
+        manifest, load_error = _parse_snapshot_json(manifest_entry.body)
     base = (
         _verify_snapshot_data(manifest, signing_key=signing_key)
         if manifest is not None
@@ -93,66 +113,32 @@ def verify_snapshot_extended(
         )
     )
 
-    offending: list[str] = []
-    symlinks_ok = True
     mode = manifest.get("mode") if manifest is not None else None
-    for entry in snapshot_dir.rglob("*"):
-        if not entry.is_symlink():
-            if (
-                mode == "hashes-only"
-                and entry.is_file()
-                and entry.is_relative_to(snapshot_dir / "traces")
-            ):
-                symlinks_ok = False
-                offending.append(str(entry))
-            continue
-        link_target = entry.readlink()
-        if link_target.is_absolute():
-            symlinks_ok = False
-            offending.append(str(entry))
-            continue
-        try:
-            target_resolved = (entry.parent / link_target).resolve()
-        except OSError:
-            symlinks_ok = False
-            offending.append(str(entry))
-            continue
-        if not _is_within(target_resolved, snapshot_resolved):
-            symlinks_ok = False
-            offending.append(str(entry))
-            continue
-        relative = entry.relative_to(snapshot_dir)
-        parts = relative.parts
-        expected_target = (
-            snapshot_dir / "export" / "traces" / Path(*parts[1:])
-            if mode == "hashes-only"
-            and len(parts) >= 3
-            and parts[0] == "traces"
-            else None
-        )
-        if (
-            expected_target is None
-            or target_resolved != expected_target.resolve()
-            or not expected_target.is_dir()
-        ):
-            symlinks_ok = False
-            offending.append(str(entry))
-
-    # Per-file hash recheck — applies to whatever bodies were materialised
-    # on disk. In hashes-only mode no bodies exist, so this loop is a no-op
-    # (and correctly returns True).
-    files_ok, file_offenders = _verify_file_hashes(snapshot_dir, manifest)
-    layout_ok, layout_offenders = _verify_layout_inventory(snapshot_dir, manifest)
+    extended_required = _extended_layout_required(inventory, manifest)
+    symlink_offenders = _verify_symlinks(inventory, mode)
+    symlinks_ok = not symlink_offenders
+    files_ok, file_offenders = _verify_file_hashes(
+        inventory,
+        manifest,
+        verify_publishable=extended_required,
+    )
+    layout_ok, layout_offenders = _verify_layout_inventory(
+        inventory,
+        manifest,
+        required=extended_required,
+    )
     files_ok = files_ok and layout_ok
     file_offenders.extend(layout_offenders)
-    offending.extend(file_offenders)
+    offending = list(dict.fromkeys((*symlink_offenders, *file_offenders)))
 
     ok = base.ok and symlinks_ok and files_ok
     reason_parts: list[str] = []
     if not base.ok:
         reason_parts.append(f"attestation: {base.reason}")
     if not symlinks_ok:
-        reason_parts.append(f"symlink containment failed: {len(offending)} offender(s)")
+        reason_parts.append(
+            f"symlink containment failed: {len(symlink_offenders)} offender(s)"
+        )
     if not files_ok:
         reason_parts.append(f"file hash mismatch: {len(file_offenders)} offender(s)")
     reason = "ok" if ok else "; ".join(reason_parts) or "failed"
@@ -167,9 +153,74 @@ def verify_snapshot_extended(
     )
 
 
+def _inventory_failure(snapshot_dir: Path) -> ExtendedVerificationResult:
+    path = str(snapshot_dir)
+    return ExtendedVerificationResult(
+        ok=False,
+        reason="snapshot tree cannot be inventoried securely",
+        base=VerificationResult(
+            ok=False,
+            reason="missing or unsafe manifest",
+            body_sha256_matches=False,
+            signature_matches=None,
+        ),
+        symlinks_contained=False,
+        file_hashes_match=False,
+        offending_paths=[path],
+    )
+
+
+def _entry_path(inventory: TreeInventory, relative_path: str) -> str:
+    return str(inventory.root / relative_path)
+
+
+def _verify_symlinks(
+    inventory: TreeInventory,
+    mode: object,
+) -> list[str]:
+    offenders: list[str] = []
+    for entry in inventory.entries.values():
+        path = PurePosixPath(entry.relative_path)
+        if (
+            mode == "hashes-only"
+            and entry.kind == "file"
+            and path.parts
+            and path.parts[0] == "traces"
+        ):
+            offenders.append(_entry_path(inventory, entry.relative_path))
+            continue
+        if entry.kind != "symlink":
+            continue
+        target = PurePosixPath(entry.target or "")
+        combined = posixpath.normpath((path.parent / target).as_posix())
+        combined_path = PurePosixPath(combined)
+        expected = (
+            PurePosixPath("export", "traces", *path.parts[1:])
+            if mode == "hashes-only"
+            and len(path.parts) >= 3
+            and path.parts[0] == "traces"
+            else None
+        )
+        target_entry = inventory.entries.get(combined)
+        if (
+            target.is_absolute()
+            or combined_path.is_absolute()
+            or not combined_path.parts
+            or combined_path.parts[0] == ".."
+            or expected is None
+            or combined_path != expected
+            or target_entry is None
+            or target_entry.kind != "directory"
+        ):
+            offenders.append(_entry_path(inventory, entry.relative_path))
+    return offenders
+
+
 def _verify_file_hashes(
-    snapshot_dir: Path,
+    inventory: TreeInventory,
     manifest: dict[str, object] | None,
+    *,
+    verify_publishable: bool,
 ) -> tuple[bool, list[str]]:
     """Recompute sha256 for every file body referenced by the manifest.
 
@@ -182,7 +233,7 @@ def _verify_file_hashes(
     ``export/traces/`` must be exact copies of those authenticated bodies.
     Missing, extra, unsafe, or changed bodies fail closed.
     """
-    manifest_path = snapshot_dir / "SNAPSHOT.json"
+    manifest_path = inventory.root / "SNAPSHOT.json"
     if manifest is None:
         return False, [str(manifest_path)]
     mode = manifest.get("mode")
@@ -192,22 +243,25 @@ def _verify_file_hashes(
         list,
     ):
         return False, [str(manifest_path)]
-    files_dir = snapshot_dir / "files"
+    files_dir = inventory.root / "files"
     if mode == "hashes-only":
-        if files_dir.exists():
+        if "files" in inventory.entries:
             return False, [str(files_dir)]
+        if not verify_publishable:
+            return True, []
         hashes_only_offenders = _verify_publishable_tree(
-            snapshot_dir / "export" / "traces",
+            inventory,
+            "export/traces",
             {},
         )
         return not hashes_only_offenders, hashes_only_offenders
 
-    try:
-        _, body_files, _ = read_source_files(files_dir)
-    except (FileNotFoundError, SymlinkEscapeError):
+    files_root = inventory.entries.get("files")
+    if files_root is None or files_root.kind != "directory":
         return False, [str(files_dir)]
-    bodies = {source_file.relative_path: source_file.body for source_file in body_files}
+    bodies, body_offenders = _subtree_hashes(inventory, "files")
     offenders: list[str] = []
+    offenders.extend(body_offenders)
     expected_publishable: dict[str, str] = {}
     expected_body_paths: set[str] = set()
     for entry in raw_files:
@@ -228,8 +282,8 @@ def _verify_file_hashes(
             offenders.append(rel)
             continue
         candidate = files_dir / rel
-        body = bodies.get(rel)
-        if body is None:
+        actual = bodies.get(rel)
+        if actual is None:
             offenders.append(str(candidate))
             continue
         if (
@@ -239,7 +293,6 @@ def _verify_file_hashes(
         ):
             offenders.append(str(candidate))
             continue
-        actual = hashlib.sha256(body).hexdigest()
         if actual != expected_redacted:
             offenders.append(str(candidate))
             continue
@@ -257,56 +310,119 @@ def _verify_file_hashes(
 
     for extra_body in sorted(set(bodies) - expected_body_paths):
         offenders.append(str(files_dir / extra_body))
-    offenders.extend(
-        _verify_publishable_tree(
-            snapshot_dir / "export" / "traces",
-            expected_publishable,
+    if verify_publishable:
+        offenders.extend(
+            _verify_publishable_tree(
+                inventory,
+                "export/traces",
+                expected_publishable,
+            )
         )
-    )
-    offenders.extend(
-        _verify_publishable_tree(
-            snapshot_dir / "traces",
-            expected_publishable,
+        offenders.extend(
+            _verify_publishable_tree(
+                inventory,
+                "traces",
+                expected_publishable,
+            )
         )
-    )
 
     return len(offenders) == 0, offenders
 
 
 def _verify_publishable_tree(
-    root: Path,
+    inventory: TreeInventory,
+    root: str,
     expected_hashes: dict[str, str],
 ) -> list[str]:
-    try:
-        _, files, _ = read_source_files(root)
-    except (FileNotFoundError, SymlinkEscapeError):
-        return [str(root)]
-    actual = {
-        source_file.relative_path: hashlib.sha256(source_file.body).hexdigest()
-        for source_file in files
-    }
+    root_entry = inventory.entries.get(root)
+    if root_entry is None or root_entry.kind != "directory":
+        return [_entry_path(inventory, root)]
+    actual, offenders = _subtree_hashes(inventory, root)
+    root_path = inventory.root / root
     offenders = [
-        str(root / relative)
-        for relative in sorted(set(actual) | set(expected_hashes))
-        if actual.get(relative) != expected_hashes.get(relative)
+        *offenders,
+        *(
+            str(root_path / relative)
+            for relative in sorted(set(actual) | set(expected_hashes))
+            if actual.get(relative) != expected_hashes.get(relative)
+        ),
     ]
     return offenders
 
 
-def _verify_layout_inventory(
-    snapshot_dir: Path,
+def _subtree_hashes(
+    inventory: TreeInventory,
+    root: str,
+) -> tuple[dict[str, str], list[str]]:
+    prefix = f"{root}/"
+    hashes: dict[str, str] = {}
+    offenders: list[str] = []
+    for entry in inventory.entries.values():
+        if not entry.relative_path.startswith(prefix):
+            continue
+        relative = entry.relative_path.removeprefix(prefix)
+        if entry.kind == "file" and entry.sha256 is not None:
+            hashes[relative] = entry.sha256
+        elif entry.kind not in ("directory", "file"):
+            offenders.append(_entry_path(inventory, entry.relative_path))
+    return hashes, offenders
+
+
+def _extended_layout_required(
+    inventory: TreeInventory,
     manifest: dict[str, object] | None,
+) -> bool:
+    if manifest is not None and any(
+        key in manifest
+        for key in (
+            "schema_version",
+            "created_at",
+            "dependencies",
+            "layout",
+        )
+    ):
+        return True
+    return any(
+        entry.relative_path.split("/", 1)[0] in {"summary", "traces", "export"}
+        for entry in inventory.entries.values()
+    )
+
+
+def _verify_extended_schema(
+    inventory: TreeInventory,
+    manifest: dict[str, object] | None,
+) -> list[str]:
+    manifest_path = _entry_path(inventory, "SNAPSHOT.json")
+    if (
+        manifest is None
+        or manifest.get("schema_version") != SNAPSHOT_SCHEMA_VERSION
+        or not isinstance(manifest.get("created_at"), str)
+        or not isinstance(manifest.get("dependencies"), dict)
+        or not isinstance(manifest.get("layout"), list)
+    ):
+        return [manifest_path]
+    return []
+
+
+def _verify_layout_inventory(
+    inventory: TreeInventory,
+    manifest: dict[str, object] | None,
+    *,
+    required: bool,
 ) -> tuple[bool, list[str]]:
-    if manifest is None or "schema_version" not in manifest:
+    if not required:
         return True, []
-    raw_layout = manifest.get("layout")
+    schema_offenders = _verify_extended_schema(inventory, manifest)
+    raw_layout = manifest.get("layout") if manifest is not None else None
     if not isinstance(raw_layout, list):
-        return False, [str(snapshot_dir / "SNAPSHOT.json")]
+        return False, schema_offenders or [
+            _entry_path(inventory, "SNAPSHOT.json")
+        ]
 
     expected: dict[str, tuple[str, str | None]] = {}
     for raw_entry in raw_layout:
         if not isinstance(raw_entry, dict):
-            return False, [str(snapshot_dir / "SNAPSHOT.json")]
+            return False, [_entry_path(inventory, "SNAPSHOT.json")]
         path = raw_entry.get("path")
         kind = raw_entry.get("kind")
         evidence = (
@@ -317,7 +433,7 @@ def _verify_layout_inventory(
             else None
         )
         if not isinstance(path, str):
-            return False, [str(snapshot_dir / "SNAPSHOT.json")]
+            return False, [_entry_path(inventory, "SNAPSHOT.json")]
         expected_path = PurePosixPath(path)
         if (
             expected_path.is_absolute()
@@ -327,49 +443,27 @@ def _verify_layout_inventory(
             or (kind in ("file", "symlink") and not isinstance(evidence, str))
             or path in expected
         ):
-            return False, [str(snapshot_dir / "SNAPSHOT.json")]
+            return False, [_entry_path(inventory, "SNAPSHOT.json")]
         expected[path] = (kind, evidence)
 
-    actual: dict[str, tuple[str, str | None]] = {}
-    offenders: list[str] = []
-    try:
-        entries = list(snapshot_dir.rglob("*"))
-    except OSError:
-        return False, [str(snapshot_dir)]
-    for entry in entries:
-        actual_path = entry.relative_to(snapshot_dir).as_posix()
-        if actual_path == "SNAPSHOT.json":
-            continue
-        try:
-            if entry.is_symlink():
-                actual[actual_path] = ("symlink", entry.readlink().as_posix())
-            elif entry.is_dir():
-                actual[actual_path] = ("directory", None)
-            elif entry.is_file():
-                body = read_regular_file(
-                    snapshot_dir,
-                    actual_path,
-                    max_bytes=MAX_SOURCE_CAPTURE_BYTES,
-                )
-                actual[actual_path] = (
-                    "file",
-                    hashlib.sha256(body).hexdigest(),
-                )
-            else:
-                actual[actual_path] = ("special", None)
-        except (OSError, SymlinkEscapeError):
-            offenders.append(str(entry))
-
-    for path in sorted(set(expected) | set(actual)):
-        if expected.get(path) != actual.get(path):
-            offenders.append(str(snapshot_dir / path))
+    actual = {
+        entry.relative_path: (
+            entry.kind,
+            entry.sha256
+            if entry.kind == "file"
+            else entry.target
+            if entry.kind == "symlink"
+            else None,
+        )
+        for entry in inventory.entries.values()
+        if entry.relative_path != "SNAPSHOT.json"
+    }
+    offenders = [
+        *schema_offenders,
+        *(
+            _entry_path(inventory, path)
+            for path in sorted(set(actual) | set(expected))
+            if expected.get(path) != actual.get(path)
+        ),
+    ]
     return not offenders, offenders
-
-
-def _is_within(path: Path, root: Path) -> bool:
-    """Return True when ``path`` is equal to or nested under ``root``."""
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False

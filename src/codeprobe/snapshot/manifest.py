@@ -9,10 +9,9 @@ R14 produces a base manifest with ``mode``, ``source``, ``files``,
   LLM model IDs per backend, issue-tracker API versions, and build-manifest
   parser versions present at mine/run time.
 
-The extended block sits alongside (not inside) the r14 attestation body, so
-the attestation signature computed by r14 is unaffected. R18 layers its own
-file-hash re-verification pass on top of r14's body attestation to catch
-tampering of file bodies.
+The extended block sits alongside the r14 fields on disk. Snapshot creation
+binds these fields into the base attestation payload so schema, timestamp,
+dependency, and layout tampering all fail verification.
 
 No LLM is invoked from this module.
 """
@@ -36,6 +35,7 @@ __all__ = [
     "SNAPSHOT_SCHEMA_VERSION",
     "build_extended_manifest",
     "collect_dependencies",
+    "extended_attestation_fields",
     "manifest_to_json_dict",
     "serialize_extended_manifest",
     "write_extended_manifest",
@@ -209,10 +209,17 @@ def manifest_to_json_dict(ext: ExtendedManifest) -> dict[str, Any]:
     added at the top level, alongside (not inside) the r14 payload.
     """
     body: dict[str, Any] = ext.base.to_dict()
-    body["schema_version"] = ext.schema_version
-    body["created_at"] = ext.created_at
-    body["dependencies"] = asdict(ext.dependencies)
+    body.update(extended_attestation_fields(ext))
     return body
+
+
+def extended_attestation_fields(ext: ExtendedManifest) -> dict[str, object]:
+    """Return extended fields that must be bound by the base attestation."""
+    return {
+        "schema_version": ext.schema_version,
+        "created_at": ext.created_at,
+        "dependencies": asdict(ext.dependencies),
+    }
 
 
 def serialize_extended_manifest(ext: ExtendedManifest) -> bytes:

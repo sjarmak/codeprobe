@@ -39,6 +39,7 @@ from codeprobe.snapshot.manifest import (
     ExtendedManifest,
     build_extended_manifest,
     collect_dependencies,
+    extended_attestation_fields,
     serialize_extended_manifest,
 )
 from codeprobe.snapshot.redact import (
@@ -49,7 +50,6 @@ from codeprobe.snapshot.redact import (
     _prepare_snapshot,
     _PreparedSnapshot,
     _resolve_signing_key,
-    _write_materialized_bodies,
 )
 from codeprobe.snapshot.safe_io import (
     SecureOutputDirectory,
@@ -95,6 +95,21 @@ _LAYOUT_SUBDIRS: tuple[str, ...] = ("summary", "traces", "export", "export/trace
 _SUMMARY_FILES: tuple[str, ...] = ("rewards.json", "aggregate.json", "timing.json", "costs.json")
 
 
+@dataclass(frozen=True)
+class _PlannedLayoutEntry:
+    entry: LayoutEntry
+    body: bytes | None = None
+
+
+@dataclass(frozen=True)
+class _LayoutPlan:
+    entries: tuple[_PlannedLayoutEntry, ...]
+    trial_count: int
+
+    def manifest_entries(self) -> list[LayoutEntry]:
+        return [planned.entry for planned in self.entries]
+
+
 # ---------------------------------------------------------------------------
 # Preflight: symlink containment
 # ---------------------------------------------------------------------------
@@ -133,7 +148,7 @@ def _captured_trial_files(
 
 
 def _add_layout_directory(
-    entries: dict[str, LayoutEntry],
+    entries: dict[str, _PlannedLayoutEntry],
     path: str,
 ) -> None:
     current = PurePosixPath(path)
@@ -141,7 +156,9 @@ def _add_layout_directory(
         relative = current.as_posix()
         entries.setdefault(
             relative,
-            LayoutEntry(path=relative, kind="directory"),
+            _PlannedLayoutEntry(
+                entry=LayoutEntry(path=relative, kind="directory"),
+            ),
         )
         current = current.parent
         if current == PurePosixPath("."):
@@ -149,26 +166,56 @@ def _add_layout_directory(
 
 
 def _add_layout_file(
-    entries: dict[str, LayoutEntry],
+    entries: dict[str, _PlannedLayoutEntry],
     path: str,
     body: bytes,
 ) -> None:
     parent = PurePosixPath(path).parent
     if parent != PurePosixPath("."):
         _add_layout_directory(entries, parent.as_posix())
-    entries[path] = LayoutEntry(
-        path=path,
-        kind="file",
-        sha256=hashlib.sha256(body).hexdigest(),
+    entries[path] = _PlannedLayoutEntry(
+        entry=LayoutEntry(
+            path=path,
+            kind="file",
+            sha256=hashlib.sha256(body).hexdigest(),
+        ),
+        body=body,
     )
 
 
-def _build_layout_inventory(
+def _add_trial_layout(
+    entries: dict[str, _PlannedLayoutEntry],
+    trials: dict[tuple[str, str], list[str]],
+    redacted_files: dict[str, bytes],
+    mode: RedactionMode,
+) -> None:
+    for (config, task_id), files in sorted(trials.items()):
+        export_root = f"export/traces/{config}/{task_id}"
+        _add_layout_directory(entries, export_root)
+        trace_root = f"traces/{config}/{task_id}"
+        if mode == "hashes-only":
+            _add_layout_directory(entries, f"traces/{config}")
+            entries[trace_root] = _PlannedLayoutEntry(
+                entry=LayoutEntry(
+                    path=trace_root,
+                    kind="symlink",
+                    target=f"../../export/traces/{config}/{task_id}",
+                ),
+            )
+            continue
+        _add_layout_directory(entries, trace_root)
+        for relative in files:
+            body = redacted_files[f"{config}/{task_id}/{relative}"]
+            _add_layout_file(entries, f"{export_root}/{relative}", body)
+            _add_layout_file(entries, f"{trace_root}/{relative}", body)
+
+
+def _build_layout_plan(
     prepared: _PreparedSnapshot,
     trials: dict[tuple[str, str], list[str]],
     mode: RedactionMode,
-) -> list[LayoutEntry]:
-    entries: dict[str, LayoutEntry] = {}
+) -> _LayoutPlan:
+    entries: dict[str, _PlannedLayoutEntry] = {}
     for subdirectory in _LAYOUT_SUBDIRS:
         _add_layout_directory(entries, subdirectory)
     if mode != "hashes-only":
@@ -185,73 +232,33 @@ def _build_layout_inventory(
         body = redacted_files.get(f"summary/{name}", empty_summary)
         _add_layout_file(entries, f"summary/{name}", body)
 
-    for (config, task_id), files in sorted(trials.items()):
-        export_root = f"export/traces/{config}/{task_id}"
-        _add_layout_directory(entries, export_root)
-        trace_root = f"traces/{config}/{task_id}"
-        if mode == "hashes-only":
-            _add_layout_directory(entries, f"traces/{config}")
-            entries[trace_root] = LayoutEntry(
-                path=trace_root,
-                kind="symlink",
-                target=f"../../export/traces/{config}/{task_id}",
-            )
-            continue
-        _add_layout_directory(entries, trace_root)
-        for relative in files:
-            source_relative = f"{config}/{task_id}/{relative}"
-            body = redacted_files[source_relative]
-            _add_layout_file(entries, f"{export_root}/{relative}", body)
-            _add_layout_file(entries, f"{trace_root}/{relative}", body)
-    return [entries[path] for path in sorted(entries)]
+    _add_trial_layout(entries, trials, redacted_files, mode)
+    return _LayoutPlan(
+        entries=tuple(entries[path] for path in sorted(entries)),
+        trial_count=len(trials),
+    )
 
 
-def _materialize_captured_layout(
+def _materialize_layout_plan(
     output: SecureOutputDirectory,
-    prepared: _PreparedSnapshot,
+    plan: _LayoutPlan,
     extended_manifest: ExtendedManifest,
-    mode: RedactionMode,
-    trials: dict[tuple[str, str], list[str]],
-) -> int:
-    for subdirectory in _LAYOUT_SUBDIRS:
-        output.ensure_directory(subdirectory)
-    if mode != "hashes-only":
-        output.ensure_directory("files")
-
-    _write_materialized_bodies(prepared, output)
+) -> None:
     output.write_bytes(
         "SNAPSHOT.json",
         serialize_extended_manifest(extended_manifest),
     )
-
-    redacted_files = {
-        relative_path.removeprefix("files/"): body
-        for relative_path, body in prepared.materialized_bodies
-    }
-    empty_summary = json.dumps({"entries": []}, indent=2).encode()
-    for name in _SUMMARY_FILES:
-        body = redacted_files.get(f"summary/{name}", empty_summary)
-        output.write_bytes(f"summary/{name}", body)
-
-    for (config, task_id), files in sorted(trials.items()):
-        export_root = f"export/traces/{config}/{task_id}"
-        output.ensure_directory(export_root)
-        trace_root = f"traces/{config}/{task_id}"
-        if mode == "hashes-only":
-            output.symlink(
-                trace_root,
-                f"../../export/traces/{config}/{task_id}",
-            )
+    for planned in plan.entries:
+        entry = planned.entry
+        if entry.kind == "directory":
+            output.ensure_directory(entry.path)
+        elif entry.kind == "file":
+            assert planned.body is not None
+            output.write_bytes(entry.path, planned.body)
         else:
-            output.ensure_directory(trace_root)
-            for relative in files:
-                source_relative = f"{config}/{task_id}/{relative}"
-                body = redacted_files[source_relative]
-                output.write_bytes(f"{export_root}/{relative}", body)
-                output.write_bytes(f"{trace_root}/{relative}", body)
-
+            assert entry.target is not None
+            output.symlink(entry.path, entry.target)
     output.ensure_path_unchanged()
-    return len(trials)
 
 
 def _require_fairness_pass(
@@ -331,7 +338,6 @@ def create_snapshot(
         mode=mode,
         out_dir=out_dir,
         scanner=scanner,
-        signing_key=signing_key,
         canary_proof=canary_proof,
         allow_source_in_export=allow_source_in_export,
     )
@@ -339,48 +345,39 @@ def create_snapshot(
         _require_fairness_pass(prepared, fairness_repo_root)
 
     trials = _captured_trial_files(prepared)
-    layout = _build_layout_inventory(prepared, trials, mode)
-    previous_attestation = prepared.manifest.attestation
+    plan = _build_layout_plan(prepared, trials, mode)
     manifest = replace(
         prepared.manifest,
         attestation=None,
-        layout=layout,
+        layout=plan.manifest_entries(),
     )
+
+    # Build every security-relevant extended field before the sole attestation.
+    deps = collect_dependencies()
+    extended = build_extended_manifest(manifest, dependencies=deps)
     manifest = replace(
         manifest,
         attestation=_attest(
             manifest=manifest,
             signing_key=_resolve_signing_key(signing_key),
-            scanner_name=(
-                previous_attestation.scanner_name
-                if previous_attestation is not None
-                else None
-            ),
-            canary=(
-                previous_attestation.canary
-                if previous_attestation is not None
-                else None
-            ),
+            scanner_name=prepared.scanner_name,
+            canary=prepared.canary,
+            extended_fields=extended_attestation_fields(extended),
         ),
     )
-    prepared = replace(prepared, manifest=manifest)
-
-    # Extend with R18 schema and dependency metadata after authenticating the
-    # complete emitted layout as part of the base attestation body.
-    deps = collect_dependencies()
-    extended = build_extended_manifest(prepared.manifest, dependencies=deps)
+    extended = replace(extended, base=manifest)
     prepared = replace(
         prepared,
+        manifest=manifest,
+        materialized_bodies=(),
         source_files=(),
         source_directories=(),
     )
     with staged_output_directory(out_dir) as output:
-        trial_count = _materialize_captured_layout(
+        _materialize_layout_plan(
             output,
-            prepared,
+            plan,
             extended,
-            mode,
-            trials,
         )
 
     # Status payload returned to the CLI (and suitable for direct tests).
@@ -391,8 +388,8 @@ def create_snapshot(
         "files": len(prepared.manifest.files),
         "schema_version": extended.schema_version,
         "created_at": extended.created_at,
-        "traces": trial_count,
-        "export_traces": trial_count,
+        "traces": plan.trial_count,
+        "export_traces": plan.trial_count,
         "attestation_kind": (
             prepared.manifest.attestation.kind
             if prepared.manifest.attestation

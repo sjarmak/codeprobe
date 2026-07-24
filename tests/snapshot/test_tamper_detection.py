@@ -11,6 +11,7 @@ Both must cause ``verify_snapshot_extended`` to return ``ok=False``.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,10 @@ import pytest
 from codeprobe.snapshot import (
     CANARY_DEFAULT,
     MockScanner,
+    RedactionMode,
     create_snapshot,
+    redact,
+    safe_io,
     verify_snapshot_extended,
 )
 
@@ -172,6 +176,31 @@ def test_verify_rejects_manifest_body_path_escape(tmp_path: Path) -> None:
     assert "../../victim.txt" in result.offending_paths
 
 
+@pytest.mark.parametrize("mode", ["hashes-only", "contents"])
+def test_extended_verifier_accepts_base_redaction_snapshot(
+    tmp_path: Path,
+    mode: RedactionMode,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "result.json").write_text('{"reward": 1.0}\n')
+    snapshot = tmp_path / "snapshot"
+    if mode == "contents":
+        redact(
+            source,
+            mode,
+            snapshot,
+            scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+            allow_source_in_export=True,
+        )
+    else:
+        redact(source, mode, snapshot)
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is True, result.reason
+
+
 def test_verify_does_not_follow_manifest_symlink(tmp_path: Path) -> None:
     source = _make_experiment(tmp_path)
     external = tmp_path / "external"
@@ -292,6 +321,58 @@ def test_verify_rejects_tampered_summary_file(tmp_path: Path) -> None:
     assert str(summary) in result.offending_paths
 
 
+def test_verify_rejects_extended_schema_downgrade_with_tampered_layout(
+    tmp_path: Path,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    key = "extended-downgrade-test-key"
+    create_snapshot(experiment, snapshot, signing_key=key)
+    manifest_path = snapshot / "SNAPSHOT.json"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["schema_version"]
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2))
+    summary = snapshot / "summary" / "rewards.json"
+    summary.write_text('{"entries": ["tampered"]}\n')
+    extra = snapshot / "unexpected.txt"
+    extra.write_text("not declared\n")
+
+    result = verify_snapshot_extended(snapshot, signing_key=key)
+
+    assert result.ok is False
+    assert result.base.body_sha256_matches is False
+    assert str(summary) in result.offending_paths
+    assert str(extra) in result.offending_paths
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("schema_version", "999"),
+        ("created_at", "2099-01-01T00:00:00+00:00"),
+        ("dependencies", {"mcp_tools": [{"name": "tampered"}]}),
+    ],
+)
+def test_verify_rejects_tampered_extended_attestation_fields(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    key = "extended-fields-test-key"
+    create_snapshot(experiment, snapshot, signing_key=key)
+    manifest_path = snapshot / "SNAPSHOT.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest[field] = replacement
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2))
+
+    result = verify_snapshot_extended(snapshot, signing_key=key)
+
+    assert result.ok is False
+    assert result.base.body_sha256_matches is False
+
+
 def test_verify_rejects_unexpected_top_level_file(tmp_path: Path) -> None:
     experiment = _make_experiment(tmp_path)
     snapshot = tmp_path / "snapshot"
@@ -361,3 +442,55 @@ def test_verify_invalid_manifest_schema_returns_structured_failure(
     assert result.ok is False
     assert result.base.ok is False
     assert "schema" in result.reason
+
+
+def test_extended_verifier_uses_one_descriptor_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    experiment = _make_experiment(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    create_snapshot(
+        experiment,
+        snapshot,
+        mode="contents",
+        scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+        allow_source_in_export=True,
+    )
+    verify_module = importlib.import_module("codeprobe.snapshot.verify")
+
+    def repeated_scan_forbidden(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("extended verification must reuse one inventory")
+
+    monkeypatch.setattr(
+        verify_module,
+        "read_source_files",
+        repeated_scan_forbidden,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        verify_module,
+        "read_regular_file",
+        repeated_scan_forbidden,
+        raising=False,
+    )
+    monkeypatch.setattr(Path, "rglob", repeated_scan_forbidden)
+
+    result = verify_snapshot_extended(snapshot)
+
+    assert result.ok is True, result.reason
+
+
+def test_descriptor_inventory_bounds_captured_manifest_bytes(
+    tmp_path: Path,
+) -> None:
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "SNAPSHOT.json").write_bytes(b"12345")
+
+    with pytest.raises(safe_io.SymlinkEscapeError, match="size limit"):
+        safe_io.inventory_tree(
+            snapshot,
+            capture_paths=frozenset({"SNAPSHOT.json"}),
+            max_capture_bytes=4,
+        )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -358,6 +359,53 @@ def test_gitleaks_maps_findings_after_first_line(
     assert data[findings[0].start : findings[0].end] == external_secret
 
 
+def test_gitleaks_ignores_source_suppression_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invoked: list[list[str]] = []
+
+    def successful_scan(
+        args: Sequence[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        command = list(args)
+        invoked.append(command)
+        report = Path(command[command.index("-r") + 1])
+        report.write_text("[]")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: "/test/gitleaks",
+    )
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.subprocess.run",
+        successful_scan,
+    )
+
+    GitleaksScanner().scan(b"safe")
+
+    assert invoked
+    assert "--ignore-gitleaks-allow" in invoked[0]
+
+
+@pytest.mark.skipif(shutil.which("gitleaks") is None, reason="gitleaks not installed")
+def test_real_gitleaks_rejects_source_suppression_annotation() -> None:
+    scanners_module = importlib.import_module("codeprobe.snapshot.scanners")
+    token = b"AIzaSyA1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6"
+    source = b'const credential = "' + token + b'" // gitleaks:allow\n'
+    assert scanners_module.PatternScanner().scan(source) == []
+
+    with scanners_module.pinned_scanner(
+        scanners_module.GitleaksScanner()
+    ) as scanner:
+        assert scanner is not None
+        assert scanner.scan(source)
+        redacted = scanner.redact(source)
+        assert token not in redacted
+        assert scanner.scan(redacted) == []
+
+
 def test_trufflehog_malformed_output_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -524,6 +572,31 @@ def test_gitleaks_report_size_limit_fails_before_parsing(
     with pytest.raises(ScannerError, match="size limit"):
         GitleaksScanner(
             limits=ExternalScannerLimits(max_output_bytes=16)
+        ).scan(b"opaque=value\n")
+
+
+def test_gitleaks_report_line_limit_fails_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def long_report(
+        args: Sequence[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        Path(args[args.index("-r") + 1]).write_bytes(b"[]")
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: "/test/gitleaks",
+    )
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.subprocess.run",
+        long_report,
+    )
+
+    with pytest.raises(ScannerError, match="line size limit"):
+        GitleaksScanner(
+            limits=ExternalScannerLimits(max_line_bytes=1)
         ).scan(b"opaque=value\n")
 
 
@@ -909,3 +982,56 @@ def test_external_scan_uses_proven_binary_and_config_after_validation_swap(
     assert all(body == original_executable for _path, body in invoked_executables)
     assert all(path != config for path, _body in invoked_configs)
     assert all(body == original_config for _path, body in invoked_configs)
+
+
+def test_external_runtime_artifacts_are_read_in_bounded_chunks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "gitleaks"
+    executable.write_bytes(b"scanner executable")
+    config = tmp_path / "gitleaks.toml"
+    config.write_text("[allowlist]\n")
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: str(executable),
+    )
+    monkeypatch.setenv("GITLEAKS_CONFIG", str(config))
+    scanners_module = importlib.import_module("codeprobe.snapshot.scanners")
+    original_read = scanners_module.os.read
+    read_sizes: list[int] = []
+
+    def bounded_read(fd: int, size: int) -> bytes:
+        assert 0 < size <= scanners_module._SCANNER_ARTIFACT_CHUNK_BYTES
+        read_sizes.append(size)
+        return original_read(fd, size)
+
+    monkeypatch.setattr(scanners_module.os, "read", bounded_read)
+
+    with scanners_module.pinned_scanner(scanners_module.GitleaksScanner()) as pinned:
+        assert isinstance(pinned, scanners_module.GitleaksScanner)
+        assert Path(pinned._require()).read_bytes() == b"scanner executable"
+        environment = pinned._pinned_runtime
+        assert environment is not None
+        assert Path(environment.environment["GITLEAKS_CONFIG"]).read_text() == (
+            "[allowlist]\n"
+        )
+    assert read_sizes
+
+
+def test_external_runtime_fifo_executable_fails_without_blocking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "gitleaks"
+    os.mkfifo(executable)
+    executable.chmod(0o700)
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.shutil.which",
+        lambda _binary: str(executable),
+    )
+    scanners_module = importlib.import_module("codeprobe.snapshot.scanners")
+
+    with pytest.raises(scanners_module.ScannerError, match="not a regular file"):
+        with scanners_module.pinned_scanner(scanners_module.GitleaksScanner()):
+            pytest.fail("FIFO scanner executable must not be yielded")
