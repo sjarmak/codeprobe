@@ -58,14 +58,14 @@ def test_error_includes_exception_type(tmp_path: Path, exc: Exception) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: logger.exception called at ERROR level
+# Tests: exception diagnostics logged at ERROR level
 # ---------------------------------------------------------------------------
 
 
 def test_logs_exception_at_error_level(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """logger.exception must fire at ERROR level with scorer name and task_dir."""
+    """The log retains scorer, exception type, and task without a traceback."""
     exc = ValueError("kaboom")
     scorer = _RaisingScorer(exc)
 
@@ -76,9 +76,43 @@ def test_logs_exception_at_error_level(
     record = caplog.records[0]
     assert record.levelno == logging.ERROR
     assert "_RaisingScorer" in record.message
+    assert "ValueError" in record.message
     assert str(tmp_path) in record.message
-    # logger.exception attaches exc_info
-    assert record.exc_info is not None
+    assert record.exc_info is None
+
+
+def test_secret_in_exception_is_redacted_from_result_and_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A scorer exception is an untrusted boundary, including its traceback."""
+    secret = "sk-" + "c" * 32
+    scorer = _RaisingScorer(RuntimeError(f"plugin failed with {secret}"))
+
+    with caplog.at_level(logging.ERROR, logger="codeprobe.core.scoring"):
+        result = _safe_leg_score(scorer, "", tmp_path)
+
+    assert result.error is not None
+    assert secret not in result.error
+    assert "[REDACTED]" in result.error
+    assert secret not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+def test_secret_in_task_path_is_redacted_from_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The task path is also untrusted diagnostic input."""
+    secret = "sk-" + "d" * 32
+    secret_task_dir = tmp_path / secret
+    scorer = _RaisingScorer(RuntimeError("plugin failed"))
+
+    with caplog.at_level(logging.ERROR, logger="codeprobe.core.scoring"):
+        _safe_leg_score(scorer, "", secret_task_dir)
+
+    assert secret not in caplog.text
+    assert "[REDACTED]" in caplog.text
 
 
 # ---------------------------------------------------------------------------

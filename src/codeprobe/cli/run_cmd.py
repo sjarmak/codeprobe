@@ -403,54 +403,63 @@ def _filter_tasks_by_suite(
 
 
 def _check_ground_truth_present(task_dirs: list[Path], path: str) -> None:
-    """Reject artifact_eval/dual tasks whose ground_truth.json oracle is missing.
+    """Reject artifact_eval/dual tasks whose ground_truth.json is unusable.
 
-    Loads each task's task.toml (or metadata.json) to read
-    ``verification.verification_mode``. Tasks in "artifact_eval" or "dual"
-    mode are scored by ``ArtifactScorer``, which looks up
-    ``tests/ground_truth.json`` and falls back to the legacy task-root
-    ``ground_truth.json`` (mirrors the lookup in
-    ``core/scoring/scorers.py:ArtifactScorer.score``). A stale or interrupted
-    ``codeprobe mine`` run can leave a task in one of those modes with
-    neither file present; without this check it scores ``verifier_error`` on
-    every trial instead of failing loudly here.
+    Tasks whose ``verification.verification_mode`` is "artifact_eval" or
+    "dual" are scored by ``ArtifactScorer``. A stale or interrupted
+    ``codeprobe mine`` run can leave one of those with the oracle missing,
+    or present but unscoreable; either way every trial scores
+    ``verifier_error`` instead of a real result, so reject the run here
+    rather than after burning the trial budget. Location and content are
+    judged by the same descriptor-relative ``load_ground_truth`` path the
+    scorer uses, so the gate and the scorer cannot drift.
     """
-    from codeprobe.loaders import load_task
+    from codeprobe.core.scoring.sandbox import sanitize_secrets
+    from codeprobe.core.scoring.scorers import load_ground_truth
+    from codeprobe.qa.verify import load_task_meta
 
     missing: list[str] = []
+    invalid: list[dict[str, str]] = []
     for td in task_dirs:
-        toml_path = td / "task.toml"
-        json_path = td / "metadata.json"
-        meta_path = toml_path if toml_path.exists() else (json_path if json_path.exists() else None)
-        if meta_path is None:
-            continue  # no metadata to check
-
-        try:
-            task = load_task(meta_path)
-        except (ValueError, KeyError):
-            logger.warning(
-                "Skipping ground-truth preflight for %s: failed to load metadata", td.name
-            )
+        # Read verification_mode from a raw parse rather than load_task(),
+        # whose valid reward_type set is environment-dependent (it includes
+        # entry-point scorers). Metadata validity is not this check's job.
+        meta = load_task_meta(td)
+        if not meta:
+            continue  # no readable metadata — not this check's concern
+        if meta.get("verification_mode") not in ("artifact_eval", "dual"):
             continue
 
-        if task.verification.verification_mode not in ("artifact_eval", "dual"):
-            continue
-
-        gt_path = td / "tests" / "ground_truth.json"
-        if not gt_path.exists():
-            gt_path = td / "ground_truth.json"
-        if not gt_path.exists():
+        _, problem = load_ground_truth(td)
+        if problem == "not found":
             missing.append(td.name)
+            continue
 
-    if not missing:
+        if problem is not None:
+            # The reason can quote untrusted oracle content verbatim (an
+            # answer_type string, an OS error carrying a path) and lands in
+            # the JSON error envelope, so it gets the same redaction the
+            # scorers apply to untrusted subprocess output.
+            invalid.append({"task": td.name, "reason": sanitize_secrets(problem)})
+
+    if not (invalid or missing):
         return
 
+    # Both lists are reported in one error: a suite with one absent and one
+    # malformed oracle would otherwise surface only the first kind, and the
+    # user would fix it, rerun, and only then learn about the rest.
+    counts = []
+    if invalid:
+        detail = ", ".join(f"{i['task']} ({i['reason']})" for i in invalid)
+        counts.append(f"{len(invalid)} unusable ({detail})")
+    if missing:
+        counts.append(f"{len(missing)} missing ({', '.join(missing)})")
     raise DiagnosticError(
-        code="MISSING_GROUND_TRUTH",
+        code="INVALID_GROUND_TRUTH" if invalid else "MISSING_GROUND_TRUTH",
         message=(
-            f"{len(missing)} artifact_eval/dual task(s) missing "
-            f"tests/ground_truth.json: {', '.join(missing)}. These would "
-            "score verifier_error instead of a real result."
+            f"artifact_eval/dual task(s) without a usable "
+            f"tests/ground_truth.json: {'; '.join(counts)}. Every affected "
+            "trial would score verifier_error instead of a real result."
         ),
         diagnose_cmd=f"codeprobe validate {path} --json",
         terminal=True,
@@ -460,7 +469,11 @@ def _check_ground_truth_present(task_dirs: list[Path], path: str) -> None:
                 f"codeprobe mine {path} --dual-verify",
             ),
         ],
-        detail={"path": path, "missing_ground_truth_tasks": missing},
+        detail={
+            "path": path,
+            **({"invalid_ground_truth_tasks": invalid} if invalid else {}),
+            **({"missing_ground_truth_tasks": missing} if missing else {}),
+        },
     )
 
 

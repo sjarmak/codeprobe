@@ -49,10 +49,10 @@ def _resolve(
 
 def _available(builtins: dict[str, str], ep_group: str) -> list[str]:
     """Generic available: merge builtins with entry_points."""
-    names = set(builtins.keys())
-    eps = importlib.metadata.entry_points(group=ep_group)
-    names.update(ep.name for ep in eps)
-    return sorted(names)
+    entry_point_names = {
+        ep.name for ep in importlib.metadata.entry_points(group=ep_group)
+    }
+    return sorted(set(builtins) | entry_point_names)
 
 
 # -- Agent adapter registry ---------------------------------------------------
@@ -141,23 +141,29 @@ def _resolve_oracle(
     """
     if name in builtins:
         try:
-            return _import_class(builtins[name])
-        except ImportError as exc:
+            scorer = _import_class(builtins[name])
+        except Exception as exc:  # noqa: BLE001 — plugin import boundary
             raise KeyError(
-                f"{kind} {name!r} could not be loaded — a required dependency "
-                f"is missing: {exc}. Check that the tool is installed."
+                f"{kind} {name!r} could not be loaded: {exc}. "
+                "Check that the tool and its dependencies are installed."
             ) from exc
+        if not callable(scorer):
+            raise KeyError(f"{kind} {name!r} resolved to a non-callable object")
+        return scorer
 
     eps = importlib.metadata.entry_points(group=ep_group)
     for ep in eps:
         if ep.name == name:
             try:
-                return ep.load()
-            except ImportError as exc:
+                scorer = ep.load()
+            except Exception as exc:  # noqa: BLE001 — plugin import boundary
                 raise KeyError(
-                    f"{kind} {name!r} could not be loaded — a required dependency "
-                    f"is missing: {exc}. Check that the tool is installed."
+                    f"{kind} {name!r} could not be loaded: {exc}. "
+                    "Check that the tool and its dependencies are installed."
                 ) from exc
+            if not callable(scorer):
+                raise KeyError(f"{kind} {name!r} resolved to a non-callable object")
+            return scorer
 
     all_names = _available(builtins, ep_group)
     raise KeyError(f"Unknown {kind}: {name!r}. Available: {', '.join(all_names)}")

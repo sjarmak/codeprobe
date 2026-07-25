@@ -464,6 +464,14 @@
       "since": "0.13.0",
       "description": "The --out path passed to `mine`, `run`, or `interpret` has a parent directory that does not exist or is not writable.",
       "remediation_pattern": "Pass a --out path whose parent directory already exists and is writable (mkdir -p it first if needed)."
+    },
+    {
+      "code": "INVALID_GROUND_TRUTH",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "An artifact_eval/dual-scored task has a ground_truth.json that exists but cannot be used as an oracle — a directory, oversized, invalid JSON, a non-object, or a schema no scorer can dispatch (e.g. an unknown answer_type or an empty expected set). Every trial would score verifier_error, so the run is rejected before any adapter is spawned rather than after burning the trial budget.",
+      "remediation_pattern": "Inspect the reported tasks with `codeprobe validate <path> --json`, then re-mine to regenerate the oracle: `codeprobe mine <path> --dual-verify`."
     }
   ]
 }

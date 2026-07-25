@@ -277,10 +277,19 @@ class TestV2CheckValidation:
         assert result.score == 0.0
         assert result.error is not None
 
-    def test_unknown_answer_type_scores_zero_others_still_score(
+    def test_unknown_answer_type_is_a_verifier_error_not_partial_credit(
         self, tmp_path: Path
     ) -> None:
-        """Unknown type gets 0.0, but known checks still score normally."""
+        """An unscoreable check invalidates the whole oracle.
+
+        This deliberately replaces the old partial-credit expectation
+        (codeprobe-sh8c). The agent below answers BOTH checks exactly
+        correctly, yet the old behavior scored it 0.6 and called that a pass
+        — it silently forfeited the 0.4 weight because the harness could not
+        dispatch 'unknown_type'. Partial credit over a check that can never
+        score makes the composite denominator a lie, so the oracle is now
+        rejected as a verifier fault instead of being charged to the agent.
+        """
         gt = {
             "checks": [
                 {"answer_type": "unknown_type", "answer": "x", "weight": 0.4},
@@ -295,9 +304,9 @@ class TestV2CheckValidation:
         }
         task_dir = _make_artifact_task(tmp_path, gt, answer, name="unknown-type")
         result = ArtifactScorer().score("", task_dir)
-        # unknown = 0.0, count = 1.0 → composite = 0.4*0 + 0.6*1 = 0.6
-        assert result.score == pytest.approx(0.6)
-        assert result.passed is True  # 0.6 >= 0.5
+        assert result.verdict == "verifier_error"
+        assert result.score == 0.0
+        assert result.passed is False
 
 
 # ---------------------------------------------------------------------------

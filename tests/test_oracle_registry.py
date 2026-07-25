@@ -128,6 +128,33 @@ class TestOracleRegistryExtensibility:
             scorer = resolve_oracle_scorer("custom_type")
             assert callable(scorer)
 
+    def test_entry_point_load_failure_is_normalized(self):
+        """Arbitrary plugin import failures become a resolver diagnostic."""
+        from unittest.mock import MagicMock
+
+        mock_ep = MagicMock()
+        mock_ep.name = "broken_type"
+        mock_ep.load.side_effect = RuntimeError("plugin import exploded")
+
+        with patch("importlib.metadata.entry_points", return_value=[mock_ep]):
+            from codeprobe.core.registry import resolve_oracle_scorer
+
+            with pytest.raises(KeyError, match="could not be loaded"):
+                resolve_oracle_scorer("broken_type")
+
+    def test_entry_point_must_resolve_to_a_callable(self):
+        from unittest.mock import MagicMock
+
+        mock_ep = MagicMock()
+        mock_ep.name = "data_only_type"
+        mock_ep.load.return_value = {"not": "callable"}
+
+        with patch("importlib.metadata.entry_points", return_value=[mock_ep]):
+            from codeprobe.core.registry import resolve_oracle_scorer
+
+            with pytest.raises(KeyError, match="non-callable"):
+                resolve_oracle_scorer("data_only_type")
+
 
 class TestArtifactScorerNewFormatRegression:
     """Regression: _score_new_format produces identical results via registry."""
@@ -192,7 +219,11 @@ class TestArtifactScorerNewFormatRegression:
         )
         result = scorer.score("", task_dir)
         assert result.passed is False
-        assert "Unknown answer_type" in result.error
+        # An answer_type with no registered scorer is oracle breakage, so it
+        # is now reported as a verifier_error rather than an agent 0.0
+        # (codeprobe-sh8c).
+        assert result.verdict == "verifier_error"
+        assert "unknown answer_type" in result.error
 
     def test_missing_expected(self, scorer, task_dir):
         self._write_files(
@@ -202,7 +233,12 @@ class TestArtifactScorerNewFormatRegression:
         )
         result = scorer.score("", task_dir)
         assert result.passed is False
-        assert "missing 'answer' field" in result.error
+        # The ORACLE declares answer_type with no answer — unscoreable, and
+        # caught by schema validation before the agent is graded. Contrast
+        # test_missing_actual below, where the AGENT's answer.json is short a
+        # field: that stays an agent fault (codeprobe-sh8c).
+        assert result.verdict == "verifier_error"
+        assert "missing 'answer'" in result.error
 
     def test_missing_actual(self, scorer, task_dir):
         self._write_files(

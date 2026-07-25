@@ -133,8 +133,16 @@ class TestDualScorerWeightValidation:
             "#!/bin/bash\nexit 0\n", encoding="utf-8"
         )
         (task_dir / "tests" / "test.sh").chmod(0o755)
+        # A VALID oracle: these tests are about weight handling, so the
+        # artifact leg must score 0.0 for a real reason (no answer.json is
+        # written, i.e. the agent produced nothing) rather than because the
+        # oracle is broken. An empty answer list is now rejected as a
+        # verifier_error (codeprobe-sh8c), which would mask the weight
+        # behavior these tests exist to pin.
         (task_dir / "tests" / "ground_truth.json").write_text(
-            json.dumps({"schema_version": 1, "answer_type": "file_list", "answer": []}),
+            json.dumps(
+                {"schema_version": 1, "answer_type": "file_list", "answer": ["a.py"]}
+            ),
             encoding="utf-8",
         )
         metadata = {
@@ -187,8 +195,8 @@ class TestDualScorerWeightValidation:
             tmp_path, {"weight_direct": 0.3, "weight_artifact": 0.7}
         )
         result = DualScorer().score("", task_dir)
-        # test.sh exits 0 → direct=1.0, artifact=0.0 (empty oracle → F1=0)
-        # weighted = 0.3*1.0 + 0.7*0.0 = 0.3
+        # test.sh exits 0 → direct=1.0; artifact=0.0 because the agent wrote
+        # no answer.json. weighted = 0.3*1.0 + 0.7*0.0 = 0.3
         assert 0.25 <= result.score <= 0.35
         assert "error_weights" not in result.details
 

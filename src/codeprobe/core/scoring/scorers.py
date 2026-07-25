@@ -8,10 +8,13 @@ mechanical move — see the package ``__init__`` for the public surface).
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
+import os
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -958,9 +961,115 @@ _ORACLE_TYPE_SCORERS: dict[str, Callable[..., ScoreResult]] = {
 # by ArtifactScorer to pass the per-task IR family through; everything else
 # uses the (expected, actual) signature unchanged.
 _IR_LIST_ANSWER_TYPES: frozenset[str] = frozenset({"file_list", "symbol_list"})
+_STRING_LIST_ANSWER_TYPES: frozenset[str] = frozenset(
+    {"file_list", "symbol_list", "dependency_chain"}
+)
 
 
 _WEIGHT_TOLERANCE = 1e-6
+
+
+def _answer_type_problem(answer_type: object) -> str | None:
+    """Return why *answer_type* cannot be dispatched, or None if it can.
+
+    Resolved against the registry rather than a literal allowlist so
+    entry-point plugin answer types aren't rejected as harness failures.
+    Phrased as a verb clause so both callers can prefix it with the location
+    (``check[0] ...`` / ``v1 ground_truth ...``).
+    """
+    if not isinstance(answer_type, str):
+        return f"declares a non-string answer_type ({type(answer_type).__name__})"
+    from codeprobe.core.registry import resolve_oracle_scorer
+
+    try:
+        resolve_oracle_scorer(answer_type)
+    except KeyError as exc:
+        return (
+            f"has unknown answer_type or unloadable scorer {answer_type!r}: "
+            f"{exc}"
+        )
+    return None
+
+
+def _builtin_answer_problem(answer_type: object, answer: object) -> str | None:
+    """Return why a built-in scorer cannot consume *answer*, if applicable."""
+    if answer_type not in _ORACLE_TYPE_SCORERS:
+        return None
+    if answer_type in _STRING_LIST_ANSWER_TYPES:
+        return _string_list_problem(f"answer_type {answer_type!r}", answer)
+    if answer_type == "count":
+        if isinstance(answer, bool) or not isinstance(answer, (int, str)):
+            return (
+                "answer_type 'count' requires an integer or integer string, "
+                f"got {type(answer).__name__}"
+            )
+        try:
+            int(answer)
+        except (TypeError, ValueError):
+            return (
+                "answer_type 'count' requires an integer or integer string, "
+                f"got {type(answer).__name__}"
+            )
+        return None
+    if answer_type in ("boolean", "text") and not isinstance(
+        answer, (str, bool, int, float)
+    ):
+        return (
+            f"answer_type {answer_type!r} requires a scalar value, "
+            f"got {type(answer).__name__}"
+        )
+    return None
+
+
+def _string_list_problem(label: str, answer: object) -> str | None:
+    """Return why *answer* is not a non-empty list of meaningful strings."""
+    if not isinstance(answer, list) or not answer:
+        return (
+            f"{label} requires a non-empty list of strings, "
+            f"got {type(answer).__name__}"
+        )
+    for index, item in enumerate(answer):
+        if not isinstance(item, str) or not item.strip():
+            return (
+                f"{label} requires non-empty string elements; "
+                f"item[{index}] is {type(item).__name__}"
+            )
+    return None
+
+
+def _invoke_oracle_plugin(
+    scorer_fn: Callable[..., object],
+    expected: object,
+    actual: object,
+    *,
+    scorer_family: str,
+) -> ScoreResult:
+    """Invoke an untrusted oracle plugin and validate its structural contract."""
+    safe_family = sanitize_secrets(scorer_family)
+    try:
+        result = scorer_fn(expected, actual)
+    except Exception as exc:  # noqa: BLE001 — plugin execution boundary
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            error=sanitize_secrets(
+                f"oracle scorer raised {type(exc).__name__}: {exc}"
+            ),
+            scorer_family=safe_family,
+            verdict="verifier_error",
+        )
+    if not isinstance(result, ScoreResult):
+        return ScoreResult(
+            score=0.0,
+            passed=False,
+            error=sanitize_secrets(
+                "oracle scorer returned "
+                f"{type(result).__name__}; expected ScoreResult"
+            ),
+            scorer_family=safe_family,
+            verdict="verifier_error",
+        )
+    return result
 
 
 def validate_ground_truth(gt: dict) -> str | None:
@@ -971,29 +1080,66 @@ def validate_ground_truth(gt: dict) -> str | None:
     - V1: ``answer_type`` + ``answer`` single-answer scoring
     - Legacy: ``expected`` as a list
     """
+    if "confidence" in gt:
+        confidence = gt["confidence"]
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            return (
+                "ground_truth confidence must be numeric, "
+                f"got {type(confidence).__name__}"
+            )
+        try:
+            finite_confidence = math.isfinite(confidence)
+        except OverflowError:
+            finite_confidence = False
+        if not finite_confidence:
+            return "ground_truth confidence must be finite"
+        if confidence < 0.0 or confidence > 1.0:
+            return (
+                "ground_truth confidence must be in [0, 1], "
+                f"got {confidence}"
+            )
+
     if "checks" in gt:
         checks = gt["checks"]
         if not isinstance(checks, list) or len(checks) == 0:
             return "v2 ground_truth 'checks' must be a non-empty list"
+        normalized_weights: list[float] = []
         for i, check in enumerate(checks):
             if not isinstance(check, dict):
                 return f"check[{i}] must be a dict"
             if "answer_type" not in check:
                 return f"check[{i}] missing 'answer_type'"
+            # Same registry gate as the v1 branch below: an unscoreable
+            # answer_type would otherwise fold a silent 0.0 into the weighted
+            # composite, charging the agent for that check's weight.
+            type_problem = _answer_type_problem(check["answer_type"])
+            if type_problem is not None:
+                return f"check[{i}] {type_problem}"
             if "answer" not in check:
                 return f"check[{i}] missing 'answer'"
+            answer_problem = _builtin_answer_problem(
+                check["answer_type"], check["answer"]
+            )
+            if answer_problem is not None:
+                return f"check[{i}] {answer_problem}"
             if "weight" not in check:
                 return f"check[{i}] missing 'weight'"
             weight = check["weight"]
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+                return (
+                    f"check[{i}] weight must be numeric, "
+                    f"got {type(weight).__name__}"
+                )
             try:
                 w = float(weight)
-            except (TypeError, ValueError):
-                return f"check[{i}] weight is not numeric: {weight!r}"
+            except (OverflowError, TypeError, ValueError):
+                return f"check[{i}] weight cannot be represented as a number"
             if not math.isfinite(w):
                 return f"check[{i}] weight must be finite, got: {w}"
             if w < 0.0 or w > 1.0:
                 return f"check[{i}] weight out of range [0, 1]: {w}"
-        total = sum(float(c["weight"]) for c in checks)
+            normalized_weights.append(w)
+        total = sum(normalized_weights)
         if abs(total - 1.0) > _WEIGHT_TOLERANCE:
             return f"check weights must sum to 1.0, got {total:.6f}"
         return None
@@ -1003,38 +1149,147 @@ def validate_ground_truth(gt: dict) -> str | None:
             return "v1 ground_truth has 'answer_type' but missing 'answer'"
         answer_type = gt["answer_type"]
         answer = gt["answer"]
-        # Validate answer shape matches declared answer_type
-        if answer_type in ("file_list", "symbol_list", "dependency_chain"):
-            if not isinstance(answer, list):
-                return (
-                    f"v1 ground_truth answer_type {answer_type!r} requires a list, "
-                    f"got {type(answer).__name__}"
-                )
-        elif answer_type == "count":
-            try:
-                int(answer)
-            except (ValueError, TypeError):
-                return (
-                    f"v1 ground_truth answer_type 'count' requires an int-convertible value, "
-                    f"got {type(answer).__name__}: {answer!r}"
-                )
-        elif answer_type in ("boolean", "text"):
-            if not isinstance(answer, (str, bool, int, float)):
-                return (
-                    f"v1 ground_truth answer_type {answer_type!r} requires a scalar value, "
-                    f"got {type(answer).__name__}"
-                )
+        type_problem = _answer_type_problem(answer_type)
+        if type_problem is not None:
+            return f"v1 ground_truth {type_problem}"
+        answer_problem = _builtin_answer_problem(answer_type, answer)
+        if answer_problem is not None:
+            return f"v1 ground_truth {answer_problem}"
         return None
 
     if "expected" in gt:
-        if not isinstance(gt["expected"], list):
-            return "legacy ground_truth 'expected' must be a list"
+        expected_problem = _string_list_problem(
+            "legacy ground_truth 'expected'", gt["expected"]
+        )
+        if expected_problem is not None:
+            return expected_problem
         return None
 
     return (
         "ground_truth.json must have 'checks' (v2), "
         "'answer_type' (v1), or 'expected' (legacy)"
     )
+
+
+def _open_ground_truth_at(directory_fd: int) -> tuple[int | None, str | None]:
+    """Open ``ground_truth.json`` below *directory_fd* without following it."""
+    try:
+        fd = os.open(
+            "ground_truth.json",
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd,
+        )
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            return None, "not a regular file (symlink)"
+        if exc.errno == errno.ENOENT:
+            return None, "not found"
+        return None, f"unreadable: {exc.strerror or exc}"
+    return fd, None
+
+
+def _open_task_directory(task_dir: Path) -> tuple[int | None, str | None]:
+    """Open every supplied task-path component without following symlinks."""
+    if ".." in task_dir.parts:
+        return None, "task directory path contains '..'"
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    anchor = os.sep if task_dir.is_absolute() else "."
+    components = task_dir.parts[1:] if task_dir.is_absolute() else task_dir.parts
+    try:
+        current_fd = os.open(anchor, flags)
+    except OSError as exc:
+        return None, f"task directory anchor unreadable: {exc.strerror or exc}"
+
+    for component in components:
+        try:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+        except OSError as exc:
+            os.close(current_fd)
+            if exc.errno in (errno.ELOOP, errno.EMLINK, errno.ENOTDIR):
+                return (
+                    None,
+                    "task directory path contains a symlink or non-directory component",
+                )
+            if exc.errno == errno.ENOENT:
+                return None, "task directory not found"
+            return None, f"task directory unreadable: {exc.strerror or exc}"
+        os.close(current_fd)
+        current_fd = next_fd
+    return current_fd, None
+
+
+def _open_task_ground_truth(task_fd: int) -> tuple[int | None, str | None]:
+    """Open the preferred oracle below an already-open task directory."""
+    try:
+        tests_fd = os.open(
+            "tests",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=task_fd,
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return _open_ground_truth_at(task_fd)
+        if exc.errno in (errno.ELOOP, errno.EMLINK, errno.ENOTDIR):
+            return None, "tests is a symlink or is not a directory"
+        return None, f"tests directory unreadable: {exc.strerror or exc}"
+
+    try:
+        fd, problem = _open_ground_truth_at(tests_fd)
+    finally:
+        os.close(tests_fd)
+    if problem == "not found":
+        return _open_ground_truth_at(task_fd)
+    return fd, problem
+
+
+def load_ground_truth(task_dir: Path) -> tuple[dict | None, str | None]:
+    """Load *task_dir*'s oracle: ``(gt, None)`` or ``(None, reason)``.
+
+    *reason* says why the file cannot be used as an oracle. Single source of
+    truth for that judgement: ``ArtifactScorer`` reports it as a
+    ``verifier_error``, and ``codeprobe run``'s preflight rejects the run
+    with it, so preflight fails on exactly the oracles that would otherwise
+    burn a whole trial budget scoring verifier_error (codeprobe-sh8c).
+    """
+    # Every controlled path component is opened descriptor-relatively with
+    # O_NOFOLLOW. The same file descriptor is fstat'd and consumed, closing
+    # both ancestor-symlink and stat-then-open races. O_NONBLOCK on the leaf
+    # prevents a swapped-in FIFO from hanging before fstat can reject it.
+    task_fd, problem = _open_task_directory(task_dir)
+    if task_fd is None:
+        return None, problem
+    try:
+        fd, problem = _open_task_ground_truth(task_fd)
+    finally:
+        os.close(task_fd)
+    if fd is None:
+        return None, problem
+
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, "not a regular file"
+        if st.st_size > _MAX_GROUND_TRUTH_BYTES:
+            return None, (
+                f"oversized ({st.st_size} bytes, limit {_MAX_GROUND_TRUTH_BYTES})"
+            )
+        data = json.loads(os.read(fd, st.st_size))
+    except OSError as exc:
+        return None, f"unreadable: {exc.strerror or exc}"
+    except (RecursionError, ValueError) as exc:
+        # ValueError covers JSONDecodeError and UnicodeDecodeError;
+        # RecursionError is the parser's mechanical nesting limit.
+        return None, f"invalid JSON: {exc}"
+    finally:
+        os.close(fd)
+
+    if not isinstance(data, dict):
+        return None, f"must be a JSON object, got {type(data).__name__}"
+    problem = validate_ground_truth(data)
+    if problem is not None:
+        return None, problem
+    return data, None
 
 
 class ArtifactScorer:
@@ -1067,26 +1322,18 @@ class ArtifactScorer:
         ir_family = _select_ir_family(task_dir)
         ir_beta = _read_fbeta_beta(task_dir)
 
-        # Load ground truth — check tests/ subdir first (standard location),
-        # then task_dir root (legacy). Keep in sync with mining/writer._ORACLE_PY.
-        gt_path = task_dir / "tests" / "ground_truth.json"
-        if not gt_path.exists():
-            gt_path = task_dir / "ground_truth.json"
-        gt = _load_json_file(gt_path)
-        if gt is None or not isinstance(gt, dict):
-            # Oracle-side failure: a missing or corrupt answer key is
-            # verifier infrastructure breaking, not the agent failing the
-            # task. Route to verdict="verifier_error" so it can never be
-            # silently collapsed into an agent loss (premortem Theme C).
-            detail = (
-                "ground_truth.json is invalid or oversized"
-                if gt_path.is_file()
-                else "ground_truth.json not found"
-            )
+        # Load AND schema-check the oracle before the agent's answer is even
+        # read. A broken oracle — missing, corrupt, or a shape no scorer can
+        # dispatch — is verifier infrastructure failing, not the agent, so it
+        # routes to verdict="verifier_error" and can never be collapsed into
+        # an agent loss (premortem Theme C). Validating here is what keeps the
+        # dispatch below total: every branch it reaches is scoreable.
+        gt, problem = load_ground_truth(task_dir)
+        if gt is None:
             return ScoreResult(
                 score=0.0,
                 passed=False,
-                error=detail,
+                error=f"ground_truth.json: {sanitize_secrets(problem or 'invalid')}",
                 scorer_family=ir_family,
                 verdict="verifier_error",
             )
@@ -1097,7 +1344,7 @@ class ArtifactScorer:
             logger.warning(
                 "Low confidence ground truth (%.2f) in %s",
                 confidence,
-                gt_path,
+                sanitize_secrets(str(task_dir)),
             )
 
         # Load agent answer
@@ -1142,20 +1389,13 @@ class ArtifactScorer:
         ir_family: str = DEFAULT_IR_FAMILY,
         ir_beta: float = DEFAULT_FBETA_BETA,
     ) -> ScoreResult:
-        """Score using v2 multi-check format with weighted composite."""
-        checks: list[dict] = gt.get("checks", [])
+        """Score using v2 multi-check format with weighted composite.
 
-        # Validate structure — a malformed oracle is a verifier-side
-        # failure, not an agent failure.
-        validation_error = validate_ground_truth(gt)
-        if validation_error is not None:
-            return ScoreResult(
-                score=0.0,
-                passed=False,
-                error=validation_error,
-                scorer_family="weighted_checkpoints",
-                verdict="verifier_error",
-            )
+        The oracle's structure is already validated by ``score()`` via
+        ``load_ground_truth``, which routes a malformed oracle to
+        ``verifier_error`` before any agent output is read.
+        """
+        checks: list[dict] = gt.get("checks", [])
 
         # Build answer lookup: {answer_type: answer_value} from agent answers.
         # Use the first occurrence of each answer_type (spec: "first match").
@@ -1181,33 +1421,40 @@ class ArtifactScorer:
 
             # Look up scorer function
             scorer_fn = _ORACLE_TYPE_SCORERS.get(answer_type)
+            is_plugin = scorer_fn is None
             if scorer_fn is None:
                 # Try entry_point registry
                 try:
                     from codeprobe.core.registry import resolve_oracle_scorer
 
                     scorer_fn = resolve_oracle_scorer(answer_type)
-                except KeyError:
-                    pass
+                except KeyError as exc:
+                    return ScoreResult(
+                        score=0.0,
+                        passed=False,
+                        error=sanitize_secrets(
+                            f"oracle scorer resolution failed for "
+                            f"answer_type {answer_type!r}: {exc}"
+                        ),
+                        scorer_family="weighted_checkpoints",
+                        verdict="verifier_error",
+                    )
 
             # Look up agent's answer for this type
             actual = answer_lookup.get(answer_type)
 
-            if scorer_fn is None:
-                # Unknown answer_type — scores 0.0 for this check. The
-                # family is the answer_type itself so callers can see
-                # which check failed.
-                check_result = ScoreResult(
-                    score=0.0,
-                    passed=False,
-                    error=f"Unknown answer_type: {answer_type!r}",
-                    scorer_family=str(answer_type),
-                )
-            elif actual is None:
+            if actual is None:
                 # Agent didn't provide an answer for this type
                 check_result = ScoreResult(
                     score=0.0,
                     passed=False,
+                    scorer_family=str(answer_type),
+                )
+            elif is_plugin:
+                check_result = _invoke_oracle_plugin(
+                    scorer_fn,
+                    expected,
+                    actual,
                     scorer_family=str(answer_type),
                 )
             elif answer_type in _IR_LIST_ANSWER_TYPES:
@@ -1220,6 +1467,15 @@ class ArtifactScorer:
                 )
             else:
                 check_result = scorer_fn(expected, actual)
+
+            if check_result.verdict == "verifier_error":
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=check_result.error or "oracle scorer reported verifier_error",
+                    scorer_family="weighted_checkpoints",
+                    verdict="verifier_error",
+                )
 
             composite += check_result.score * weight
             check_scores.append(
@@ -1302,16 +1558,23 @@ class ArtifactScorer:
             from codeprobe.core.registry import resolve_oracle_scorer
 
             scorer_fn = resolve_oracle_scorer(answer_type)
-            return cast(ScoreResult, scorer_fn(expected, actual))
-        except KeyError:
-            pass
-
-        return ScoreResult(
-            score=0.0,
-            passed=False,
-            error=f"Unknown answer_type: {answer_type!r}",
-            scorer_family=error_family,
-        )
+            return _invoke_oracle_plugin(
+                scorer_fn,
+                expected,
+                actual,
+                scorer_family=error_family,
+            )
+        except KeyError as exc:
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=sanitize_secrets(
+                    f"oracle scorer resolution failed for "
+                    f"answer_type {answer_type!r}: {exc}"
+                ),
+                scorer_family=sanitize_secrets(error_family),
+                verdict="verifier_error",
+            )
 
     def _score_legacy_format(
         self,
@@ -1391,7 +1654,7 @@ def _safe_leg_score(
 
     DualScorer must never short-circuit because one leg raises. Any
     exception is converted into a ScoreResult(score=0.0) with the
-    exception message exposed via ``error``. ``kwargs`` forwards
+    sanitized exception message exposed via ``error``. ``kwargs`` forwards
     leg-specific options (e.g. ``low_confidence_threshold`` for the
     artifact leg) — callers pass only what the target scorer accepts.
     """
@@ -1402,16 +1665,20 @@ def _safe_leg_score(
         return cast(ScoreResult, score_fn(agent_output, task_dir, **kwargs))
     except Exception as exc:  # noqa: BLE001 — both legs must run
         scorer_name = type(scorer).__name__
-        logger.exception(
-            "Scorer %s failed on task_dir=%s",
+        logger.error(
+            "Scorer %s raised %s on task_dir=%s",
             scorer_name,
-            task_dir,
+            type(exc).__name__,
+            sanitize_secrets(str(task_dir)),
         )
         return ScoreResult(
             score=0.0,
             passed=False,
-            error=f"scorer raised: {type(exc).__name__}: {exc}",
+            error=sanitize_secrets(
+                f"scorer raised: {type(exc).__name__}: {exc}"
+            ),
             scorer_family="dual_composite",
+            verdict="verifier_error",
         )
 
 
@@ -1567,12 +1834,28 @@ class DualScorer:
         ]
         combined_error = "; ".join(p for p in error_parts if p) or None
 
+        # A leg that reported verifier_error never measured the agent, so its
+        # 0.0 is a placeholder, not a result; blending it into the composite
+        # would bill the agent for harness breakage. Computed after the
+        # weight checks so an invalid weight is still reported — both are
+        # harness faults and the caller should see both.
+        verifier_error_leg: str | None = None
+        if direct_result.verdict == "verifier_error":
+            verifier_error_leg = "direct"
+        elif artifact_result.verdict == "verifier_error":
+            verifier_error_leg = "artifact"
+        if verifier_error_leg is not None:
+            details["verifier_error_leg"] = verifier_error_leg
+            composite = 0.0
+            passed = False
+
         return ScoreResult(
             score=composite,
             passed=passed,
             error=combined_error,
             details=details,
             scorer_family="dual_composite",
+            verdict="verifier_error" if verifier_error_leg is not None else None,
             sub_scores={
                 "composite": composite,
                 "score_direct": direct_result.score,

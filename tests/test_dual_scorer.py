@@ -321,6 +321,7 @@ def test_both_legs_run_when_direct_raises(
     # Artifact leg STILL ran
     assert result.details["score_artifact"] == 1.0
     assert result.details["passed_artifact"] is True
+    assert result.verdict == "verifier_error"
 
 
 def test_both_legs_run_when_artifact_raises(

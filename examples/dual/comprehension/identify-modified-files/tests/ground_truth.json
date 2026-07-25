@@ -1,5 +1,5 @@
 {
-  "answer_type": "list",
+  "answer_type": "file_list",
   "answer": [
     "src/a.py",
     "src/b.py"

@@ -354,7 +354,12 @@ class TestEdgeCases:
             tmp_path / "ground_truth.json",
             {"answer_type": "unknown_type", "answer": "x", "confidence": 0.9},
         )
+        # The agent's answer matches the oracle exactly; only the declared
+        # answer_type is unscoreable. That is harness breakage, so it must
+        # be a verifier_error rather than a 0.0 charged to the agent
+        # (codeprobe-sh8c). This assertion previously encoded the bug.
         _write_json(tmp_path / "answer.json", {"answer": "x"})
         result = scorer.score("", tmp_path)
         assert result.passed is False
-        assert "Unknown answer_type" in (result.error or "")
+        assert result.verdict == "verifier_error"
+        assert "unknown answer_type" in (result.error or "")
