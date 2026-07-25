@@ -780,6 +780,33 @@ def test_deep_external_json_is_reported_as_generic_scanner_error(
     assert exc_info.value.__context__ is None
 
 
+def test_external_scan_launch_does_not_use_preexec_fn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launch_options: dict[str, object] = {}
+
+    def record_launch(
+        args: Sequence[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        launch_options.update(kwargs)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(
+        "codeprobe.snapshot.scanners.subprocess.run",
+        record_launch,
+    )
+
+    _completed_external_scan(
+        "test-scanner",
+        [sys.executable, "-c", "pass"],
+        limits=ExternalScannerLimits(),
+        stdout=subprocess.DEVNULL,
+    )
+
+    assert "preexec_fn" not in launch_options
+
+
 def test_external_stdout_is_killed_at_size_limit_during_execution() -> None:
     limits = ExternalScannerLimits(max_output_bytes=4_096)
     with tempfile.TemporaryFile() as output:
@@ -947,7 +974,7 @@ def test_external_scan_uses_proven_binary_and_config_after_validation_swap(
         args: Sequence[str],
         **kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
-        invoked_executable = Path(args[0])
+        invoked_executable = Path(args[args.index("detect") - 1])
         invoked_executables.append(
             (invoked_executable, invoked_executable.read_bytes())
         )

@@ -30,6 +30,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Iterator, Mapping
@@ -473,32 +474,27 @@ def _completed_external_scan(
     output_limit = limits.max_output_bytes + 1
 
     pid_read_fd, pid_write_fd = os.pipe()
-
-    def configure_child() -> None:
-        assert resource is not None
-        _, hard_limit = resource.getrlimit(resource.RLIMIT_FSIZE)
-        effective_limit = (
-            output_limit
-            if hard_limit == resource.RLIM_INFINITY
-            else min(output_limit, hard_limit)
-        )
-        resource.setrlimit(
-            resource.RLIMIT_FSIZE,
-            (effective_limit, hard_limit),
-        )
-        os.write(pid_write_fd, str(os.getpid()).encode())
+    helper_path = Path(__file__).with_name("_scanner_exec.py")
+    helper_args = [
+        sys.executable,
+        "-I",
+        "-S",
+        str(helper_path),
+        str(output_limit),
+        str(pid_write_fd),
+        *args,
+    ]
 
     execution_error: str | None = None
     process_group_id: int | None = None
     try:
         try:
             completed = subprocess.run(  # noqa: S603 - resolved scanner executable
-                args,
+                helper_args,
                 stdout=stdout,
                 stderr=subprocess.DEVNULL,
                 timeout=limits.timeout_seconds,
                 check=False,
-                preexec_fn=configure_child,
                 pass_fds=(pid_write_fd,),
                 start_new_session=True,
                 env=dict(environment) if environment is not None else None,
@@ -539,7 +535,12 @@ def _completed_external_scan(
             ) from None
     if output_size > limits.max_output_bytes:
         raise ScannerError(f"{scanner_name} output exceeded its size limit")
-    return completed
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+    )
 
 
 def _terminate_process_group(process_group_id: int) -> None:
