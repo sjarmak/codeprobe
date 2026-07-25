@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -24,8 +23,8 @@ _GIT_ENV = {
 def _make_experiment_repo(tmp_path: Path) -> Path:
     """Create a minimal git repo with a valid codeprobe experiment layout.
 
-    The experiment has two tasks whose test.sh scripts sleep for 30s, ensuring
-    the process is alive long enough to receive SIGINT.
+    The experiment has two valid tasks; the fake agent process blocks until
+    the test delivers SIGINT.
     """
     repo = tmp_path / "exp"
     repo.mkdir()
@@ -45,7 +44,7 @@ def _make_experiment_repo(tmp_path: Path) -> Path:
         tests_dir.mkdir(parents=True)
         (task_dir / "instruction.md").write_text("Do something.\n")
         test_sh = tests_dir / "test.sh"
-        test_sh.write_text("#!/usr/bin/env bash\nsleep 30 && exit 0\n")
+        test_sh.write_text("#!/usr/bin/env bash\nexit 0\n")
         test_sh.chmod(0o755)
 
     # git init (codeprobe run requires a git repo) --------------------------
@@ -66,12 +65,76 @@ def _make_experiment_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _make_blocking_claude(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a deterministic Claude stand-in that exits quietly on signals."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "claude"
+    ready_file = tmp_path / "claude-ready"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "\n"
+        "def stop(*_args: object) -> None:\n"
+        "    raise SystemExit(130)\n"
+        "\n"
+        "signal.signal(signal.SIGINT, stop)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        f"Path({str(ready_file)!r}).touch()\n"
+        "while True:\n"
+        "    time.sleep(30)\n"
+    )
+    binary.chmod(0o755)
+    return bin_dir, ready_file
+
+
+def _wait_for_ready_file(
+    proc: subprocess.Popen[bytes],
+    ready_file: Path,
+    *,
+    timeout: float,
+) -> None:
+    """Wait until the fake agent has installed its signal handlers."""
+    deadline = time.monotonic() + timeout
+    while not ready_file.exists():
+        if proc.poll() is not None:
+            pytest.fail(
+                f"Process exited with {proc.returncode} before agent readiness"
+            )
+        if time.monotonic() >= deadline:
+            pytest.fail(f"Agent was not ready within {timeout}s")
+        time.sleep(0.01)
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGINT not portable on Windows")
-@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not installed")
 def test_sigint_produces_exit_130_no_traceback(tmp_path: Path) -> None:
     """Sending SIGINT to ``codeprobe run`` must exit 130 without a traceback."""
     repo = _make_experiment_repo(tmp_path)
+    bin_dir, ready_file = _make_blocking_claude(tmp_path)
+    test_home = tmp_path / "home"
+    claude_config = tmp_path / "claude-config"
+    test_home.mkdir()
+    claude_config.mkdir()
+    auth_variables = {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+    }
+    inherited_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in auth_variables
+    }
+    env = {
+        **inherited_env,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        "HOME": str(test_home),
+        "CLAUDE_CONFIG_DIR": str(claude_config),
+    }
 
     proc = subprocess.Popen(
         [
@@ -85,26 +148,30 @@ def test_sigint_produces_exit_130_no_traceback(tmp_path: Path) -> None:
             "--force-plain",
             "--agent",
             "claude",
+            "--uncontained",
         ],
         cwd=str(repo),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=env,
         # Start in a new process group so SIGINT only hits the child tree.
-        preexec_fn=os.setsid,
+        start_new_session=True,
     )
 
-    # Give the process time to start up and enter the run loop.
-    time.sleep(3)
-
-    # Send SIGINT to the entire process group.
-    os.killpg(os.getpgid(proc.pid), signal.SIGINT)
-
+    stderr = b""
     try:
+        _wait_for_ready_file(proc, ready_file, timeout=10)
+        os.killpg(proc.pid, signal.SIGINT)
         _stdout, stderr = proc.communicate(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
         pytest.fail("Process did not exit within 10s after SIGINT")
+    finally:
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.communicate()
 
     stderr_text = stderr.decode("utf-8", errors="replace")
 
