@@ -50,6 +50,8 @@ heuristics, no semantic judgment.
 Usage:
     python scripts/pre_tag_check.py
     python scripts/pre_tag_check.py --history-dir acceptance/verdict-history
+    python scripts/pre_tag_check.py \
+        --export-release-evidence acceptance/release-verdicts
 
 Exit codes:
     0   ready to tag
@@ -71,6 +73,10 @@ if str(REPO_ROOT_DEFAULT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT_DEFAULT))
 
 from acceptance.release import ReleaseGate  # noqa: E402
+from acceptance.release_evidence import (  # noqa: E402
+    ReleaseEvidenceError,
+    export_release_evidence,
+)
 
 #: Must match the naming scheme scripts/acceptance_loop.py writes.
 _VERDICT_FILE_RE = re.compile(r"^verdict-(\d{4})\.json$")
@@ -163,7 +169,12 @@ def _no_handler_criteria(path: Path) -> list[dict[str, str]]:
     return entries if isinstance(entries, list) else []
 
 
-def run_checks(repo_root: Path, history_dir: Path) -> int:
+def run_checks(
+    repo_root: Path,
+    history_dir: Path,
+    *,
+    announce_ready: bool = True,
+) -> int:
     """Run all preconditions; print PASS/FAIL per check; return exit code."""
     failures: list[str] = []
     version = read_pyproject_version(repo_root / "pyproject.toml")
@@ -321,7 +332,8 @@ def run_checks(repo_root: Path, history_dir: Path) -> int:
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
-    print(f"\nREADY to tag {tag}")
+    if announce_ready:
+        print(f"\nREADY to tag {tag}")
     return 0
 
 
@@ -344,6 +356,15 @@ def main(argv: list[str] | None = None) -> int:
             "<repo-root>/acceptance/verdict-history)."
         ),
     )
+    parser.add_argument(
+        "--export-release-evidence",
+        type=Path,
+        default=None,
+        help=(
+            "After every pre-tag check passes, copy the two accepted verdicts "
+            "and a version-bound manifest to this tracked directory."
+        ),
+    )
     args = parser.parse_args(argv)
 
     repo_root = args.repo_root.resolve()
@@ -352,7 +373,31 @@ def main(argv: list[str] | None = None) -> int:
         if args.history_dir is not None
         else repo_root / "acceptance" / "verdict-history"
     )
-    return run_checks(repo_root, history_dir)
+    exit_code = run_checks(
+        repo_root,
+        history_dir,
+        announce_ready=args.export_release_evidence is None,
+    )
+    if exit_code != 0 or args.export_release_evidence is None:
+        return exit_code
+
+    evidence_dir = args.export_release_evidence
+    if not evidence_dir.is_absolute():
+        evidence_dir = repo_root / evidence_dir
+    verdict_paths = find_newest_verdicts(history_dir)
+    version = read_pyproject_version(repo_root / "pyproject.toml")
+    try:
+        manifest_path = export_release_evidence(
+            verdict_paths,
+            evidence_dir.resolve(),
+            version,
+        )
+    except ReleaseEvidenceError as exc:
+        print(f"NOT READY to tag: release evidence export failed: {exc}", file=sys.stderr)
+        return 1
+    print(f"exported release evidence to {manifest_path}")
+    print(f"\nREADY to tag v{version}")
+    return 0
 
 
 if __name__ == "__main__":

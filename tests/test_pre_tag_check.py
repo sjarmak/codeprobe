@@ -7,6 +7,7 @@ except in the one test that exercises it against a real ``git init`` repo.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -102,6 +103,58 @@ def test_ready_when_all_preconditions_hold(
 ) -> None:
     assert _run(repo) == 0
     assert f"READY to tag v{VERSION}" in capsys.readouterr().out
+
+
+def test_ready_check_exports_version_bound_release_evidence(repo: Path) -> None:
+    evidence_dir = repo / "acceptance" / "release-verdicts"
+
+    assert (
+        pre_tag_check.main(
+            [
+                "--repo-root",
+                str(repo),
+                "--export-release-evidence",
+                "acceptance/release-verdicts",
+            ]
+        )
+        == 0
+    )
+
+    manifest = json.loads((evidence_dir / "manifest.json").read_text())
+    assert manifest["schema_version"] == 1
+    assert manifest["release_version"] == VERSION
+    assert [entry["path"] for entry in manifest["verdicts"]] == [
+        "verdict-previous.json",
+        "verdict-latest.json",
+    ]
+
+    history = repo / "acceptance" / "verdict-history"
+    for source_name, entry in zip(
+        ("verdict-0001.json", "verdict-0002.json"),
+        manifest["verdicts"],
+        strict=True,
+    ):
+        exported = evidence_dir / entry["path"]
+        assert exported.read_bytes() == (history / source_name).read_bytes()
+        assert hashlib.sha256(exported.read_bytes()).hexdigest() == entry["sha256"]
+
+
+def test_failed_ready_check_does_not_export_release_evidence(repo: Path) -> None:
+    evidence_dir = repo / "acceptance" / "release-verdicts"
+    (repo / "acceptance" / "verdict-history" / "verdict-0002.json").unlink()
+
+    assert (
+        pre_tag_check.main(
+            [
+                "--repo-root",
+                str(repo),
+                "--export-release-evidence",
+                str(evidence_dir),
+            ]
+        )
+        == 1
+    )
+    assert not evidence_dir.exists()
 
 
 # ---------------------------------------------------------------------------

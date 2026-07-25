@@ -12,7 +12,8 @@ Before tagging, confirm all three:
    ```bash
    uv run python scripts/acceptance_loop.py --eval-mode full --iterations 2 \
        --target-repo <a real repo> --producer-agent claude
-   uv run python scripts/pre_tag_check.py
+   uv run python scripts/pre_tag_check.py \
+       --export-release-evidence acceptance/release-verdicts
    ```
 
    `scripts/acceptance_loop.py` compiles the criteria manifest into Test
@@ -23,19 +24,23 @@ Before tagging, confirm all three:
    `ReleaseGate.check_ready(verdict_paths)` (`acceptance/release.py`) over
    the two newest verdicts — both must be `status == "EVALUATED"` with
    `all_pass is True` — plus preconditions 2 and 3 below, and exits nonzero
-   with the fixing command when anything is not ready. This check is
-   local-only — CI has no view of acceptance-loop verdict history — so it
-   runs before anything is tagged.
+   with the fixing command when anything is not ready. The export option runs
+   only after every check passes. It copies those two verdicts into
+   `acceptance/release-verdicts/` and writes a manifest bound to the release
+   version and the verdict content hashes. Commit all three generated JSON
+   files before creating the tag. This tracked handoff gives the fresh tag
+   workflow the exact real verdict history that passed locally.
 
    **Mode caveat (binding for 0.13.0 and later):** a default-mode green is
    NOT release evidence for the mode-gated tiers. In `--eval-mode default`,
    every criterion carrying `eval_mode_required = "full"` is excluded from
    the evaluated denominator, so the behavioral and statistical tiers can
-   report 100% while evaluating little or nothing. At least one of the two
-   verdicts feeding the release decision must come from
+   report 100% while evaluating little or nothing. Both verdicts feeding the
+   release decision must come from
    `--eval-mode full` (real agent runs, real spend) before a tag is
-   created; `pre_tag_check.py` enforces this mechanically via the
-   `eval_mode` field recorded in each verdict.
+   created; `pre_tag_check.py` requires both verdicts to be full-mode and
+   enforces this mechanically via the `eval_mode` field recorded in each
+   verdict.
 
    **Producer agent (binding for 0.13.0 and later):** `--eval-mode full`
    requires `--producer-agent` — no silent default. The loop runs a real
@@ -58,6 +63,10 @@ Before tagging, confirm all three:
    ```bash
    uv run python scripts/acceptance_loop.py --eval-mode full --iterations 2 \
        --target-repo <a real git repo> --producer-agent claude
+   uv run python scripts/pre_tag_check.py \
+       --export-release-evidence acceptance/release-verdicts
+   git add acceptance/release-verdicts
+   git commit -m "chore: record release verdict evidence"
    ```
 2. **`CHANGELOG.md` has an entry for the version being released.** A `##
    <version>` heading; see the `Unreleased` section for the running list of
@@ -84,7 +93,9 @@ git push origin v<version>
 Pushing the tag triggers `.github/workflows/publish.yml`:
 
 ```
-test  →  gate  →  publish
+test ───────────┐
+                ├→ gate → publish
+e2e-self-serve ─┘
 ```
 
 - **`test`** — the normal pytest matrix (3.11/3.12/3.13), same as CI.
@@ -96,16 +107,21 @@ test  →  gate  →  publish
   filename versions match `pyproject.toml`; `CHANGELOG.md` has a heading for
   that version. **Immediately after that check passes**, `dist/` is uploaded
   as the `release-dist` workflow artifact — before the next step runs.
-  Only then does `scripts/release_gate.py` run, as a separate smoke test:
-  it invokes `ReleaseGate.build_and_stage()`, which rebuilds the wheel
-  again, installs it into a throwaway venv, runs `codeprobe --version`, and
+  Only then does `scripts/release_gate.py` run the complete acceptance gate.
+  It loads `acceptance/release-verdicts/manifest.json`, rejects a missing,
+  stale-version, or hash-mismatched evidence set, and passes the two ordered
+  verdicts directly to `ReleaseGate.check_ready()`. Staging is unreachable
+  unless both verdicts are `EVALUATED` with `all_pass is True`. Once ready,
+  the same `ReleaseGate` instance runs `build_and_stage()`: it rebuilds the
+  wheel, installs it into a throwaway venv, runs `codeprobe --version`, and
   exercises five structural acceptance criteria against the freshly-staged
-  install. That rebuild is deliberately sequenced *after* the artifact
-  upload: `python -m build` wheel output is not byte-reproducible between
-  invocations even against an unchanged source tree (differing zip-entry
-  timestamps/metadata), so if `release_gate.py` ran before the upload step,
-  the artifact would silently capture its unchecked rebuild instead of the
-  wheel `check_release_artifacts.py` actually validated.
+  install. Every staging field must be true. That rebuild is deliberately
+  sequenced *after* the artifact upload: `python -m build` wheel output is
+  not byte-reproducible between invocations even against an unchanged source
+  tree (differing zip-entry timestamps/metadata), so if `release_gate.py`
+  ran before the upload step, the artifact would silently capture its
+  unchecked rebuild instead of the wheel `check_release_artifacts.py`
+  actually validated.
 - **`publish`** — downloads `release-dist` and runs `twine upload dist/*`.
   It never rebuilds. The bytes `gate` uploaded (immediately after checking
   them, before any later rebuild) are the exact bytes published — this is

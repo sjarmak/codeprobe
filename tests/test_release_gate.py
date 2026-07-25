@@ -10,6 +10,7 @@ when a maintainer wants end-to-end coverage.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -535,10 +536,9 @@ def test_build_and_stage_real_wheel() -> None:  # pragma: no cover - opt-in
 # ---------------------------------------------------------------------------
 # scripts/release_gate.py CLI wiring
 #
-# These tests prove the CLI wiring (main() reads a StagingResult and maps it
-# to an exit code) rather than re-proving ReleaseGate.build_and_stage itself,
-# which is already covered above. run_release_gate is monkeypatched so no
-# real build happens.
+# These tests exercise the same evidence-loading + readiness + staging path
+# the tag publication workflow invokes. The ReleaseGate class is replaced so
+# no real wheel build happens.
 # ---------------------------------------------------------------------------
 
 _RELEASE_GATE_SCRIPT_PATH = (
@@ -566,27 +566,89 @@ def _staging_result(**overrides: object) -> StagingResult:
     return StagingResult(**defaults)  # type: ignore[arg-type]
 
 
-def test_release_gate_cli_returns_zero_on_all_true(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def _write_release_evidence(
+    evidence_dir: Path,
+    *,
+    version: str = "0.12.0",
+    verdicts: list[dict[str, object]] | None = None,
 ) -> None:
-    monkeypatch.setattr(
-        release_gate_script, "run_release_gate", lambda repo_root: _staging_result()
+    evidence_dir.mkdir(parents=True)
+    payloads = verdicts or [
+        {"status": "EVALUATED", "all_pass": True},
+        {"status": "EVALUATED", "all_pass": True},
+    ]
+    records = []
+    names = ["verdict-previous.json", "verdict-latest.json"]
+    for name, payload in zip(names, payloads, strict=False):
+        content = json.dumps(payload, sort_keys=True).encode()
+        (evidence_dir / name).write_bytes(content)
+        records.append(
+            {"path": name, "sha256": hashlib.sha256(content).hexdigest()}
+        )
+    (evidence_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "release_version": version,
+                "verdicts": records,
+            }
+        )
     )
-    exit_code = release_gate_script.main(["--repo-root", str(tmp_path)])
-    assert exit_code == 0
 
 
-def test_release_gate_cli_returns_nonzero_on_failed_staging(
+def _release_gate_args(repo_root: Path, evidence_dir: Path) -> list[str]:
+    return [
+        "--repo-root",
+        str(repo_root),
+        "--evidence-dir",
+        str(evidence_dir),
+        "--expected-version",
+        "0.12.0",
+    ]
+
+
+def test_release_gate_cli_rejects_insufficient_verdict_history(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    failed = _staging_result(
-        structural_criteria_passed=False, error="one or more structural smoke criteria did not pass"
+    evidence_dir = tmp_path / "evidence"
+    _write_release_evidence(
+        evidence_dir,
+        verdicts=[{"status": "EVALUATED", "all_pass": True}],
     )
     monkeypatch.setattr(
-        release_gate_script, "run_release_gate", lambda repo_root: failed
+        release_gate_script,
+        "run_release_gate",
+        lambda repo_root, verdict_paths: pytest.fail(
+            "ReleaseGate must not run without two verdicts"
+        ),
     )
-    exit_code = release_gate_script.main(["--repo-root", str(tmp_path)])
-    assert exit_code == 1
+
+    assert release_gate_script.main(_release_gate_args(tmp_path, evidence_dir)) == 1
+
+
+def test_release_gate_cli_does_not_stage_failed_acceptance_criteria(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_dir = tmp_path / "evidence"
+    _write_release_evidence(
+        evidence_dir,
+        verdicts=[
+            {"status": "EVALUATED", "all_pass": True},
+            {"status": "EVALUATED", "all_pass": False},
+        ],
+    )
+
+    def unexpected_staging(self: ReleaseGate) -> StagingResult:
+        del self
+        return pytest.fail("staging must be unreachable when readiness fails")
+
+    monkeypatch.setattr(
+        ReleaseGate,
+        "build_and_stage",
+        unexpected_staging,
+    )
+
+    assert release_gate_script.main(_release_gate_args(tmp_path, evidence_dir)) == 1
 
 
 @pytest.mark.parametrize(
@@ -596,9 +658,38 @@ def test_release_gate_cli_returns_nonzero_on_failed_staging(
 def test_release_gate_cli_returns_nonzero_if_any_field_false(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, field: str
 ) -> None:
+    evidence_dir = tmp_path / "evidence"
+    _write_release_evidence(evidence_dir)
     failed = _staging_result(**{field: False, "error": f"{field} failed"})
-    monkeypatch.setattr(
-        release_gate_script, "run_release_gate", lambda repo_root: failed
-    )
-    exit_code = release_gate_script.main(["--repo-root", str(tmp_path)])
-    assert exit_code == 1
+
+    monkeypatch.setattr(ReleaseGate, "build_and_stage", lambda self: failed)
+
+    assert release_gate_script.main(_release_gate_args(tmp_path, evidence_dir)) == 1
+
+
+def test_release_gate_cli_returns_zero_for_valid_release(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    evidence_dir = tmp_path / "evidence"
+    _write_release_evidence(evidence_dir)
+    calls: list[str] = []
+    real_check_ready = ReleaseGate.check_ready
+
+    def check_ready(self: ReleaseGate, verdict_paths: list[Path]) -> bool:
+        calls.append("check_ready")
+        assert [path.name for path in verdict_paths] == [
+            "verdict-previous.json",
+            "verdict-latest.json",
+        ]
+        return real_check_ready(self, verdict_paths)
+
+    def build_and_stage(self: ReleaseGate) -> StagingResult:
+        del self
+        calls.append("build_and_stage")
+        return _staging_result()
+
+    monkeypatch.setattr(ReleaseGate, "check_ready", check_ready)
+    monkeypatch.setattr(ReleaseGate, "build_and_stage", build_and_stage)
+
+    assert release_gate_script.main(_release_gate_args(tmp_path, evidence_dir)) == 0
+    assert calls == ["check_ready", "build_and_stage"]

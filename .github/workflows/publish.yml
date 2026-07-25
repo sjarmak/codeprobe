@@ -67,9 +67,9 @@ jobs:
           name: release-dist
           path: dist/
           if-no-files-found: error
-      # Smoke-test only, past this point: proves a clean build/install still
-      # works. Its own internal rebuild must not feed the published artifact
-      # (see comment above) — the upload already happened.
+      # Acceptance readiness + staging gate. Its internal rebuild must not
+      # feed the published artifact (see comment above) — the upload already
+      # happened.
       #
       # No `pip install dist/codeprobe-*.whl` here (codeprobe-zqmr): the
       # structural smoke's import_equals / dataclass_has_fields handlers now
@@ -78,7 +78,10 @@ jobs:
       # this job's interpreter. codeprobe is intentionally NOT importable
       # here — that's what proves the smoke tests the staged install rather
       # than whatever happens to be on this runner's Python path.
-      - run: python scripts/release_gate.py
+      - run: >-
+          python scripts/release_gate.py
+          --evidence-dir acceptance/release-verdicts
+          --expected-version "${GITHUB_REF_NAME#v}"
 
   publish:
     needs: [gate]

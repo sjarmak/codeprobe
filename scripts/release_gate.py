@@ -1,26 +1,10 @@
 #!/usr/bin/env python3
-"""Thin CLI wrapper around :class:`acceptance.release.ReleaseGate`.
+"""CI entry point for the complete acceptance release gate.
 
-Runs ``ReleaseGate(repo_root).build_and_stage()`` — build a wheel, install it
-into a fresh venv, run ``codeprobe --version``, and exercise five structural
-acceptance criteria against the freshly-staged install — and exits nonzero
-unless every step succeeded.
-
-This is the CI-facing half of the release gate. ``ReleaseGate.check_ready``
-(the acceptance-loop verdict-history check) deliberately stays out of CI:
-``verdict.json`` history is a local acceptance-loop artifact a fresh CI
-runner does not have. The release skill runs ``check_ready`` locally before
-tagging; this script runs in the ``gate`` job after the tag is pushed, as a
-second, independent confirmation that the tagged tree actually builds and
-installs cleanly.
-
-Usage:
-    python scripts/release_gate.py
-    python scripts/release_gate.py --repo-root /path/to/repo
-
-Exit codes:
-    0   built, installed, version matched, structural smoke passed
-    1   any StagingResult field is False — details printed to stderr
+Loads the tracked, version-bound acceptance verdicts, calls
+``ReleaseGate.check_ready()``, and only then calls
+``ReleaseGate.build_and_stage()``. The command exits nonzero unless both
+verdicts are ready and every staging result is true.
 """
 
 from __future__ import annotations
@@ -34,15 +18,35 @@ if str(REPO_ROOT_DEFAULT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT_DEFAULT))
 
 from acceptance.release import ReleaseGate, StagingResult  # noqa: E402
+from acceptance.release_evidence import (  # noqa: E402
+    ReleaseEvidenceError,
+    load_release_evidence,
+)
 
 
-def run_release_gate(repo_root: Path) -> StagingResult:
-    return ReleaseGate(repo_root).build_and_stage()
+def run_release_gate(
+    repo_root: Path,
+    verdict_paths: list[Path],
+) -> tuple[bool, StagingResult | None]:
+    """Run readiness and staging through one ``ReleaseGate`` instance."""
+    gate = ReleaseGate(repo_root)
+    if not gate.check_ready(verdict_paths):
+        return False, None
+    return True, gate.build_and_stage()
+
+
+def _staging_succeeded(result: StagingResult) -> bool:
+    return (
+        result.built
+        and result.installed
+        and result.version_matches
+        and result.structural_criteria_passed
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build, stage, and smoke-test the wheel via ReleaseGate."
+        description="Validate acceptance verdicts, then build and stage the wheel."
     )
     parser.add_argument(
         "--repo-root",
@@ -50,9 +54,42 @@ def main(argv: list[str] | None = None) -> int:
         default=REPO_ROOT_DEFAULT,
         help="Repo root (default: parent of scripts/).",
     )
+    parser.add_argument(
+        "--evidence-dir",
+        type=Path,
+        required=True,
+        help="Tracked release-verdict evidence directory.",
+    )
+    parser.add_argument(
+        "--expected-version",
+        required=True,
+        help="Release version expected in the evidence manifest.",
+    )
     args = parser.parse_args(argv)
 
-    result = run_release_gate(args.repo_root)
+    repo_root = args.repo_root.resolve()
+    evidence_dir = args.evidence_dir
+    if not evidence_dir.is_absolute():
+        evidence_dir = repo_root / evidence_dir
+
+    try:
+        verdict_paths = load_release_evidence(
+            evidence_dir.resolve(),
+            args.expected_version,
+        )
+    except ReleaseEvidenceError as exc:
+        print(f"release evidence rejected: {exc}", file=sys.stderr)
+        return 1
+
+    ready, result = run_release_gate(repo_root, verdict_paths)
+    if not ready or result is None:
+        print(
+            "release evidence rejected: the two acceptance verdicts are not "
+            "both EVALUATED + all_pass",
+            file=sys.stderr,
+        )
+        return 1
+
     print(
         f"built={result.built} installed={result.installed} "
         f"version_matches={result.version_matches} "
@@ -60,14 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if result.wheel_path is not None:
         print(f"wheel_path={result.wheel_path}")
-
-    ok = (
-        result.built
-        and result.installed
-        and result.version_matches
-        and result.structural_criteria_passed
-    )
-    if not ok:
+    if not _staging_succeeded(result):
         print(f"error={result.error}", file=sys.stderr)
         return 1
     return 0
