@@ -1097,6 +1097,11 @@ class CheckpointScriptError(ValueError):
     """
 
 
+_HISTORICAL_CHECKPOINT_STUB = (
+    "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n"
+)
+
+
 def _has_non_comment_line(body: str) -> bool:
     """True when *body* holds at least one non-blank, non-comment line.
 
@@ -1106,6 +1111,14 @@ def _has_non_comment_line(body: str) -> bool:
     return any(
         line.strip() and not line.lstrip().startswith("#")
         for line in body.splitlines()
+    )
+
+
+def _is_usable_checkpoint_script(body: str) -> bool:
+    """Reject empty/comment-only bodies and the historical full-credit stub."""
+    return (
+        _has_non_comment_line(body)
+        and body != _HISTORICAL_CHECKPOINT_STUB
     )
 
 
@@ -1148,7 +1161,7 @@ def resolve_verified_checkpoint_scripts(
             problems.append(
                 f"{cp.name!r}: no script provided for verifier {cp.verifier!r}"
             )
-        elif not _has_non_comment_line(body):
+        elif not _is_usable_checkpoint_script(body):
             problems.append(
                 f"{cp.name!r}: verifier {cp.verifier!r} has no executable body"
             )

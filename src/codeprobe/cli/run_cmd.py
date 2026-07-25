@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -477,6 +478,107 @@ def _check_ground_truth_present(task_dirs: list[Path], path: str) -> None:
     )
 
 
+def _checkpoint_definitions_for_preflight(task_dir: Path) -> list[dict]:
+    """Load checkpoints with CheckpointScorer's metadata-over-JSON precedence."""
+    from codeprobe.qa.verify import load_task_meta
+
+    metadata = load_task_meta(task_dir)
+    metadata_checkpoints = metadata.get("checkpoints") if metadata else None
+    if isinstance(metadata_checkpoints, list) and metadata_checkpoints:
+        return [cp for cp in metadata_checkpoints if isinstance(cp, dict)]
+
+    checkpoints_file = task_dir / "tests" / "checkpoints.json"
+    if not checkpoints_file.is_file():
+        return []
+    try:
+        payload = json.loads(checkpoints_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [cp for cp in payload if isinstance(cp, dict)]
+
+
+def _checkpoint_verifier_problem(
+    task_dir: Path,
+    checkpoint: dict,
+) -> dict[str, str] | None:
+    """Return one structural verifier problem, if present."""
+    from codeprobe.mining.writer import _is_usable_checkpoint_script
+
+    verifier = checkpoint.get("verifier")
+    if (
+        not isinstance(verifier, str)
+        or not verifier
+        or Path(verifier).name != verifier
+    ):
+        return {
+            "task": task_dir.name,
+            "verifier": str(verifier or ""),
+            "reason": "unsafe",
+        }
+
+    verifier_path = task_dir / "tests" / "verifiers" / verifier
+    if not verifier_path.is_file():
+        return {
+            "task": task_dir.name,
+            "verifier": verifier,
+            "reason": "missing",
+        }
+    try:
+        body = verifier_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        reason = "unreadable"
+    else:
+        reason = "stub" if not _is_usable_checkpoint_script(body) else ""
+    return (
+        {"task": task_dir.name, "verifier": verifier, "reason": reason}
+        if reason
+        else None
+    )
+
+
+def _check_checkpoint_verifiers_present(
+    task_dirs: list[Path],
+    path: str,
+) -> None:
+    """Reject declared checkpoints whose verifier is missing or a no-op."""
+    candidates = (
+        _checkpoint_verifier_problem(task_dir, checkpoint)
+        for task_dir in task_dirs
+        for checkpoint in _checkpoint_definitions_for_preflight(task_dir)
+    )
+    problems = [problem for problem in candidates if problem is not None]
+
+    if not problems:
+        return
+
+    detail = ", ".join(
+        f"{item['task']}/{item['verifier']} ({item['reason']})"
+        for item in problems
+    )
+    raise DiagnosticError(
+        code="MISSING_CHECKPOINT_VERIFIER",
+        message=(
+            "Checkpoint task(s) have missing or unusable verifier scripts: "
+            f"{detail}. Every affected checkpoint could otherwise receive "
+            "full credit without verifying the agent."
+        ),
+        diagnose_cmd=f"codeprobe validate {path} --json",
+        terminal=True,
+        next_steps=[
+            (
+                "Re-mine to regenerate checkpoint verifiers",
+                f"codeprobe mine {path}",
+            ),
+        ],
+        detail={
+            "path": path,
+            "checkpoint_verifier_problems": problems,
+        },
+    )
+
+
 def _print_dry_run(estimate: DryRunEstimate) -> None:
     """Pretty-print a DryRunEstimate to stdout."""
     cost_lo, cost_hi = estimate.estimated_cost_range
@@ -947,6 +1049,7 @@ def run_eval(
         # Fail loud on a stale/interrupted mine run before any adapter spawns
         # (codeprobe-yxex) — applies whether or not a suite filter was given.
         _check_ground_truth_present(task_dirs, path)
+        _check_checkpoint_verifiers_present(task_dirs, path)
 
         configs_to_run = experiment.configs
         if not configs_to_run:

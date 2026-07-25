@@ -483,6 +483,10 @@ class TestCheckpointScriptValidation:
                 "#!/usr/bin/env bash\n# TODO: verify something\n",
                 id="comments-only",
             ),
+            pytest.param(
+                "#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n",
+                id="historical-full-credit-stub",
+            ),
         ],
     )
     def test_body_without_executable_lines_raises(

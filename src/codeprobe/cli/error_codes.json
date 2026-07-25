@@ -338,6 +338,14 @@
       "remediation_pattern": "Re-mine the repo to regenerate the oracle: `codeprobe mine <path> --dual-verify`."
     },
     {
+      "code": "MISSING_CHECKPOINT_VERIFIER",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.11.0",
+      "description": "A task declares a weighted checkpoint whose tests/verifiers script is missing, unreadable, unsafe, empty, comment-only, or the historical exit-0 full-credit stub.",
+      "remediation_pattern": "Re-mine the task to regenerate its checkpoint verifier scripts: `codeprobe mine <path>`."
+    },
+    {
       "code": "DIRTY_CHECKOUT",
       "kind": "prescriptive",
       "exit_code": 2,
