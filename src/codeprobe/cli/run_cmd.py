@@ -480,12 +480,11 @@ def _check_ground_truth_present(task_dirs: list[Path], path: str) -> None:
 
 def _checkpoint_definitions_for_preflight(task_dir: Path) -> list[dict]:
     """Load checkpoints with CheckpointScorer's metadata-over-JSON precedence."""
-    from codeprobe.qa.verify import load_task_meta
+    from codeprobe.core.scoring import load_metadata_checkpoints
 
-    metadata = load_task_meta(task_dir)
-    metadata_checkpoints = metadata.get("checkpoints") if metadata else None
-    if isinstance(metadata_checkpoints, list) and metadata_checkpoints:
-        return [cp for cp in metadata_checkpoints if isinstance(cp, dict)]
+    metadata_checkpoints = load_metadata_checkpoints(task_dir)
+    if metadata_checkpoints:
+        return metadata_checkpoints
 
     checkpoints_file = task_dir / "tests" / "checkpoints.json"
     if not checkpoints_file.is_file():

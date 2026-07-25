@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import stat
+import textwrap
 from pathlib import Path
 
 import pytest
 
+from codeprobe.core.executor import _bind_checkpoint_metadata
 from codeprobe.core.scoring import CheckpointScorer
 from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
@@ -89,6 +91,41 @@ class TestTaskVerificationCheckpoints:
 
 class TestMetadataCheckpoints:
     """CheckpointScorer initialised with metadata_checkpoints (from task.toml)."""
+
+    def test_executor_binding_preserves_metadata_precedence(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        task_dir = tmp_path / "task"
+        _make_verifier(task_dir, "metadata.sh", "#!/bin/bash\nexit 0\n")
+        (task_dir / "task.toml").write_text(
+            textwrap.dedent(
+                """\
+                [task]
+                id = "task"
+                repo = "test/repo"
+
+                [verification]
+                reward_type = "checkpoint"
+
+                [[checkpoints]]
+                name = "metadata"
+                weight = 1.0
+                verifier = "metadata.sh"
+                """
+            ),
+            encoding="utf-8",
+        )
+        _write_checkpoints_json(
+            task_dir,
+            [{"name": "legacy", "weight": 1.0, "verifier": "missing-json.sh"}],
+        )
+
+        scorer = _bind_checkpoint_metadata(CheckpointScorer(), task_dir)
+        result = scorer.score("", task_dir)
+
+        assert result.verdict == "correct"
+        assert result.error is None
 
     def test_three_checkpoints_one_fails_score_055(self, tmp_path: Path) -> None:
         """Core acceptance test: weights 0.2, 0.45, 0.35 with cp2 failing -> 0.55."""

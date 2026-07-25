@@ -545,6 +545,17 @@ class ContinuousScorer:
 # ---------------------------------------------------------------------------
 
 
+def load_metadata_checkpoints(task_dir: Path) -> list[dict[str, object]]:
+    """Read non-empty checkpoint metadata from task.toml or metadata.json."""
+    from codeprobe.qa.verify import load_task_meta
+
+    metadata = load_task_meta(task_dir)
+    raw = metadata.get("checkpoints") if metadata else None
+    if not isinstance(raw, list) or not raw:
+        return []
+    return [dict(checkpoint) for checkpoint in raw if isinstance(checkpoint, dict)]
+
+
 class CheckpointScorer:
     """Runs weighted checkpoint verifiers and computes a composite score.
 

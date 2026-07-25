@@ -50,9 +50,11 @@ from codeprobe.core.preamble import (
 from codeprobe.core.scoring import (
     COPYTREE_IGNORE,
     AgentState,
+    CheckpointScorer,
     Scorer,
     ScoreResult,
     get_scorer,
+    load_metadata_checkpoints,
     read_task_metadata,
     sanitize_secrets,
     scorer_accepts_agent_state,
@@ -77,6 +79,16 @@ if TYPE_CHECKING:
 # Per-run agent artifacts that must not leak across task runs.
 _STALE_ANSWER_FILES = ("answer.txt", "answer.json", "reward.txt")
 _MCP_INSTRUCTION_VARIANT = "instruction_mcp.md"
+
+
+def _bind_checkpoint_metadata(scorer: Scorer, task_dir: Path) -> Scorer:
+    """Construct checkpoint scoring with the descriptor-preferred manifest."""
+    if not isinstance(scorer, CheckpointScorer):
+        return scorer
+    checkpoints = load_metadata_checkpoints(task_dir)
+    if not checkpoints:
+        return scorer
+    return CheckpointScorer(metadata_checkpoints=checkpoints)
 
 
 def _drop_stale_answers(base: Path) -> None:
@@ -891,6 +903,7 @@ def execute_task(
                 agent_stdout=output.stdout,
                 agent_stderr=output.stderr or "",
             )
+        scorer = _bind_checkpoint_metadata(scorer, task_dir)
 
         # Scoring runs in an isolated per-run sandbox; the projection of the
         # ScoreResult into a TaskResult lives in _score_in_sandbox so the

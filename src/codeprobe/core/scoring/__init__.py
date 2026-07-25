@@ -88,6 +88,7 @@ from codeprobe.core.scoring.scorers import (  # noqa: F401
     _parse_float_score,
     _safe_leg_score,
     get_scorer,
+    load_metadata_checkpoints,
     score_task_output,
     validate_ground_truth,
 )
@@ -167,6 +168,7 @@ __all__ = [
     "_parse_float_score",
     "_safe_leg_score",
     "get_scorer",
+    "load_metadata_checkpoints",
     "score_task_output",
     "validate_ground_truth",
 ]
