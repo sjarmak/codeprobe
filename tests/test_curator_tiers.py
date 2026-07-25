@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from codeprobe.core.llm import LLMError, LLMResponse
 from codeprobe.mining.curator import CuratedFile
 from codeprobe.mining.curator_tiers import classify_tiers, verify_curation
@@ -284,16 +286,24 @@ class TestVerifyCuration:
     @patch("codeprobe.mining.curator_tiers.call_claude")
     @patch("codeprobe.mining.curator_tiers.llm_available", return_value=True)
     def test_llm_call_error_is_error(
-        self, mock_avail: object, mock_call: object, mock_tracked: object
+        self,
+        mock_avail: object,
+        mock_call: object,
+        mock_tracked: object,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         mock_tracked.return_value = frozenset({"a.py", "x.py"})
-        mock_call.side_effect = LLMError("timeout")
+        secret = "sk-" + "c" * 32
+        mock_call.side_effect = LLMError(f"request failed with {secret}")
 
         files = [_make_file("a.py")]
         result = verify_curation(files, FAMILY, REPOS, sample_size=5)
         assert result.status == "error"
         assert result.reason == "model_error"
+        assert result.message == "Curation verification model call failed."
         assert not result.admissible
+        assert secret not in caplog.text
+        assert "[REDACTED]" in caplog.text
 
     @patch("codeprobe.mining.curator_tiers.get_tracked_files")
     @patch("codeprobe.mining.curator_tiers.call_claude")

@@ -31,6 +31,7 @@ from codeprobe.core.llm import (
     call_claude,
     llm_available,
 )
+from codeprobe.core.scoring.sandbox import sanitize_secrets
 from codeprobe.mining.curator import CuratedFile, CurationVerification
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.mining.org_scale_scanner import get_tracked_files
@@ -359,7 +360,10 @@ def verify_curation(
     try:
         response_text = _call_verification_model(in_sample, out_sample, family)
     except LLMError as exc:
-        logger.warning("Curation verification model call failed: %s", exc)
+        logger.warning(
+            "Curation verification model call failed: %s",
+            sanitize_secrets(str(exc)),
+        )
         message = "Curation verification model call failed."
         return _verification_error("model_error", message, in_sample, out_sample)
 
