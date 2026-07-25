@@ -172,7 +172,11 @@ def oracle_check(
     if oracle_type == "file_list":
         return _check_file_list(task_dir, gt_data, metric=metric)
 
-    return {"score": 0.0, "error": f"Unknown oracle_type: {oracle_type!r}"}
+    return {
+        "score": 0.0,
+        "error": f"Unknown oracle_type: {oracle_type!r}",
+        "verdict": "verifier_error",
+    }
 
 
 def _check_file_list(

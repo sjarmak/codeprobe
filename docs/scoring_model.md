@@ -709,6 +709,18 @@ scorers, and human follow-up inspection.
 * `completed.json#scoring_details["verdict"]` — same value.
 * `completed.json#scoring_details["materialized_via"]` — same.
 
+The migrated scorer families use the following verdict boundary:
+
+* `ContinuousScorer` reports `verifier_error` when its script is missing,
+  sandbox execution fails, or an exit-zero verifier produces no valid numeric
+  score. A valid numeric reward reports `correct` or `incorrect` according to
+  that family's existing pass rule.
+* `CheckpointScorer` and `OracleChecksScorer` report `verifier_error` for
+  malformed manifests, invalid weights, missing verifier scripts, sandbox
+  failures, and malformed non-empty JSON output. Valid verifier results,
+  including an empty-output nonzero exit, remain agent-attributable and produce
+  `correct` or `incorrect` from the composite pass rule.
+
 Aggregate consumers classify `verifier_error` as an infrastructure failure:
 the trial is excluded from reward means, pass rates, and confidence intervals,
 and is surfaced in `infra_failure_count`. An `incorrect` verdict remains a

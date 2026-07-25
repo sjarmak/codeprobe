@@ -3,7 +3,7 @@
 The Code Scale Bench verification report (2026-04-24) shipped shellcheck +
 custom rules over its 781 ``test.sh`` files. codeprobe's verifiers are
 Python, so the analogous lint is an AST scan over the scorer modules. The
-goal is to catch four classes of *verifier dishonesty* that have shipped
+goal is to catch five classes of *verifier dishonesty* that have shipped
 in the past or could ship silently going forward:
 
 1. **Missing ``scorer_family`` declaration** — every ``ScoreResult(...)``
@@ -36,6 +36,12 @@ in the past or could ship silently going forward:
    patterns swallow root causes and turn scorer bugs into "agent failed
    the task". Per architecture.md §"Don't Swallow Errors". Scorer
    exception paths must catch specific types and surface a real error.
+
+5. **Missing verdicts in migrated scorer families** — every
+   ``ScoreResult(...)`` constructed by ContinuousScorer, CheckpointScorer,
+   and OracleChecksScorer must distinguish an agent-attributable result from
+   a verifier failure. A verdict-less zero is not safe once aggregate
+   validity depends on the typed verdict.
 
 The lint is a pytest test rather than a separate CLI so it runs in the
 default ``pytest`` invocation and produces a regression-style report.
@@ -527,6 +533,48 @@ def find_bare_excepts(source: str, relpath: str) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# Rule 5 — migrated scorer families must declare verdict
+# ---------------------------------------------------------------------------
+
+_VERDICT_REQUIRED_SCORERS: frozenset[str] = frozenset(
+    {
+        "ContinuousScorer",
+        "CheckpointScorer",
+        "OracleChecksScorer",
+    }
+)
+
+
+def find_missing_scorer_verdict(source: str, relpath: str) -> list[Finding]:
+    """Flag verdict-less results in scorer families migrated to honesty."""
+    findings: list[Finding] = []
+    tree = ast.parse(source, filename=relpath)
+    for class_node in tree.body:
+        if not isinstance(class_node, ast.ClassDef):
+            continue
+        if class_node.name not in _VERDICT_REQUIRED_SCORERS:
+            continue
+        for node in ast.walk(class_node):
+            if not isinstance(node, ast.Call) or not _is_scoreresult_call(node):
+                continue
+            kwargs = _scoreresult_kwargs(node)
+            if "verdict" in kwargs or any(kw.arg is None for kw in node.keywords):
+                continue
+            findings.append(
+                Finding(
+                    relpath=relpath,
+                    line=node.lineno,
+                    rule="missing-scorer-verdict",
+                    detail=(
+                        f"{class_node.name} constructs ScoreResult without "
+                        "verdict= — classify agent and verifier outcomes"
+                    ),
+                )
+            )
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Combined runner
 # ---------------------------------------------------------------------------
 
@@ -539,6 +587,7 @@ def _run_lint(path: Path) -> list[Finding]:
     findings.extend(find_quiet_recall_fallbacks(source, relpath))
     findings.extend(find_hardcoded_thresholds(source, relpath))
     findings.extend(find_bare_excepts(source, relpath))
+    findings.extend(find_missing_scorer_verdict(source, relpath))
     return findings
 
 
@@ -704,6 +753,30 @@ def test_lint_accepts_noqa_annotated_except_exception() -> None:
     )
     findings = find_bare_excepts(good_source, "synthetic.py")
     assert findings == [], f"Expected no findings, got: {findings}"
+
+
+def test_lint_catches_missing_verdict_in_migrated_scorer() -> None:
+    bad_source = (
+        "class ContinuousScorer:\n"
+        "    def score(self):\n"
+        "        return ScoreResult(\n"
+        "            score=0.0, passed=False, scorer_family='continuous'\n"
+        "        )\n"
+    )
+    findings = find_missing_scorer_verdict(bad_source, "synthetic.py")
+    assert [finding.rule for finding in findings] == ["missing-scorer-verdict"]
+
+
+def test_lint_allows_declared_verdict_in_migrated_scorer() -> None:
+    good_source = (
+        "class ContinuousScorer:\n"
+        "    def score(self):\n"
+        "        return ScoreResult(\n"
+        "            score=0.0, passed=False, scorer_family='continuous',\n"
+        "            verdict='incorrect',\n"
+        "        )\n"
+    )
+    assert find_missing_scorer_verdict(good_source, "synthetic.py") == []
 
 
 def test_scorer_family_registry_is_non_empty() -> None:

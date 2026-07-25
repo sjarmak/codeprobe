@@ -72,11 +72,11 @@ def _reject_non_finite_json_constant(value: str) -> None:
 def _parse_composite_verifier_stdout(
     stdout: str,
     verifier_name: str,
-) -> float | None:
-    """Parse strict JSON score output, or return ``None`` for empty stdout."""
+) -> tuple[float | None, bool]:
+    """Return ``(score, invalid)`` for strict JSON composite output."""
     stripped = stdout.strip()
     if not stripped:
-        return None
+        return None, False
 
     try:
         data = json.loads(
@@ -97,9 +97,9 @@ def _parse_composite_verifier_stdout(
             verifier_name,
             exc,
         )
-        return _ZERO_SCORE
+        return _ZERO_SCORE, True
 
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, score)), False
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +243,7 @@ class ContinuousScorer:
                 passed=False,
                 error="tests/test.sh not found",
                 scorer_family="continuous",
+                verdict="verifier_error",
             )
 
         run = _run_in_sandbox(test_sh, agent_output, task_dir, cleanup=False)
@@ -257,6 +258,7 @@ class ContinuousScorer:
                     error=run.error,
                     details=exec_details,
                     scorer_family="continuous",
+                    verdict="verifier_error",
                 )
             if run.returncode != 0:
                 return ScoreResult(
@@ -266,6 +268,7 @@ class ContinuousScorer:
                     details=exec_details,
                     scorer_family="continuous",
                     sub_scores={"exit_code": run.returncode},
+                    verdict="incorrect",
                 )
 
             # Try reward.txt first
@@ -281,6 +284,7 @@ class ContinuousScorer:
                     error="No valid score found in reward.txt or stdout",
                     details=exec_details,
                     scorer_family="continuous",
+                    verdict="verifier_error",
                 )
 
             clamped = max(0.0, min(1.0, raw_score))
@@ -301,15 +305,17 @@ class ContinuousScorer:
                 reward, ir_metrics, sub_scores = self._derive_reward_and_metrics(
                     details, fallback=clamped, family=family, beta=beta
                 )
+                passed = reward >= PASS_THRESHOLD
                 return ScoreResult(
                     score=reward,
-                    passed=reward >= PASS_THRESHOLD,
+                    passed=passed,
                     details={**details, **exec_details},
                     reward_score=reward,
                     ir_metrics=ir_metrics,
                     scorer_family=family,
                     sub_scores=sub_scores,
                     diagnostics={"ir_metrics": dict(ir_metrics)} if ir_metrics else {},
+                    verdict="correct" if passed else "incorrect",
                 )
             # Non-IR continuous: preserve the legacy ``passed = score > 0.0``
             # semantic for tasks whose verifier emits a raw float without
@@ -317,13 +323,15 @@ class ContinuousScorer:
             # ``>= PASS_THRESHOLD`` rule above; mixing the two would break
             # custom continuous tasks that intentionally emit sub-threshold
             # rewards as "partial credit, treat as pass".
+            passed = clamped > 0.0
             return ScoreResult(
                 score=clamped,
-                passed=clamped > 0.0,
+                passed=passed,
                 details=exec_details,
                 reward_score=clamped,
                 scorer_family="continuous",
                 sub_scores={"raw_score": clamped},
+                verdict="correct" if passed else "incorrect",
             )
         finally:
             if run.sandbox_dir is not None:
@@ -543,6 +551,7 @@ class CheckpointScorer:
                 passed=False,
                 error="tests/checkpoints.json not found",
                 scorer_family="weighted_checkpoints",
+                verdict="verifier_error",
             )
 
         try:
@@ -555,6 +564,7 @@ class CheckpointScorer:
                 passed=False,
                 error=f"Invalid checkpoints.json: {exc}",
                 scorer_family="weighted_checkpoints",
+                verdict="verifier_error",
             )
         return checkpoints  # type: ignore[no-any-return]
 
@@ -578,6 +588,7 @@ class CheckpointScorer:
                 passed=False,
                 error=f"Checkpoint weights must sum to 1.0, got {total_weight:.4f}",
                 scorer_family="weighted_checkpoints",
+                verdict="verifier_error",
             )
 
         weighted_score = 0.0
@@ -600,19 +611,30 @@ class CheckpointScorer:
                     passed=False,
                     error=f"Verifier not found: {verifier_name}",
                     scorer_family="weighted_checkpoints",
+                    verdict="verifier_error",
                 )
 
-            cp_score, sandbox_execution = self._run_verifier(
+            cp_score, sandbox_execution, verifier_error = self._run_verifier(
                 verifier_path, agent_output, task_dir
             )
+            if verifier_error:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"Verifier failed: {verifier_name}",
+                    details={"sandbox_execution": sandbox_execution},
+                    scorer_family="weighted_checkpoints",
+                    verdict="verifier_error",
+                )
             weighted_score += cp_score * weight
             checkpoint_scores[name] = cp_score
             checkpoint_weights[name] = weight
 
         clamped = max(0.0, min(1.0, weighted_score))
+        passed = clamped >= PASS_THRESHOLD
         return ScoreResult(
             score=clamped,
-            passed=clamped >= PASS_THRESHOLD,
+            passed=passed,
             details={
                 "checkpoint_scores": checkpoint_scores,
                 "checkpoint_weights": checkpoint_weights,
@@ -626,6 +648,7 @@ class CheckpointScorer:
                 "composite": clamped,
                 "checkpoint_scores": dict(checkpoint_scores),
             },
+            verdict="correct" if passed else "incorrect",
         )
 
     @staticmethod
@@ -633,12 +656,10 @@ class CheckpointScorer:
         verifier_path: Path,
         agent_output: str,
         task_dir: Path,
-    ) -> tuple[float, str]:
+    ) -> tuple[float, str, bool]:
         """Run a single checkpoint verifier.
 
-        Returns ``(score, execution_mode)`` where score is 0.0-1.0 and
-        execution_mode is the sandbox's ``"container"`` / ``"host"`` /
-        ``"none"`` (nothing executed — refusal or setup failure).
+        Returns ``(score, execution_mode, verifier_error)``.
         """
         run = _run_in_sandbox(verifier_path, agent_output, task_dir)
         if run.error is not None:
@@ -650,21 +671,21 @@ class CheckpointScorer:
                 verifier_path.name,
                 run.error,
             )
-            return _ZERO_SCORE, run.execution_mode
+            return _ZERO_SCORE, run.execution_mode, True
 
-        parsed_score = _parse_composite_verifier_stdout(
+        parsed_score, invalid_stdout = _parse_composite_verifier_stdout(
             run.stdout,
             verifier_path.name,
         )
         if parsed_score is not None:
-            return parsed_score, run.execution_mode
+            return parsed_score, run.execution_mode, invalid_stdout
 
         # Empty stdout uses the legacy exit-code contract. Non-zero is a
         # legitimate "verifier failed" signal (not a silent swallow);
         # returncode is the loud channel.
         if run.returncode == 0:
-            return 1.0, run.execution_mode
-        return _ZERO_SCORE, run.execution_mode
+            return 1.0, run.execution_mode, False
+        return _ZERO_SCORE, run.execution_mode, False
 
 
 # ---------------------------------------------------------------------------
@@ -734,6 +755,7 @@ class OracleChecksScorer:
                 passed=False,
                 error="tests/rubric.json not found",
                 scorer_family=self.SCORER_FAMILY,
+                verdict="verifier_error",
             )
 
         try:
@@ -744,6 +766,7 @@ class OracleChecksScorer:
                 passed=False,
                 error=f"Invalid rubric.json: {exc}",
                 scorer_family=self.SCORER_FAMILY,
+                verdict="verifier_error",
             )
 
         if not isinstance(payload, list):
@@ -752,6 +775,7 @@ class OracleChecksScorer:
                 passed=False,
                 error="rubric.json must be a JSON list of criteria",
                 scorer_family=self.SCORER_FAMILY,
+                verdict="verifier_error",
             )
         return cast(list[dict[str, object]], payload)
 
@@ -767,6 +791,7 @@ class OracleChecksScorer:
                 passed=False,
                 error="rubric must declare at least one criterion",
                 scorer_family=self.SCORER_FAMILY,
+                verdict="verifier_error",
             )
 
         # Validate weights up-front. A negative or non-finite weight is a
@@ -784,6 +809,7 @@ class OracleChecksScorer:
                     passed=False,
                     error=f"criterion[{idx}] weight is not numeric: {raw!r}",
                     scorer_family=self.SCORER_FAMILY,
+                    verdict="verifier_error",
                 )
             if not math.isfinite(w):
                 return ScoreResult(
@@ -791,6 +817,7 @@ class OracleChecksScorer:
                     passed=False,
                     error=f"criterion[{idx}] weight must be finite, got: {w}",
                     scorer_family=self.SCORER_FAMILY,
+                    verdict="verifier_error",
                 )
             if w < 0.0:
                 return ScoreResult(
@@ -798,6 +825,7 @@ class OracleChecksScorer:
                     passed=False,
                     error=f"criterion[{idx}] weight must be non-negative, got: {w}",
                     scorer_family=self.SCORER_FAMILY,
+                    verdict="verifier_error",
                 )
             weights.append(w)
 
@@ -811,6 +839,7 @@ class OracleChecksScorer:
                     "must have a positive weight"
                 ),
                 scorer_family=self.SCORER_FAMILY,
+                verdict="verifier_error",
             )
 
         criterion_scores: dict[str, float] = {}
@@ -828,6 +857,7 @@ class OracleChecksScorer:
                     passed=False,
                     error=f"criterion[{idx}] missing 'verifier' field",
                     scorer_family=self.SCORER_FAMILY,
+                    verdict="verifier_error",
                 )
 
             verifier_path = task_dir / "tests" / "verifiers" / verifier_name
@@ -837,11 +867,21 @@ class OracleChecksScorer:
                     passed=False,
                     error=f"Verifier not found: {verifier_name}",
                     scorer_family=self.SCORER_FAMILY,
+                    verdict="verifier_error",
                 )
 
-            cp_score, sandbox_execution = self._run_verifier(
+            cp_score, sandbox_execution, verifier_error = self._run_verifier(
                 verifier_path, agent_output, task_dir
             )
+            if verifier_error:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=f"Verifier failed: {verifier_name}",
+                    details={"sandbox_execution": sandbox_execution},
+                    scorer_family=self.SCORER_FAMILY,
+                    verdict="verifier_error",
+                )
             weighted_sum += cp_score * weight
             criterion_scores[name] = cp_score
             criterion_weights[name] = weight
@@ -855,9 +895,10 @@ class OracleChecksScorer:
             "criterion_scores": dict(criterion_scores),
             "total_weight": total_weight,
         }
+        passed = reward >= PASS_THRESHOLD
         return ScoreResult(
             score=reward,
-            passed=reward >= PASS_THRESHOLD,
+            passed=passed,
             details={
                 "criterion_scores": criterion_scores,
                 "criterion_weights": criterion_weights,
@@ -868,6 +909,7 @@ class OracleChecksScorer:
             },
             scorer_family=self.SCORER_FAMILY,
             sub_scores=sub_scores,
+            verdict="correct" if passed else "incorrect",
         )
 
     @staticmethod
@@ -875,10 +917,10 @@ class OracleChecksScorer:
         verifier_path: Path,
         agent_output: str,
         task_dir: Path,
-    ) -> tuple[float, str]:
+    ) -> tuple[float, str, bool]:
         """Run a single criterion verifier.
 
-        Returns ``(score, execution_mode)`` with score in 0.0-1.0. Mirrors
+        Returns ``(score, execution_mode, verifier_error)``. Mirrors
         :meth:`CheckpointScorer._run_verifier` so both composite scorers
         see the same sandbox semantics: JSON ``score`` field is preferred,
         exit-code is the documented fallback.
@@ -890,18 +932,18 @@ class OracleChecksScorer:
                 verifier_path.name,
                 run.error,
             )
-            return _ZERO_SCORE, run.execution_mode
+            return _ZERO_SCORE, run.execution_mode, True
 
-        parsed_score = _parse_composite_verifier_stdout(
+        parsed_score, invalid_stdout = _parse_composite_verifier_stdout(
             run.stdout,
             verifier_path.name,
         )
         if parsed_score is not None:
-            return parsed_score, run.execution_mode
+            return parsed_score, run.execution_mode, invalid_stdout
 
         if run.returncode == 0:
-            return 1.0, run.execution_mode
-        return _ZERO_SCORE, run.execution_mode
+            return 1.0, run.execution_mode, False
+        return _ZERO_SCORE, run.execution_mode, False
 
 
 # ---------------------------------------------------------------------------
