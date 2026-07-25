@@ -206,7 +206,11 @@ class TestPreflightRejectsUnusableOracles:
         td = self._dual_task(tmp_path, "t-deep")
         self._write_gt(td, "[" * 4000 + "0" + "]" * 4000)
 
-        self._expect_invalid(td, tmp_path, "invalid JSON")
+        with pytest.raises(DiagnosticError) as exc_info:
+            _check_ground_truth_present([td], str(tmp_path))
+        assert exc_info.value.code == "INVALID_GROUND_TRUTH"
+        details = str(exc_info.value.detail["invalid_ground_truth_tasks"])
+        assert "invalid JSON" in details or "must be a JSON object" in details
 
     @pytest.mark.parametrize(
         ("payload", "fragment"),

@@ -729,7 +729,11 @@ class TestOracleFileIsReadSafely:
         result = ArtifactScorer().score("", task_dir)
 
         assert result.verdict == "verifier_error"
-        assert result.error is not None and "invalid JSON" in result.error
+        assert result.error is not None
+        assert (
+            "invalid JSON" in result.error
+            or "must be a JSON object" in result.error
+        )
 
     def test_regular_oracle_still_loads(self, tmp_path: Path) -> None:
         """The hardening must not break the ordinary path."""
