@@ -58,6 +58,7 @@ class TestResumeSkipsCompleted:
                 source_hint="local",
                 min_quality=0.0,
                 state=state,
+                no_llm=True,
             )
             completed = state.completed_shas()
 
@@ -77,7 +78,11 @@ class TestResumeSkipsCompleted:
         mock_run.side_effect = _extractor_side_effect
 
         result = mine_tasks(
-            Path("/fake/repo"), count=5, source_hint="local", min_quality=0.0
+            Path("/fake/repo"),
+            count=5,
+            source_hint="local",
+            min_quality=0.0,
+            no_llm=True,
         )
         assert len(result.tasks) == 2
 
@@ -103,6 +108,7 @@ class TestRelaxationRetryWithState:
                 min_files=5,  # both fixture PRs change only 2 files
                 min_quality=0.0,
                 state=state,
+                no_llm=True,
             )
 
         assert len(result.tasks) == 2
@@ -132,6 +138,7 @@ class TestInterruptRecordsInterrupted:
                     source_hint="local",
                     min_quality=0.0,
                     state=state,
+                    no_llm=True,
                 )
 
         # Reopen exactly like a resume would: the in-flight SHA must be
