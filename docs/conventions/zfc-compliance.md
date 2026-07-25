@@ -11,7 +11,7 @@ A heuristic in codeprobe doesn't just affect codeprobe — it shapes how users p
 
 | File | Why it's compliant |
 | --- | --- |
-| `core/scoring.py` | Delegates pass / fail to `test.sh` (gold-standard ZFC); IR scorers report reward = recall (or `weighted_recall` for tiered oracles) with precision / F1 in `ir_metrics`. The split is documented arithmetic, not judgment — see `docs/scoring_model.md` |
+| `core/scoring/` | Delegates pass / fail to `test.sh` (gold-standard ZFC); IR scorers report reward = recall (or `weighted_recall` for tiered oracles) with precision / F1 in `ir_metrics`. The split is documented arithmetic, not judgment — see `docs/scoring_model.md` |
 | `core/llm.py` | Shared Claude CLI utility for model-based judgment (pure IO + mechanical parsing) |
 | `analysis/ranking.py` | Deterministic arithmetic with explicit tiebreakers |
 | `analysis/trace_quality.py` | Mechanical projection of `CompletedTask` + `BiasWarning` records onto a per-trial quality view; sole threshold (`LOW_RECALL_THRESHOLD`) is a documented constant that surfaces an existing oracle metric, not a quality verdict (see `docs/trace_quality.md`) |
@@ -19,6 +19,7 @@ A heuristic in codeprobe doesn't just affect codeprobe — it shapes how users p
 | `analysis/stats.py` | Arithmetic aggregation (deterministic math, not judgment) |
 | `assess/heuristics.py:score_repo_with_model()` | Delegates scoring to Claude via fixed `RUBRIC_V1`; model judges quality, code does IO |
 | `mining/extractor.py:generate_instruction()` | Delegates instruction.md generation to LLM; regex fallback only for `--no-llm` offline mode |
+| `mining/curator_tiers.py:verify_curation()` | Delegates the overall pass / warn / fail curation verdict to the model; application code only samples files, validates complete structured output, records explicit unavailable/error states, and enforces the admission gate |
 | `config/defaults.py` narrative-source resolver | Delegates selection to `core/llm.py` under fixed rubric `_NARRATIVE_RUBRIC_V1`; falls back to deterministic priority `pr > commits > rfcs > issues` only when no LLM backend is available or `offline=True`; emits an `LLM_UNAVAILABLE` envelope warning so callers see the degraded mode (PRD §13-T4 refactor) |
 
 ## Known violations (tracked for refactoring)

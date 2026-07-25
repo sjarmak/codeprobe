@@ -13,7 +13,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from codeprobe.models.task import Task
 
 from codeprobe.mining.org_scale_families import TaskFamily
 
@@ -46,6 +49,62 @@ class MergeConfig:
     backend_weights: dict[str, float] = field(default_factory=dict)
 
 
+VerificationStatus = Literal["pass", "warn", "fail", "unevaluated", "error"]
+VerificationReason = Literal[
+    "model_unavailable",
+    "model_error",
+    "parse_error",
+    "empty_sample",
+]
+
+
+@dataclass(frozen=True)
+class CurationVerification:
+    """Structured outcome of model-backed curation verification."""
+
+    status: VerificationStatus
+    reason: VerificationReason | None = None
+    message: str = ""
+    reviews: tuple[tuple[str, str], ...] = ()
+    sampled_in: tuple[str, ...] = ()
+    sampled_out: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        model_verdict = self.status in {"pass", "warn", "fail"}
+        if model_verdict and not self.reviews:
+            raise ValueError(
+                "Model verification verdicts require file reviews"
+            )
+        if model_verdict and self.reason is not None:
+            raise ValueError(
+                "Model verification verdicts cannot have an error reason"
+            )
+        if not model_verdict and self.reason is None:
+            raise ValueError(
+                "Unevaluated and error outcomes require a reason"
+            )
+        review_paths = [path for path, _ in self.reviews]
+        if len(review_paths) != len(set(review_paths)):
+            raise ValueError("Verification reviews contain duplicate paths")
+
+    @property
+    def admissible(self) -> bool:
+        """Whether this outcome permits a curated task to ship."""
+        return self.status in {"pass", "warn"}
+
+    def as_dict(self) -> dict[str, object]:
+        """Return a stable JSON-ready representation."""
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "message": self.message,
+            "reviews": dict(self.reviews),
+            "sampled_in": list(self.sampled_in),
+            "sampled_out": list(self.sampled_out),
+            "admissible": self.admissible,
+        }
+
+
 @dataclass(frozen=True)
 class CurationResult:
     """Result of curating files for a task family across repos."""
@@ -57,7 +116,7 @@ class CurationResult:
     backends_used: tuple[str, ...]
     merge_config: MergeConfig
     matched_files: frozenset[str] = frozenset()
-    verification_result: str | None = None
+    verification_result: CurationVerification | None = None
 
     @classmethod
     def from_scan_result(
@@ -110,6 +169,15 @@ class CurationResult:
             merge_config=MergeConfig(),
             matched_files=scan_result.matched_files,
         )
+
+
+@dataclass(frozen=True)
+class QuarantinedCuration:
+    """Curated task candidate rejected by explicit verification."""
+
+    task: Task
+    curation_result: CurationResult
+    verification: CurationVerification
 
 
 # ---------------------------------------------------------------------------

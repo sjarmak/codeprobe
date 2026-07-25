@@ -14,6 +14,7 @@ from codeprobe.mining.confidence import (
     score_task_confidence,
     write_confidence_file,
 )
+from codeprobe.mining.curator import CurationResult, CurationVerification
 from codeprobe.mining.extractor import _is_safe_relative_path
 from codeprobe.models.task import Task
 
@@ -1292,6 +1293,104 @@ def write_quarantined_task(
 
     logger.info("Quarantined %s/%s -> %s", family, symbol, task_dir)
     return task_dir
+
+
+def write_quarantined_curation(
+    *,
+    task: Task,
+    curation_result: CurationResult,
+    verification: CurationVerification,
+    base_dir: Path,
+) -> Path:
+    """Preserve a curated candidate rejected by explicit verification."""
+    if not _is_safe_path_component(task.id):
+        raise ValueError(
+            f"Invalid task id for quarantine output: {task.id!r}"
+        )
+
+    task_dir = base_dir / task.id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "instruction.md").write_text(
+        _curation_quarantine_instruction(task, verification),
+        encoding="utf-8",
+    )
+    _write_json_document(
+        task_dir / "curation_verification.json",
+        verification.as_dict(),
+    )
+    _write_json_document(
+        task_dir / "curation_files.json",
+        _curation_files_payload(curation_result),
+    )
+    _write_json_document(
+        task_dir / "metadata.json",
+        _curation_quarantine_metadata(task, curation_result),
+    )
+
+    logger.info(
+        "Quarantined curation %s/%s -> %s",
+        task.metadata.category,
+        task.id,
+        task_dir,
+    )
+    return task_dir
+
+
+def _curation_quarantine_instruction(
+    task: Task,
+    verification: CurationVerification,
+) -> str:
+    """Build the reviewer-facing instruction for rejected curation."""
+    title = task.metadata.issue_title or task.metadata.name
+    body = task.metadata.issue_body or task.metadata.description
+    return (
+        f"# {title}\n\n"
+        f"**Repository:** {task.repo}\n"
+        f"**Family:** {task.metadata.category}\n\n"
+        "## Question\n\n"
+        f"{body}\n\n"
+        "## Quarantine Reason\n\n"
+        "Explicit curation verification did not produce an admissible "
+        f"result: `{verification.status}`. See "
+        "`curation_verification.json` for diagnostics and "
+        "`curation_files.json` for the partial curated artifact.\n"
+    )
+
+
+def _curation_files_payload(
+    curation_result: CurationResult,
+) -> list[dict[str, object]]:
+    """Serialize curated files in deterministic path order."""
+    return [
+        asdict(curated_file)
+        for curated_file in sorted(
+            curation_result.files, key=lambda item: item.path
+        )
+    ]
+
+
+def _curation_quarantine_metadata(
+    task: Task,
+    curation_result: CurationResult,
+) -> dict[str, object]:
+    """Build metadata for a rejected curation candidate."""
+    return {
+        "task_id": task.id,
+        "family": task.metadata.category,
+        "repo": task.repo,
+        "status": "quarantined",
+        "quarantine_source": "curation_verification",
+        "backends_used": list(curation_result.backends_used),
+        "commit_shas": curation_result.commit_shas,
+    }
+
+
+def _write_json_document(path: Path, payload: object) -> None:
+    """Write a stable UTF-8 JSON document."""
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
 
 def write_task_dir(

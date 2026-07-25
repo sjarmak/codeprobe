@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from codeprobe.mining.curator import CuratedFile, CurationResult, MergeConfig
-from codeprobe.mining.org_scale import generate_org_scale_task
+from codeprobe.mining.curator import (
+    CuratedFile,
+    CurationResult,
+    CurationVerification,
+    MergeConfig,
+)
+from codeprobe.mining.org_scale import OrgScaleMineResult, generate_org_scale_task
 from codeprobe.mining.org_scale_families import MIGRATION_INVENTORY
 from codeprobe.mining.org_scale_scanner import FamilyScanResult, PatternHit
-from codeprobe.mining.writer import write_task_dir
+from codeprobe.mining.writer import write_quarantined_curation, write_task_dir
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 # ---------------------------------------------------------------------------
@@ -185,6 +191,55 @@ class TestWriterCuration:
         assert "commit" in gt
         assert "pattern_used" in gt
 
+    def test_quarantine_preserves_verification_and_partial_curation(
+        self,
+        scan_result: FamilyScanResult,
+        curation_result: CurationResult,
+        tmp_path: Path,
+    ) -> None:
+        task = generate_org_scale_task(
+            scan_result,
+            no_llm=True,
+            curation_result=curation_result,
+        )
+        assert task is not None
+        verification = CurationVerification(
+            status="error",
+            reason="parse_error",
+            message="Verification response omitted src/c.py.",
+            sampled_in=("src/a.py", "src/c.py"),
+            sampled_out=("src/other.py",),
+        )
+
+        task_dir = write_quarantined_curation(
+            task=task,
+            curation_result=curation_result,
+            verification=verification,
+            base_dir=tmp_path,
+        )
+
+        assert (task_dir / "instruction.md").is_file()
+        assert (task_dir / "curation_verification.json").is_file()
+        assert (task_dir / "curation_files.json").is_file()
+        assert (task_dir / "metadata.json").is_file()
+        assert not (task_dir / "ground_truth.json").exists()
+        assert not (task_dir / "tests").exists()
+
+        report = json.loads(
+            (task_dir / "curation_verification.json").read_text()
+        )
+        assert report["status"] == "error"
+        assert report["reason"] == "parse_error"
+        assert report["admissible"] is False
+
+        files = json.loads((task_dir / "curation_files.json").read_text())
+        assert [entry["path"] for entry in files] == [
+            "src/a.py",
+            "src/b.py",
+            "src/c.py",
+        ]
+        assert files[0]["sources"] == ["grep", "pr_diff"]
+
 
 # ---------------------------------------------------------------------------
 # CLI flag validation
@@ -235,6 +290,179 @@ class TestFromScanResultBridge:
         assert cr.matched_files == scan_result.matched_files
         assert all(cf.tier == "required" for cf in cr.files)
         assert all(cf.sources == ("grep",) for cf in cr.files)
+
+
+# ---------------------------------------------------------------------------
+# Explicit verification admission gate
+# ---------------------------------------------------------------------------
+
+
+class TestRunCurationVerification:
+    @staticmethod
+    def _mine_result(
+        scan_result: FamilyScanResult,
+        curation_result: CurationResult,
+    ) -> OrgScaleMineResult:
+        task = generate_org_scale_task(
+            scan_result,
+            no_llm=True,
+            curation_result=curation_result,
+        )
+        assert task is not None
+        return OrgScaleMineResult(tasks=[task], scan_results=[scan_result])
+
+    @patch("codeprobe.mining.curator_tiers.classify_tiers")
+    @patch("codeprobe.mining.curator.CurationPipeline.curate")
+    @patch("codeprobe.cli.mine_cmd._build_curation_backends", return_value=[])
+    @patch("codeprobe.mining.curator_tiers.verify_curation")
+    def test_fail_is_quarantined_before_task_generation(
+        self,
+        mock_verify: object,
+        mock_build: object,
+        mock_curate: object,
+        mock_classify: object,
+        scan_result: FamilyScanResult,
+        curation_result: CurationResult,
+    ) -> None:
+        mock_curate.return_value = curation_result
+        mock_classify.return_value = list(curation_result.files)
+        mock_verify.return_value = CurationVerification(
+            status="fail",
+            message="The sampled curation is unreliable.",
+            reviews=(("src/a.py", "disagree"),),
+        )
+
+        from codeprobe.cli.mine_cmd import _run_curation
+
+        tasks, backends, quarantined = _run_curation(
+            self._mine_result(scan_result, curation_result),
+            list(scan_result.repo_paths),
+            no_llm=False,
+            verify_curation_flag=True,
+        )
+
+        assert tasks == []
+        assert backends == tuple(sorted(curation_result.backends_used))
+        assert len(quarantined) == 1
+        assert quarantined[0].verification.status == "fail"
+        assert (
+            quarantined[0].curation_result.verification_result.status
+            == "fail"
+        )
+        mock_verify.assert_called_once()
+
+    @patch("codeprobe.mining.curator_tiers.classify_tiers")
+    @patch("codeprobe.mining.curator.CurationPipeline.curate")
+    @patch("codeprobe.cli.mine_cmd._build_curation_backends", return_value=[])
+    @patch("codeprobe.mining.curator_tiers.verify_curation")
+    def test_unevaluated_is_quarantined(
+        self,
+        mock_verify: object,
+        mock_build: object,
+        mock_curate: object,
+        mock_classify: object,
+        scan_result: FamilyScanResult,
+        curation_result: CurationResult,
+    ) -> None:
+        mock_curate.return_value = curation_result
+        mock_classify.return_value = list(curation_result.files)
+        from codeprobe.cli.mine_cmd import _run_curation
+
+        tasks, _, quarantined = _run_curation(
+            self._mine_result(scan_result, curation_result),
+            list(scan_result.repo_paths),
+            no_llm=True,
+            verify_curation_flag=True,
+        )
+
+        assert tasks == []
+        assert quarantined[0].verification.reason == "model_unavailable"
+        mock_verify.assert_not_called()
+
+    @patch("codeprobe.mining.curator_tiers.classify_tiers")
+    @patch("codeprobe.mining.curator.CurationPipeline.curate")
+    @patch("codeprobe.cli.mine_cmd._build_curation_backends", return_value=[])
+    @patch("codeprobe.mining.curator_tiers.verify_curation")
+    def test_affirmative_pass_remains_admissible(
+        self,
+        mock_verify: object,
+        mock_build: object,
+        mock_curate: object,
+        mock_classify: object,
+        scan_result: FamilyScanResult,
+        curation_result: CurationResult,
+    ) -> None:
+        mock_curate.return_value = curation_result
+        mock_classify.return_value = list(curation_result.files)
+        mock_verify.return_value = CurationVerification(
+            status="pass",
+            message="The sampled curation is sound.",
+            reviews=(("src/a.py", "agree"),),
+        )
+
+        from codeprobe.cli.mine_cmd import _run_curation
+
+        tasks, _, quarantined = _run_curation(
+            self._mine_result(scan_result, curation_result),
+            list(scan_result.repo_paths),
+            no_llm=False,
+            verify_curation_flag=True,
+        )
+
+        assert len(tasks) == 1
+        assert quarantined == []
+        mock_verify.assert_called_once()
+
+    @patch("codeprobe.cli.mine_cmd._show_org_scale_results")
+    @patch("codeprobe.cli.mine_cmd._record_task_ids_in_experiment")
+    @patch("codeprobe.cli.mine_cmd._is_interactive", return_value=False)
+    @patch("codeprobe.mining.curator_tiers.classify_tiers")
+    @patch("codeprobe.mining.curator.CurationPipeline.curate")
+    @patch("codeprobe.cli.mine_cmd._build_curation_backends", return_value=[])
+    @patch("codeprobe.mining.curator_tiers.verify_curation")
+    @patch("codeprobe.mining.org_scale.mine_org_scale_tasks")
+    def test_no_llm_verification_writes_only_quarantine_artifacts(
+        self,
+        mock_mine: object,
+        mock_verify: object,
+        mock_build: object,
+        mock_curate: object,
+        mock_classify: object,
+        mock_interactive: object,
+        mock_record: object,
+        mock_show: object,
+        scan_result: FamilyScanResult,
+        curation_result: CurationResult,
+        tmp_path: Path,
+    ) -> None:
+        result = self._mine_result(scan_result, curation_result)
+        mock_mine.return_value = result
+        mock_curate.return_value = curation_result
+        mock_classify.return_value = list(curation_result.files)
+        output = tmp_path / "output"
+
+        from codeprobe.cli.mine_cmd import _run_org_scale_mine
+
+        _run_org_scale_mine(
+            list(scan_result.repo_paths),
+            no_llm=True,
+            curate=True,
+            verify_curation_flag=True,
+            out_dir=output,
+        )
+
+        task = result.tasks[0]
+        assert not (output / "tasks" / task.id).exists()
+        rejected = output / "tasks_quarantined" / task.id
+        assert (rejected / "curation_verification.json").is_file()
+        assert (rejected / "curation_files.json").is_file()
+        assert not (rejected / "ground_truth.json").exists()
+        report = json.loads(
+            (rejected / "curation_verification.json").read_text()
+        )
+        assert report["status"] == "unevaluated"
+        assert report["reason"] == "model_unavailable"
+        mock_verify.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

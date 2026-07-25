@@ -12,7 +12,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from codeprobe.mining.curator import CurationBackend
+    from codeprobe.mining.curator import (
+        CurationBackend,
+        CurationResult,
+        QuarantinedCuration,
+    )
+    from codeprobe.mining.org_scale_scanner import FamilyScanResult
     from codeprobe.mining.state import MineState
 from collections.abc import Callable
 from dataclasses import dataclass, is_dataclass, replace
@@ -3716,9 +3721,14 @@ def _run_org_scale_mine(
 
     # Run curation pipeline if requested
     curation_backends_used: tuple[str, ...] = ()
+    curation_quarantined: list[QuarantinedCuration] = []
     curated_tasks = result.tasks
     if curate:
-        curated_tasks, curation_backends_used = _run_curation(
+        (
+            curated_tasks,
+            curation_backends_used,
+            curation_quarantined,
+        ) = _run_curation(
             result,
             repo_paths,
             backends=backends,
@@ -3742,8 +3752,11 @@ def _run_org_scale_mine(
     quarantine_dir = tasks_dir.parent / "tasks_quarantined"
     if quarantine_dir.exists():
         shutil.rmtree(quarantine_dir)
-    if quarantined:
-        from codeprobe.mining.writer import write_quarantined_task
+    if quarantined or curation_quarantined:
+        from codeprobe.mining.writer import (
+            write_quarantined_curation,
+            write_quarantined_task,
+        )
 
         quarantine_dir.mkdir(parents=True, exist_ok=True)
         for cand in quarantined:
@@ -3758,6 +3771,13 @@ def _run_org_scale_mine(
                 divergence_report=cand.divergence_report,
                 base_dir=quarantine_dir,
             )
+        for rejected in curation_quarantined:
+            write_quarantined_curation(
+                task=rejected.task,
+                curation_result=rejected.curation_result,
+                verification=rejected.verification,
+                base_dir=quarantine_dir,
+            )
 
     _record_task_ids_in_experiment(
         primary_repo, [t.id for t in curated_tasks], out_dir=out_dir
@@ -3769,7 +3789,12 @@ def _run_org_scale_mine(
         primary_repo,
         curation_backends_used,
         quarantined_count=len(quarantined),
-        quarantine_dir=quarantine_dir if quarantined else None,
+        curation_quarantined_count=len(curation_quarantined),
+        quarantine_dir=(
+            quarantine_dir
+            if quarantined or curation_quarantined
+            else None
+        ),
         consensus_config=consensus_config,
         out_dir=out_dir,
     )
@@ -3808,6 +3833,98 @@ def _build_curation_backends(
     return result
 
 
+def _task_for_family(tasks: list[Task], family_name: str) -> Task | None:
+    """Return the single mined task corresponding to a scan family."""
+    return next(
+        (
+            task
+            for task in tasks
+            if task.metadata.category == family_name
+        ),
+        None,
+    )
+
+
+def _tier_curation_result(
+    curation_result: CurationResult,
+    scan_result: FamilyScanResult,
+    repo_paths: list[Path],
+    *,
+    no_llm: bool,
+) -> CurationResult:
+    """Return an immutable curation result with classified file tiers."""
+    from codeprobe.mining.curator import CurationResult
+    from codeprobe.mining.curator_tiers import classify_tiers
+
+    tiered_files = classify_tiers(
+        list(curation_result.files),
+        scan_result.family,
+        repo_paths,
+        use_llm=not no_llm,
+    )
+    return CurationResult(
+        family=curation_result.family,
+        files=tuple(tiered_files),
+        repo_paths=curation_result.repo_paths,
+        commit_shas=curation_result.commit_shas,
+        backends_used=curation_result.backends_used,
+        merge_config=curation_result.merge_config,
+        matched_files=frozenset(item.path for item in tiered_files),
+    )
+
+
+def _verify_curation_result(
+    curation_result: CurationResult,
+    scan_result: FamilyScanResult,
+    repo_paths: list[Path],
+    *,
+    enabled: bool,
+    no_llm: bool,
+) -> CurationResult:
+    """Attach an explicit verification outcome when requested."""
+    if not enabled:
+        return curation_result
+    if no_llm:
+        from codeprobe.mining.curator import CurationVerification
+
+        verification = CurationVerification(
+            status="unevaluated",
+            reason="model_unavailable",
+            message="Curation verification is disabled by --no-llm.",
+        )
+    else:
+        from codeprobe.mining.curator_tiers import verify_curation
+
+        verification = verify_curation(
+            list(curation_result.files),
+            scan_result.family,
+            repo_paths,
+        )
+    detail = f" ({verification.reason})" if verification.reason else ""
+    click.echo(
+        f"  Curation verification ({scan_result.family.name}): "
+        f"{verification.status}{detail}"
+    )
+    return replace(curation_result, verification_result=verification)
+
+
+def _gate_curated_task(
+    task: Task,
+    curation_result: CurationResult,
+) -> tuple[Task | None, QuarantinedCuration | None]:
+    """Route a task to admitted output or verification quarantine."""
+    from codeprobe.mining.curator import QuarantinedCuration
+
+    verification = curation_result.verification_result
+    if verification is None or verification.admissible:
+        return task, None
+    return None, QuarantinedCuration(
+        task=task,
+        curation_result=curation_result,
+        verification=verification,
+    )
+
+
 def _run_curation(
     result: OrgScaleMineResult,
     repo_paths: list[Path],
@@ -3815,70 +3932,49 @@ def _run_curation(
     backends: tuple[str, ...] = (),
     no_llm: bool = False,
     verify_curation_flag: bool = False,
-) -> tuple[list[Task], tuple[str, ...]]:
+) -> tuple[list[Task], tuple[str, ...], list[QuarantinedCuration]]:
     """Run curation pipeline on mined tasks, returning updated tasks and backends used."""
     from codeprobe.mining.curator import CurationPipeline
-    from codeprobe.mining.curator_tiers import classify_tiers, verify_curation
     from codeprobe.mining.org_scale import generate_org_scale_task
 
-    backend_instances = _build_curation_backends(backends, no_llm)
-    pipeline = CurationPipeline(backends=backend_instances)
-
+    pipeline = CurationPipeline(backends=_build_curation_backends(backends, no_llm))
     curated_tasks: list[Task] = []
+    quarantined: list[QuarantinedCuration] = []
     all_backends_used: set[str] = set()
 
-    for sr in result.scan_results:
-        # Run curation for this family
-        curation_result = pipeline.curate(repos=repo_paths, family=sr.family)
-        if not curation_result.files:
-            # No curated files: keep original tasks for this family
-            for task in result.tasks:
-                if task.metadata.category == sr.family.name:
-                    curated_tasks.append(task)
+    for scan_result in result.scan_results:
+        original_task = _task_for_family(result.tasks, scan_result.family.name)
+        if original_task is None:
             continue
 
-        all_backends_used.update(curation_result.backends_used)
-
-        # Classify tiers
-        tiered_files = classify_tiers(
-            list(curation_result.files),
-            sr.family,
+        curation_result = pipeline.curate(repos=repo_paths, family=scan_result.family)
+        candidate: Task | None = original_task
+        if curation_result.files:
+            all_backends_used.update(curation_result.backends_used)
+            curation_result = _tier_curation_result(
+                curation_result, scan_result, repo_paths, no_llm=no_llm
+            )
+            candidate = generate_org_scale_task(
+                scan_result,
+                no_llm=no_llm,
+                curation_result=curation_result,
+            )
+        if candidate is None:
+            continue
+        verified_result = _verify_curation_result(
+            curation_result,
+            scan_result,
             repo_paths,
-            use_llm=not no_llm,
+            enabled=verify_curation_flag,
+            no_llm=no_llm,
         )
+        admitted, rejected = _gate_curated_task(candidate, verified_result)
+        if admitted is not None:
+            curated_tasks.append(admitted)
+        if rejected is not None:
+            quarantined.append(rejected)
 
-        # Build updated CurationResult with tiered files
-        from codeprobe.mining.curator import CurationResult
-
-        tiered_result = CurationResult(
-            family=curation_result.family,
-            files=tuple(tiered_files),
-            repo_paths=curation_result.repo_paths,
-            commit_shas=curation_result.commit_shas,
-            backends_used=curation_result.backends_used,
-            merge_config=curation_result.merge_config,
-            matched_files=frozenset(cf.path for cf in tiered_files),
-        )
-
-        # Verify curation if requested
-        if verify_curation_flag and not no_llm:
-            verdict = verify_curation(tiered_files, sr.family, repo_paths)
-            click.echo(f"  Curation verification ({sr.family.name}): {verdict}")
-
-        # Re-generate task with curation result
-        for task in result.tasks:
-            if task.metadata.category == sr.family.name:
-                curated_task = generate_org_scale_task(
-                    sr,
-                    no_llm=no_llm,
-                    curation_result=tiered_result,
-                )
-                if curated_task is not None:
-                    curated_tasks.append(curated_task)
-                    break  # One task per family/scan_result
-
-    backends_tuple = tuple(sorted(all_backends_used))
-    return curated_tasks, backends_tuple
+    return curated_tasks, tuple(sorted(all_backends_used)), quarantined
 
 
 def _interactive_family_selection(
@@ -3982,6 +4078,7 @@ def _show_org_scale_results(
     curation_backends: tuple[str, ...] = (),
     *,
     quarantined_count: int = 0,
+    curation_quarantined_count: int = 0,
     quarantine_dir: Path | None = None,
     consensus_config: object | None = None,
     out_dir: Path | None = None,
@@ -4004,6 +4101,16 @@ def _show_org_scale_results(
             click.echo(
                 f"Quarantined candidates written to {quarantine_dir} "
                 "with divergence_report.json"
+            )
+        click.echo()
+    if curation_quarantined_count:
+        click.echo(
+            "Curation verification: "
+            f"quarantined={curation_quarantined_count}"
+        )
+        if quarantine_dir is not None:
+            click.echo(
+                f"Rejected curation artifacts written to {quarantine_dir}"
             )
         click.echo()
 

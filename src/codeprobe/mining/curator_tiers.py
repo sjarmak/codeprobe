@@ -4,7 +4,7 @@ Provides three entry points:
 - classify_tiers(): Assigns tier labels (required/supplementary/context)
   to curated files using LLM judgment or a source-count heuristic.
 - verify_curation(): Samples files and asks an LLM to confirm curation
-  membership, returning pass/warn/fail.
+  membership, returning a structured verification outcome.
 - assign_ground_truth_tiers() / assign_mcp_family_tiers(): Ground-truth
   tier assignment that routes through an LLM invocation before any
   tier string literal is returned — the ZFC-compliant replacement for
@@ -23,6 +23,7 @@ import random
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 from codeprobe.core.llm import (
     LLMError,
@@ -30,13 +31,15 @@ from codeprobe.core.llm import (
     call_claude,
     llm_available,
 )
-from codeprobe.mining.curator import CuratedFile
+from codeprobe.mining.curator import CuratedFile, CurationVerification
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.mining.org_scale_scanner import get_tracked_files
 
 logger = logging.getLogger(__name__)
 
 _VALID_TIERS = frozenset({"required", "supplementary", "context"})
+_VALID_VERDICTS = frozenset({"pass", "warn", "fail"})
+_VALID_REVIEWS = frozenset({"agree", "disagree"})
 
 # Tier assigned to files at each graph distance from the PR-diff seed set.
 # PRD R3: direct PR-diff hit → required, 1-hop reference → supplementary,
@@ -198,16 +201,26 @@ def _build_verify_prompt(
         "FILES NOT IN THE CURATED SET (should be irrelevant):\n"
         f"{not_list}\n\n"
         "For each file, respond with whether you AGREE or DISAGREE with its "
-        "current classification (in-set or not-in-set).\n\n"
-        "Respond with ONLY a JSON object mapping each file path to "
-        '"agree" or "disagree".\n'
-        'Example: {"src/foo.py": "agree", "src/bar.py": "disagree"}\n'
-        "No markdown fences. No explanation. Just the JSON object."
+        "current classification (in-set or not-in-set). Then judge whether "
+        "the sampled evidence makes the curation acceptable (pass), "
+        "questionable but usable (warn), or unacceptable (fail).\n\n"
+        "Respond with ONLY a JSON object in this exact shape:\n"
+        '{\n  "verdict": "pass" | "warn" | "fail",\n'
+        '  "reviews": {"src/foo.py": "agree", "src/bar.py": "disagree"},\n'
+        '  "reason": "brief rationale"\n}\n'
+        "Include every sampled file exactly once in reviews. "
+        "No markdown fences or additional keys."
     )
 
 
-def _parse_verify_response(text: str) -> dict[str, str]:
-    """Parse LLM verification response into path->agree/disagree mapping."""
+def _parse_verify_response(
+    text: str,
+    expected_paths: frozenset[str],
+    *,
+    sampled_in: tuple[str, ...],
+    sampled_out: tuple[str, ...],
+) -> CurationVerification:
+    """Parse and structurally validate an affirmative model review."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
@@ -215,14 +228,104 @@ def _parse_verify_response(text: str) -> dict[str, str]:
         cleaned = "\n".join(lines)
 
     try:
-        mapping = json.loads(cleaned)
+        payload = json.loads(cleaned)
     except (json.JSONDecodeError, ValueError) as exc:
         raise ValueError(f"Failed to parse verify JSON: {exc}") from exc
 
-    if not isinstance(mapping, dict):
-        raise ValueError(f"Expected JSON object, got {type(mapping).__name__}")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object, got {type(payload).__name__}")
+    allowed_keys = {"verdict", "reviews", "reason"}
+    if set(payload) - allowed_keys:
+        raise ValueError("Verification response contains unexpected keys")
 
-    return mapping
+    verdict = payload.get("verdict")
+    if verdict not in _VALID_VERDICTS:
+        raise ValueError(f"Invalid verification verdict: {verdict!r}")
+
+    reviews = payload.get("reviews")
+    if not isinstance(reviews, dict) or not reviews:
+        raise ValueError("Verification reviews must be a non-empty JSON object")
+    if set(reviews) != expected_paths:
+        raise ValueError("Verification reviews must cover every sampled file exactly")
+    if any(value not in _VALID_REVIEWS for value in reviews.values()):
+        raise ValueError("Verification reviews must contain only agree/disagree")
+
+    message = payload.get("reason", "")
+    if not isinstance(message, str):
+        raise ValueError("Verification reason must be a string")
+
+    return CurationVerification(
+        status=verdict,
+        message=message,
+        reviews=tuple(sorted(reviews.items())),
+        sampled_in=sampled_in,
+        sampled_out=sampled_out,
+    )
+
+
+def _sample_files(
+    curated_files: list[CuratedFile],
+    repos: list[Path],
+    sample_size: int,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Select in-set and out-of-set files for model review."""
+    curated_paths = [curated.path for curated in curated_files]
+    curated_set = frozenset(curated_paths)
+    in_sample = tuple(
+        random.sample(curated_paths, min(sample_size, len(curated_paths)))
+    )
+
+    all_tracked: set[str] = set()
+    for repo in repos:
+        all_tracked.update(get_tracked_files(repo))
+
+    not_curated = sorted(all_tracked - curated_set)
+    out_sample = tuple(
+        random.sample(not_curated, min(sample_size, len(not_curated)))
+    )
+    return in_sample, out_sample
+
+
+def _unevaluated(
+    reason: Literal["model_unavailable", "empty_sample"],
+    message: str,
+) -> CurationVerification:
+    """Build a non-admissible verification outcome."""
+    return CurationVerification(
+        status="unevaluated",
+        reason=reason,
+        message=message,
+    )
+
+
+def _call_verification_model(
+    in_sample: tuple[str, ...],
+    out_sample: tuple[str, ...],
+    family: TaskFamily,
+) -> str:
+    """Request a structured verification verdict from the model."""
+    request = LLMRequest(
+        prompt=_build_verify_prompt(list(in_sample), list(out_sample), family),
+        model="haiku",
+        timeout_seconds=30,
+    )
+    return call_claude(request).text
+
+
+def _verification_error(
+    reason: Literal["model_error", "parse_error"],
+    message: str,
+    in_sample: tuple[str, ...],
+    out_sample: tuple[str, ...],
+) -> CurationVerification:
+    """Build a non-admissible verification error."""
+    return CurationVerification(
+        status="error",
+        reason=reason,
+        message=message,
+        sampled_in=in_sample,
+        sampled_out=out_sample,
+    )
 
 
 def verify_curation(
@@ -231,62 +334,48 @@ def verify_curation(
     repos: list[Path],
     *,
     sample_size: int = 5,
-) -> str:
-    """Verify curation quality by sampling files and asking LLM.
-
-    Samples up to ``sample_size`` files from the curated set and up to
-    ``sample_size`` from tracked files NOT in the set. Sends a single
-    Haiku call to confirm/reject membership.
-
-    Returns:
-        "pass" if <=1 disagreement, "warn" if 2, "fail" if >2.
-        Returns "pass" when LLM is unavailable (graceful degradation).
-    """
+) -> CurationVerification:
+    """Verify curation; only a parsed model verdict can pass."""
     if not llm_available():
-        logger.info("LLM unavailable, skipping curation verification (pass)")
-        return "pass"
+        logger.info("LLM unavailable; curation verification is unevaluated")
+        return _unevaluated(
+            "model_unavailable",
+            "Curation verification model is unavailable.",
+        )
 
-    # Gather curated paths
-    curated_paths = [f.path for f in curated_files]
-    curated_set = frozenset(curated_paths)
+    if not curated_files:
+        return _unevaluated(
+            "empty_sample",
+            "No curated files were available for verification.",
+        )
 
-    # Sample from curated set
-    in_sample = random.sample(curated_paths, min(sample_size, len(curated_paths)))
-
-    # Gather all tracked files from repos, subtract curated set
-    all_tracked: set[str] = set()
-    for repo in repos:
-        try:
-            tracked = get_tracked_files(repo)
-            all_tracked.update(tracked)
-        except Exception as exc:
-            logger.warning("Failed to get tracked files from %s: %s", repo, exc)
-
-    not_curated = sorted(all_tracked - curated_set)
-    not_sample = random.sample(not_curated, min(sample_size, len(not_curated)))
-
-    if not in_sample and not not_sample:
-        return "pass"
-
-    prompt = _build_verify_prompt(in_sample, not_sample, family)
+    in_sample, out_sample = _sample_files(curated_files, repos, sample_size)
+    if not in_sample and not out_sample:
+        return _unevaluated(
+            "empty_sample",
+            "No files were available for curation verification.",
+        )
 
     try:
-        response = call_claude(
-            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+        response_text = _call_verification_model(in_sample, out_sample, family)
+    except LLMError as exc:
+        logger.warning("Curation verification model call failed: %s", exc)
+        message = "Curation verification model call failed."
+        return _verification_error("model_error", message, in_sample, out_sample)
+
+    try:
+        expected_paths = frozenset((*in_sample, *out_sample))
+        return _parse_verify_response(
+            response_text,
+            expected_paths,
+            sampled_in=in_sample,
+            sampled_out=out_sample,
         )
-        mapping = _parse_verify_response(response.text)
-    except (LLMError, ValueError) as exc:
-        logger.warning("LLM verification failed, returning pass (graceful): %s", exc)
-        return "pass"
-
-    # Count disagreements
-    disagreements = sum(1 for v in mapping.values() if v.lower().strip() == "disagree")
-
-    if disagreements <= 1:
-        return "pass"
-    if disagreements == 2:
-        return "warn"
-    return "fail"
+    except ValueError as exc:
+        logger.warning("Curation verification response was invalid: %s", exc)
+        return _verification_error(
+            "parse_error", str(exc), in_sample, out_sample
+        )
 
 
 # ---------------------------------------------------------------------------
