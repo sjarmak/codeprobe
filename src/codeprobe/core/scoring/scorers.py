@@ -234,6 +234,8 @@ class ContinuousScorer:
         "metric",
         "weighted_recall",
     )
+    _VERIFIER_RESULT_FILENAME = "verifier_result.json"
+    _MAX_VERIFIER_RESULT_BYTES = 16 * 1024
 
     def score(self, agent_output: str, task_dir: Path) -> ScoreResult:
         test_sh = task_dir / "tests" / "test.sh"
@@ -256,6 +258,16 @@ class ContinuousScorer:
                     score=0.0,
                     passed=False,
                     error=run.error,
+                    details=exec_details,
+                    scorer_family="continuous",
+                    verdict="verifier_error",
+                )
+            verifier_error = self._read_verifier_error(run.sandbox_task)
+            if verifier_error is not None:
+                return ScoreResult(
+                    score=0.0,
+                    passed=False,
+                    error=verifier_error,
                     details=exec_details,
                     scorer_family="continuous",
                     verdict="verifier_error",
@@ -345,6 +357,33 @@ class ContinuousScorer:
         if not reward_file.is_file():
             return None
         return _parse_float_score(reward_file.read_text(encoding="utf-8"))
+
+    @classmethod
+    def _read_verifier_error(cls, sandbox_task: Path | None) -> str | None:
+        """Read the typed failure envelope emitted by generated verifiers."""
+        if sandbox_task is None:
+            return None
+        result_file = sandbox_task / cls._VERIFIER_RESULT_FILENAME
+        if not result_file.is_file():
+            return None
+        try:
+            if result_file.stat().st_size > cls._MAX_VERIFIER_RESULT_BYTES:
+                return "Invalid verifier_result.json: file exceeds size limit"
+            payload = json.loads(
+                result_file.read_text(encoding="utf-8"),
+                parse_constant=_reject_non_finite_json_constant,
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            return sanitize_secrets(f"Invalid verifier_result.json: {exc}")
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != 1
+            or payload.get("verdict") != "verifier_error"
+            or not isinstance(payload.get("error"), str)
+            or not payload["error"].strip()
+        ):
+            return "Invalid verifier_result.json: unsupported result envelope"
+        return sanitize_secrets(payload["error"].strip())
 
     @staticmethod
     def _derive_reward_and_metrics(

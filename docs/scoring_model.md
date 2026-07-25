@@ -713,8 +713,11 @@ The migrated scorer families use the following verdict boundary:
 
 * `ContinuousScorer` reports `verifier_error` when its script is missing,
   sandbox execution fails, or an exit-zero verifier produces no valid numeric
-  score. A valid numeric reward reports `correct` or `incorrect` according to
-  that family's existing pass rule.
+  score. Generated verifiers can also report a configuration failure through
+  the bounded, schema-checked `verifier_result.json` envelope; the scorer reads
+  that envelope before interpreting the process exit code. A valid numeric
+  reward reports `correct` or `incorrect` according to that family's existing
+  pass rule.
 * `CheckpointScorer` and `OracleChecksScorer` report `verifier_error` for
   malformed manifests, invalid weights, missing verifier scripts, sandbox
   failures, and malformed non-empty JSON output. Valid verifier results,

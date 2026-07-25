@@ -178,11 +178,26 @@ metrics.json shape:
    "weighted_recall": float|null}
 The host scorer (ContinuousScorer) merges this into scoring_details so
 F1 stays the headline number while precision/recall remain inspectable.
+
+Verifier configuration failures are written to verifier_result.json as a
+typed envelope so the host can distinguish them from an agent's zero score.
 """
 import json, sys
 from pathlib import Path
 
 TIER_WEIGHTS = {"required": 2.0, "supplementary": 1.0, "context": 0.5}
+
+def fail_verifier(task_dir, message):
+    (task_dir / "verifier_result.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "verdict": "verifier_error",
+            "error": message,
+        }, sort_keys=True) + "\\n",
+        encoding="utf-8",
+    )
+    print(f"VERIFIER ERROR: {message}", file=sys.stderr)
+    sys.exit(2)
 
 def normalize(p):
     p = p.replace("\\\\", "/").strip()
@@ -215,19 +230,32 @@ def strip_repo_prefix(p, repo):
 
 def main():
     task_dir = Path(sys.argv[1])
-    gt = json.loads((task_dir / "ground_truth.json").read_text())
+    try:
+        gt = json.loads((task_dir / "ground_truth.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail_verifier(task_dir, f"Invalid ground_truth.json: {exc}")
+    if not isinstance(gt, dict):
+        fail_verifier(task_dir, "Invalid ground_truth.json: expected an object")
+    oracle_type = gt.get("oracle_type")
+    if oracle_type != "file_list":
+        fail_verifier(task_dir, f"Unsupported generated oracle type: {oracle_type!r}")
+
     repo = gt.get("repo", "") or ""
     tiers_raw = gt.get("oracle_tiers") or {}
+    if not isinstance(tiers_raw, dict):
+        fail_verifier(task_dir, "Invalid ground_truth.json: oracle_tiers must be an object")
     has_tiers = bool(tiers_raw)
 
+    expected = gt.get("expected")
+    if not isinstance(expected, list) or any(not isinstance(p, str) for p in expected):
+        fail_verifier(task_dir, "Invalid ground_truth.json: expected must be a list of paths")
     expected_set = frozenset(
         strip_repo_prefix(normalize(p), repo)
-        for p in gt.get("expected", [])
+        for p in expected
         if p
     )
     if not expected_set:
-        print("FAIL: empty ground truth")
-        sys.exit(1)
+        fail_verifier(task_dir, "Invalid ground_truth.json: expected paths are empty")
 
     # Tier map keyed by the same normalized+stripped form as expected_set.
     tier_map = {

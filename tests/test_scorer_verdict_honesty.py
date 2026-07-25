@@ -16,7 +16,9 @@ from codeprobe.core.scoring import (
     ScoreResult,
 )
 from codeprobe.mining.org_scale_oracle import oracle_check
+from codeprobe.mining.writer import write_task_dir
 from codeprobe.models.experiment import CompletedTask
+from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 
 def _write_executable(path: Path, body: str) -> None:
@@ -122,3 +124,27 @@ def test_unknown_org_scale_oracle_type_is_typed_verifier_error(
 
     assert result["verdict"] == "verifier_error"
     assert result["error"] == "Unknown oracle_type: 'unknown'"
+
+
+def test_generated_unknown_oracle_type_reaches_continuous_scorer_as_infra(
+    tmp_path: Path,
+) -> None:
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    task = Task(
+        id="unknown-generated-oracle",
+        repo=repo_path.name,
+        metadata=TaskMetadata(name="Unknown generated oracle"),
+        verification=TaskVerification(
+            type="oracle",
+            reward_type="continuous",
+            oracle_type="unknown",
+            oracle_answer=("a.py",),
+        ),
+    )
+    task_dir = write_task_dir(task, tmp_path / "tasks", repo_path)
+
+    result = ContinuousScorer().score("a.py\n", task_dir)
+
+    _assert_infra(result)
+    assert result.error == "Unsupported generated oracle type: 'unknown'"

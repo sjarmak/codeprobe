@@ -31,7 +31,11 @@ def _setup_task(
     task_dir = tmp_path / "task"
     task_dir.mkdir()
     (task_dir / "oracle.py").write_text(_ORACLE_PY)
-    gt: dict[str, object] = {"expected": expected, "repo": repo}
+    gt: dict[str, object] = {
+        "oracle_type": "file_list",
+        "expected": expected,
+        "repo": repo,
+    }
     if oracle_tiers is not None:
         gt["oracle_tiers"] = oracle_tiers
     (task_dir / "ground_truth.json").write_text(json.dumps(gt))
