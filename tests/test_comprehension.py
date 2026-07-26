@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -300,6 +301,22 @@ def test_write_comprehension_tasks_creates_files(
             "confidence",
             "provenance",
         }
+
+
+def test_write_comprehension_tasks_rejects_parent_directory_id(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    generated = ComprehensionGenerator(chain_repo).generate(count=1)
+    assert generated
+    unsafe_task = replace(generated[0], id="..")
+    output_dir = tmp_path / "out"
+
+    with pytest.raises(ValueError, match="Invalid task id"):
+        write_comprehension_tasks([unsafe_task], output_dir)
+
+    assert not (tmp_path / "instruction.md").exists()
+    assert not (tmp_path / "metadata.json").exists()
+    assert not (tmp_path / "tests").exists()
 
 
 def test_ground_truth_provenance_is_deterministic(

@@ -530,16 +530,24 @@ class TestMineTasks:
 
 
 class TestWriteTaskDir:
-    def test_write_task_dir_rejects_path_traversal(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("task_id", ["../etc", "..", "."])
+    def test_write_task_dir_rejects_path_traversal(
+        self, tmp_path: Path, task_id: str
+    ) -> None:
         """Writer rejects task IDs with path traversal."""
         task = Task(
-            id="../etc",
+            id=task_id,
             repo="r",
             metadata=TaskMetadata(name="x"),
             verification=TaskVerification(command="bash tests/test.sh"),
         )
+        base_dir = tmp_path / "tasks"
         with pytest.raises(ValueError, match="Invalid task id"):
-            write_task_dir(task, tmp_path / "tasks", tmp_path / "r")
+            write_task_dir(task, base_dir, tmp_path / "r")
+
+        assert not (tmp_path / "instruction.md").exists()
+        assert not (tmp_path / "metadata.json").exists()
+        assert not (tmp_path / "tests").exists()
 
     def test_write_task_dir(self, tmp_path: Path) -> None:
         task = Task(

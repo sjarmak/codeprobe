@@ -1078,13 +1078,20 @@ def resolve_checkpoint_scripts(task: Task) -> dict[str, str] | None:
     return None
 
 
+_UNSAFE_PATH_COMPONENTS = frozenset({".", ".."})
+
+
 def _is_safe_path_component(name: str) -> bool:
     """True when *name* is a bare filename safe to join onto an output dir.
 
-    Rejects empty strings and anything with a directory part, so a value
-    read out of task.toml can't escape the directory it's written into.
+    Rejects empty strings, dot directories, and anything with a directory
+    part, so a value read out of task.toml can't escape its output directory.
     """
-    return bool(name) and Path(name).name == name
+    return (
+        bool(name)
+        and name not in _UNSAFE_PATH_COMPONENTS
+        and Path(name).name == name
+    )
 
 
 class CheckpointScriptError(ValueError):

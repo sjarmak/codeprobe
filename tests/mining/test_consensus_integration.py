@@ -304,12 +304,15 @@ def test_write_quarantined_task_emits_three_files(tmp_path: Path) -> None:
     assert div["decision"] == "quarantined"
 
 
-def test_write_quarantined_task_rejects_unsafe_id(tmp_path: Path) -> None:
+@pytest.mark.parametrize("task_id", ["../escape", "..", "."])
+def test_write_quarantined_task_rejects_unsafe_id(
+    tmp_path: Path, task_id: str
+) -> None:
     base = tmp_path / "tasks_quarantined"
     base.mkdir()
     with pytest.raises(ValueError, match="Invalid task id"):
         write_quarantined_task(
-            task_id="../escape",
+            task_id=task_id,
             family="symbol-reference-trace",
             repo="r",
             symbol="s",
@@ -319,6 +322,10 @@ def test_write_quarantined_task_rejects_unsafe_id(tmp_path: Path) -> None:
             divergence_report={},
             base_dir=base,
         )
+
+    assert not (tmp_path / "instruction.md").exists()
+    assert not (tmp_path / "metadata.json").exists()
+    assert not (tmp_path / "divergence_report.json").exists()
 
 
 # ---------------------------------------------------------------------------

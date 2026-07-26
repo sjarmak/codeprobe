@@ -102,13 +102,13 @@ def write_comprehension_tasks(
     # task category here, so None is the whole map.
     writable: list[tuple[Task, ComprehensionTaskSpec]] = []
     for task in tasks:
+        if not _is_safe_path_component(task.id):
+            raise ValueError(f"Invalid task id for filesystem use: {task.id!r}")
+
         spec = registry.get(task.id)
         if spec is None:
             logger.warning("No spec registered for task %s, skipping", task.id)
             continue
-
-        if not _is_safe_path_component(task.id):
-            raise ValueError(f"Invalid task id for filesystem use: {task.id!r}")
 
         if task.verification.verification_mode == "dual" and repo_path is None:
             raise ValueError(

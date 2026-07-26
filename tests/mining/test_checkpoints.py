@@ -29,6 +29,7 @@ from codeprobe.mining.org_scale import (
 )
 from codeprobe.mining.writer import (
     CheckpointScriptError,
+    _is_safe_path_component,
     _write_checkpoints,
     resolve_checkpoint_scripts,
     write_task_dir,
@@ -504,11 +505,21 @@ class TestCheckpointScriptValidation:
         assert "a.sh" in str(excinfo.value)
         assert list(base_dir.iterdir()) == []
 
-    def test_traversal_verifier_name_raises(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "verifier",
+        [
+            pytest.param("../../escapee.sh", id="parent-traversal"),
+            pytest.param("..", id="parent-directory"),
+            pytest.param(".", id="current-directory"),
+        ],
+    )
+    def test_traversal_verifier_name_raises(
+        self, tmp_path: Path, verifier: str
+    ) -> None:
         """Checkpoint.verifier is loader-verbatim from task.toml and is joined
         onto verifiers_dir then chmod 0755 — it needs the task.id check."""
         escapee = tmp_path / "escapee.sh"
-        task = _make_custom_checkpoint_task("../../escapee.sh")
+        task = _make_custom_checkpoint_task(verifier)
         repo_path, base_dir = self._dirs(tmp_path)
 
         with pytest.raises(CheckpointScriptError) as excinfo:
@@ -516,13 +527,15 @@ class TestCheckpointScriptValidation:
                 task,
                 base_dir,
                 repo_path,
-                checkpoint_scripts={
-                    "../../escapee.sh": "#!/usr/bin/env bash\nexit 0\n"
-                },
+                checkpoint_scripts={verifier: "#!/usr/bin/env bash\nexit 0\n"},
             )
 
         assert "unsafe verifier filename" in str(excinfo.value)
         assert not escapee.exists(), "verifier must not be written outside the task tree"
+
+    @pytest.mark.parametrize("name", [".", ".."])
+    def test_safe_path_component_rejects_dot_directories(self, name: str) -> None:
+        assert not _is_safe_path_component(name)
 
     def test_direct_write_checkpoints_call_cannot_bypass(
         self, tmp_path: Path
