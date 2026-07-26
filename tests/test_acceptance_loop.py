@@ -525,6 +525,50 @@ def _write_fake_codeprobe(tmp_path: Path) -> tuple[str, ...]:
     return (sys.executable, str(shim))
 
 
+def test_run_producer_explicitly_mines_micro_probes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Release acceptance spends only on deterministic micro-probes.
+
+    The real producer validates mine/run/telemetry plumbing. Letting the
+    default mixed miner include an arbitrarily hard SDLC task makes that
+    plumbing check depend on task difficulty and can exhaust the iteration's
+    approved budget before ``interpret`` can produce valid evidence.
+    """
+    calls: list[list[str]] = []
+
+    def fail_after_capture(
+        cmd: list[str],
+        **_kwargs: object,
+    ) -> object:
+        calls.append(cmd)
+        return acceptance_loop.subprocess.CompletedProcess(
+            cmd,
+            returncode=1,
+            stdout="",
+            stderr="captured",
+        )
+
+    monkeypatch.setattr(acceptance_loop.subprocess, "run", fail_after_capture)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    record = acceptance_loop._run_producer(
+        target,
+        "e2e-stub",
+        codeprobe_cmd=("codeprobe",),
+    )
+
+    assert record["stage"] == "mine"
+    assert calls == [[
+        "codeprobe", "mine", str(target),
+        "--count", "3",
+        "--task-type", "micro_probe",
+        "--no-interactive", "--no-llm", "--source", "local",
+    ]]
+
+
 def test_run_producer_populates_results_and_statistical_criteria_evaluate(
     tmp_path: Path,
 ) -> None:

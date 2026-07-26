@@ -255,11 +255,12 @@ def _run_producer(
 ) -> dict[str, Any]:
     """Populate ``target_repo/.codeprobe/results.json`` via a real run.
 
-    Runs ``codeprobe mine`` then ``codeprobe run --agent <producer_agent>``
-    against ``target_repo``, then aggregates the per-arm results into the
-    single ``results.json`` the statistical criteria read. The agent is the
-    caller's *explicit* ``--producer-agent`` choice — there is no default,
-    so a stub can never masquerade as real release evidence by accident.
+    Mines deterministic micro-probes, runs them with
+    ``codeprobe run --agent <producer_agent>`` against ``target_repo``, then
+    aggregates the per-arm results into the single ``results.json`` the
+    statistical criteria read. The agent is the caller's *explicit*
+    ``--producer-agent`` choice — there is no default, so a stub can never
+    masquerade as real release evidence by accident.
 
     Every step's failure is recorded and returned, never masked: a failed
     mine/run leaves no ``results.json``, so the dependent statistical
@@ -269,6 +270,7 @@ def _run_producer(
     mine = [
         *codeprobe_cmd, "mine", str(target_repo),
         "--count", str(mine_count),
+        "--task-type", "micro_probe",
         "--no-interactive", "--no-llm", "--source", "local",
     ]
     run = [
