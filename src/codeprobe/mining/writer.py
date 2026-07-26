@@ -5,8 +5,11 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import re
 import shlex
+import shutil
+import stat
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
 
@@ -1182,6 +1185,70 @@ def resolve_verified_checkpoint_scripts(
     return scripts
 
 
+def _read_regular_utf8_file(path: Path) -> str:
+    """Read a UTF-8 regular file without following its final symlink."""
+    flags = os.O_RDONLY | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = -1
+            return stream.read().decode("utf-8")
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def read_checkpoint_scripts(task: Task, tests_dir: Path) -> dict[str, str]:
+    """Read the task's declared verifier scripts from an existing task dir."""
+    checkpoints = task.verification.checkpoints
+    if not checkpoints:
+        return {}
+
+    verifiers_dir = tests_dir / "verifiers"
+    if verifiers_dir.is_symlink():
+        raise CheckpointScriptError(
+            f"task {task.id!r} verifier directory must not be a symlink"
+        )
+
+    scripts: dict[str, str] = {}
+    problems: list[str] = []
+    for checkpoint in checkpoints:
+        if not _is_safe_path_component(checkpoint.verifier):
+            problems.append(
+                f"{checkpoint.name!r}: unsafe verifier filename "
+                f"{checkpoint.verifier!r}"
+            )
+            continue
+
+        verifier_path = verifiers_dir / checkpoint.verifier
+        if verifier_path.is_symlink():
+            problems.append(
+                f"{checkpoint.name!r}: verifier must not be a symlink "
+                f"{checkpoint.verifier!r}"
+            )
+            continue
+        try:
+            scripts[checkpoint.verifier] = _read_regular_utf8_file(
+                verifier_path
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            problems.append(
+                f"{checkpoint.name!r}: cannot read verifier "
+                f"{checkpoint.verifier!r}: {exc}"
+            )
+
+    if problems:
+        raise CheckpointScriptError(
+            f"task {task.id!r} has unreadable checkpoint verifiers: "
+            f"{'; '.join(problems)}"
+        )
+    return scripts
+
+
 def _write_checkpoints(
     task: Task,
     tests_dir: Path,
@@ -1189,10 +1256,10 @@ def _write_checkpoints(
 ) -> None:
     """Emit per-checkpoint verifier scripts + ``tests/checkpoints.json``.
 
-    No-op when ``task.verification.checkpoints`` is empty — this is the
-    gating contract that keeps single-step tasks (plain sdlc_code_change,
-    non-multi-step org_scale, etc.) from emitting ``tests/verifiers/`` or
-    ``tests/checkpoints.json`` (R17 acceptance #4).
+    When ``task.verification.checkpoints`` is empty, remove any checkpoint
+    artifacts left by an earlier write. This keeps single-step tasks (plain
+    sdlc_code_change, non-multi-step org_scale, etc.) from retaining
+    ``tests/verifiers/`` or ``tests/checkpoints.json`` (R17 acceptance #4).
 
     ``checkpoint_scripts`` maps the verifier filename (e.g.
     ``step1_answer_provided.sh``) to its bash body. Every declared
@@ -1200,14 +1267,20 @@ def _write_checkpoints(
     raises :class:`CheckpointScriptError` rather than getting a stub.
     """
     checkpoints = task.verification.checkpoints
+    checkpoints_path = tests_dir / "checkpoints.json"
+    verifiers_dir = tests_dir / "verifiers"
     if not checkpoints:
+        checkpoints_path.unlink(missing_ok=True)
+        if verifiers_dir.is_symlink():
+            verifiers_dir.unlink()
+        elif verifiers_dir.exists():
+            shutil.rmtree(verifiers_dir)
         return
 
     # Resolved here rather than taken on trust, so direct callers of this
     # helper get the same check write_task_dir applies at its boundary.
     scripts = resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
 
-    verifiers_dir = tests_dir / "verifiers"
     verifiers_dir.mkdir(parents=True, exist_ok=True)
 
     for cp in checkpoints:
@@ -1219,7 +1292,7 @@ def _write_checkpoints(
         {"name": cp.name, "weight": cp.weight, "verifier": cp.verifier}
         for cp in checkpoints
     ]
-    (tests_dir / "checkpoints.json").write_text(
+    checkpoints_path.write_text(
         json.dumps(checkpoints_payload, indent=2) + "\n",
         encoding="utf-8",
     )

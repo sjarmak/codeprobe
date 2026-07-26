@@ -4245,8 +4245,8 @@ def _run_refresh(
         read_task_metadata_json,
         refresh_task,
     )
-    from codeprobe.mining.writer import write_task_dir
-    from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+    from codeprobe.mining.writer import read_checkpoint_scripts, write_task_dir
+    from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
 
     existing_task_dir = Path(existing_task_dir).resolve()
     if not existing_task_dir.is_dir():
@@ -4310,6 +4310,15 @@ def _run_refresh(
     old_metadata_section = old_meta.get("metadata") or {}
     old_verification = old_meta.get("verification") or {}
     language = old_metadata_section.get("language", "") or ""
+    checkpoints = tuple(
+        Checkpoint(
+            name=checkpoint["name"],
+            weight=float(checkpoint["weight"]),
+            verifier=checkpoint["verifier"],
+            description=checkpoint.get("description", ""),
+        )
+        for checkpoint in old_verification.get("checkpoints") or ()
+    )
 
     new_task = Task(
         id=str(old_meta.get("id", "")),
@@ -4335,6 +4344,7 @@ def _run_refresh(
             ),
             oracle_type=new_signature.oracle_type,
             oracle_answer=new_signature.oracle_files,
+            checkpoints=checkpoints,
         ),
     )
 
@@ -4360,7 +4370,16 @@ def _run_refresh(
     # 5. Write the refreshed task back. write_task_dir uses the task.id
     #    (preserved) as the directory name, so this rewrites in place.
     base_dir = existing_task_dir.parent
-    write_task_dir(result.task, base_dir, repo_path)
+    checkpoint_scripts = read_checkpoint_scripts(
+        result.task,
+        existing_task_dir / "tests",
+    )
+    write_task_dir(
+        result.task,
+        base_dir,
+        repo_path,
+        checkpoint_scripts=checkpoint_scripts,
+    )
 
     if result.renumbered:
         click.echo(

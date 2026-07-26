@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+import os
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
 
+from codeprobe.cli import mine_cmd
 from codeprobe.mining.refresh import (
     CHURN_THRESHOLD,
     StructuralMismatchError,
@@ -18,8 +20,16 @@ from codeprobe.mining.refresh import (
     refresh_task,
     signature_from_task,
 )
-from codeprobe.mining.writer import write_task_dir
-from codeprobe.models.task import Task, TaskMetadata, TaskVerification
+from codeprobe.mining.writer import (
+    CheckpointScriptError,
+    read_checkpoint_scripts,
+    write_task_dir,
+)
+from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
+
+_CUSTOM_CHECKPOINT_SCRIPT = (
+    "#!/usr/bin/env bash\r\nset -euo pipefail\r\ntest -f answer.md\r\n"
+)
 
 # ---------------------------------------------------------------------------
 # Fixture builders
@@ -60,13 +70,49 @@ def _write_existing_task_dir(
     tmp_path: Path,
     task: Task,
     repo_path: Path | None = None,
+    *,
+    checkpoint_scripts: dict[str, str] | None = None,
 ) -> Path:
     """Write a task dir to disk via the real writer. Returns the task dir."""
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir(exist_ok=True)
     rp = repo_path if repo_path is not None else tmp_path / "repo"
     rp.mkdir(exist_ok=True)
-    return write_task_dir(task, tasks_dir, rp)
+    return write_task_dir(
+        task,
+        tasks_dir,
+        rp,
+        checkpoint_scripts=checkpoint_scripts,
+    )
+
+
+def _checkpoint_task(commit: str = "aaa0000") -> Task:
+    return Task(
+        id="checkpoint-task",
+        repo="example/repo",
+        metadata=TaskMetadata(
+            name="checkpoint-task",
+            category="change-scope-audit",
+            task_type="org_scale_cross_repo",
+            language="python",
+            ground_truth_commit=commit,
+        ),
+        verification=TaskVerification(
+            type="oracle",
+            command="bash tests/test.sh",
+            verification_mode="oracle",
+            oracle_type="file_list",
+            oracle_answer=("src/a.py",),
+            checkpoints=(
+                Checkpoint(
+                    name="answer-provided",
+                    weight=1.0,
+                    verifier="custom.sh",
+                    description="The answer artifact exists.",
+                ),
+            ),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -406,3 +452,78 @@ class TestRefreshTask:
         md = TaskMetadata(name="t", ground_truth_commit_history=("a", "b", "c"))
         d = asdict(md)
         assert d["ground_truth_commit_history"] == ("a", "b", "c")
+
+
+class TestRunRefreshCheckpointConsistency:
+    def test_refresh_preserves_checkpoint_metadata_and_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo_path = tmp_path / "repo"
+        task = _checkpoint_task()
+        task_dir = _write_existing_task_dir(
+            tmp_path,
+            task,
+            repo_path,
+            checkpoint_scripts={"custom.sh": _CUSTOM_CHECKPOINT_SCRIPT},
+        )
+        expected_metadata = [asdict(cp) for cp in task.verification.checkpoints]
+        expected_checkpoints = json.loads(
+            (task_dir / "tests" / "checkpoints.json").read_text()
+        )
+        verifier_path = task_dir / "tests" / "verifiers" / "custom.sh"
+        expected_verifier = verifier_path.read_bytes()
+
+        monkeypatch.setattr(mine_cmd, "_resolve_repo_path", lambda _: repo_path)
+        monkeypatch.setattr(
+            mine_cmd, "_resolve_refresh_commit", lambda _: "bbb1111"
+        )
+
+        mine_cmd._run_refresh(
+            task_dir,
+            repo_path_arg=str(repo_path),
+            accept_structural_change=False,
+        )
+
+        metadata = json.loads((task_dir / "metadata.json").read_text())
+        assert metadata["verification"]["checkpoints"] == expected_metadata
+        assert (
+            json.loads((task_dir / "tests" / "checkpoints.json").read_text())
+            == expected_checkpoints
+        )
+        assert verifier_path.read_bytes() == expected_verifier
+
+    def test_rewrite_without_checkpoints_removes_stale_artifacts(
+        self, tmp_path: Path
+    ) -> None:
+        repo_path = tmp_path / "repo"
+        task = _checkpoint_task()
+        task_dir = _write_existing_task_dir(
+            tmp_path,
+            task,
+            repo_path,
+            checkpoint_scripts={"custom.sh": _CUSTOM_CHECKPOINT_SCRIPT},
+        )
+        assert (task_dir / "tests" / "checkpoints.json").is_file()
+        assert (task_dir / "tests" / "verifiers").is_dir()
+
+        without_checkpoints = replace(
+            task,
+            verification=replace(task.verification, checkpoints=()),
+        )
+        write_task_dir(without_checkpoints, task_dir.parent, repo_path)
+
+        metadata = json.loads((task_dir / "metadata.json").read_text())
+        assert metadata["verification"]["checkpoints"] == []
+        assert not (task_dir / "tests" / "checkpoints.json").exists()
+        assert not (task_dir / "tests" / "verifiers").exists()
+
+    def test_refresh_rejects_non_regular_checkpoint_verifier(
+        self, tmp_path: Path
+    ) -> None:
+        tests_dir = tmp_path / "tests"
+        verifiers_dir = tests_dir / "verifiers"
+        verifiers_dir.mkdir(parents=True)
+        os.mkfifo(verifiers_dir / "custom.sh")
+
+        with pytest.raises(CheckpointScriptError, match="regular file"):
+            read_checkpoint_scripts(_checkpoint_task(), tests_dir)
