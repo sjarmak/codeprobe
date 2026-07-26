@@ -234,6 +234,79 @@ def test_all_pass_false_when_fail_count_nonzero(
     assert verdict["all_pass"] is False
 
 
+# ---------------------------------------------------------------------------
+# Exit-code gate: a command that ERRORED must not green just because it
+# happened to emit valid JSON (e.g. an error envelope on stdout, or JSON log
+# lines on stderr before the error). stream_separation / json_lines_valid must
+# require exit 0 so the criteria stay non-vacuous.
+# ---------------------------------------------------------------------------
+
+
+def _failure(verdict: dict, criterion_id: str) -> dict | None:
+    for f in verdict["failures"]:
+        if f["criterion_id"] == criterion_id:
+            return f
+    return None
+
+
+_JSON_ENVELOPE = '{"ok": false, "error": "NO_EXPERIMENT"}'
+_JSON_LOG_LINE = '{"level": "INFO", "logger": "codeprobe.x", "message": "hi"}\n'
+
+
+@pytest.mark.parametrize(
+    "kind, content, exit_code, should_fail",
+    [
+        # Nonzero exit → fail, even with well-formed JSON output (error
+        # envelope on stdout, or log lines emitted before the failure).
+        ("stream", _JSON_ENVELOPE, "2", True),
+        ("json", _JSON_LOG_LINE, "1", True),
+        # Missing exit artifact → fail: output exists but success is unknowable.
+        ("stream", _JSON_ENVELOPE, None, True),
+        ("json", _JSON_LOG_LINE, None, True),
+        # Empty / malformed exit artifact → fail (cannot confirm success).
+        ("stream", _JSON_ENVELOPE, "", True),
+        ("stream", _JSON_ENVELOPE, "notanint", True),
+        # The happy path is preserved: valid output + exit 0 → pass.
+        ("stream", '{"ok": true, "data": {"n": 3}}', "0", False),
+        ("json", _JSON_LOG_LINE, "0", False),
+    ],
+)
+def test_exit_code_gates_stream_and_json_checks(
+    tmp_path: Path,
+    kind: str,
+    content: str,
+    exit_code: str | None,
+    should_fail: bool,
+) -> None:
+    """stream_separation / json_lines_valid stay non-vacuous: only a command
+    that exited exactly 0 can pass. A nonzero, missing, empty, or malformed
+    exit code fails even when the output is well-formed JSON. Reuses the
+    existing stream / json_lines manifest builders."""
+    if kind == "stream":
+        manifest = _stream_manifest(
+            tmp_path,
+            'command = "x"\nstdout_must_parse_as = "json"\nwarning_channel = "stderr"',
+        )
+        cid, channel = "STREAM", "stdout"
+    else:
+        manifest = _json_lines_manifest(tmp_path)
+        cid, channel = "JLINES", "stderr"
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    other = "stderr" if channel == "stdout" else "stdout"
+    (ws / f"{cid}.{channel}").write_text(content)
+    (ws / f"{cid}.{other}").write_text("")
+    if exit_code is not None:  # None models a MISSING exit artifact
+        (ws / f"{cid}.exit").write_text(exit_code)
+    verdict = Verifier(manifest).run(ws)
+    fail = _failure(verdict, cid)
+    if should_fail:
+        assert fail is not None, f"{cid} must FAIL for exit={exit_code!r}"
+        assert "exit" in fail["evidence"].lower()
+    else:
+        assert fail is None, f"{cid} must PASS on exit 0"
+
+
 def test_failures_carry_required_fields(mixed_manifest: Path, tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -1279,11 +1352,13 @@ def test_stream_separation_json_stdout_pass_and_fail(tmp_path: Path) -> None:
     ws_ok = tmp_path / "ok"
     ws_ok.mkdir()
     (ws_ok / "STREAM.stdout").write_text('{"ok": true}\n')
+    (ws_ok / "STREAM.exit").write_text("0")
     assert v.run(ws_ok)["pass_count"] == 1
 
     ws_bad = tmp_path / "bad"
     ws_bad.mkdir()
     (ws_bad / "STREAM.stdout").write_text("WARNING: heads up\n{\"ok\": true}\n")
+    (ws_bad / "STREAM.exit").write_text("0")
     assert v.run(ws_bad)["fail_count"] == 1
 
 
@@ -1298,11 +1373,13 @@ def test_stream_separation_not_contains_pass_and_fail(tmp_path: Path) -> None:
     ws_ok = tmp_path / "ok"
     ws_ok.mkdir()
     (ws_ok / "STREAM.stdout").write_text("pure results, no logs here\n")
+    (ws_ok / "STREAM.exit").write_text("0")
     assert v.run(ws_ok)["pass_count"] == 1
 
     ws_bad = tmp_path / "bad"
     ws_bad.mkdir()
     (ws_bad / "STREAM.stdout").write_text("INFO codeprobe: leaked onto stdout\n")
+    (ws_bad / "STREAM.exit").write_text("0")
     assert v.run(ws_bad)["fail_count"] == 1
 
 
@@ -1351,6 +1428,7 @@ def test_json_lines_valid_pass(tmp_path: Path) -> None:
         '{"level": "INFO", "logger": "codeprobe", "message": "started"}\n'
         '{"level": "DEBUG", "logger": "codeprobe.mine", "message": "3 tasks"}\n'
     )
+    (ws / "JLINES.exit").write_text("0")
     assert v.run(ws)["pass_count"] == 1
 
 
@@ -1362,6 +1440,7 @@ def test_json_lines_valid_fails_on_non_json_line(tmp_path: Path) -> None:
         '{"level": "INFO", "logger": "codeprobe", "message": "ok"}\n'
         "Traceback (most recent call last):\n"
     )
+    (ws / "JLINES.exit").write_text("0")
     verdict = v.run(ws)
     assert verdict["fail_count"] == 1
     assert "not valid JSON" in verdict["failures"][0]["evidence"]
@@ -1372,6 +1451,7 @@ def test_json_lines_valid_fails_on_missing_required_key(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "JLINES.stderr").write_text('{"level": "INFO", "message": "no logger key"}\n')
+    (ws / "JLINES.exit").write_text("0")
     verdict = v.run(ws)
     assert verdict["fail_count"] == 1
     assert "missing required keys" in verdict["failures"][0]["evidence"]
@@ -1391,6 +1471,7 @@ def test_json_lines_valid_fails_when_channel_empty(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
     (ws / "JLINES.stderr").write_text("\n  \n")
+    (ws / "JLINES.exit").write_text("0")
     verdict = v.run(ws)
     assert verdict["fail_count"] == 1
     assert "no non-empty lines" in verdict["failures"][0]["evidence"]

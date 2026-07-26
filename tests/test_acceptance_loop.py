@@ -334,7 +334,8 @@ def test_producer_timeout_does_not_leak_stale_target_repo_state(
             command = """\\
             if [ -f {repo}/.marker ]; then sleep 5; else \\
             mkdir -p {repo}/.codeprobe/tasks && \\
-            touch {repo}/.codeprobe/tasks/task-{a,b,c} {repo}/.marker; fi\\
+            touch {repo}/.codeprobe/tasks/task-a {repo}/.codeprobe/tasks/task-b \\
+            {repo}/.codeprobe/tasks/task-c {repo}/.marker ; fi\\
             """
             expected_exit = 0
 

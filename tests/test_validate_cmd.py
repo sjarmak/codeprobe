@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import stat
 from pathlib import Path
 
@@ -569,3 +570,102 @@ class TestValidateMultiTaskDir:
         # No task-shape anywhere → legacy single-task mode runs and fails
         assert result.exit_code == 1
         assert "Validated" not in result.output
+
+    def test_discovers_nested_task_subdirectories(self, tmp_path: Path) -> None:
+        """Tasks nested below the top level are discovered recursively.
+
+        Regression for BUG-VALIDATE-DISCOVERY-005: a ``group/task-001``
+        layout must surface ``task-001`` even though the task sits two levels
+        below the argument. One-level (``iterdir``) discovery missed it.
+        """
+        group = tmp_path / "group-a"
+        group.mkdir()
+        self._make_valid_task(group, "task-001")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "task-001" in result.output
+        assert "Validated 1 task(s): 1 passed, 0 failed." in result.output
+
+    def test_does_not_descend_into_a_task_own_subdirs(self, tmp_path: Path) -> None:
+        """A task's own ``tests/`` subtree is not mistaken for a nested task."""
+        # One task under the parent; the task carries a tests/ subdir. Recursive
+        # discovery must stop at the task and not walk into tests/, so the count
+        # stays exactly 1.
+        self._make_valid_task(tmp_path, "task-001")
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert "Validated 1 task(s): 1 passed, 0 failed." in result.output
+
+    def test_discovery_handles_pathologically_deep_nesting(
+        self, tmp_path: Path
+    ) -> None:
+        """A very deep non-task chain must not raise RecursionError.
+
+        Recursive discovery blew the interpreter stack past ~1000 levels; the
+        iterative walker must find the leaf task at depth > 1100 and return it.
+        """
+        from codeprobe.cli.validate_cmd import _find_task_dirs
+
+        chain: list[Path] = []
+        cur = tmp_path
+        for _ in range(1200):
+            cur = cur / "d"
+            cur.mkdir()
+            chain.append(cur)
+        task = self._make_valid_task(cur, "task-001")
+
+        try:
+            found = _find_task_dirs(tmp_path)
+            assert [p.name for p in found] == ["task-001"]
+        finally:
+            # Tear the deep chain down iteratively: pytest's tmp_path cleanup
+            # (shutil.rmtree) and os.walk both recurse, so they would hit the
+            # same RecursionError on this tree. rmdir bottom-up avoids it.
+            shutil.rmtree(task)  # task subtree is shallow
+            for d in reversed(chain):
+                d.rmdir()
+
+    def test_discovery_propagates_io_errors_not_silent_partial(
+        self, tmp_path: Path
+    ) -> None:
+        """An unlistable subdirectory must surface as an error, not be silently
+        skipped — a swallowed OSError makes a partial discovery look complete.
+
+        Mode ``0o111`` (execute, no read) is the exact case the swallow hid:
+        ``_looks_like_task_dir`` can still stat (absent) children and returns
+        False, so the walk descends and ``iterdir()`` raises PermissionError.
+        """
+        import os
+
+        from codeprobe.cli.validate_cmd import _find_task_dirs
+
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses directory permissions")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o111)
+        try:
+            with pytest.raises(OSError):
+                _find_task_dirs(tmp_path)
+        finally:
+            locked.chmod(0o755)
+
+    def test_nested_tasks_fixture_surfaces_task_001(self) -> None:
+        """The committed ``nested_tasks`` fixture — the acceptance fixture for
+        BUG-VALIDATE-DISCOVERY-005 — must exist and surface ``task-001``.
+
+        Exit code 0 is asserted alongside the substring: the criterion's
+        ``cli_stdout_contains`` check inspects only stdout, so a fixture with
+        an invalid task (validate exit 1) that still printed ``task-001``
+        would green vacuously. Every discovered task must validate cleanly.
+        """
+        fixture = Path(__file__).resolve().parent / "fixtures" / "nested_tasks"
+        assert fixture.is_dir(), f"missing acceptance fixture: {fixture}"
+        runner = CliRunner()
+        result = runner.invoke(main, ["validate", str(fixture)])
+        assert result.exit_code == 0, result.output
+        assert "task-001" in result.output, result.output
+        assert "task-002" in result.output, result.output

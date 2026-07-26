@@ -61,7 +61,11 @@ prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_p
 depends_on = ["BUG-MINE-RUN-001"]
 eval_mode_required = "full"
 [criterion.params]
-command = "codeprobe interpret {results} --format json"
+# {repo} routes interpret at the real producer output (target_repo/.codeprobe),
+# so stdout is a genuine JSON report. {results} pointed at an unpopulated
+# workspace path, so interpret errored and left stdout empty (a wiring bug,
+# not an interpret defect).
+command = "codeprobe interpret {repo} --format json"
 stdout_must_parse_as = "json"
 warning_channel = "stderr"
 
@@ -120,7 +124,11 @@ depends_on = ["BUG-MINE-RUN-001"]
 eval_mode_required = "full"
 [criterion.params]
 source = "{repo}/.codeprobe/tasks"
-pattern = "*/metadata.json"
+# Every mined task dir carries instruction.md; only artifact-eval tasks carry
+# metadata.json (probe/test_script tasks use task.toml). Counting metadata.json
+# undercounted a 3-task mine as 1. instruction.md is the file common to every
+# task, so it counts tasks honestly. min_count unchanged (still 3).
+pattern = "*/instruction.md"
 min_count = 3
 
 [[criterion]]
@@ -316,7 +324,11 @@ prd_source = "docs/prd/prd_add_structured_logging_with_verbosity_levels_to_the_p
 depends_on = []
 eval_mode_required = "full"
 [criterion.params]
-command = "codeprobe probe {repo}"
+# --output routes probe tasks into the isolated workspace, so probe does not
+# leave the target repo dirty (a dirty checkout fails the next iteration's
+# producer 'run'). {repo} is read-only here. --count 5 (== MIN_PROBES) pins a
+# small, deterministic probe count.
+command = "codeprobe probe {repo} --count 5 --output {workspace}/log-stderr-probes"
 stdout_must_not_contain = "INFO codeprobe"
 stderr_may_contain = "INFO codeprobe"
 
@@ -334,7 +346,12 @@ prd_source = "docs/prd/prd_improving_tool_flow_customizability_ease_of_use_obser
 depends_on = ["LOG-STDERR-003"]
 eval_mode_required = "full"
 [criterion.params]
-command = "codeprobe --log-format json run {experiment}"
+# A deterministic, zero-budget 'probe' exercises --log-format json without a
+# paid agent 'run'. Output is routed under {workspace} so it does not dirty the
+# target. --count 5 (== MIN_PROBES) pins a small, deterministic probe count.
+# 'run {experiment}' needed a populated experiment and an agent; probe emits the
+# same JSON log stream deterministically.
+command = "codeprobe --log-format json probe {repo} --count 5 --output {workspace}/out-json-probes"
 channel = "stderr"
 required_keys = ["level", "logger", "message"]
 

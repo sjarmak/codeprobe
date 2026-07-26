@@ -850,11 +850,42 @@ def _looks_like_task_dir(path: Path) -> bool:
     )
 
 
-def _list_child_task_dirs(path: Path) -> list[Path]:
-    """Return immediate child directories of *path* that look like task dirs."""
+def _real_child_dirs(path: Path) -> list[Path]:
+    """Sorted, real (non-symlink) child directories of *path*.
+
+    IO errors are not swallowed: an unlistable directory raises ``OSError``,
+    which propagates as an explicit failure rather than silently yielding a
+    partial discovery that looks complete. ``is_symlink()`` is checked before
+    ``is_dir()`` so the latter never follows a symlink.
+    """
+    return [c for c in sorted(path.iterdir()) if not c.is_symlink() and c.is_dir()]
+
+
+def _find_task_dirs(path: Path) -> list[Path]:
+    """Return task-shaped directories found anywhere beneath *path*.
+
+    Discovery walks the tree so a task nested below intermediate grouping
+    directories (e.g. ``<parent>/group-a/task-001``) is still found. Once a
+    directory is identified as a task, its own subtree is not searched — a
+    task's ``tests/`` directory is part of that task, not a nested task.
+    Symlinked directories are never followed, so a cyclic layout cannot loop.
+
+    An explicit stack (not recursion) is used so a pathologically deep tree
+    cannot raise ``RecursionError``. Children are pushed in reverse sorted
+    order so they pop in sorted order, preserving a deterministic pre-order
+    traversal.
+    """
     if not path.is_dir():
         return []
-    return sorted(c for c in path.iterdir() if c.is_dir() and _looks_like_task_dir(c))
+    found: list[Path] = []
+    stack: list[Path] = list(reversed(_real_child_dirs(path)))
+    while stack:
+        current = stack.pop()
+        if _looks_like_task_dir(current):
+            found.append(current)  # a task dir is a leaf — do not descend
+        else:
+            stack.extend(reversed(_real_child_dirs(current)))
+    return found
 
 
 @click.command("validate")
@@ -919,7 +950,7 @@ def validate(
     # but its children look like tasks. Keeps legacy single-task semantics
     # intact for empty dirs and malformed inputs.
     if not _looks_like_task_dir(path):
-        children = _list_child_task_dirs(path)
+        children = _find_task_dirs(path)
         if children:
             total = len(children)
             passed_count = 0

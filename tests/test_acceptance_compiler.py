@@ -5,6 +5,9 @@ TDD RED phase: all tests written against the planned API before implementation.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -138,6 +141,30 @@ class TestStreamCaptureEmitters:
         assert "STREAM-001.exit" in a.artifact_paths
         # {results} token was substituted, not left literal.
         assert "{results}" not in a.shell_snippet
+
+    def test_workspace_token_substituted(self) -> None:
+        """``{workspace}`` resolves to the workspace path.
+
+        Regression for the LOG-STDERR-003 / OUT-JSON-LINES-001 fix: probe
+        output is routed under the isolated workspace (``--output
+        {workspace}/...``) instead of dirtying the target repo across
+        iterations, so the token must substitute like ``{repo}`` does.
+        """
+        c = _criterion(
+            id="WS-TOKEN-001",
+            check_type="stream_separation",
+            params={"command": "codeprobe probe {repo} --output {workspace}/probes"},
+        )
+        actions = compile_actions(
+            [c],
+            target_repo=TARGET_REPO,
+            workspace=WORKSPACE,
+            project_root=PROJECT_ROOT,
+        )
+        assert len(actions) == 1
+        snippet = actions[0].shell_snippet
+        assert "{workspace}" not in snippet
+        assert f"{WORKSPACE}/probes" in snippet
 
     @pytest.mark.parametrize("check_type", ["stream_separation", "json_lines_valid"])
     def test_missing_command_returns_stub(self, check_type: str) -> None:
@@ -558,51 +585,111 @@ class TestRealCriteria:
         ids = [a.criterion_id for a in actions]
         assert len(ids) == len(set(ids))
 
+    # -- The four approved manifest corrections (codeprobe-nien). Guard the
+    #    real acceptance/criteria.toml so a future edit cannot silently revert
+    #    a fix back into its deterministic-failure shape.
 
-# ---------------------------------------------------------------------------
-# Token substitution safety
-# ---------------------------------------------------------------------------
+    def _by_id(self, cid: str) -> Criterion:
+        for c in load_criteria():
+            if c.id == cid:
+                return c
+        raise AssertionError(f"criterion {cid} missing from manifest")
 
+    def test_interpret_criterion_uses_repo_token(self) -> None:
+        c = self._by_id("BUG-INTERPRET-STDOUT-003")
+        cmd = c.params["command"]
+        assert "{repo}" in cmd
+        assert "{results}" not in cmd
 
-class TestTokenSubstitution:
-    def test_braces_in_command_do_not_crash(self) -> None:
-        """Commands with shell ${VAR} should not raise KeyError."""
-        c = _criterion(
-            id="BRACE-001",
-            check_type="cli_exit_code",
-            params={
-                "command": 'echo "${HOME}" && codeprobe mine {repo}',
-                "expected_exit": 0,
-            },
+    def test_mine_count_pattern_counts_instruction_md_min_3(self) -> None:
+        c = self._by_id("SILENT-MINE-COUNT-001")
+        assert c.params["pattern"] == "*/instruction.md"
+        # min_count is unchanged: the fix is the pattern, not the threshold.
+        assert c.params["min_count"] == 3
+        assert c.severity == "critical"
+
+    def test_log_stderr_probe_output_rooted_in_workspace(self) -> None:
+        c = self._by_id("LOG-STDERR-003")
+        cmd = c.params["command"]
+        assert cmd.startswith("codeprobe probe {repo}")
+        assert "--output {workspace}/" in cmd
+        # A pinned, deterministic probe count keeps the check reproducible.
+        assert "--count 5" in cmd
+
+    def test_out_json_lines_is_deterministic_probe_under_workspace(self) -> None:
+        c = self._by_id("OUT-JSON-LINES-001")
+        cmd = c.params["command"]
+        assert "--log-format json" in cmd
+        # Deterministic, zero-budget: a probe, never an agent 'run'.
+        assert " probe " in f" {cmd} "
+        assert " run " not in f" {cmd} "
+        assert "--output {workspace}/" in cmd
+        assert "--count 5" in cmd
+
+    def test_validate_discovery_action_exits_zero_and_finds_task_001(
+        self, tmp_path: Path
+    ) -> None:
+        """Execute the REAL compiled BUG-VALIDATE-DISCOVERY-005 action end to
+        end and assert BOTH the captured exit code is 0 AND stdout contains
+        ``task-001``.
+
+        The criterion's ``cli_stdout_contains`` check inspects only stdout, so
+        a nonzero exit (an invalid fixture task) with ``task-001`` still in the
+        listing would green vacuously. Asserting ``.exit == 0`` here closes
+        that gap: the acceptance fixture must validate cleanly for the rehearsal
+        green to be real.
+        """
+        # Resolve ``codeprobe`` from the directory of the running interpreter
+        # (the venv/editable install under test), not from ambient PATH — a
+        # stale ``codeprobe`` earlier on PATH would exercise the wrong code and
+        # give a misleading result. Prepending that dir makes the run
+        # deterministic regardless of how PATH is set outside the test.
+        bindir = Path(sys.executable).parent
+        assert (bindir / "codeprobe").exists(), (
+            f"codeprobe not installed next to interpreter: {bindir / 'codeprobe'}"
         )
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+        }
+        repo_root = Path(__file__).resolve().parent.parent
+        crit = next(
+            c for c in load_criteria() if c.id == "BUG-VALIDATE-DISCOVERY-005"
+        )
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
         actions = compile_actions(
-            [c],
-            target_repo=TARGET_REPO,
-            workspace=WORKSPACE,
-            project_root=PROJECT_ROOT,
+            [crit],
+            target_repo=repo_root,
+            workspace=workspace,
+            project_root=repo_root,
         )
         assert len(actions) == 1
-        # {repo} substituted, ${HOME} left intact
-        assert str(TARGET_REPO) in actions[0].shell_snippet
-        assert "${HOME}" in actions[0].shell_snippet
+        subprocess.run(
+            ["bash", "-c", actions[0].shell_snippet],
+            cwd=workspace,
+            env=env,
+            check=False,
+        )
+        exit_code = (workspace / f"{crit.id}.exit").read_text().strip()
+        stdout = (workspace / f"{crit.id}.stdout").read_text()
+        assert exit_code == "0", f"validate exited {exit_code}; stdout={stdout!r}"
+        assert "task-001" in stdout, stdout
 
-    def test_non_string_params_not_substituted(self) -> None:
-        """Integer params like min_count should pass through without crash."""
-        c = _criterion(
-            id="INT-001",
-            check_type="count_ge",
-            tier="statistical",
-            params={
-                "source": "{repo}/.codeprobe/tasks",
-                "pattern": "task-*",
-                "min_count": 3,
-            },
-        )
-        # Should not raise
-        actions = compile_actions(
-            [c],
-            target_repo=TARGET_REPO,
-            workspace=WORKSPACE,
-            project_root=PROJECT_ROOT,
-        )
-        assert len(actions) == 1
+    def test_workspace_rooted_criteria_compile_output_into_workspace(self) -> None:
+        """The probe-based criteria must compile with their output path under
+        the workspace, not the target repo — otherwise consecutive iterations
+        re-dirty the target."""
+        actions = {
+            a.criterion_id: a
+            for a in compile_actions(
+                load_criteria(),
+                target_repo=TARGET_REPO,
+                workspace=WORKSPACE,
+                project_root=Path(__file__).resolve().parent.parent,
+            )
+        }
+        for cid in ("LOG-STDERR-003", "OUT-JSON-LINES-001"):
+            snippet = actions[cid].shell_snippet
+            assert f"--output {WORKSPACE}/" in snippet, cid
+            assert "{workspace}" not in snippet, cid

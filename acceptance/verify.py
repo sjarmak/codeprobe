@@ -1142,6 +1142,48 @@ class Verifier:
             return self._pass(criterion, f"file present: {rel}")
         return self._fail(criterion, f"file missing: {rel}")
 
+    def _exit_gate(
+        self, criterion: Criterion, workspace: Path
+    ) -> CheckResult | None:
+        """Return a failing result unless the captured command exited exactly 0.
+
+        ``stream_separation`` and ``json_lines_valid`` assert a property of a
+        *successful* command's output. Called only after the command's output
+        artifact is confirmed present, so the command DID run and produced
+        output. A missing, empty, malformed, or nonzero ``<id>.exit`` therefore
+        cannot be an honest pass — none of them let us confirm the command
+        succeeded, and a JSON error envelope (or log lines written before a
+        failure) would otherwise green vacuously. Returns ``None`` only for an
+        exit code of exactly 0.
+        """
+        exit_file = workspace / f"{criterion.id}.exit"
+        if not exit_file.is_file():
+            return self._fail(
+                criterion,
+                "exit artifact missing; the command produced output but its "
+                "exit status is unknown, so success cannot be confirmed",
+            )
+        raw = exit_file.read_text(errors="replace").strip()
+        if not raw:
+            return self._fail(
+                criterion,
+                "exit artifact is empty; the command's exit status is unknown, "
+                "so success cannot be confirmed",
+            )
+        try:
+            code = int(raw)
+        except ValueError:
+            return self._fail(
+                criterion, f"exit artifact is not an integer: {raw!r}"
+            )
+        if code != 0:
+            return self._fail(
+                criterion,
+                f"command exited {code} (expected 0); a nonzero exit means the "
+                "command errored, so its output is not evidence of success",
+            )
+        return None
+
     def _check_stream_separation(
         self, criterion: Criterion, workspace: Path
     ) -> CheckResult:
@@ -1163,6 +1205,10 @@ class Verifier:
         if not stdout_file.is_file():
             return self._skip(criterion, f"stdout artifact missing: {stdout_file.name}")
         stdout_text = stdout_file.read_text(errors="replace")
+
+        exit_fail = self._exit_gate(criterion, workspace)
+        if exit_fail is not None:
+            return exit_fail
 
         parse_as = params.get("stdout_must_parse_as")
         if parse_as == "json":
@@ -1213,6 +1259,9 @@ class Verifier:
         artifact = workspace / f"{criterion.id}.{channel}"
         if not artifact.is_file():
             return self._skip(criterion, f"{channel} artifact missing: {artifact.name}")
+        exit_fail = self._exit_gate(criterion, workspace)
+        if exit_fail is not None:
+            return exit_fail
         lines = [ln for ln in artifact.read_text(errors="replace").splitlines() if ln.strip()]
         if not lines:
             return self._fail(
