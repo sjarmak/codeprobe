@@ -2,14 +2,53 @@
 
 ## Unreleased
 
+## 0.13.0 (2026-07-26)
+
+### Release evidence and output workflows
+
 - The behavioral acceptance loop is now runnable end to end:
   `scripts/acceptance_loop.py` compiles the criteria manifest into Test
   Agent actions, executes them in a fresh workspace, verifies, persists
   `verdict-NNNN.json` into `acceptance/verdict-history/`, and honors the
   convergence controller's decision. `scripts/pre_tag_check.py` gates
-  tagging on the two newest verdicts (both `EVALUATED` + `all_pass`, at
-  least one from `--eval-mode full`), the changelog heading, and the
+  tagging on the two newest verdicts (both `EVALUATED` + `all_pass` and
+  produced with `--eval-mode full`), the changelog heading, and the
   version bump. Verdicts now record the `eval_mode` that produced them.
+- Full-mode acceptance now runs a real producer, records its agent identity,
+  aggregates per-arm results, and requires two consecutive full-mode greens
+  from a non-stub producer. Release evidence export binds the selected
+  verdicts to the release version and their content hashes.
+- `mine`, `run`, and `interpret` support explicit `--out` destinations, with
+  experiment metadata and next-step instructions anchored to the selected
+  output location.
+
+### Evaluation integrity
+
+- Bias-detection and low-confidence thresholds are configurable, validated
+  on load, and carried through scoring rather than being hidden constants.
+- Malformed verifier output, unusable checkpoint verifiers, invalid ground
+  truth, and generated-oracle failures now fail closed and propagate through
+  result surfaces. Verifier errors are excluded from reward populations
+  instead of being scored as ordinary outcomes.
+- Acceptance verification gained the missing structural and behavioral
+  handlers, honest command-exit checks, deterministic target reset, and
+  corrected criteria for recursive task discovery, mixed task layouts,
+  interpret output, and structured log streams.
+
+### Filesystem and isolation hardening
+
+- Mining and curation now reject unsafe dot-directory and out-of-root paths,
+  bind validated reads and writes to held directory descriptors, preserve
+  checkpoint verifiers safely, and refuse symlink, hardlink, FIFO, or
+  path-swap redirection across task and verifier writers.
+- Snapshot redaction, scanning, and publication now fail closed at filesystem
+  boundaries, pin publication inputs, verify published artifacts, and launch
+  external scanners without cross-thread environment races.
+- Worktree reset failures are quarantined and surfaced instead of allowing a
+  contaminated checkout to re-enter the execution pool.
+
+### Maintenance
+
 - `scipy-stubs` now declares an upper bound (`<2`) in the dev extras —
   the sole unbounded dependency, caught by criterion CI-DEPS-UPPER-001 on
   the acceptance loop's first real run.
