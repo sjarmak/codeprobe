@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import shlex
-import shutil
 import stat
 from dataclasses import asdict, replace
 from pathlib import Path, PurePosixPath
@@ -19,6 +18,7 @@ from codeprobe.mining.confidence import (
 )
 from codeprobe.mining.curator import CurationResult, CurationVerification
 from codeprobe.mining.extractor import _is_safe_relative_path
+from codeprobe.mining.safe_output import ContainmentError, SafeOutputDir
 from codeprobe.models.task import Task
 
 
@@ -28,10 +28,17 @@ def _emit_confidence(task_dir: Path) -> None:
     Cross-validation signal is neutral at mining time — it requires a
     cross-validation report which is generated post-mining. Callers can
     re-score later via :func:`mining.confidence.score_tasks_dir`.
+
+    A :class:`ContainmentError` (a symlinked ``confidence.json`` or task dir)
+    is an attack indicator and propagates so ``write_task_dir`` rejects the
+    task rather than silently skipping the artifact; only genuine operational
+    scoring failures are logged and swallowed as best-effort.
     """
     try:
         score = score_task_confidence(task_dir)
         write_confidence_file(score, task_dir)
+    except ContainmentError:
+        raise
     except (OSError, ValueError) as exc:
         logger.warning("Failed to write confidence.json for %s: %s", task_dir, exc)
 
@@ -1251,10 +1258,15 @@ def read_checkpoint_scripts(task: Task, tests_dir: Path) -> dict[str, str]:
 
 def _write_checkpoints(
     task: Task,
-    tests_dir: Path,
+    tests_dir: SafeOutputDir,
     checkpoint_scripts: dict[str, str] | None,
 ) -> None:
     """Emit per-checkpoint verifier scripts + ``tests/checkpoints.json``.
+
+    ``tests_dir`` is a :class:`SafeOutputDir` reached without traversing a
+    symlink; every write below is bound to its descriptor, so a symlinked
+    ``tests/verifiers/`` cannot redirect a verifier script outside the task
+    tree (codeprobe-2cqg).
 
     When ``task.verification.checkpoints`` is empty, remove any checkpoint
     artifacts left by an earlier write. This keeps single-step tasks (plain
@@ -1267,34 +1279,33 @@ def _write_checkpoints(
     raises :class:`CheckpointScriptError` rather than getting a stub.
     """
     checkpoints = task.verification.checkpoints
-    checkpoints_path = tests_dir / "checkpoints.json"
-    verifiers_dir = tests_dir / "verifiers"
     if not checkpoints:
-        checkpoints_path.unlink(missing_ok=True)
-        if verifiers_dir.is_symlink():
-            verifiers_dir.unlink()
-        elif verifiers_dir.exists():
-            shutil.rmtree(verifiers_dir)
+        # Removal, not publication — and bound to the held tests descriptor,
+        # not tests_dir.path. Path-based cleanup would follow a swapped
+        # ``tests`` symlink and delete artifacts outside the task tree
+        # (codeprobe-2cqg). unlink() removes a symlinked entry itself;
+        # remove_tree() descends real dirs with O_NOFOLLOW fds only.
+        tests_dir.unlink("checkpoints.json", missing_ok=True)
+        tests_dir.remove_tree("verifiers")
         return
 
     # Resolved here rather than taken on trust, so direct callers of this
     # helper get the same check write_task_dir applies at its boundary.
     scripts = resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
 
-    verifiers_dir.mkdir(parents=True, exist_ok=True)
-
-    for cp in checkpoints:
-        verifier_path = verifiers_dir / cp.verifier
-        verifier_path.write_text(scripts[cp.verifier], encoding="utf-8")
-        verifier_path.chmod(0o755)
+    with tests_dir.child("verifiers") as verifiers_out:
+        for cp in checkpoints:
+            verifiers_out.write_text(
+                cp.verifier, scripts[cp.verifier], executable=True
+            )
 
     checkpoints_payload = [
         {"name": cp.name, "weight": cp.weight, "verifier": cp.verifier}
         for cp in checkpoints
     ]
-    checkpoints_path.write_text(
+    tests_dir.write_text(
+        "checkpoints.json",
         json.dumps(checkpoints_payload, indent=2) + "\n",
-        encoding="utf-8",
     )
 
 
@@ -1331,9 +1342,6 @@ def write_quarantined_task(
             f"Invalid task id for quarantine output: {task_id!r}"
         )
 
-    task_dir = base_dir / task_id
-    task_dir.mkdir(parents=True, exist_ok=True)
-
     instruction = (
         f"# {instruction_title}\n\n"
         f"**Repository:** {repo}\n"
@@ -1347,29 +1355,30 @@ def write_quarantined_task(
         "what the ground truth should be. See `divergence_report.json` "
         "for the per-backend file lists and pairwise metrics.\n"
     )
-    (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
 
-    (task_dir / "divergence_report.json").write_text(
-        json.dumps(divergence_report, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-    (task_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "task_id": task_id,
-                "family": family,
-                "repo": repo,
-                "symbol": symbol,
-                "defining_file": defining_file,
-                "status": "quarantined",
-            },
-            indent=2,
-            ensure_ascii=False,
+    with SafeOutputDir.create(base_dir, task_id) as task_out:
+        task_out.write_text("instruction.md", instruction)
+        task_out.write_text(
+            "divergence_report.json",
+            json.dumps(divergence_report, indent=2, ensure_ascii=False) + "\n",
         )
-        + "\n",
-        encoding="utf-8",
-    )
+        task_out.write_text(
+            "metadata.json",
+            json.dumps(
+                {
+                    "task_id": task_id,
+                    "family": family,
+                    "repo": repo,
+                    "symbol": symbol,
+                    "defining_file": defining_file,
+                    "status": "quarantined",
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + "\n",
+        )
+        task_dir = task_out.path
 
     logger.info("Quarantined %s/%s -> %s", family, symbol, task_dir)
     return task_dir
@@ -1388,24 +1397,25 @@ def write_quarantined_curation(
             f"Invalid task id for quarantine output: {task.id!r}"
         )
 
-    task_dir = base_dir / task.id
-    task_dir.mkdir(parents=True, exist_ok=True)
-    (task_dir / "instruction.md").write_text(
-        _curation_quarantine_instruction(task, verification),
-        encoding="utf-8",
-    )
-    _write_json_document(
-        task_dir / "curation_verification.json",
-        verification.as_dict(),
-    )
-    _write_json_document(
-        task_dir / "curation_files.json",
-        _curation_files_payload(curation_result),
-    )
-    _write_json_document(
-        task_dir / "metadata.json",
-        _curation_quarantine_metadata(task, curation_result),
-    )
+    with SafeOutputDir.create(base_dir, task.id) as task_out:
+        task_out.write_text(
+            "instruction.md",
+            _curation_quarantine_instruction(task, verification),
+        )
+        _write_json_document(
+            task_out, "curation_verification.json", verification.as_dict()
+        )
+        _write_json_document(
+            task_out,
+            "curation_files.json",
+            _curation_files_payload(curation_result),
+        )
+        _write_json_document(
+            task_out,
+            "metadata.json",
+            _curation_quarantine_metadata(task, curation_result),
+        )
+        task_dir = task_out.path
 
     logger.info(
         "Quarantined curation %s/%s -> %s",
@@ -1465,11 +1475,13 @@ def _curation_quarantine_metadata(
     }
 
 
-def _write_json_document(path: Path, payload: object) -> None:
-    """Write a stable UTF-8 JSON document."""
-    path.write_text(
+def _write_json_document(
+    out_dir: SafeOutputDir, name: str, payload: object
+) -> None:
+    """Write a stable UTF-8 JSON document bound to *out_dir*'s descriptor."""
+    out_dir.write_text(
+        name,
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
 
 
@@ -1507,137 +1519,141 @@ def write_task_dir(
     # a later run would score as passing.
     resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
 
-    task_dir = base_dir / task.id
-    tests_dir = task_dir / "tests"
-    tests_dir.mkdir(parents=True, exist_ok=True)
-
     # Write instruction.md and verification files
     repo_name = repo_path.name
     language = task.metadata.language or "unknown"
 
-    # Oracle tasks get a different output structure
-    if task.verification.type == "oracle":
-        _write_oracle_task(
-            task,
-            task_dir,
-            tests_dir,
-            repo_path,
-            task.id,
-            curation_backends=curation_backends,
+    # Every write below is bound to a descriptor opened without following a
+    # symlink, so a pre-existing symlinked task/tests component cannot redirect
+    # any artifact outside base_dir (codeprobe-2cqg).
+    with (
+        SafeOutputDir.create(base_dir, task.id) as task_out,
+        task_out.child("tests") as tests_out,
+    ):
+        task_dir = task_out.path
+
+        # Oracle tasks get a different output structure
+        if task.verification.type == "oracle":
+            _write_oracle_task(
+                task,
+                task_out,
+                tests_out,
+                repo_path,
+                task.id,
+                curation_backends=curation_backends,
+            )
+            _write_checkpoints(task, tests_out, checkpoint_scripts)
+            _emit_confidence(task_dir)
+            return task_dir
+
+        # Dual-verification tasks: direct test.sh + artifact answer.json
+        if task.verification.verification_mode == "dual":
+            _write_dual_task(task, task_out, tests_out, repo_path, task.id)
+            _write_checkpoints(task, tests_out, checkpoint_scripts)
+            _emit_confidence(task_dir)
+            return task_dir
+
+        if task.metadata.issue_title:
+            issue_body = task.metadata.issue_body
+
+            # Only apply regex cleanup for non-LLM content — LLM output is clean
+            if task.metadata.enrichment_source != "llm":
+                # Strip solution-leaking sections from issue body
+                pr_match = _WHAT_THIS_PR_PATTERN.search(issue_body)
+                if pr_match:
+                    issue_body = issue_body[: pr_match.start()].strip()
+                # Strip HTML comments, <details> blocks, noise fenced blocks
+                issue_body = _HTML_COMMENT.sub("", issue_body)
+                issue_body = _DETAILS_BLOCK.sub("", issue_body)
+                issue_body = _NOISE_FENCED_BLOCKS.sub("", issue_body)
+                # Collapse blank lines and truncate to keep instructions focused
+                issue_body = re.sub(r"\n{3,}", "\n\n", issue_body).strip()
+                if len(issue_body) > _MAX_ISSUE_BODY_LEN:
+                    issue_body = (
+                        issue_body[:_MAX_ISSUE_BODY_LEN] + "\n\n[...truncated]"
+                    )
+            instruction = (
+                f"# {task.metadata.issue_title}\n\n"
+                f"**Repository:** {repo_name}\n"
+                f"**Language:** {language}\n\n"
+                "## Problem\n\n"
+                f"{issue_body}\n\n"
+                "## Task Contract\n\n"
+                f"- `TASK_REPO_ROOT={repo_path}`\n\n"
+                "## Task\n\n"
+                "Implement the fix or feature described above. "
+                "The test script will verify correctness.\n"
+            )
+        else:
+            # Fallback: use PR title + first paragraph only (not full body)
+            pr_hint = _extract_first_paragraph(task.metadata.description)
+            instruction = (
+                f"# {task.metadata.name}\n\n"
+                f"**Repository:** {repo_name}\n"
+                f"**Language:** {language}\n\n"
+                "## Task\n\n"
+                f"{pr_hint}\n\n"
+                "## Task Contract\n\n"
+                f"- `TASK_REPO_ROOT={repo_path}`\n\n"
+                "Implement the changes described above. "
+                "The test script will verify correctness.\n"
+            )
+        task_out.write_text("instruction.md", instruction)
+
+        # Write instruction_mcp.md variant for MCP / org-scale / SG tasks.
+        # Trigger widened per PRD: task_type in mcp_tool_usage /
+        # org_scale_cross_repo, or org_scale=True, or sg_repo set.
+        if _mcp_variant_triggered(task):
+            _write_mcp_instruction_variant(task, task_out, instruction)
+
+        # Write tests/test.sh — weighted checklist for sdlc-schema ground
+        # truth, otherwise a plain wrapper. Both paths validate the mined
+        # command against the allowlist in _build_*_script.
+        use_weighted = ground_truth is not None and str(
+            ground_truth.get("schema_version", "")
+        ).startswith("sdlc-")
+
+        if use_weighted and ground_truth is not None:
+            test_script = _build_weighted_checklist_script(
+                task.verification.command,
+                repo_path,
+                language=language,
+                ground_truth=ground_truth,
+                header=f"Weighted-checklist verification for task {task.id}",
+            )
+            # Composite is a float in [0, 1] → downstream uses ContinuousScorer.
+            task = replace(
+                task,
+                verification=replace(
+                    task.verification, reward_type="continuous"
+                ),
+            )
+        else:
+            test_script = _build_test_script(
+                task.verification.command,
+                repo_path,
+                header=f"Verification script for task {task.id}",
+            )
+        tests_out.write_text("test.sh", test_script, executable=True)
+
+        # Write metadata.json
+        task_out.write_text(
+            "metadata.json",
+            json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
         )
-        _write_checkpoints(task, tests_dir, checkpoint_scripts)
+
+        # Write tests/ground_truth.json for SDLC tasks (when provided)
+        if ground_truth is not None:
+            tests_out.write_text(
+                "ground_truth.json",
+                json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
+            )
+
+        # Per-checkpoint verifier scripts + tests/checkpoints.json. Gated
+        # behind task.verification.checkpoints (R17 acceptance #4).
+        _write_checkpoints(task, tests_out, checkpoint_scripts)
+
         _emit_confidence(task_dir)
-        return task_dir
-
-    # Dual-verification tasks: direct test.sh + artifact answer.json
-    if task.verification.verification_mode == "dual":
-        _write_dual_task(task, task_dir, tests_dir, repo_path, task.id)
-        _write_checkpoints(task, tests_dir, checkpoint_scripts)
-        _emit_confidence(task_dir)
-        return task_dir
-
-    if task.metadata.issue_title:
-        issue_body = task.metadata.issue_body
-
-        # Only apply regex cleanup for non-LLM content — LLM output is clean
-        if task.metadata.enrichment_source != "llm":
-            # Strip solution-leaking sections from issue body
-            pr_match = _WHAT_THIS_PR_PATTERN.search(issue_body)
-            if pr_match:
-                issue_body = issue_body[: pr_match.start()].strip()
-            # Strip HTML comments, <details> blocks, and noise fenced blocks
-            issue_body = _HTML_COMMENT.sub("", issue_body)
-            issue_body = _DETAILS_BLOCK.sub("", issue_body)
-            issue_body = _NOISE_FENCED_BLOCKS.sub("", issue_body)
-            # Collapse blank lines and truncate to keep instructions focused
-            issue_body = re.sub(r"\n{3,}", "\n\n", issue_body).strip()
-            if len(issue_body) > _MAX_ISSUE_BODY_LEN:
-                issue_body = issue_body[:_MAX_ISSUE_BODY_LEN] + "\n\n[...truncated]"
-        instruction = (
-            f"# {task.metadata.issue_title}\n\n"
-            f"**Repository:** {repo_name}\n"
-            f"**Language:** {language}\n\n"
-            "## Problem\n\n"
-            f"{issue_body}\n\n"
-            "## Task Contract\n\n"
-            f"- `TASK_REPO_ROOT={repo_path}`\n\n"
-            "## Task\n\n"
-            "Implement the fix or feature described above. "
-            "The test script will verify correctness.\n"
-        )
-    else:
-        # Fallback: use PR title + first paragraph only (not full body)
-        pr_hint = _extract_first_paragraph(task.metadata.description)
-        instruction = (
-            f"# {task.metadata.name}\n\n"
-            f"**Repository:** {repo_name}\n"
-            f"**Language:** {language}\n\n"
-            "## Task\n\n"
-            f"{pr_hint}\n\n"
-            "## Task Contract\n\n"
-            f"- `TASK_REPO_ROOT={repo_path}`\n\n"
-            "Implement the changes described above. "
-            "The test script will verify correctness.\n"
-        )
-    instruction_path = task_dir / "instruction.md"
-    instruction_path.write_text(instruction, encoding="utf-8")
-
-    # Write instruction_mcp.md variant for MCP / org-scale / SG-enriched tasks.
-    # Trigger widened per PRD: task_type in mcp_tool_usage / org_scale_cross_repo,
-    # or org_scale=True, or sg_repo set.
-    if _mcp_variant_triggered(task):
-        _write_mcp_instruction_variant(task, task_dir, instruction)
-
-    # Write tests/test.sh — weighted checklist for sdlc-schema ground truth,
-    # otherwise a plain wrapper. Both paths validate the mined command against
-    # the allowlist in _build_*_script.
-    use_weighted = ground_truth is not None and str(
-        ground_truth.get("schema_version", "")
-    ).startswith("sdlc-")
-
-    if use_weighted and ground_truth is not None:
-        test_script = _build_weighted_checklist_script(
-            task.verification.command,
-            repo_path,
-            language=language,
-            ground_truth=ground_truth,
-            header=f"Weighted-checklist verification for task {task.id}",
-        )
-        # Composite is a float in [0, 1] → downstream must use ContinuousScorer.
-        task = replace(
-            task,
-            verification=replace(task.verification, reward_type="continuous"),
-        )
-    else:
-        test_script = _build_test_script(
-            task.verification.command,
-            repo_path,
-            header=f"Verification script for task {task.id}",
-        )
-    test_sh_path = tests_dir / "test.sh"
-    test_sh_path.write_text(test_script, encoding="utf-8")
-    test_sh_path.chmod(0o755)
-
-    # Write metadata.json
-    metadata_path = task_dir / "metadata.json"
-    metadata_path.write_text(
-        json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-
-    # Write tests/ground_truth.json for SDLC tasks (when provided)
-    if ground_truth is not None:
-        gt_path = tests_dir / "ground_truth.json"
-        gt_path.write_text(
-            json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-    # Per-checkpoint verifier scripts + tests/checkpoints.json. Gated
-    # behind task.verification.checkpoints (R17 acceptance #4).
-    _write_checkpoints(task, tests_dir, checkpoint_scripts)
-
-    _emit_confidence(task_dir)
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir
@@ -1737,8 +1753,8 @@ def _build_dual_instruction(
 
 def _write_dual_task(
     task: Task,
-    task_dir: Path,
-    tests_dir: Path,
+    task_dir: SafeOutputDir,
+    tests_dir: SafeOutputDir,
     repo_path: Path,
     safe_id: str,
 ) -> None:
@@ -1757,7 +1773,7 @@ def _write_dual_task(
 
     # instruction.md — single combined prompt with answer.json schema section
     instruction = _build_dual_instruction(task, repo_name, language, repo_path)
-    (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+    task_dir.write_text("instruction.md", instruction)
 
     # tests/test.sh — direct verification, validated against allowlist
     test_script = _build_test_script(
@@ -1765,9 +1781,7 @@ def _write_dual_task(
         repo_path,
         header=f"Direct verification for dual task {safe_id}",
     )
-    test_sh_path = tests_dir / "test.sh"
-    test_sh_path.write_text(test_script, encoding="utf-8")
-    test_sh_path.chmod(0o755)
+    tests_dir.write_text("test.sh", test_script, executable=True)
 
     # tests/ground_truth.json — use oracle data from verification if populated,
     # otherwise write a stub for manual curation.
@@ -1781,18 +1795,18 @@ def _write_dual_task(
             "task_id": task.id,
         },
     }
-    (tests_dir / "ground_truth.json").write_text(
+    tests_dir.write_text(
+        "ground_truth.json",
         json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
 
     # metadata.json — full task dump (verification_mode flows through asdict)
-    (task_dir / "metadata.json").write_text(
+    task_dir.write_text(
+        "metadata.json",
         json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
 
-    logger.info("Wrote dual task %s → %s", task.id, task_dir)
+    logger.info("Wrote dual task %s → %s", task.id, task_dir.path)
 
 
 # ---------------------------------------------------------------------------
@@ -1843,7 +1857,7 @@ def _render_mcp_section() -> str:
 
 def _write_mcp_instruction_variant(
     task: Task,
-    task_dir: Path,
+    task_dir: SafeOutputDir,
     base_instruction: str,
 ) -> None:
     """Write instruction_mcp.md alongside instruction.md for MCP tasks.
@@ -1861,8 +1875,7 @@ def _write_mcp_instruction_variant(
         + mcp_section.rstrip()
         + f"\n\n**MCP Suite:** {mcp_suite}\n"
     )
-    mcp_path = task_dir / "instruction_mcp.md"
-    mcp_path.write_text(mcp_instruction, encoding="utf-8")
+    mcp_path = task_dir.write_text("instruction_mcp.md", mcp_instruction)
     logger.info("Wrote MCP instruction variant → %s", mcp_path)
 
 
@@ -1924,8 +1937,8 @@ def _strip_location_hints(question: str, family_description: str = "") -> str:
 
 def _write_oracle_task(
     task: Task,
-    task_dir: Path,
-    tests_dir: Path,
+    task_dir: SafeOutputDir,
+    tests_dir: SafeOutputDir,
     repo_path: Path,
     safe_id: str,
     *,
@@ -1999,7 +2012,7 @@ def _write_oracle_task(
         )
 
     base_instruction = _build_instruction(discovery_question)
-    (task_dir / "instruction.md").write_text(base_instruction, encoding="utf-8")
+    task_dir.write_text("instruction.md", base_instruction)
 
     # Emit the MCP instruction variant for org-scale / SG / MCP tasks so the
     # widened R1 trigger also covers oracle-typed tasks (the main writer path
@@ -2058,18 +2071,18 @@ def _write_oracle_task(
         ground_truth["oracle_backends_consensus"] = list(
             task.metadata.oracle_backends_consensus
         )
-    (task_dir / "ground_truth.json").write_text(
+    task_dir.write_text(
+        "ground_truth.json",
         json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )
 
     # tests/oracle.py — self-contained scorer. Structured-retrieval tasks
     # get the four-field JSON oracle; legacy file-list tasks get the F1
     # file-list oracle (preserved path per R2 acceptance criterion).
     if is_structured:
-        (tests_dir / "oracle.py").write_text(_ORACLE_STRUCTURED, encoding="utf-8")
+        tests_dir.write_text("oracle.py", _ORACLE_STRUCTURED)
     else:
-        (tests_dir / "oracle.py").write_text(_ORACLE_PY, encoding="utf-8")
+        tests_dir.write_text("oracle.py", _ORACLE_PY)
 
     # tests/test.sh — calls oracle.py, writes reward.txt
     if is_structured:
@@ -2103,12 +2116,10 @@ def _write_oracle_task(
             "# Self-contained oracle check — no codeprobe install required\n"
             'python3 "$SCRIPT_DIR/oracle.py" "$TASK_DIR"\n'
         )
-    test_sh_path = tests_dir / "test.sh"
-    test_sh_path.write_text(test_script, encoding="utf-8")
-    test_sh_path.chmod(0o755)
+    tests_dir.write_text("test.sh", test_script, executable=True)
 
     # metadata.json
-    (task_dir / "metadata.json").write_text(
+    task_dir.write_text(
+        "metadata.json",
         json.dumps(asdict(task), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
     )

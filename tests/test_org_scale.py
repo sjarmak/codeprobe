@@ -29,12 +29,34 @@ from codeprobe.mining.org_scale_scanner import (
     PatternHit,
     scan_repo_for_family,
 )
-from codeprobe.mining.writer import write_task_dir
+from codeprobe.mining.safe_output import SafeOutputDir
+from codeprobe.mining.writer import _write_oracle_task, write_task_dir
 from codeprobe.models.task import (
     Task,
     TaskMetadata,
     TaskVerification,
 )
+
+
+def _write_oracle_task_dirs(
+    task: Task,
+    task_dir: Path,
+    tests_dir: Path,
+    repo_path: Path,
+    safe_id: str,
+) -> None:
+    """Open symlink-safe handles on existing dirs, then delegate.
+
+    ``_write_oracle_task`` now writes through :class:`SafeOutputDir`
+    descriptors (codeprobe-2cqg); these tests still assert on the ``Path``
+    dirs, so this adapts the direct-call sites.
+    """
+    with (
+        SafeOutputDir.create(task_dir.parent, task_dir.name) as task_out,
+        task_out.child(tests_dir.name) as tests_out,
+    ):
+        _write_oracle_task(task, task_out, tests_out, repo_path, safe_id)
+
 
 # ---------------------------------------------------------------------------
 # Path normalization tests
@@ -843,7 +865,6 @@ class TestStripLocationHints:
 
     def test_instruction_md_strips_hints(self, tmp_path: Path) -> None:
         """instruction.md is the discovery version with hints stripped."""
-        from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
             id="disc-001",
@@ -868,7 +889,7 @@ class TestStripLocationHints:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
 
-        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "disc-001")
+        _write_oracle_task_dirs(task, task_dir, tests_dir, tmp_path / "repo", "disc-001")
 
         instruction = task_dir / "instruction.md"
         assert instruction.exists()
@@ -878,7 +899,6 @@ class TestStripLocationHints:
 
     def test_no_discovery_variant_when_unchanged(self, tmp_path: Path) -> None:
         """No instruction_discovery.md when stripping changes nothing."""
-        from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
             id="disc-002",
@@ -900,13 +920,12 @@ class TestStripLocationHints:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
 
-        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "disc-002")
+        _write_oracle_task_dirs(task, task_dir, tests_dir, tmp_path / "repo", "disc-002")
 
         assert not (task_dir / "instruction_discovery.md").exists()
 
     def test_mcp_family_preserves_symbol_name(self, tmp_path: Path) -> None:
         """MCP-advantaged families preserve symbol name in instruction.md."""
-        from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
             id="mcp-sym-001",
@@ -932,7 +951,7 @@ class TestStripLocationHints:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
 
-        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-sym-001")
+        _write_oracle_task_dirs(task, task_dir, tests_dir, tmp_path / "repo", "mcp-sym-001")
 
         content = (task_dir / "instruction.md").read_text()
         assert "AgentConfig" in content
@@ -940,7 +959,6 @@ class TestStripLocationHints:
 
     def test_mcp_family_type_hierarchy_preserves_symbol(self, tmp_path: Path) -> None:
         """type-hierarchy-consumers preserves base type name in instruction.md."""
-        from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
             id="mcp-th-001",
@@ -965,14 +983,13 @@ class TestStripLocationHints:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
 
-        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-th-001")
+        _write_oracle_task_dirs(task, task_dir, tests_dir, tmp_path / "repo", "mcp-th-001")
 
         content = (task_dir / "instruction.md").read_text()
         assert "BaseHandler" in content
 
     def test_mcp_family_change_scope_preserves_symbol(self, tmp_path: Path) -> None:
         """change-scope-audit preserves symbol name in instruction.md."""
-        from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
             id="mcp-cs-001",
@@ -998,7 +1015,7 @@ class TestStripLocationHints:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
 
-        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-cs-001")
+        _write_oracle_task_dirs(task, task_dir, tests_dir, tmp_path / "repo", "mcp-cs-001")
 
         content = (task_dir / "instruction.md").read_text()
         assert "process_data" in content
@@ -1006,7 +1023,6 @@ class TestStripLocationHints:
 
     def test_mcp_family_uses_specific_heading(self, tmp_path: Path) -> None:
         """MCP-advantaged families use the task-specific heading, not generic."""
-        from codeprobe.mining.writer import _write_oracle_task
 
         task = Task(
             id="mcp-head-001",
@@ -1031,7 +1047,7 @@ class TestStripLocationHints:
         tests_dir = task_dir / "tests"
         tests_dir.mkdir()
 
-        _write_oracle_task(task, task_dir, tests_dir, tmp_path / "repo", "mcp-head-001")
+        _write_oracle_task_dirs(task, task_dir, tests_dir, tmp_path / "repo", "mcp-head-001")
 
         content = (task_dir / "instruction.md").read_text()
         assert "Find references to AgentConfig" in content

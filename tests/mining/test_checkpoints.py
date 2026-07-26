@@ -27,6 +27,7 @@ from codeprobe.mining.org_scale import (
     CHANGE_SCOPE_CHECKPOINT_SCRIPTS,
     _change_scope_checkpoints,
 )
+from codeprobe.mining.safe_output import SafeOutputDir
 from codeprobe.mining.writer import (
     CheckpointScriptError,
     _is_safe_path_component,
@@ -545,8 +546,11 @@ class TestCheckpointScriptValidation:
         tests_dir = tmp_path / "task" / "tests"
         tests_dir.mkdir(parents=True)
 
-        with pytest.raises(CheckpointScriptError):
-            _write_checkpoints(task, tests_dir, {"other.sh": "#!/bin/bash\nexit 1\n"})
+        with SafeOutputDir.create(tests_dir.parent, tests_dir.name) as tests_out:
+            with pytest.raises(CheckpointScriptError):
+                _write_checkpoints(
+                    task, tests_out, {"other.sh": "#!/bin/bash\nexit 1\n"}
+                )
 
         assert not (tests_dir / "verifiers").exists()
 

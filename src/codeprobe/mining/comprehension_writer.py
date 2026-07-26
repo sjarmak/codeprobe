@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from codeprobe.mining.comprehension import _TASK_SPECS, ComprehensionTaskSpec
+from codeprobe.mining.safe_output import SafeOutputDir
 from codeprobe.mining.writer import (
     _is_safe_path_component,
     _write_checkpoints,
@@ -121,53 +122,59 @@ def write_comprehension_tasks(
 
     for task, spec in writable:
         is_dual = task.verification.verification_mode == "dual"
-        task_dir = output_dir / task.id
-        tests_dir = task_dir / "tests"
-        tests_dir.mkdir(parents=True, exist_ok=True)
 
-        instruction = _build_instruction(task, spec)
-        (task_dir / "instruction.md").write_text(instruction, encoding="utf-8")
+        # Every write is bound to a symlink-refusing descriptor so a reused
+        # output tree cannot redirect an artifact outside output_dir
+        # (codeprobe-2cqg).
+        with (
+            SafeOutputDir.create(output_dir, task.id) as task_out,
+            task_out.child("tests") as tests_out,
+        ):
+            instruction = _build_instruction(task, spec)
+            task_out.write_text("instruction.md", instruction)
 
-        metadata_payload = asdict(task)
-        (task_dir / "metadata.json").write_text(
-            json.dumps(metadata_payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-        ground_truth = {
-            "answer": spec.answer,
-            "answer_type": spec.answer_type,
-            "confidence": spec.confidence,
-            "provenance": spec.provenance,
-        }
-        if commit:
-            ground_truth["commit"] = commit
-        (tests_dir / "ground_truth.json").write_text(
-            json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
-        report = (divergence_reports or {}).get(task.id)
-        if report is not None:
-            (task_dir / "divergence_report.json").write_text(
-                json.dumps(report, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+            metadata_payload = asdict(task)
+            task_out.write_text(
+                "metadata.json",
+                json.dumps(metadata_payload, indent=2, ensure_ascii=False)
+                + "\n",
             )
 
-        if is_dual:
-            test_sh = tests_dir / "test.sh"
-            test_sh.write_text(
-                _DUAL_DIRECT_LEG_TEMPLATE.format(
-                    task_id=task.id, repo_default=repo_path
-                ),
-                encoding="utf-8",
+            ground_truth = {
+                "answer": spec.answer,
+                "answer_type": spec.answer_type,
+                "confidence": spec.confidence,
+                "provenance": spec.provenance,
+            }
+            if commit:
+                ground_truth["commit"] = commit
+            tests_out.write_text(
+                "ground_truth.json",
+                json.dumps(ground_truth, indent=2, ensure_ascii=False) + "\n",
             )
-            test_sh.chmod(0o755)
 
-        # R17: multi-step templates (import_chain, dependency_analysis)
-        # attach checkpoints; the writer resolves the script bodies from
-        # the task category. No-op for single-step templates.
-        _write_checkpoints(task, tests_dir, None)
+            report = (divergence_reports or {}).get(task.id)
+            if report is not None:
+                task_out.write_text(
+                    "divergence_report.json",
+                    json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+                )
+
+            if is_dual:
+                tests_out.write_text(
+                    "test.sh",
+                    _DUAL_DIRECT_LEG_TEMPLATE.format(
+                        task_id=task.id, repo_default=repo_path
+                    ),
+                    executable=True,
+                )
+
+            # R17: multi-step templates (import_chain, dependency_analysis)
+            # attach checkpoints; the writer resolves the script bodies from
+            # the task category. No-op for single-step templates.
+            _write_checkpoints(task, tests_out, None)
+
+            task_dir = task_out.path
 
         written.append(task_dir)
         logger.info("Wrote comprehension task %s -> %s", task.id, task_dir)

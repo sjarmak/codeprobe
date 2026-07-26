@@ -28,6 +28,8 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from codeprobe.mining.safe_output import SafeOutputDir
+
 logger = logging.getLogger(__name__)
 
 
@@ -324,13 +326,21 @@ def score_task_confidence(
 
 
 def write_confidence_file(score: ConfidenceScore, task_dir: Path) -> Path:
-    """Persist ``confidence.json`` next to the task's other artifacts."""
-    out = task_dir / "confidence.json"
-    out.write_text(
-        json.dumps(score.to_json(), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    return out
+    """Persist ``confidence.json`` next to the task's other artifacts.
+
+    Bound to a symlink-refusing descriptor so a pre-existing symlinked
+    ``confidence.json`` (or task directory) in a reused output tree cannot
+    redirect the write outside the task tree (codeprobe-2cqg). Raises
+    :class:`codeprobe.mining.safe_output.ContainmentError` (a ``ValueError``)
+    when a component is a symlink or otherwise unsafe; callers decide how to
+    react — ``writer._emit_confidence`` deliberately re-raises it to fail the
+    task closed rather than skipping the artifact.
+    """
+    with SafeOutputDir.create(task_dir.parent, task_dir.name) as out_dir:
+        return out_dir.write_text(
+            "confidence.json",
+            json.dumps(score.to_json(), indent=2, ensure_ascii=False) + "\n",
+        )
 
 
 def load_confidence_file(task_dir: Path) -> ConfidenceScore | None:
