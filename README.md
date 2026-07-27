@@ -395,6 +395,10 @@ cd codeprobe
 uv sync --extra dev          # or: pip install -e '.[dev]'
 ```
 
+The `--extra dev` is required for test work. A bare `uv sync` omits pytest;
+without `.venv/bin/pytest`, `uv run pytest` can fall back to a pytest executable
+on `$PATH` and silently import `codeprobe` from a different checkout.
+
 Reproduce the CI gates before handing off a change:
 
 ```bash

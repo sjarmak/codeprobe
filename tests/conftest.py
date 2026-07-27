@@ -2,16 +2,85 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+import sys
 from pathlib import Path
 
 import pytest
 
-from codeprobe.adapters.protocol import (
-    AdapterCapabilities,
-    AgentConfig,
-    AgentOutput,
+_REMEDY = (
+    "This is usually the '.venv/bin/pytest missing, uv run pytest fell back "
+    "to $PATH' failure mode -- run `uv sync --extra dev` in this worktree "
+    "and re-run pytest."
 )
+
+_EXPECTED_SRC_DIR = Path(__file__).parent.parent / "src" / "codeprobe"
+
+
+def wrong_checkout_message(
+    imported_package_dir: Path | None,
+    expected_src_dir: Path,
+) -> str | None:
+    """Return a remedy message if imported_package_dir != expected_src_dir.
+
+    ``imported_package_dir`` is None when codeprobe was never imported, or
+    was imported without a resolvable __file__ (e.g. a namespace package) --
+    both count as "wrong" since we can't confirm the worktree's own src/ is
+    in use.
+    """
+    if imported_package_dir is None:
+        return (
+            "codeprobe could not be resolved to a file location (missing "
+            "import, or a namespace package) -- expected it to resolve to "
+            f"{expected_src_dir}. {_REMEDY}"
+        )
+    if imported_package_dir.resolve() != expected_src_dir.resolve():
+        return (
+            f"codeprobe was imported from {imported_package_dir} but this "
+            f"repo's source lives at {expected_src_dir}. {_REMEDY} If that "
+            "doesn't fix it, codeprobe may be installed non-editable (e.g. "
+            "`pip install .` instead of `pip install -e .`) -- reinstall in "
+            "editable mode."
+        )
+    return None
+
+
+def _imported_codeprobe_dir() -> Path | None:
+    """Resolve sys.modules["codeprobe"].__file__'s parent, or None."""
+    imported = sys.modules.get("codeprobe")
+    file_attr = getattr(imported, "__file__", None)
+    return Path(file_attr).parent if file_attr else None
+
+
+# A genuine top-level package failure must escape before the narrower protocol
+# handler below can defer a wrong-checkout submodule failure to the friendly
+# collection guard.
+importlib.import_module("codeprobe")
+
+try:
+    from codeprobe.adapters.protocol import (
+        AdapterCapabilities,
+        AgentConfig,
+        AgentOutput,
+    )
+except ImportError:
+    if wrong_checkout_message(_imported_codeprobe_dir(), _EXPECTED_SRC_DIR) is None:
+        raise
+    AdapterCapabilities = AgentConfig = AgentOutput = None
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Abort after collection if codeprobe resolved to the wrong checkout.
+
+    This is deferred past collection so tests/mcp/conftest.py can repair the
+    top-level ``sys.modules["codeprobe"]`` entry during full-suite collection.
+    That repair does not refresh names already bound by this module; the
+    residual limitation remains tracked by codeprobe-g3mu.1.2.
+    """
+    message = wrong_checkout_message(_imported_codeprobe_dir(), _EXPECTED_SRC_DIR)
+    if message:
+        pytest.exit(message, returncode=1)
 
 
 class PassthroughIsolation:
