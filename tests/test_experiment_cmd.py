@@ -93,6 +93,13 @@ def test_experiment_help(runner: CliRunner) -> None:
 # ---- init ----
 
 
+def test_init_help_names_the_path_name_nesting(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["experiment", "init", "--help"])
+    assert result.exit_code == 0
+    assert "PATH/NAME" in result.output
+    assert "base directory" in result.output
+
+
 def test_init_creates_experiment(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(
         main,

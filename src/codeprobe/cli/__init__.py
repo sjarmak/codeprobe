@@ -1268,7 +1268,11 @@ def experiment() -> None:
 @experiment.command("init")
 @add_json_flags
 @click.argument("path", default=".", type=click.Path(exists=True))
-@click.option("--name", default=None, help="Experiment name (used as directory name).")
+@click.option(
+    "--name",
+    default=None,
+    help="Experiment child directory name; output is written to PATH/NAME.",
+)
 @click.option("--description", default="", help="One-line experiment description.")
 @click.option(
     "--non-interactive",
@@ -1288,7 +1292,10 @@ def init_experiment(
     no_json_flag: bool,
     json_lines_flag: bool,
 ) -> None:
-    """Create a new experiment directory."""
+    """Create a new experiment under the PATH base directory.
+
+    The resulting experiment directory is PATH/NAME, not PATH itself.
+    """
     from codeprobe.cli._output_helpers import resolve_explicit_mode
     from codeprobe.cli.errors import PrescriptiveError
     from codeprobe.cli.experiment_cmd import experiment_init
