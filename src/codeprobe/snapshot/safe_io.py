@@ -574,7 +574,10 @@ class SecureOutputDirectory:
         self._fd = opened_fd
         self._directory_identities: dict[tuple[str, ...], tuple[int, int]] = {}
         self._file_identities: dict[tuple[str, ...], tuple[int, int]] = {}
-        self._symlink_identities: dict[tuple[str, ...], tuple[int, int]] = {}
+        self._symlink_identities: dict[
+            tuple[str, ...],
+            tuple[int, int, str],
+        ] = {}
 
     def __enter__(self) -> SecureOutputDirectory:
         if self._fd is None:
@@ -729,6 +732,7 @@ class SecureOutputDirectory:
             self._symlink_identities[parts] = (
                 metadata.st_dev,
                 metadata.st_ino,
+                target,
             )
         finally:
             os.close(parent_fd)
@@ -800,7 +804,7 @@ class SecureOutputDirectory:
                 raise SymlinkEscapeError(
                     "snapshot output file changed during secure write"
                 )
-        for parts, pinned_identity in self._symlink_identities.items():
+        for parts, pinned_symlink_identity in self._symlink_identities.items():
             try:
                 parent_fd = self._open_directory_parts(parts[:-1], create=False)
                 try:
@@ -809,15 +813,24 @@ class SecureOutputDirectory:
                         dir_fd=parent_fd,
                         follow_symlinks=False,
                     )
+                    visible_target = os.readlink(
+                        parts[-1],
+                        dir_fd=parent_fd,
+                    )
                 finally:
                     os.close(parent_fd)
             except (OSError, SymlinkEscapeError) as exc:
                 raise SymlinkEscapeError(
                     "snapshot output symlink changed during secure write"
                 ) from exc
-            if not stat.S_ISLNK(visible_link.st_mode) or pinned_identity != (
+            visible_identity = (
                 visible_link.st_dev,
                 visible_link.st_ino,
+                visible_target,
+            )
+            if (
+                not stat.S_ISLNK(visible_link.st_mode)
+                or pinned_symlink_identity != visible_identity
             ):
                 raise SymlinkEscapeError(
                     "snapshot output symlink changed during secure write"

@@ -340,6 +340,42 @@ def test_create_detects_generated_symlink_replacement(
     assert swapped is True
 
 
+def test_secure_output_detects_symlink_target_change_after_inode_reuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_stat = os.stat
+
+    with safe_io.SecureOutputDirectory(tmp_path / "snapshot") as output:
+        link = output.symlink("latest", "trial-a")
+        pinned = original_stat(link, follow_symlinks=False)
+        link.unlink()
+        link.symlink_to("trial-b")
+
+        def stat_with_reused_identity(
+            path: os.PathLike[str] | str,
+            *,
+            dir_fd: int | None = None,
+            follow_symlinks: bool = True,
+        ) -> os.stat_result:
+            if (
+                path == "latest"
+                and dir_fd is not None
+                and follow_symlinks is False
+            ):
+                return pinned
+            return original_stat(
+                path,
+                dir_fd=dir_fd,
+                follow_symlinks=follow_symlinks,
+            )
+
+        monkeypatch.setattr(os, "stat", stat_with_reused_identity)
+
+        with pytest.raises(SymlinkEscapeError, match="symlink changed"):
+            output.ensure_path_unchanged()
+
+
 def test_create_preserves_empty_trial_directories(tmp_path: Path) -> None:
     experiment = _experiment(tmp_path)
     (experiment / "baseline" / "empty-task").mkdir()
