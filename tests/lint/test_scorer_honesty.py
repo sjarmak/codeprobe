@@ -3,7 +3,7 @@
 The Code Scale Bench verification report (2026-04-24) shipped shellcheck +
 custom rules over its 781 ``test.sh`` files. codeprobe's verifiers are
 Python, so the analogous lint is an AST scan over the scorer modules. The
-goal is to catch five classes of *verifier dishonesty* that have shipped
+goal is to catch six classes of *verifier dishonesty* that have shipped
 in the past or could ship silently going forward:
 
 1. **Missing ``scorer_family`` declaration** — every ``ScoreResult(...)``
@@ -43,10 +43,15 @@ in the past or could ship silently going forward:
    a verifier failure. A verdict-less zero is not safe once aggregate
    validity depends on the typed verdict.
 
+6. **Positive reward from exit status alone** — composite verifiers emit a
+   score contract on stdout. Their scorer helpers must parse that contract
+   before a successful process exit may activate the documented legacy
+   empty-output fallback.
+
 The lint is a pytest test rather than a separate CLI so it runs in the
 default ``pytest`` invocation and produces a regression-style report.
 Pre-existing offenders documented in the bead description and in
-CLAUDE.md ZFC notes are tracked in ``_KNOWN_OFFENDERS`` with the bead
+AGENTS.md ZFC notes are tracked in ``_KNOWN_OFFENDERS`` with the bead
 ID(s) that follow up; a new offender either gains an explicit waiver
 (reviewer judgment) or fails CI.
 """
@@ -60,6 +65,13 @@ from pathlib import Path
 import pytest
 
 from codeprobe.core.scoring import SCORER_FAMILIES
+from tests.lint.scorer_honesty_exit_fallback import (
+    Finding,
+    find_positive_reward_exit_fallbacks,
+)
+from tests.lint.scorer_honesty_exit_fallback import (
+    is_scoreresult_call as _is_scoreresult_call,
+)
 
 # ---------------------------------------------------------------------------
 # Targets
@@ -131,17 +143,6 @@ def _offender_for(
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Finding:
-    relpath: str
-    line: int
-    rule: str
-    detail: str
-
-    def format(self) -> str:
-        return f"{self.relpath}:{self.line} [{self.rule}] {self.detail}"
-
-
 def _relpath(path: Path) -> str:
     try:
         return path.relative_to(REPO_ROOT).as_posix()
@@ -152,15 +153,6 @@ def _relpath(path: Path) -> str:
 # ---------------------------------------------------------------------------
 # Rule 1 — every ScoreResult(...) constructor must declare scorer_family
 # ---------------------------------------------------------------------------
-
-
-def _is_scoreresult_call(call: ast.Call) -> bool:
-    func = call.func
-    if isinstance(func, ast.Name):
-        return func.id == "ScoreResult"
-    if isinstance(func, ast.Attribute):
-        return func.attr == "ScoreResult"
-    return False
 
 
 def _scoreresult_kwargs(call: ast.Call) -> dict[str, ast.expr]:
@@ -588,6 +580,7 @@ def _run_lint(path: Path) -> list[Finding]:
     findings.extend(find_hardcoded_thresholds(source, relpath))
     findings.extend(find_bare_excepts(source, relpath))
     findings.extend(find_missing_scorer_verdict(source, relpath))
+    findings.extend(find_positive_reward_exit_fallbacks(source, relpath))
     return findings
 
 

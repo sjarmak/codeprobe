@@ -58,12 +58,19 @@ The former single scoring module is now a package:
 - Sandbox execution and secret sanitization:
   `src/codeprobe/core/scoring/sandbox.py`
 
-`tests/lint/test_scorer_honesty.py` enforces four rules:
+`tests/lint/test_scorer_honesty.py` enforces six rules:
 
 1. Every `ScoreResult(...)` constructor declares `scorer_family=`.
 2. F1-family branches do not quietly return recall/weighted recall.
 3. Scorer code does not introduce hardcoded semantic thresholds.
 4. Scorer code does not use unannotated broad exception handlers.
+5. Migrated scorer families declare a typed `verdict=`.
+6. Composite scorers parse their stdout contract before a successful process
+   exit can award positive reward.
+
+The positive-reward exit fallback rule intentionally targets scorer code only.
+Mining-writer verifier names and stub prevention are representability concerns
+enforced by writer validation and its focused tests, not reward calculation.
 
 To add a scorer family:
 
@@ -109,7 +116,7 @@ uv run mypy src/codeprobe --strict-optional
 uv run pytest tests/ -x --cov=src/codeprobe --cov-fail-under=80
 uv run python3 scripts/lint_zfc.py src/codeprobe/ \
   --allowlist scripts/lint_zfc.allowlist.toml
-uv run pytest tests/lint/test_scorer_honesty.py -q
+uv run pytest tests/lint/test_scorer_honesty*.py -q
 ```
 
 For documentation-only guidance changes, verify every backticked repository
