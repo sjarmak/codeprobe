@@ -18,3 +18,5 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
       - run: pytest --cov=src/codeprobe --cov-report=term-missing
+        env:
+          CODEPROBE_TENANT: ci-${{ github.sha }}
