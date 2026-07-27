@@ -853,6 +853,11 @@ def _record_mine_yield(
     )
 
 
+def _tasks_dir_path(repo_path: Path, out_dir: Path | None = None) -> Path:
+    base_dir = out_dir if out_dir is not None else (repo_path / ".codeprobe")
+    return base_dir / "tasks"
+
+
 def _clear_tasks_dir(
     repo_path: Path, *, preserve: bool = False, out_dir: Path | None = None
 ) -> Path:
@@ -873,13 +878,53 @@ def _clear_tasks_dir(
 
     ensure_codeprobe_excluded(repo_path)
 
-    base_dir = out_dir if out_dir is not None else (repo_path / ".codeprobe")
-    tasks_dir = base_dir / "tasks"
+    tasks_dir = _tasks_dir_path(repo_path, out_dir)
     if not preserve and tasks_dir.exists():
         shutil.rmtree(tasks_dir)
     global _CURRENT_TASKS_DIR
     _CURRENT_TASKS_DIR = tasks_dir
     return tasks_dir
+
+
+def _checkpoint_script_diagnostic(
+    error: Exception,
+    repo_path: Path,
+) -> DiagnosticError:
+    detail = str(error)
+    return DiagnosticError(
+        code="MISSING_CHECKPOINT_VERIFIER",
+        message=(
+            "Mining produced checkpoint tasks without usable verifier scripts: "
+            f"{detail}. No task with an unusable checkpoint verifier was accepted."
+        ),
+        diagnose_cmd="codeprobe doctor --json",
+        terminal=True,
+        next_steps=[
+            (
+                f"Add or repair the named checkpoint verifier scripts: {detail}",
+                "codeprobe doctor --json",
+            ),
+            (
+                "Re-run mining after the verifier scripts are available",
+                f"codeprobe mine {repo_path} --json",
+            ),
+        ],
+        detail={
+            "repo_path": str(repo_path),
+            "checkpoint_script_error": detail,
+        },
+    )
+
+
+def _validate_checkpoint_scripts(tasks: list[Task], tasks_dir: Path) -> None:
+    """Validate a mined batch before replacing the existing task corpus."""
+    from codeprobe.mining.writer import resolve_verified_checkpoint_scripts
+
+    for task in tasks:
+        resolve_verified_checkpoint_scripts(
+            task,
+            destination_dir=tasks_dir / task.id / "tests" / "verifiers",
+        )
 
 
 def _existing_task_ids(tasks_dir: Path) -> set[str]:
@@ -2081,6 +2126,8 @@ def _dispatch_cross_repo(
         return
 
     tasks = list(result.tasks)
+    destination = _tasks_dir_path(primary, out_dir)
+    _validate_checkpoint_scripts(tasks, destination)
     tasks_dir = _clear_tasks_dir(primary, out_dir=out_dir)
     for task in tasks:
         write_task_dir(task, tasks_dir, primary)
@@ -2531,6 +2578,8 @@ def _dispatch_sdlc(
 
     llm_used = _was_llm_used(no_llm)
 
+    destination = _tasks_dir_path(repo_path, out_dir)
+    _validate_checkpoint_scripts(tasks, destination)
     tasks_dir = _clear_tasks_dir(repo_path, preserve=resume, out_dir=out_dir)
     preserved_ids = _existing_task_ids(tasks_dir) if resume else set()
     for task in tasks:
@@ -2663,6 +2712,8 @@ def _dispatch_comprehension(
     quarantined = [t for t in tasks if not consensus[t.id].agreed]
     commit = mine_time_commit(repo_path)
 
+    destination = _tasks_dir_path(repo_path, out_dir)
+    _validate_checkpoint_scripts(shipped, destination)
     tasks_dir = _clear_tasks_dir(repo_path, out_dir=out_dir)
     quarantine_dir = tasks_dir.parent / "tasks_quarantined"
     _quarantine_comprehension_tasks(
@@ -2817,8 +2868,6 @@ def _dispatch_mixed(
     sdlc_count = max(1, count // 2)
     probe_count = max(1, count - sdlc_count)
 
-    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume, out_dir=out_dir)
-    all_task_ids: list[str] = sorted(_existing_task_ids(tasks_dir)) if resume else []
     sdlc_tasks: list = []
 
     # SDLC mining (may produce 0 tasks on cold-start repos)
@@ -2859,6 +2908,14 @@ def _dispatch_mixed(
         sdlc_tasks = _enrich_sdlc_tasks(sdlc_tasks, mine_result, no_llm, enrich)
         if dual_verify:
             sdlc_tasks = _apply_dual_verification(sdlc_tasks, mine_result, repo_path)
+
+    destination = _tasks_dir_path(repo_path, out_dir)
+    _validate_checkpoint_scripts(sdlc_tasks, destination)
+    tasks_dir = _clear_tasks_dir(repo_path, preserve=resume, out_dir=out_dir)
+    all_task_ids: list[str] = (
+        sorted(_existing_task_ids(tasks_dir)) if resume else []
+    )
+    if sdlc_tasks:
         for task in sdlc_tasks:
             write_mining_task(
                 task,
@@ -3363,6 +3420,8 @@ def run_mine(
             click.echo("Aborted.")
             return
 
+        from codeprobe.mining.writer import CheckpointScriptError
+
         try:
             # Cross-repo dispatch: AFTER resolve_effective_config, BEFORE org_scale
             if cross_repo:
@@ -3494,6 +3553,8 @@ def run_mine(
                 exit_code=130,
                 detail={"partial_path": partial_path},
             ) from exc
+        except CheckpointScriptError as exc:
+            raise _checkpoint_script_diagnostic(exc, repo_path) from exc
 
         # Success path: when envelope/NDJSON mode is active, emit a terminal
         # summary envelope. Pretty mode preserves the existing click.echo
@@ -3737,6 +3798,8 @@ def _run_org_scale_mine(
         )
 
     # Write tasks
+    destination = _tasks_dir_path(primary_repo, out_dir)
+    _validate_checkpoint_scripts(curated_tasks, destination)
     tasks_dir = _clear_tasks_dir(primary_repo, out_dir=out_dir)
     for task in curated_tasks:
         write_task_dir(
@@ -4245,7 +4308,11 @@ def _run_refresh(
         read_task_metadata_json,
         refresh_task,
     )
-    from codeprobe.mining.writer import read_checkpoint_scripts, write_task_dir
+    from codeprobe.mining.writer import (
+        CheckpointScriptError,
+        read_checkpoint_scripts,
+        write_task_dir,
+    )
     from codeprobe.models.task import Checkpoint, Task, TaskMetadata, TaskVerification
 
     existing_task_dir = Path(existing_task_dir).resolve()
@@ -4370,16 +4437,19 @@ def _run_refresh(
     # 5. Write the refreshed task back. write_task_dir uses the task.id
     #    (preserved) as the directory name, so this rewrites in place.
     base_dir = existing_task_dir.parent
-    checkpoint_scripts = read_checkpoint_scripts(
-        result.task,
-        existing_task_dir / "tests",
-    )
-    write_task_dir(
-        result.task,
-        base_dir,
-        repo_path,
-        checkpoint_scripts=checkpoint_scripts,
-    )
+    try:
+        checkpoint_scripts = read_checkpoint_scripts(
+            result.task,
+            existing_task_dir / "tests",
+        )
+        write_task_dir(
+            result.task,
+            base_dir,
+            repo_path,
+            checkpoint_scripts=checkpoint_scripts,
+        )
+    except CheckpointScriptError as exc:
+        raise _checkpoint_script_diagnostic(exc, repo_path) from exc
 
     if result.renumbered:
         click.echo(
