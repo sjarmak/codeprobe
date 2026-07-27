@@ -93,7 +93,6 @@ def write_comprehension_tasks(
     the spec is looked up from a process-wide registry keyed on ``task.id``.
     """
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
     registry = specs if specs is not None else _TASK_SPECS
@@ -117,9 +116,14 @@ def write_comprehension_tasks(
                 "for the direct-leg TASK_REPO_ROOT fallback"
             )
 
-        resolve_verified_checkpoint_scripts(task, None)
+        resolve_verified_checkpoint_scripts(
+            task,
+            None,
+            destination_dir=output_dir / task.id / "tests" / "verifiers",
+        )
         writable.append((task, spec))
 
+    output_dir.mkdir(parents=True, exist_ok=True)
     for task, spec in writable:
         is_dual = task.verification.verification_mode == "dual"
 

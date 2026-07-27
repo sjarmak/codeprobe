@@ -1140,9 +1140,26 @@ def _is_usable_checkpoint_script(body: str) -> bool:
     )
 
 
+def _filesystem_component_error(name: str, destination_dir: Path) -> str | None:
+    """Return why *name* cannot be created on *destination_dir*'s filesystem."""
+    if "\0" in name:
+        return "contains NUL"
+
+    existing_dir = destination_dir
+    while not existing_dir.exists():
+        existing_dir = existing_dir.parent
+    name_max = os.pathconf(existing_dir, "PC_NAME_MAX")
+    name_bytes = len(os.fsencode(name))
+    if name_max != -1 and name_bytes > name_max:
+        return f"is {name_bytes} bytes; component limit is {name_max} bytes"
+    return None
+
+
 def resolve_verified_checkpoint_scripts(
     task: Task,
     checkpoint_scripts: dict[str, str] | None = None,
+    *,
+    destination_dir: Path | None = None,
 ) -> dict[str, str]:
     """Return the verifier-filename -> bash-body map *task* will be written with.
 
@@ -1174,6 +1191,17 @@ def resolve_verified_checkpoint_scripts(
                 f"{cp.name!r}: unsafe verifier filename {cp.verifier!r}"
             )
             continue
+        if destination_dir is not None:
+            component_error = _filesystem_component_error(
+                cp.verifier,
+                destination_dir,
+            )
+            if component_error is not None:
+                problems.append(
+                    f"{cp.name!r}: verifier filename {cp.verifier!r} is not "
+                    f"representable on destination filesystem: {component_error}"
+                )
+                continue
         body = scripts.get(cp.verifier)
         if body is None:
             problems.append(
@@ -1291,7 +1319,11 @@ def _write_checkpoints(
 
     # Resolved here rather than taken on trust, so direct callers of this
     # helper get the same check write_task_dir applies at its boundary.
-    scripts = resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
+    scripts = resolve_verified_checkpoint_scripts(
+        task,
+        checkpoint_scripts,
+        destination_dir=tests_dir.path / "verifiers",
+    )
 
     with tests_dir.child("verifiers") as verifiers_out:
         for cp in checkpoints:
@@ -1517,7 +1549,11 @@ def write_task_dir(
     # Checked before anything hits disk: a task whose checkpoints can't be
     # backed by real verifiers must not leave a half-written directory that
     # a later run would score as passing.
-    resolve_verified_checkpoint_scripts(task, checkpoint_scripts)
+    resolve_verified_checkpoint_scripts(
+        task,
+        checkpoint_scripts,
+        destination_dir=base_dir / task.id / "tests" / "verifiers",
+    )
 
     # Write instruction.md and verification files
     repo_name = repo_path.name

@@ -15,14 +15,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from codeprobe.mining.comprehension import (
     COMPREHENSION_CHECKPOINT_SCRIPTS,
+    ComprehensionTaskSpec,
     _comprehension_checkpoints,
 )
+from codeprobe.mining.comprehension_writer import write_comprehension_tasks
 from codeprobe.mining.org_scale import (
     CHANGE_SCOPE_CHECKPOINT_SCRIPTS,
     _change_scope_checkpoints,
@@ -426,6 +429,16 @@ def _make_custom_checkpoint_task(*verifiers: str) -> Task:
     )
 
 
+def _filesystem_invalid_verifier(kind: str, destination: Path) -> str:
+    if kind == "nul":
+        return "invalid\0.sh"
+    name_max = os.pathconf(destination, "PC_NAME_MAX")
+    assert name_max > 0
+    if kind == "multibyte_overlong":
+        return "é" * (name_max // len(os.fsencode("é")) + 1)
+    return "v" * (name_max + 1)
+
+
 class TestCheckpointScriptValidation:
     """A declared checkpoint with no real script aborts the write.
 
@@ -533,6 +546,72 @@ class TestCheckpointScriptValidation:
 
         assert "unsafe verifier filename" in str(excinfo.value)
         assert not escapee.exists(), "verifier must not be written outside the task tree"
+
+    @pytest.mark.parametrize("kind", ["nul", "overlong", "multibyte_overlong"])
+    def test_filesystem_invalid_verifier_writes_no_partial_task(
+        self,
+        tmp_path: Path,
+        kind: str,
+    ) -> None:
+        repo_path, base_dir = self._dirs(tmp_path)
+        verifier = _filesystem_invalid_verifier(kind, base_dir)
+        task = _make_custom_checkpoint_task(verifier)
+
+        with pytest.raises(
+            CheckpointScriptError,
+            match="not representable on destination filesystem",
+        ):
+            write_task_dir(
+                task,
+                base_dir,
+                repo_path,
+                checkpoint_scripts={verifier: "#!/bin/bash\nexit 1\n"},
+            )
+
+        assert not (base_dir / task.id).exists()
+
+    @pytest.mark.parametrize("kind", ["nul", "overlong", "multibyte_overlong"])
+    def test_comprehension_writer_preflights_filesystem_invalid_verifier(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+    ) -> None:
+        output_dir = tmp_path / "tasks"
+        verifier = _filesystem_invalid_verifier(kind, tmp_path)
+        task = _make_custom_checkpoint_task(verifier)
+        task = replace(
+            task,
+            metadata=replace(
+                task.metadata,
+                category="architecture_comprehension",
+                task_type="architecture_comprehension",
+            ),
+        )
+        monkeypatch.setitem(
+            COMPREHENSION_CHECKPOINT_SCRIPTS,
+            verifier,
+            "#!/bin/bash\nexit 1\n",
+        )
+        spec = ComprehensionTaskSpec(
+            template="import_chain",
+            question="Which files import the target?",
+            answer=("src/example.py",),
+            answer_type="file_list",
+            target="example",
+        )
+
+        with pytest.raises(
+            CheckpointScriptError,
+            match="not representable on destination filesystem",
+        ):
+            write_comprehension_tasks(
+                [task],
+                output_dir,
+                specs={task.id: spec},
+            )
+
+        assert not output_dir.exists()
 
     @pytest.mark.parametrize("name", [".", ".."])
     def test_safe_path_component_rejects_dot_directories(self, name: str) -> None:
