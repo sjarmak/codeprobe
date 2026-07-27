@@ -1,0 +1,14 @@
+{
+  "release_version": "0.13.0",
+  "schema_version": 1,
+  "verdicts": [
+    {
+      "path": "verdict-previous.json",
+      "sha256": "f45c82d9214edb8dc0e0780970584972839cab904991ba4f807680d17869af28"
+    },
+    {
+      "path": "verdict-latest.json",
+      "sha256": "3b9ec6c58c05f4a9f5b0c9e095d295894e450ac9335057ccd581183692d9cf83"
+    }
+  ]
+}

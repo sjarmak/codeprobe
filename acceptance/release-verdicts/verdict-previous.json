@@ -1,0 +1,43 @@
+{
+  "all_pass": true,
+  "criteria_source": "/tmp/codeprobe-paid-iter4-rc-6df58ce/runner/acceptance/criteria.toml",
+  "eval_mode": "full",
+  "evaluated_at": "2026-07-26T13:25:19Z",
+  "evaluated_pct": {
+    "behavioral": 100.0,
+    "statistical": 80.0,
+    "structural": 100.0
+  },
+  "fail_count": 0,
+  "failures": [],
+  "iteration": 4,
+  "mode_skip_count": 0,
+  "no_handler_count": 0,
+  "no_handler_criteria": [],
+  "pass_count": 24,
+  "producer_agent": "claude",
+  "skip_count": 1,
+  "status": "EVALUATED",
+  "tier_counts": {
+    "behavioral": {
+      "fail": 0,
+      "pass": 10,
+      "skip": 0,
+      "total": 10
+    },
+    "statistical": {
+      "fail": 0,
+      "pass": 4,
+      "skip": 1,
+      "total": 5
+    },
+    "structural": {
+      "fail": 0,
+      "pass": 10,
+      "skip": 0,
+      "total": 10
+    }
+  },
+  "total_criteria": 25,
+  "workspace": "/tmp/codeprobe-paid-iter4-rc-6df58ce/workspace/iter-0004"
+}
