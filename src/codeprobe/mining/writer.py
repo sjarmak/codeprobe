@@ -18,7 +18,11 @@ from codeprobe.mining.confidence import (
 )
 from codeprobe.mining.curator import CurationResult, CurationVerification
 from codeprobe.mining.extractor import _is_safe_relative_path
-from codeprobe.mining.safe_output import ContainmentError, SafeOutputDir
+from codeprobe.mining.safe_output import (
+    ContainmentError,
+    SafeOutputDir,
+    staged_output_dirs,
+)
 from codeprobe.models.task import Task
 
 
@@ -1563,10 +1567,12 @@ def write_task_dir(
     # symlink, so a pre-existing symlinked task/tests component cannot redirect
     # any artifact outside base_dir (codeprobe-2cqg).
     with (
-        SafeOutputDir.create(base_dir, task.id) as task_out,
+        staged_output_dirs(base_dir, [task.id]) as staged,
+        staged[task.id] as task_out,
         task_out.child("tests") as tests_out,
     ):
-        task_dir = task_out.path
+        staged_task_dir = task_out.path
+        task_dir = base_dir / task.id
 
         # Oracle tasks get a different output structure
         if task.verification.type == "oracle":
@@ -1579,14 +1585,14 @@ def write_task_dir(
                 curation_backends=curation_backends,
             )
             _write_checkpoints(task, tests_out, checkpoint_scripts)
-            _emit_confidence(task_dir)
+            _emit_confidence(staged_task_dir)
             return task_dir
 
         # Dual-verification tasks: direct test.sh + artifact answer.json
         if task.verification.verification_mode == "dual":
             _write_dual_task(task, task_out, tests_out, repo_path, task.id)
             _write_checkpoints(task, tests_out, checkpoint_scripts)
-            _emit_confidence(task_dir)
+            _emit_confidence(staged_task_dir)
             return task_dir
 
         if task.metadata.issue_title:
@@ -1689,7 +1695,7 @@ def write_task_dir(
         # behind task.verification.checkpoints (R17 acceptance #4).
         _write_checkpoints(task, tests_out, checkpoint_scripts)
 
-        _emit_confidence(task_dir)
+        _emit_confidence(staged_task_dir)
 
     logger.info("Wrote task %s → %s", task.id, task_dir)
     return task_dir

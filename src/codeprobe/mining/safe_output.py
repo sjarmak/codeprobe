@@ -1,49 +1,35 @@
-"""Symlink-refusing directory writes for mined task output.
+"""Descriptor-bound, symlink-refusing writes for reused mining output trees.
 
-Mining reuses input and output trees across runs, so a symlink left in an
-output tree (by a prior run or an attacker with control of the tree) could
-redirect a task or verifier artifact outside the caller-supplied base
-directory (CWE-59). :class:`SafeOutputDir` closes that gap: every directory
-descent, file write, and removal is bound to a descriptor opened with
-``O_NOFOLLOW``, so no symlink component is ever traversed and a check/use
-swap of a path cannot redirect the operation — it follows the held
-descriptor, not the re-resolved path string.
-
-This reuses the ``O_NOFOLLOW`` descriptor-chaining idiom already used on the
-read side (``codeprobe.mining.oracle_curator._read_resolved_candidate``)
-rather than adding path-string prefix checks, which a symlink defeats.
-
-Only genuine symlink / wrong-type conditions become :class:`ContainmentError`.
-Operational failures (permission denied, out of space, ...) propagate with
-their original exception type so callers are not misled about the cause.
-
-Why a mining-specific primitive rather than reusing
-``codeprobe.snapshot.safe_io.SecureOutputDirectory`` (per the "reuse or
-extend" instruction in codeprobe-2cqg): that snapshot writer and this one
-solve the same CWE-59 class but have incompatible contracts. The snapshot
-primitive is exclusive-create (``O_CREAT | O_EXCL``) and *refuses* to
-overwrite, fixes every file at ``0o600``, pins whole-output directory/file
-identities for post-write re-verification, and can create symlinks — all
-correct for immutable snapshot publication. Mining output trees are the
-opposite: they are reused across runs, so writers must *overwrite* task
-artifacts idempotently, must mark verifier scripts executable (``0o755``),
-must *remove* stale checkpoint artifacts through the held descriptor, and
-must never emit symlinks. Bending ``SecureOutputDirectory`` to add
-overwrite/removal/executable modes would couple snapshot semantics to
-mining cleanup and widen a security-sensitive shared surface; a small,
-mining-scoped primitive that borrows the same ``O_NOFOLLOW`` descriptor
-discipline is the lower-risk choice.
+Unlike immutable snapshot output, mining must overwrite task artifacts,
+mark verifier scripts executable, and remove stale files. This module keeps
+those operations beneath held ``O_NOFOLLOW`` directory descriptors so a
+path swap cannot redirect reads, writes, or cleanup outside the trusted base.
 """
 
 from __future__ import annotations
 
 import errno
 import os
+import secrets
 import stat
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 
-__all__ = ["ContainmentError", "SafeOutputDir"]
+from codeprobe.mining._atomic_rename import (
+    rename_component as _rename_component,
+)
+from codeprobe.mining._atomic_rename import (
+    rename_component_no_replace as _rename_component_no_replace,
+)
+
+__all__ = [
+    "ContainmentError",
+    "SafeOutputDir",
+    "staged_output_dirs",
+]
 
 _UNSAFE_COMPONENTS = frozenset({"", ".", ".."})
 
@@ -79,6 +65,10 @@ _FILE_FLAGS = (
 _CONTAINMENT_ERRNOS = frozenset(
     {errno.ELOOP, errno.ENOTDIR, errno.ENXIO, errno.EISDIR}
 )
+
+_STAGE_PREFIX = ".codeprobe-stage-"
+_BACKUP_PREFIX = ".codeprobe-backup-"
+_CLEANUP_PREFIX = ".codeprobe-cleanup-"
 
 
 class ContainmentError(ValueError):
@@ -259,6 +249,504 @@ class SafeOutputDir:
         self.close()
 
 
+@dataclass(frozen=True)
+class _StagedDirectory:
+    final_name: str
+    stage_name: str
+    stage_identity: tuple[int, int]
+    original_identity: tuple[int, int] | None
+
+
+@dataclass(frozen=True)
+class _PublishedSwap:
+    entry: _StagedDirectory
+    backup_name: str | None
+
+
+@contextmanager
+def staged_output_dirs(
+    base_dir: Path,
+    names: list[str] | tuple[str, ...],
+) -> Iterator[Mapping[str, SafeOutputDir]]:
+    """Stage complete directories and publish them as one rollback-safe batch.
+
+    Every staged directory is a sibling of its final destination, so each
+    descriptor-relative rename stays on the same filesystem. Existing
+    destinations remain untouched while callers write. On successful exit,
+    all staged trees are swapped into place; if a later swap fails, earlier
+    swaps are reversed before the original exception propagates.
+
+    Existing output trees are validated before staging so switching from
+    in-place writes to whole-directory replacement does not weaken
+    :class:`SafeOutputDir`'s symlink, wrong-type, or hardlink rejection.
+    """
+    base_dir = Path(base_dir)
+    final_names = tuple(names)
+    if len(set(final_names)) != len(final_names):
+        raise ValueError("staged output names must be unique")
+    for name in final_names:
+        _require_component(name, base_dir)
+
+    base_dir.mkdir(parents=True, exist_ok=True)
+    base_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    base_fd = os.open(base_dir, base_flags)
+    staged: list[_StagedDirectory] = []
+    handles: dict[str, SafeOutputDir] = {}
+    try:
+        try:
+            for final_name in final_names:
+                identity = _validate_existing_tree(
+                    base_fd,
+                    name=final_name,
+                    parent_path=base_dir,
+                )
+                stage_name, stage_fd = _create_private_directory(
+                    base_fd,
+                    _STAGE_PREFIX,
+                    base_dir,
+                )
+                staged.append(
+                    _StagedDirectory(
+                        final_name=final_name,
+                        stage_name=stage_name,
+                        stage_identity=_directory_identity(stage_fd),
+                        original_identity=identity,
+                    )
+                )
+                handles[final_name] = SafeOutputDir(
+                    base_dir / stage_name,
+                    stage_fd,
+                )
+            yield handles
+        except BaseException as exc:
+            _close_handles(handles.values())
+            cleanup_errors = _remove_staged_components(base_fd, staged)
+            if cleanup_errors:
+                raise BaseExceptionGroup(
+                    "staged output preparation and cleanup both failed",
+                    [exc, *cleanup_errors],
+                ) from exc
+            raise
+        else:
+            _close_handles(handles.values())
+            _publish_staged_directories(base_fd, base_dir, staged)
+    finally:
+        _close_handles(handles.values())
+        os.close(base_fd)
+
+
+def _close_handles(handles: Iterable[SafeOutputDir]) -> None:
+    """Close a collection of output handles."""
+    for handle in handles:
+        handle.close()
+
+
+def _create_private_directory(
+    parent_fd: int,
+    prefix: str,
+    parent_path: Path,
+) -> tuple[str, int]:
+    """Create and securely open an unpredictable private child directory."""
+    for _ in range(10):
+        name = f"{prefix}{secrets.token_hex(12)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        try:
+            return name, _open_dir_nofollow(parent_fd, name, parent_path)
+        except BaseException:
+            # The component may have been replaced between mkdir and open.
+            # Without a retained descriptor identity, deleting it could remove
+            # unrelated concurrent data. Preserve it for recovery.
+            raise
+    raise FileExistsError(
+        f"could not allocate private output directory under {parent_path}"
+    )
+
+
+def _validate_existing_tree(
+    parent_fd: int,
+    name: str,
+    parent_path: Path,
+) -> tuple[int, int] | None:
+    """Validate an existing destination and return its stable root identity."""
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        raise ContainmentError(
+            f"refusing to replace symlinked or non-directory component "
+            f"{name!r} under {parent_path}"
+        )
+    child_fd = _open_dir_nofollow(parent_fd, name, parent_path)
+    try:
+        _validate_tree_contents(child_fd, parent_path / name)
+        opened = os.fstat(child_fd)
+        return opened.st_dev, opened.st_ino
+    finally:
+        os.close(child_fd)
+
+
+def _validate_tree_contents(directory_fd: int, directory_path: Path) -> None:
+    """Reject symlinks, special files, and hardlinks in an existing tree."""
+    for name in os.listdir(directory_fd):
+        info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child_fd = _open_dir_nofollow(
+                directory_fd,
+                name,
+                directory_path,
+            )
+            try:
+                _validate_tree_contents(child_fd, directory_path / name)
+            finally:
+                os.close(child_fd)
+            continue
+        if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            continue
+        raise ContainmentError(
+            f"refusing unsafe existing entry {name!r} under {directory_path}"
+        )
+
+
+def _publish_staged_directories(
+    parent_fd: int,
+    parent_path: Path,
+    staged: list[_StagedDirectory],
+) -> None:
+    """Publish every staged tree, rolling all swaps back on a later failure."""
+    swaps: list[_PublishedSwap] = []
+    try:
+        for entry in staged:
+            _require_stage_ready(parent_fd, parent_path, entry)
+            _require_original_identity(parent_fd, parent_path, entry)
+            backup_name: str | None = None
+            if entry.original_identity is not None:
+                backup_name = _unused_private_name(parent_fd, _BACKUP_PREFIX)
+            swaps.append(
+                _PublishedSwap(
+                    entry=entry,
+                    backup_name=backup_name,
+                )
+            )
+            if backup_name is not None:
+                _rename_component(
+                    parent_fd,
+                    entry.final_name,
+                    backup_name,
+                )
+            _rename_component_no_replace(
+                parent_fd,
+                entry.stage_name,
+                entry.final_name,
+            )
+            _require_published_ready(parent_fd, parent_path, entry)
+    except BaseException as exc:
+        rollback_errors = _rollback_swaps(parent_fd, swaps)
+        cleanup_errors = _remove_staged_components(parent_fd, staged)
+        recovery_errors = [*rollback_errors, *cleanup_errors]
+        if recovery_errors:
+            raise BaseExceptionGroup(
+                "output publication and rollback both failed",
+                [exc, *recovery_errors],
+            ) from exc
+        raise
+
+    cleanup_errors = _remove_backup_components(parent_fd, swaps)
+    if cleanup_errors:
+        raise BaseExceptionGroup(
+            "output published but backup cleanup failed",
+            cleanup_errors,
+        )
+
+
+def _require_stage_ready(
+    parent_fd: int,
+    parent_path: Path,
+    entry: _StagedDirectory,
+) -> None:
+    """Verify the staged root identity and reject unsafe staged contents."""
+    _require_named_tree_ready(
+        parent_fd,
+        parent_path,
+        entry.stage_name,
+        entry.stage_identity,
+        description=f"staged output for {entry.final_name!r}",
+    )
+
+
+def _require_published_ready(
+    parent_fd: int,
+    parent_path: Path,
+    entry: _StagedDirectory,
+) -> None:
+    """Verify that publication renamed the validated staged tree."""
+    _require_named_tree_ready(
+        parent_fd,
+        parent_path,
+        entry.final_name,
+        entry.stage_identity,
+        description=f"published output for {entry.final_name!r}",
+    )
+
+
+def _require_named_tree_ready(
+    parent_fd: int,
+    parent_path: Path,
+    name: str,
+    expected_identity: tuple[int, int],
+    *,
+    description: str,
+) -> None:
+    """Verify one named directory's identity and recursively safe contents."""
+    try:
+        directory_fd = _open_dir_nofollow(
+            parent_fd,
+            name,
+            parent_path,
+        )
+    except FileNotFoundError:
+        raise ContainmentError(
+            f"{description} changed under {parent_path}"
+        ) from None
+    try:
+        if _directory_identity(directory_fd) != expected_identity:
+            raise ContainmentError(
+                f"{description} changed under {parent_path}"
+            )
+        _validate_tree_contents(directory_fd, parent_path / name)
+    finally:
+        os.close(directory_fd)
+
+
+def _directory_identity(directory_fd: int) -> tuple[int, int]:
+    """Return the device/inode identity for an open directory descriptor."""
+    info = os.fstat(directory_fd)
+    return info.st_dev, info.st_ino
+
+
+def _require_original_identity(
+    parent_fd: int,
+    parent_path: Path,
+    entry: _StagedDirectory,
+) -> None:
+    """Reject a destination root changed between validation and publication."""
+    try:
+        info = os.stat(
+            entry.final_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        if entry.original_identity is None:
+            return
+        raise ContainmentError(
+            f"output component {entry.final_name!r} changed under {parent_path}"
+        ) from None
+
+    identity = (info.st_dev, info.st_ino)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or entry.original_identity is None
+        or identity != entry.original_identity
+    ):
+        raise ContainmentError(
+            f"output component {entry.final_name!r} changed under {parent_path}"
+        )
+
+
+def _rollback_swaps(
+    parent_fd: int,
+    swaps: list[_PublishedSwap],
+) -> list[BaseException]:
+    """Restore original destinations in reverse publication order."""
+    errors: list[BaseException] = []
+    for swap in reversed(swaps):
+        try:
+            entry = swap.entry
+            final_identity = _component_identity(
+                parent_fd,
+                entry.final_name,
+            )
+            original_at_final = (
+                entry.original_identity is not None
+                and final_identity == entry.original_identity
+            )
+            if final_identity is not None and not original_at_final:
+                if final_identity != entry.stage_identity:
+                    raise ContainmentError(
+                        f"cannot safely reconcile unexpected output "
+                        f"component {entry.final_name!r}"
+                    )
+                if _component_identity(parent_fd, entry.stage_name) is not None:
+                    raise ContainmentError(
+                        f"cannot safely reconcile output component "
+                        f"{entry.final_name!r}"
+                    )
+                _rename_component(
+                    parent_fd,
+                    entry.final_name,
+                    entry.stage_name,
+                )
+            if swap.backup_name is not None:
+                backup_identity = _component_identity(
+                    parent_fd,
+                    swap.backup_name,
+                )
+                if backup_identity is not None:
+                    if backup_identity != entry.original_identity:
+                        raise ContainmentError(
+                            f"cannot safely reconcile backup for "
+                            f"{entry.final_name!r}"
+                        )
+                    _rename_component(
+                        parent_fd,
+                        swap.backup_name,
+                        entry.final_name,
+                    )
+                elif not original_at_final:
+                    raise ContainmentError(
+                        f"original output for {entry.final_name!r} is missing"
+                    )
+        except BaseException as exc:
+            errors.append(exc)
+    return errors
+
+
+def _component_identity(
+    parent_fd: int,
+    name: str,
+) -> tuple[int, int] | None:
+    """Return a child component's inode identity without following symlinks."""
+    try:
+        info = os.stat(
+            name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+    return info.st_dev, info.st_ino
+
+
+def _unused_private_name(parent_fd: int, prefix: str) -> str:
+    """Return an unpredictable child name that is absent under *parent_fd*."""
+    for _ in range(10):
+        name = f"{prefix}{secrets.token_hex(12)}"
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return name
+    raise FileExistsError("could not allocate private backup name")
+
+
+def _remove_staged_components(
+    parent_fd: int,
+    staged: Iterable[_StagedDirectory],
+) -> list[BaseException]:
+    """Remove only stage components whose retained identities still match."""
+    errors: list[BaseException] = []
+    for entry in staged:
+        try:
+            _remove_owned_component(
+                parent_fd,
+                entry.stage_name,
+                entry.stage_identity,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    return errors
+
+
+def _remove_backup_components(
+    parent_fd: int,
+    swaps: Iterable[_PublishedSwap],
+) -> list[BaseException]:
+    """Remove only backups whose identities match their original outputs."""
+    errors: list[BaseException] = []
+    for swap in swaps:
+        original_identity = swap.entry.original_identity
+        if swap.backup_name is None or original_identity is None:
+            continue
+        try:
+            _remove_owned_component(
+                parent_fd,
+                swap.backup_name,
+                original_identity,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+    return errors
+
+
+def _remove_owned_component(
+    parent_fd: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    """Atomically claim, revalidate, and remove a transaction-owned directory."""
+    quarantine_name = _unused_private_name(parent_fd, _CLEANUP_PREFIX)
+    try:
+        _rename_component_no_replace(
+            parent_fd,
+            name,
+            quarantine_name,
+        )
+    except FileNotFoundError:
+        return
+
+    claimed_identity = _component_identity(parent_fd, quarantine_name)
+    if claimed_identity != expected_identity:
+        conflict = ContainmentError(
+            f"refusing to clean changed transaction component {name!r}"
+        )
+        try:
+            _rename_component_no_replace(
+                parent_fd,
+                quarantine_name,
+                name,
+            )
+        except BaseException as restore_exc:
+            raise BaseExceptionGroup(
+                "cleanup claim changed and restoration failed",
+                [conflict, restore_exc],
+            ) from conflict
+        raise conflict
+
+    _remove_claimed_directory(
+        parent_fd,
+        quarantine_name,
+        expected_identity,
+    )
+
+
+def _remove_claimed_directory(
+    parent_fd: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    """Empty a claimed directory through its verified descriptor, then remove it."""
+    directory_fd = _open_dir_nofollow(parent_fd, name, Path(name).parent)
+    try:
+        if _directory_identity(directory_fd) != expected_identity:
+            raise ContainmentError(
+                f"refusing to clean changed transaction component {name!r}"
+            )
+        os.fchmod(directory_fd, 0o700)
+        for entry in os.listdir(directory_fd):
+            _remove_tree_at(directory_fd, entry)
+    finally:
+        os.close(directory_fd)
+
+    if _component_identity(parent_fd, name) != expected_identity:
+        raise ContainmentError(
+            f"refusing to clean changed transaction component {name!r}"
+        )
+    os.rmdir(name, dir_fd=parent_fd)
+
+
 def _mkdir_open_nofollow(parent_fd: int, name: str, parent_path: Path) -> int:
     """Create *name* under *parent_fd* if absent, then open it O_NOFOLLOW.
 
@@ -271,6 +759,15 @@ def _mkdir_open_nofollow(parent_fd: int, name: str, parent_path: Path) -> int:
         os.mkdir(name, 0o755, dir_fd=parent_fd)
     except FileExistsError:
         pass
+    return _open_dir_nofollow(parent_fd, name, parent_path)
+
+
+def _open_dir_nofollow(
+    parent_fd: int,
+    name: str,
+    parent_path: Path,
+) -> int:
+    """Open a child directory and preserve the containment error contract."""
     try:
         return os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
     except OSError as exc:
