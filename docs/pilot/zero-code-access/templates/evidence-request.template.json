@@ -1,0 +1,161 @@
+{
+  "schema_version": "codeprobe.zero-code-access.request.v1",
+  "run": {
+    "codeprobe_version": "__CODEPROBE_VERSION__",
+    "environment": {
+      "execution_location": "participant_environment",
+      "repository_access": "participant_only",
+      "network_posture": "__NETWORK_POSTURE__"
+    },
+    "configurations": [
+      {
+        "configuration_id": "A",
+        "configuration_digest": "__SHA256_CONFIGURATION_A__"
+      },
+      {
+        "configuration_id": "B",
+        "configuration_digest": "__SHA256_CONFIGURATION_B__"
+      }
+    ]
+  },
+  "sample": {
+    "window": {
+      "start": "__START_DATE__",
+      "end": "__END_DATE__"
+    },
+    "selection_method": "predeclared_stratified",
+    "changed_after_results": false,
+    "task_pairs": [
+      {
+        "task_digest": "__SHA256_TASK_01__",
+        "verifier_digest": "__SHA256_VERIFIER_01__",
+        "category_id": "category_01"
+      },
+      {
+        "task_digest": "__SHA256_TASK_02__",
+        "verifier_digest": "__SHA256_VERIFIER_02__",
+        "category_id": "category_01"
+      },
+      {
+        "task_digest": "__SHA256_TASK_03__",
+        "verifier_digest": "__SHA256_VERIFIER_03__",
+        "category_id": "category_01"
+      },
+      {
+        "task_digest": "__SHA256_TASK_04__",
+        "verifier_digest": "__SHA256_VERIFIER_04__",
+        "category_id": "category_01"
+      },
+      {
+        "task_digest": "__SHA256_TASK_05__",
+        "verifier_digest": "__SHA256_VERIFIER_05__",
+        "category_id": "category_01"
+      },
+      {
+        "task_digest": "__SHA256_TASK_06__",
+        "verifier_digest": "__SHA256_VERIFIER_06__",
+        "category_id": "category_02"
+      },
+      {
+        "task_digest": "__SHA256_TASK_07__",
+        "verifier_digest": "__SHA256_VERIFIER_07__",
+        "category_id": "category_02"
+      },
+      {
+        "task_digest": "__SHA256_TASK_08__",
+        "verifier_digest": "__SHA256_VERIFIER_08__",
+        "category_id": "category_02"
+      },
+      {
+        "task_digest": "__SHA256_TASK_09__",
+        "verifier_digest": "__SHA256_VERIFIER_09__",
+        "category_id": "category_02"
+      },
+      {
+        "task_digest": "__SHA256_TASK_10__",
+        "verifier_digest": "__SHA256_VERIFIER_10__",
+        "category_id": "category_02"
+      }
+    ],
+    "category_counts": [
+      {
+        "category_id": "category_01",
+        "selected_count": 5,
+        "paired_scorable_count": 5
+      },
+      {
+        "category_id": "category_02",
+        "selected_count": 5,
+        "paired_scorable_count": 5
+      }
+    ],
+    "exclusions": [],
+    "attrition_count": 0,
+    "representative": false
+  },
+  "results": {
+    "quality_metric": "mean_score",
+    "repeats_per_task": 3,
+    "paired_task_count": 10,
+    "paired_task_set_same": true,
+    "configurations": [
+      {
+        "configuration_id": "A",
+        "scorable_run_count": 30,
+        "total_run_count": 30,
+        "mean_quality": 0.0,
+        "quality_ci": {
+          "lower": 0.0,
+          "upper": 0.0
+        },
+        "total_cost_usd": null,
+        "cost_coverage": 0.0,
+        "mean_latency_seconds": 0.0,
+        "total_latency_seconds": 0.0
+      },
+      {
+        "configuration_id": "B",
+        "scorable_run_count": 30,
+        "total_run_count": 30,
+        "mean_quality": 0.0,
+        "quality_ci": {
+          "lower": 0.0,
+          "upper": 0.0
+        },
+        "total_cost_usd": null,
+        "cost_coverage": 0.0,
+        "mean_latency_seconds": 0.0,
+        "total_latency_seconds": 0.0
+      }
+    ],
+    "comparison": {
+      "report_comparable": false,
+      "report_refusal_code": "invalid_run",
+      "score_difference": 0.0,
+      "cost_difference_usd": null,
+      "latency_difference_seconds": 0.0,
+      "p_value": null,
+      "effect_size": null,
+      "effect_size_method": "none",
+      "confidence_interval": {
+        "lower": 0.0,
+        "upper": 0.0
+      }
+    },
+    "validity_warnings": [
+      "report_refused"
+    ]
+  },
+  "finding": {
+    "conclusion": "insufficient_evidence"
+  },
+  "support": {
+    "events": [
+      {
+        "sequence": 1,
+        "actor_role": "solutions_engineering",
+        "kind": "published_runbook"
+      }
+    ]
+  }
+}

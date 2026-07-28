@@ -1,0 +1,65 @@
+{
+  "schema_version": "codeprobe.zero-code-access.intervention-log.v1",
+  "record_schema": {
+    "sequence": "contiguous_integer_starting_at_1",
+    "actor_role": "runtime_allowlisted_actor_role",
+    "kind": "runtime_allowlisted_support_kind"
+  },
+  "permitted_examples": [
+    {
+      "actor_role": "participant_technical_owner",
+      "kind": "published_runbook"
+    },
+    {
+      "actor_role": "solutions_engineering",
+      "kind": "asynchronous_coordination"
+    },
+    {
+      "actor_role": "field_engineering",
+      "kind": "live_collaboration"
+    },
+    {
+      "actor_role": "participant_security",
+      "kind": "security_followup"
+    },
+    {
+      "actor_role": "solutions_engineering",
+      "kind": "sanitized_diagnostics"
+    }
+  ],
+  "disqualifying_examples": [
+    {
+      "actor_role": "core_engineering",
+      "kind": "generic_guidance"
+    },
+    {
+      "actor_role": "solutions_engineering",
+      "kind": "direct_environment_access"
+    },
+    {
+      "actor_role": "other_sourcegraph_personnel",
+      "kind": "direct_environment_access"
+    },
+    {
+      "actor_role": "field_engineering",
+      "kind": "bespoke_code_change"
+    },
+    {
+      "actor_role": "solutions_engineering",
+      "kind": "manual_evidence_repair"
+    },
+    {
+      "actor_role": "field_engineering",
+      "kind": "prohibited_data_sharing"
+    },
+    {
+      "actor_role": "solutions_engineering",
+      "kind": "raw_data_received"
+    },
+    {
+      "actor_role": "solutions_engineering",
+      "kind": "raw_result_reinterpretation"
+    }
+  ],
+  "events": []
+}

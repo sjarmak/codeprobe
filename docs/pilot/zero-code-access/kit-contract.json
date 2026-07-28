@@ -1,0 +1,45 @@
+{
+  "schema_version": "codeprobe.zero-code-access.operator-kit.v1",
+  "strategy_id": "CP-ZCA-PILOT-2026",
+  "participant_time_budget_minutes": {
+    "asynchronous_intake_maximum": 10,
+    "structured_session_maximum": 45
+  },
+  "security_or_platform_followup": "optional",
+  "minimum_paired_distinct_tasks": 10,
+  "minimum_repeats_per_task_and_configuration": 3,
+  "same_task_set_required": true,
+  "sample_locked_before_results": true,
+  "external_execution_owner": "participant_technical_owner",
+  "sourcegraph_repository_access": "prohibited",
+  "allowed_conclusions": [
+    "advance_a",
+    "advance_b",
+    "insufficient_evidence"
+  ],
+  "prohibited_outbound_data": [
+    "source",
+    "repository_identifiers",
+    "paths",
+    "prompts",
+    "patches",
+    "traces",
+    "task_level_results",
+    "raw_results",
+    "logs",
+    "diagnostics"
+  ],
+  "approved_export_artifacts": [
+    "run-manifest.json",
+    "sample-attestation.json",
+    "aggregate-results.json",
+    "findings.md",
+    "support-log.json"
+  ],
+  "roles": {
+    "solutions_engineering": "methodology_and_bounded_findings",
+    "field_engineering": "coordination_and_external_session",
+    "participant_technical_owner": "execution_data_approval_and_signoff",
+    "core_engineering": "internal_defect_repair_only"
+  }
+}

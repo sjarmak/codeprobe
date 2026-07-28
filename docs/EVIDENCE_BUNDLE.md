@@ -142,3 +142,7 @@ owner has reviewed the preview. The receiver must run
 `codeprobe snapshot evidence validate BUNDLE --expect TRUSTED_DIGEST --no-json`
 with the separately authenticated data-owner digest before reviewing its
 bounded conclusion.
+
+The complete install-to-export sequence, role boundaries, sampling worksheet,
+and participant consent checklist are in the
+[zero-code-access operator kit](pilot/zero-code-access/README.md).

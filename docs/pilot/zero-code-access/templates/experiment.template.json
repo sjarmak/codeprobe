@@ -1,0 +1,52 @@
+{
+  "name": "zero-code-access-pilot",
+  "description": "Participant-operated two-configuration zero-code-access comparison",
+  "tasks_dir": "tasks",
+  "configs": [
+    {
+      "label": "A",
+      "agent": "REPLACE_WITH_AGENT",
+      "model": "REPLACE_WITH_MODEL_A",
+      "permission_mode": "default",
+      "mcp_config": null,
+      "allowed_tools": null,
+      "disallowed_tools": null,
+      "mcp_mode": "strict",
+      "instruction_variant": "instruction.md",
+      "preambles": [],
+      "reward_type": "binary",
+      "max_turns": null,
+      "hide_local_source": "off",
+      "low_confidence_threshold": 0.5,
+      "extra": {
+        "pilot_protocol": "CP-ZCA-PILOT-2026",
+        "minimum_paired_tasks": 10,
+        "required_repeats": 3
+      }
+    },
+    {
+      "label": "B",
+      "agent": "REPLACE_WITH_AGENT",
+      "model": "REPLACE_WITH_MODEL_B",
+      "permission_mode": "default",
+      "mcp_config": null,
+      "allowed_tools": null,
+      "disallowed_tools": null,
+      "mcp_mode": "strict",
+      "instruction_variant": "instruction.md",
+      "preambles": [],
+      "reward_type": "binary",
+      "max_turns": null,
+      "hide_local_source": "off",
+      "low_confidence_threshold": 0.5,
+      "extra": {
+        "pilot_protocol": "CP-ZCA-PILOT-2026",
+        "minimum_paired_tasks": 10,
+        "required_repeats": 3
+      }
+    }
+  ],
+  "bias_overshipping_recall_min": 0.95,
+  "bias_overshipping_low_precision_max": 0.5,
+  "bias_overshipping_precision_gap_min": 0.3
+}
