@@ -3,9 +3,8 @@
 These tests intentionally avoid the ~30-second cost of actually building
 a wheel — the build / venv / pip steps are exercised by mocking
 ``ReleaseGate._run_subprocess`` and by faking a dummy wheel under
-``dist/``. A single optional integration test (marked with
-``@pytest.mark.integration`` and skipped by default) can do the real build
-when a maintainer wants end-to-end coverage.
+``dist/``. A single test marked with ``@pytest.mark.integration`` performs
+the real build in default pytest and CI runs, providing end-to-end coverage.
 """
 
 from __future__ import annotations
@@ -512,13 +511,13 @@ def test_release_gate_importable_and_constructs(tmp_repo: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Optional end-to-end integration test (skipped by default)
+# End-to-end integration test (included in default pytest and CI runs)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_build_and_stage_real_wheel() -> None:  # pragma: no cover - opt-in
-    """Actually build a wheel and stage it. Slow (~30s) — run with:
+def test_build_and_stage_real_wheel() -> None:
+    """Actually build a wheel and stage it. Run this test alone with:
 
     pytest tests/test_release_gate.py -m integration
     """

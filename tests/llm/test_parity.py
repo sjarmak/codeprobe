@@ -133,8 +133,9 @@ def test_parity_anthropic_vs_second_backend_within_five_percent(
     """Compare Anthropic vs a second live backend on the same tiny task set.
 
     Skipped when either backend's credentials are absent (acceptance
-    criterion 4). The ``integration`` marker ensures non-integration
-    runs (``pytest -m 'not integration'``) do not require network.
+    criterion 4). The ``integration`` marker lets offline runs explicitly
+    exclude this test with ``pytest -m 'not integration'``; default pytest
+    and CI runs collect it, and it self-skips without credentials.
     """
     if not _has_creds("anthropic"):
         pytest.skip("ANTHROPIC_API_KEY not set")

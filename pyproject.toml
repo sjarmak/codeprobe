@@ -108,7 +108,7 @@ include-package-data = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: requires external services (skipped by default in CI)",
+    "integration: cross-component or external-service checks (included in default pytest and CI runs)",
 ]
 
 [tool.mypy]

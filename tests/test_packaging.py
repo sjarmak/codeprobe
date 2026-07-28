@@ -16,10 +16,10 @@ Two layers of defense:
    sub-package and forgot to update pyproject.toml" regression class
    without paying for a wheel build.
 
-2. ``test_built_wheel_contains_runtime_data_files`` (integration, opt-in):
+2. ``test_built_wheel_contains_runtime_data_files`` (integration):
    actually builds a wheel and inspects the zip for the same files.
-   Authoritative but slow (~20-30s); marked ``integration`` and run only
-   when explicitly requested.
+   Authoritative but slow (~20-30s); marked ``integration`` and included
+   in default pytest and CI runs.
 """
 
 from __future__ import annotations
