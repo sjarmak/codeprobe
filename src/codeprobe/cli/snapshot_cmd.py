@@ -26,6 +26,7 @@ from codeprobe.cli._output_helpers import (
 )
 from codeprobe.cli._tenant import resolve_tenant, tenant_option
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
+from codeprobe.cli.evidence_cmd import evidence_cmd
 from codeprobe.snapshot.canary import (
     CANARY_DEFAULT,
     CanaryFailedError,
@@ -67,6 +68,9 @@ _VALID_MODES: tuple[RedactionMode, ...] = ("hashes-only", "contents", "secrets")
 @click.group(cls=CodeprobeGroup)
 def snapshot() -> None:
     """Create and verify shareable snapshots of experiment directories."""
+
+
+snapshot.add_command(evidence_cmd)
 
 
 def _build_scanner(name: str) -> Scanner:

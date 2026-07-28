@@ -98,6 +98,22 @@
       "remediation_pattern": "Re-run with --acknowledge-source-export to confirm intent."
     },
     {
+      "code": "EVIDENCE_APPROVAL_MISMATCH",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.14.0",
+      "description": "The supplied evidence-export approval digest does not match the current five-artifact preview.",
+      "remediation_pattern": "Run `codeprobe snapshot evidence preview REQUEST`, review every artifact, and pass the exact printed digest to `codeprobe snapshot evidence export`."
+    },
+    {
+      "code": "EVIDENCE_BUNDLE_INVALID",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.14.0",
+      "description": "A received zero-code-access evidence directory could not be proven to contain an intact, schema-valid, approval-bound five-artifact bundle.",
+      "remediation_pattern": "Do not repair or supplement the received directory. Ask the data owner to resolve the local request, approve a new export, send the final preview digest through the agreed authenticated channel, and rerun `codeprobe snapshot evidence validate BUNDLE --expect TRUSTED_DIGEST`."
+    },
+    {
       "code": "CANARY_PROOF_FAILED",
       "kind": "diagnostic",
       "exit_code": 2,

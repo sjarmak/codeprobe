@@ -37,6 +37,10 @@ proprietary source printed by the agent lands on disk verbatim. See the
 README section "Data at rest & retention" for the on-disk reality and
 `codeprobe purge` for the retention lever.
 
+The zero-code-access evidence flow uses a separate, stricter five-artifact boundary:
+[`codeprobe snapshot evidence`](EVIDENCE_BUNDLE.md). Unlike a hashes-only
+snapshot, that bundle excludes file paths and sizes as well as file bodies.
+
 ## Capability matrix
 
 | Mode | Bodies in snapshot? | Requires `--allow-source-in-export`? | Requires canary gate? | Public default? |
