@@ -19,9 +19,9 @@ from codeprobe.cli.doctor_cmd import (
 class _FakeProc:
     """Minimal subprocess.CompletedProcess stand-in for mocked runs."""
 
-    def __init__(self, returncode: int) -> None:
+    def __init__(self, returncode: int, *, stdout: str = "") -> None:
         self.returncode = returncode
-        self.stdout = ""
+        self.stdout = stdout
         self.stderr = ""
 
 
@@ -302,6 +302,100 @@ class TestDoctorChecks:
             assert by_name["copilot auth"].passed is False
             assert by_name["copilot auth"].detail == f"unsupported token in {key}"
             assert "copilot login" not in by_name["copilot auth"].fix
+
+    @pytest.mark.parametrize(
+        "token",
+        ("gho_test-secret", "ghu_test-secret", "github_pat_test-secret"),
+    )
+    def test_copilot_auth_uses_supported_gh_token_without_leaking(
+        self, monkeypatch: object, token: str
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/usr/bin/gh" if name == "gh" else None,
+        )
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeProc:
+            calls.append(cmd)
+            return _FakeProc(0, stdout=f"{token}\n")
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+        result = mod._check_copilot_auth(required=True)
+
+        assert result.passed is True
+        assert result.detail == "gh auth token ok"
+        assert ["gh", "auth", "token"] in calls
+        assert ["gh", "auth", "status"] not in calls
+        assert token not in result.detail
+        assert token not in result.fix
+
+    @pytest.mark.parametrize("token", ("ghp_test-secret", "plain-secret", " \t\n"))
+    def test_copilot_auth_rejects_unsupported_gh_token_without_leaking(
+        self, monkeypatch: object, token: str
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/usr/bin/gh" if name == "gh" else None,
+        )
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeProc:
+            return _FakeProc(0, stdout=f"{token}\n")
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+        result = mod._check_copilot_auth(required=True)
+
+        assert result.passed is False
+        assert result.detail == "unsupported gh auth token"
+        assert "copilot login" not in result.fix
+        if token.strip():
+            assert token.strip() not in result.detail
+            assert token.strip() not in result.fix
+
+    @pytest.mark.parametrize("failure", ("nonzero", "oserror", "timeout"))
+    def test_copilot_auth_gh_token_failure_is_secret_free(
+        self, monkeypatch: object, failure: str
+    ) -> None:
+        import subprocess
+
+        import codeprobe.cli.doctor_cmd as mod
+
+        secret = "github_pat_test-secret"
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/usr/bin/gh" if name == "gh" else None,
+        )
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeProc:
+            if failure == "oserror":
+                raise OSError(f"exec failed for {secret}")
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(cmd, 5, output=secret)
+            return _FakeProc(1, stdout=f"{secret}\n")
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+        result = mod._check_copilot_auth(required=True)
+
+        assert result.passed is False
+        assert result.detail == "no Copilot gh auth"
+        assert secret not in result.detail
+        assert secret not in result.fix
 
 
 class TestDoctorCLI:

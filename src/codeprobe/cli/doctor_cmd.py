@@ -127,6 +127,34 @@ def _github_auth_status() -> tuple[bool, str]:
     return False, "no GitHub auth"
 
 
+def _copilot_token_supported(value: str) -> bool:
+    return (
+        bool(value)
+        and not any(char.isspace() for char in value)
+        and value.startswith(_COPILOT_TOKEN_PREFIXES)
+    )
+
+
+def _copilot_gh_auth_status() -> tuple[bool, str]:
+    if shutil.which("gh") is None:
+        return False, "no Copilot gh auth"
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False, "no Copilot gh auth"
+    if result.returncode != 0:
+        return False, "no Copilot gh auth"
+    token = result.stdout.strip()
+    if _copilot_token_supported(token):
+        return True, "gh auth token ok"
+    return False, "unsupported gh auth token"
+
+
 def _check_github_access() -> CheckResult:
     """Advisory GitHub-auth check: GITHUB_TOKEN or an authenticated gh CLI.
 
@@ -200,8 +228,7 @@ def _copilot_env_auth_status() -> tuple[bool, str] | None:
         if (
             not value
             or value != raw_value
-            or any(char.isspace() for char in value)
-            or not value.startswith(_COPILOT_TOKEN_PREFIXES)
+            or not _copilot_token_supported(value)
         ):
             return False, f"unsupported token in {key}"
         return True, f"{key} set"
@@ -223,7 +250,7 @@ def _check_copilot_auth(*, required: bool) -> CheckResult:
             fix=fix,
         )
     else:
-        gh_ok, detail = _github_auth_status()
+        gh_ok, detail = _copilot_gh_auth_status()
         result = CheckResult(
             name="copilot auth",
             passed=gh_ok,
