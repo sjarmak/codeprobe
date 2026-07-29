@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from importlib.metadata import version as package_version
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli._sandbox import sandbox_options
+from codeprobe.sandbox import runner as sandbox_runner
 from codeprobe.sandbox.runner import (
     SandboxError,
     SandboxResult,
@@ -35,6 +37,72 @@ DOCKERFILE = (
     / "Dockerfile.sg_only"
 )
 TEST_IMAGE_TAG = "codeprobe-sandbox:sg-only-test"
+
+_IMAGE_ENV_KEYS = (
+    "CODEPROBE_AGENT_IMAGE",
+    "CODEPROBE_SCORING_IMAGE",
+    "CODEPROBE_IMAGE_REGISTRY",
+    "CODEPROBE_IMAGE_NAMESPACE",
+    "CODEPROBE_IMAGE_VERSION",
+)
+
+
+# ---------------------------------------------------------------------------
+# Runtime image references (pure config)
+# ---------------------------------------------------------------------------
+
+
+def _clear_image_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in _IMAGE_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_agent_and_scoring_images_track_installed_package_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_image_env(monkeypatch)
+    release_version = package_version("codeprobe")
+
+    assert sandbox_runner.agent_image_reference() == f"codeprobe-agent:{release_version}"
+    assert sandbox_runner.scoring_image_reference() == f"codeprobe-scoring:{release_version}"
+
+
+def test_image_reference_composes_registry_namespace_and_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_image_env(monkeypatch)
+    monkeypatch.setenv("CODEPROBE_IMAGE_REGISTRY", "registry.example.test")
+    monkeypatch.setenv("CODEPROBE_IMAGE_NAMESPACE", "platform/codeprobe")
+    monkeypatch.setenv("CODEPROBE_IMAGE_VERSION", "1.2.3")
+
+    assert (
+        sandbox_runner.agent_image_reference()
+        == "registry.example.test/platform/codeprobe/codeprobe-agent:1.2.3"
+    )
+    assert (
+        sandbox_runner.scoring_image_reference()
+        == "registry.example.test/platform/codeprobe/codeprobe-scoring:1.2.3"
+    )
+
+
+def test_exact_agent_and_scoring_image_overrides_win(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_image_env(monkeypatch)
+    monkeypatch.setenv("CODEPROBE_IMAGE_REGISTRY", "registry.example.test")
+    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", "mirror.example/agent@sha256:abc123")
+    monkeypatch.setenv("CODEPROBE_SCORING_IMAGE", "mirror.example/scoring@sha256:def456")
+
+    assert sandbox_runner.agent_image_reference() == "mirror.example/agent@sha256:abc123"
+    assert sandbox_runner.scoring_image_reference() == "mirror.example/scoring@sha256:def456"
+
+
+def test_empty_image_override_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear_image_env(monkeypatch)
+    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", " ")
+
+    with pytest.raises(ValueError, match="CODEPROBE_AGENT_IMAGE"):
+        sandbox_runner.agent_image_reference()
 
 
 # ---------------------------------------------------------------------------

@@ -115,12 +115,14 @@ and verifier inside a `--network=none` container automatically; each trial's
 root:
 
 ```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .
+docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:<version> .
 ```
 
 With an engine present but the image missing, scoring refuses host execution
 unless the run was started with `--uncontained`, and the error message repeats
-the build command above.
+the build command above. Runtime image references default to the installed
+`codeprobe` version and can be pointed at a private registry or digest; see
+[docs/oci_images.md](docs/oci_images.md).
 
 The agent process is containerized the same way. With an engine on PATH and
 the agent image built, `codeprobe run` proceeds on a bare host with no
@@ -134,7 +136,7 @@ reach the container through the environment whitelist (`ANTHROPIC_API_KEY`,
 repository root:
 
 ```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .
+docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:<version> .
 ```
 
 With an engine present but the agent image missing, `codeprobe run` still

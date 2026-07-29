@@ -2,7 +2,7 @@
 #
 # Build from the repository root:
 #
-#   docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .
+#   docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:<version> .
 #
 # Toolchain matches the committed mining matrix (Python / Go / JS-TS) plus
 # bash, git, and coreutils for the scripts themselves. Scoring containers

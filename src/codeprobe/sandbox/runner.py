@@ -24,11 +24,16 @@ Design notes
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+from pathlib import Path
 from typing import Final
 
 logger = logging.getLogger(__name__)
@@ -36,16 +41,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE: Final[str] = "codeprobe-sandbox:sg-only"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
+_PACKAGE_NAME: Final[str] = "codeprobe"
+_DEFAULT_AGENT_IMAGE_NAME: Final[str] = "codeprobe-agent"
+_DEFAULT_SCORING_IMAGE_NAME: Final[str] = "codeprobe-scoring"
 
-# Image used to execute mined test.sh / verifier scripts (codeprobe-f7rl.4).
-# Built from ``src/codeprobe/sandbox/Dockerfile.scoring``; the version tag
-# tracks the toolchain matrix, bump it when the Dockerfile changes.
-DEFAULT_SCORING_IMAGE: Final[str] = "codeprobe-scoring:0.12"
-
-# Image used to run the agent subprocess itself (codeprobe-f7rl.5). Built
-# from ``src/codeprobe/sandbox/Dockerfile.agent``; the version tag tracks
-# the installed agent CLI surface, bump it when the Dockerfile changes.
-DEFAULT_AGENT_IMAGE: Final[str] = "codeprobe-agent:0.12"
+AGENT_IMAGE_ENV: Final[str] = "CODEPROBE_AGENT_IMAGE"
+SCORING_IMAGE_ENV: Final[str] = "CODEPROBE_SCORING_IMAGE"
+IMAGE_REGISTRY_ENV: Final[str] = "CODEPROBE_IMAGE_REGISTRY"
+IMAGE_NAMESPACE_ENV: Final[str] = "CODEPROBE_IMAGE_NAMESPACE"
+IMAGE_VERSION_ENV: Final[str] = "CODEPROBE_IMAGE_VERSION"
 
 # Lower-cased stderr fragments that indicate a write to a read-only mount.
 # Kept explicit because the exact wording varies between docker, podman, and
@@ -78,6 +82,85 @@ class SandboxWriteDeniedError(SandboxError):
 _LEGACY_EXCEPTION_ALIASES = {
     "SandboxWriteDenied": "SandboxWriteDeniedError",
 }
+
+
+def _installed_version() -> str:
+    """Return the installed codeprobe version used for default image tags."""
+    try:
+        return package_version(_PACKAGE_NAME)
+    except PackageNotFoundError:
+        pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
+        if pyproject.is_file():
+            project = tomllib.loads(pyproject.read_text())
+            version = project.get("project", {}).get("version")
+            if isinstance(version, str) and version:
+                return version
+        raise RuntimeError(
+            "Cannot resolve the installed codeprobe version; set "
+            f"{IMAGE_VERSION_ENV} or an exact image override."
+        ) from None
+
+
+# Image used to execute mined test.sh / verifier scripts (codeprobe-f7rl.4).
+# Built from ``src/codeprobe/sandbox/Dockerfile.scoring``. The default version
+# tag tracks the installed codeprobe package version.
+DEFAULT_IMAGE_VERSION: Final[str] = _installed_version()
+DEFAULT_SCORING_IMAGE: Final[str] = f"{_DEFAULT_SCORING_IMAGE_NAME}:{DEFAULT_IMAGE_VERSION}"
+
+# Image used to run the agent subprocess itself (codeprobe-f7rl.5). Built
+# from ``src/codeprobe/sandbox/Dockerfile.agent``. The default version tag
+# tracks the installed codeprobe package version.
+DEFAULT_AGENT_IMAGE: Final[str] = f"{_DEFAULT_AGENT_IMAGE_NAME}:{DEFAULT_IMAGE_VERSION}"
+
+
+def _optional_env(name: str) -> str | None:
+    """Return a stripped env value, rejecting empty or whitespace-containing refs."""
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{name} must not be empty")
+    if any(char.isspace() for char in stripped):
+        raise ValueError(f"{name} must not contain whitespace")
+    return stripped
+
+
+def _composed_image_reference(image_name: str) -> str:
+    version = _optional_env(IMAGE_VERSION_ENV) or _installed_version()
+    registry = (_optional_env(IMAGE_REGISTRY_ENV) or "").strip("/")
+    namespace = (_optional_env(IMAGE_NAMESPACE_ENV) or "").strip("/")
+    repository_parts = [part for part in (registry, namespace, image_name) if part]
+    return f"{'/'.join(repository_parts)}:{version}"
+
+
+def _image_reference(image_name: str, *, exact_env: str) -> str:
+    exact = _optional_env(exact_env)
+    if exact is not None:
+        return exact
+    return _composed_image_reference(image_name)
+
+
+def agent_image_reference() -> str:
+    """Return the configured agent container image reference."""
+    return _image_reference(_DEFAULT_AGENT_IMAGE_NAME, exact_env=AGENT_IMAGE_ENV)
+
+
+def agent_image_build_tag() -> str:
+    """Return a tag-shaped agent image reference suitable for local builds."""
+    return _composed_image_reference(_DEFAULT_AGENT_IMAGE_NAME)
+
+
+def scoring_image_reference() -> str:
+    """Return the configured scoring container image reference."""
+    return _image_reference(
+        _DEFAULT_SCORING_IMAGE_NAME, exact_env=SCORING_IMAGE_ENV
+    )
+
+
+def scoring_image_build_tag() -> str:
+    """Return a tag-shaped scoring image reference suitable for local builds."""
+    return _composed_image_reference(_DEFAULT_SCORING_IMAGE_NAME)
 
 
 def __getattr__(name: str) -> object:

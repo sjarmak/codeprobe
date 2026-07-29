@@ -72,22 +72,23 @@ def resolve_containment(uncontained: bool) -> ContainmentPlan:
 
     from codeprobe.sandbox import runner as container_runner
 
+    agent_image = container_runner.agent_image_reference()
     engine = container_runner.detect_engine()
-    if engine is not None and container_runner.image_available(
-        engine, container_runner.DEFAULT_AGENT_IMAGE
-    ):
+    if engine is not None and container_runner.image_available(engine, agent_image):
         return ContainmentPlan(mode="container", engine=engine)
 
     from codeprobe.cli.errors import PrescriptiveError
 
     build_hint = ""
     if engine is not None:
+        build_tag = container_runner.agent_image_build_tag()
         build_hint = (
             " A container engine was found but the agent image "
-            f"{container_runner.DEFAULT_AGENT_IMAGE!r} is not built; build "
-            "it from the repo root with: docker build -f "
+            f"{agent_image!r} is not available locally. Pull a trusted "
+            "published digest, or build it from the repo root with: docker build -f "
             "src/codeprobe/sandbox/Dockerfile.agent -t "
-            f"{container_runner.DEFAULT_AGENT_IMAGE} ."
+            f"{build_tag} . Override the reference with "
+            f"{container_runner.AGENT_IMAGE_ENV} when using a private mirror."
         )
     raise PrescriptiveError(
         code="UNCONTAINED_REFUSED",

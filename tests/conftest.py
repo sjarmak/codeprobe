@@ -163,7 +163,7 @@ def _no_container_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     test run selects host or container execution depending on whether the
     machine happens to have docker plus the scoring/agent images built
     (verified failure: three tests/test_scoring.py assertions flipped once
-    ``codeprobe-scoring:0.12`` existed locally). Tests that exercise the
+    ``codeprobe-scoring:<version>`` existed locally). Tests that exercise the
     container branches monkeypatch ``detect_engine`` / ``image_available``
     themselves, which overrides this pin; the docker-gated integration
     tests in tests/sandbox/test_runner.py go through the private

@@ -10,6 +10,7 @@ best-effort ``<engine> rm -f <name>``.
 from __future__ import annotations
 
 import subprocess
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from codeprobe.core import containment
 from codeprobe.sandbox.agent_container import containerize_argv
 
 ENGINE = "/usr/bin/docker"
-IMAGE = "codeprobe-agent:0.12"
+IMAGE = f"codeprobe-agent:{package_version('codeprobe')}"
 
 
 # ---------------------------------------------------------------------------

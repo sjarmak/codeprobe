@@ -2,7 +2,7 @@
 
 When ``resolve_containment`` returns a ``container`` plan, the adapter's
 argv is rewritten into a ``<engine> run`` invocation against
-``DEFAULT_AGENT_IMAGE``. Mount policy:
+the configured agent image. Mount policy:
 
 - identity rw mount of the slot worktree (host path == container path, so
   the prompt's ``TASK_REPO_ROOT`` and the ``-w`` workdir stay valid);

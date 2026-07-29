@@ -21,7 +21,7 @@ from codeprobe.adapters.protocol import (
 )
 from codeprobe.core import containment
 from codeprobe.sandbox.agent_container import containerize_argv
-from codeprobe.sandbox.runner import DEFAULT_AGENT_IMAGE
+from codeprobe.sandbox.runner import agent_image_reference
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +300,7 @@ class BaseAdapter:
                 config_dir=Path(raw_config_dir) if raw_config_dir else None,
                 mcp_tmpfile=mcp_tmpfile,
                 env_keys=sorted(container_env_keys),
-                image=DEFAULT_AGENT_IMAGE,
+                image=agent_image_reference(),
                 name=container_name,
                 env=run_env,
             )

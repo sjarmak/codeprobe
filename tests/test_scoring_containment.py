@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import stat
 import subprocess
+from importlib.metadata import version as package_version
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,8 @@ from codeprobe.core.scoring import BinaryScorer, CheckpointScorer
 from codeprobe.core.scoring.sandbox import _run_in_sandbox
 from codeprobe.sandbox import runner as container_runner
 from codeprobe.sandbox.runner import SandboxError, SandboxResult
+
+SCORING_IMAGE = f"codeprobe-scoring:{package_version('codeprobe')}"
 
 
 @pytest.fixture(autouse=True)
@@ -237,7 +240,7 @@ class TestMissingImageRefusal:
         assert run.error is not None
         assert (
             "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
-            "-t codeprobe-scoring:0.12 ." in run.error
+            f"-t {SCORING_IMAGE} ." in run.error
         )
         # Nothing executed — the disclosure must not claim host execution.
         assert run.execution_mode == "none"

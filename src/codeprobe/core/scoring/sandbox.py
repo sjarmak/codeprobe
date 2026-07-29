@@ -189,13 +189,17 @@ def _missing_image_refusal(engine: str | None) -> str | None:
     plan = active_plan()
     if plan is None or plan.mode == "host-consented":
         return None
+    scoring_image = container_runner.scoring_image_reference()
+    build_tag = container_runner.scoring_image_build_tag()
     return (
         "Container engine found but scoring image "
-        f"{container_runner.DEFAULT_SCORING_IMAGE!r} is not built; refusing "
+        f"{scoring_image!r} is not available locally; refusing "
         "to run mined test/verifier scripts on the host without "
-        "--uncontained consent. Build the image from the repo root with: "
+        "--uncontained consent. Pull a trusted published digest, or build "
+        "the image from the repo root with: "
         "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
-        "-t codeprobe-scoring:0.12 ."
+        f"-t {build_tag} . Override the reference with "
+        f"{container_runner.SCORING_IMAGE_ENV} when using a private mirror."
     )
 
 
@@ -220,11 +224,12 @@ def _container_exec(
     tests that need egress fail closed, which is the intended posture.
     """
     try:
+        scoring_image = container_runner.scoring_image_reference()
         result = container_runner.run_in_sandbox(
             ["bash", str(sandbox_script)],
             {str(sandbox_dir): str(sandbox_dir)},
             allow_writes=True,
-            image=container_runner.DEFAULT_SCORING_IMAGE,
+            image=scoring_image,
             timeout=float(timeout),
             workdir=str(sandbox_task),
             env=env_extra,
@@ -336,9 +341,8 @@ def _run_in_sandbox(
         # are both available, execute inside the --network=none container;
         # otherwise host execution needs consent (see _missing_image_refusal).
         engine = container_runner.detect_engine()
-        if engine is not None and container_runner.image_available(
-            engine, container_runner.DEFAULT_SCORING_IMAGE
-        ):
+        scoring_image = container_runner.scoring_image_reference()
+        if engine is not None and container_runner.image_available(engine, scoring_image):
             execution_mode = "container"
             outcome = _container_exec(
                 sandbox_script, sandbox_dir, sandbox_task, env_extra, timeout

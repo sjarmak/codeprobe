@@ -10,11 +10,14 @@ container (engine on PATH plus the agent image built), or a hard
 from __future__ import annotations
 
 import dataclasses
+from importlib.metadata import version as package_version
 
 import pytest
 
 from codeprobe.cli.errors import PrescriptiveError
 from codeprobe.core import containment
+
+AGENT_IMAGE = f"codeprobe-agent:{package_version('codeprobe')}"
 
 
 @pytest.fixture(autouse=True)
@@ -117,7 +120,7 @@ class TestContainerMode:
         assert plan.engine == "/usr/bin/docker"
         assert seen == {
             "engine": "/usr/bin/docker",
-            "image": "codeprobe-agent:0.12",
+            "image": AGENT_IMAGE,
         }
 
     def test_engine_without_agent_image_refuses_with_build_command(
@@ -139,7 +142,7 @@ class TestContainerMode:
         assert err.code == "UNCONTAINED_REFUSED"
         assert (
             "docker build -f src/codeprobe/sandbox/Dockerfile.agent "
-            "-t codeprobe-agent:0.12 ." in err.message
+            f"-t {AGENT_IMAGE} ." in err.message
         )
 
     def test_uncontained_flag_wins_over_container_detection(

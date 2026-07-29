@@ -2,7 +2,7 @@
 #
 # Build from the repository root:
 #
-#   docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .
+#   docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:<version> .
 #
 # Runs the agent CLI itself (Claude Code) when a container engine is
 # available, so hosts with docker get containment by default instead of a
