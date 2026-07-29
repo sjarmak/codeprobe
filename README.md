@@ -87,14 +87,15 @@ pip install codeprobe
 
 cd /path/to/your/repo         # a full clone; shallow clones cannot be mined
 
-codeprobe doctor --agent claude # check the selected agent path, auth, git, Python
+codeprobe doctor --repo . --agent claude # check selected-agent readiness
 codeprobe mine .              # reconstruct tasks from repo history
 codeprobe run . --agent claude --max-cost-usd 5.00
 codeprobe interpret .         # rank configs, print a report
 ```
 
-Use `codeprobe doctor --agent copilot` when GitHub Copilot CLI is the selected
-agent. Omitting `--agent` auto-selects the first usable supported path.
+Use `codeprobe doctor --repo . --agent copilot` when GitHub Copilot CLI is the
+selected agent. Omitting `--agent` auto-selects the first usable supported path. Add
+`--private-ca /path/to/ca.pem` when your enterprise proxy requires a custom CA.
 
 `codeprobe run` refuses to start on a checkout with uncommitted changes (error
 code `DIRTY_CHECKOUT`): every trial executes in an isolated worktree created

@@ -12,11 +12,12 @@ Use this workflow when the target repo has merged PRs or MRs that codeprobe can 
 Run the selected-agent readiness check from the target repo before mining:
 
 ```bash
-codeprobe doctor --agent claude
+codeprobe doctor --repo . --agent claude
 ```
 
-Use `--agent copilot` when GitHub Copilot CLI is the selected path. Without
-`--agent`, doctor auto-selects the first usable supported path.
+Use `codeprobe doctor --repo . --agent copilot` when GitHub Copilot CLI is the
+selected path. Without `--agent`, doctor auto-selects the first usable path. Add
+`--private-ca /path/to/ca.pem` when your enterprise proxy requires a custom CA.
 
 ## Step 1: Assess the repo
 

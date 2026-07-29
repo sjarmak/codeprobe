@@ -264,6 +264,22 @@ def test_offline_rejects_bogus_duration(
     assert result.exit_code != 0
 
 
+@pytest.mark.parametrize("duration", ["nan", "inf", "-inf"])
+def test_offline_rejects_non_finite_duration(
+    monkeypatch: pytest.MonkeyPatch, duration: str
+) -> None:
+    _clear_creds(monkeypatch)
+    result = CliRunner().invoke(
+        check_infra,
+        ["offline", "--expected-run-duration", duration, "--backend", "anthropic"],
+    )
+    combined = result.output + (result.stderr_bytes or b"").decode(
+        errors="replace"
+    )
+    assert result.exit_code != 0
+    assert "finite" in combined.lower()
+
+
 def test_offline_accepts_various_duration_units(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

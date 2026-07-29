@@ -15,6 +15,7 @@ import click
 
 from codeprobe import __version__
 from codeprobe.adapters.protocol import quarantine_message
+from codeprobe.cli import doctor_env
 from codeprobe.cli._output_helpers import (
     add_json_flags,
     emit_envelope,
@@ -30,38 +31,20 @@ class CheckResult:
     passed: bool
     detail: str
     fix: str
-    # When True, a non-passing result is advisory and does NOT count toward
-    # `any_failed` / the exit-2 DOCTOR_CHECKS_FAILED.
+    # Advisory results do NOT count toward `any_failed`; passing advisory
+    # agent checks render as neutral INFO instead of selected-path PASS.
     warn_only: bool = False
 
 
 _DOCTOR_AGENT_ORDER: tuple[str, ...] = ("claude", "copilot", "codex")
 _AUTO_AGENT_ORDER: tuple[str, ...] = ("claude", "copilot")
-_PROXY_ENV_KEYS: tuple[str, ...] = (
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "ALL_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "all_proxy",
-)
-_PRIVATE_CA_FILE_ENV_KEYS: tuple[str, ...] = (
-    "SSL_CERT_FILE",
-    "REQUESTS_CA_BUNDLE",
-    "CURL_CA_BUNDLE",
-    "NODE_EXTRA_CA_CERTS",
-)
-_PRIVATE_CA_DIR_ENV_KEYS: tuple[str, ...] = ("SSL_CERT_DIR",)
+_env_has_value = doctor_env.env_has_value
 
 
 def _optional_result(result: CheckResult) -> CheckResult:
-    if result.passed:
-        return result
     return CheckResult(
         name=result.name,
-        passed=False,
+        passed=result.passed,
         detail=result.detail,
         fix="",
         warn_only=True,
@@ -69,18 +52,26 @@ def _optional_result(result: CheckResult) -> CheckResult:
 
 
 def _check_tool(name: str, fix: str, *, required: bool = True) -> CheckResult:
-    found = shutil.which(name) is not None
+    resolved = shutil.which(name)
+    found = resolved is not None
+    usable = False
+    if resolved is not None:
+        try:
+            path = Path(resolved)
+            usable = path.is_file() and os.access(path, os.X_OK)
+        except (OSError, ValueError):
+            usable = False
     result = CheckResult(
         name=f"{name} CLI",
-        passed=found,
-        detail="found" if found else "not found",
+        passed=usable,
+        detail="found" if usable else ("not executable" if found else "not found"),
         fix=fix,
     )
     return result if required else _optional_result(result)
 
 
 def _check_env_key(key: str, fix: str, *, warn_only: bool = False) -> CheckResult:
-    present = key in os.environ and len(os.environ[key]) > 0
+    present = _env_has_value(key)
     return CheckResult(
         name=key,
         passed=present,
@@ -91,7 +82,7 @@ def _check_env_key(key: str, fix: str, *, warn_only: bool = False) -> CheckResul
 
 
 def _github_auth_status() -> tuple[bool, str]:
-    if len(os.environ.get("GITHUB_TOKEN", "")) > 0:
+    if _env_has_value("GITHUB_TOKEN"):
         return True, "GITHUB_TOKEN set"
     if shutil.which("gh") is not None:
         try:
@@ -133,7 +124,7 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
         "Set ANTHROPIC_API_KEY, set CLAUDE_CODE_OAUTH_TOKEN, "
         "or run `claude login`."
     )
-    if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get(
+    if _env_has_value("ANTHROPIC_API_KEY") or _env_has_value(
         "CLAUDE_CODE_OAUTH_TOKEN"
     ):
         result = CheckResult(
@@ -174,7 +165,7 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
 
 def _check_copilot_auth(*, required: bool) -> CheckResult:
     fix = "Set GITHUB_TOKEN, set COPILOT_API_KEY, or run `gh auth login`."
-    if os.environ.get("COPILOT_API_KEY"):
+    if _env_has_value("COPILOT_API_KEY"):
         result = CheckResult(
             name="copilot auth",
             passed=True,
@@ -204,7 +195,7 @@ def _check_openai_sdk(*, required: bool) -> CheckResult:
 
 
 def _check_codex_auth(*, required: bool) -> CheckResult:
-    configured = bool(os.environ.get("OPENAI_API_KEY"))
+    configured = _env_has_value("OPENAI_API_KEY")
     result = CheckResult(
         name="codex auth",
         passed=configured,
@@ -292,16 +283,16 @@ def _check_selected_agent(selected_agent: str | None, *, explicit: bool) -> Chec
     )
 
 
-def _check_git_repo() -> CheckResult:
+def _check_git_repo(repo: str = ".") -> CheckResult:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
+            ["git", "-C", repo.strip() or ".", "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
             timeout=5,
         )
         is_repo = result.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         is_repo = False
     return CheckResult(
         name="git repo",
@@ -401,56 +392,46 @@ def _check_container_images() -> CheckResult:
 
 
 def _check_proxy_variables() -> CheckResult:
-    configured_count = sum(1 for key in _PROXY_ENV_KEYS if os.environ.get(key))
+    passed, detail = doctor_env.proxy_variables_status()
+    if not passed:
+        return CheckResult(
+            name="proxy variables",
+            passed=False,
+            detail=detail,
+            fix=(
+                "Set proxy variables to valid proxy URLs, or unset them. "
+                "Use comma-separated hosts for NO_PROXY."
+            ),
+        )
     return CheckResult(
         name="proxy variables",
         passed=True,
-        detail=(
-            f"{configured_count} configured"
-            if configured_count
-            else "not configured"
-        ),
+        detail=detail,
         fix="",
     )
 
 
-def _check_private_ca_files() -> CheckResult:
-    unreadable: list[str] = []
-    for key in _PRIVATE_CA_FILE_ENV_KEYS:
-        raw = os.environ.get(key)
-        if raw and not Path(raw).is_file():
-            unreadable.append(key)
-    for key in _PRIVATE_CA_DIR_ENV_KEYS:
-        raw = os.environ.get(key)
-        if raw and not Path(raw).is_dir():
-            unreadable.append(key)
-
-    if not unreadable:
-        configured_count = sum(
-            1
-            for key in (*_PRIVATE_CA_FILE_ENV_KEYS, *_PRIVATE_CA_DIR_ENV_KEYS)
-            if os.environ.get(key)
-        )
+def _check_private_ca_files(
+    private_ca_paths: tuple[str, ...] = (),
+) -> CheckResult:
+    passed, detail = doctor_env.private_ca_files_status(private_ca_paths)
+    if passed:
         return CheckResult(
             name="private CA files",
             passed=True,
-            detail=(
-                f"{configured_count} configured"
-                if configured_count
-                else "not configured"
-            ),
+            detail=detail,
             fix="",
         )
     return CheckResult(
         name="private CA files",
         passed=False,
-        detail=f"unreadable: {', '.join(unreadable)}",
+        detail=detail,
         fix="Unset the variable or point it at a readable certificate file/directory.",
     )
 
 
 def _check_offline_ttl(
-    *, offline: bool, expected_run_duration: str
+    *, offline: bool, expected_run_duration: str, selected_agent: str | None
 ) -> CheckResult:
     if not offline:
         return CheckResult(
@@ -459,16 +440,28 @@ def _check_offline_ttl(
             detail="not requested",
             fix="",
         )
+    backend_filter = doctor_env.offline_backends_for_agent(selected_agent)
+    if selected_agent is not None and not backend_filter:
+        return CheckResult(
+            name="offline credential TTL",
+            passed=True,
+            detail=f"not applicable for {selected_agent}",
+            fix="",
+        )
     from codeprobe.cli.check_infra import run_offline_preflight
 
     try:
-        run_offline_preflight(expected_run_duration, echo=False)
+        run_offline_preflight(
+            expected_run_duration,
+            backend_filter=backend_filter,
+            echo=False,
+        )
     except DiagnosticError as exc:
         return CheckResult(
             name="offline credential TTL",
             passed=False,
             detail=exc.code,
-            fix=exc.message,
+            fix=f"Run `{exc.diagnose_cmd}` to inspect credential TTLs.",
         )
     return CheckResult(
         name="offline credential TTL",
@@ -481,6 +474,8 @@ def _check_offline_ttl(
 def run_checks(
     agent: str | None = None,
     *,
+    repo: str = ".",
+    private_ca: tuple[str, ...] = (),
     offline: bool = False,
     offline_expected_run_duration: str = "1h",
 ) -> list[CheckResult]:
@@ -509,14 +504,15 @@ def run_checks(
         # first-class), so this check is always advisory — see
         # _check_github_access.
         _check_github_access(),
-        _check_git_repo(),
+        _check_git_repo(repo),
         _check_python_version(),
         _check_container_images(),
         _check_proxy_variables(),
-        _check_private_ca_files(),
+        _check_private_ca_files(private_ca),
         _check_offline_ttl(
             offline=offline,
             expected_run_duration=offline_expected_run_duration,
+            selected_agent=selected_agent,
         ),
         _check_user_home_skills(required=selected_agent == "claude"),
     ]
@@ -553,7 +549,7 @@ def _build_compact_envelope(results: list[CheckResult]) -> dict[str, object]:
         "GitHub auth", CheckResult("", False, "", "")
     ).passed
     sourcegraph_token_present = any(
-        os.environ.get(k) for k in (
+        _env_has_value(k) for k in (
             "SOURCEGRAPH_TOKEN", "SRC_ACCESS_TOKEN", "SOURCEGRAPH_ACCESS_TOKEN",
         )
     )
@@ -623,6 +619,19 @@ def _build_full_envelope(results: list[CheckResult]) -> dict[str, object]:
     ),
 )
 @click.option(
+    "--repo",
+    default=".",
+    show_default=True,
+    help="Repository path whose git readiness should be validated.",
+)
+@click.option(
+    "--private-ca",
+    "private_ca",
+    multiple=True,
+    metavar="PATH",
+    help="Private CA certificate file to validate. Can be passed more than once.",
+)
+@click.option(
     "--offline",
     is_flag=True,
     default=False,
@@ -641,6 +650,8 @@ def doctor(
     json_lines_flag: bool,
     compact: bool,
     agent: str | None,
+    repo: str,
+    private_ca: tuple[str, ...],
     offline: bool,
     offline_expected_run_duration: str,
 ) -> None:
@@ -651,6 +662,8 @@ def doctor(
 
     results = run_checks(
         agent,
+        repo=repo,
+        private_ca=private_ca,
         offline=offline,
         offline_expected_run_duration=offline_expected_run_duration,
     )
@@ -690,7 +703,9 @@ def doctor(
 
     if mode.mode == "pretty":
         for r in results:
-            if r.passed:
+            if r.passed and r.warn_only:
+                click.echo(f"  INFO  {r.name} ({r.detail})")
+            elif r.passed:
                 click.echo(f"  PASS  {r.name} ({r.detail})")
             elif r.warn_only:
                 label = "WARN" if r.fix else "INFO"

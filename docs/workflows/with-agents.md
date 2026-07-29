@@ -22,6 +22,11 @@ codeprobe skills install --user
 `codeprobe skills install` writes the packaged `codeprobe-*` skills into `./.claude/skills/` (or `~/.claude/skills/` with `--user`). It never clobbers local edits: if an existing copy differs from the packaged version, the command refuses with `SKILL_INSTALL_CONFLICT` before writing anything, and `--force` overwrites deliberately.
 
 Start (or restart) Claude Code in the target repo. The skills are discovered on startup.
+Before asking a skill to mine or run, check the selected agent path from that repo:
+
+```bash
+codeprobe doctor --repo . --agent claude
+```
 
 ## The five skills
 

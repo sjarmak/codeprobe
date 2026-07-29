@@ -24,6 +24,7 @@ loudly rather than silently changing the eval's tool surface.
 from __future__ import annotations
 
 import json
+import math
 from datetime import timedelta
 from pathlib import Path
 
@@ -317,6 +318,8 @@ def _parse_duration(raw: str) -> timedelta:
             f"duration {raw!r} is not a valid number with optional unit "
             f"(s, m, h, d)"
         ) from exc
+    if not math.isfinite(value):
+        raise click.BadParameter(f"duration {raw!r} must be finite")
     if value <= 0:
         raise click.BadParameter(f"duration {raw!r} must be positive")
     return timedelta(seconds=value * multiplier)
