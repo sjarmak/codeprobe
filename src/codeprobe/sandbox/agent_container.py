@@ -24,6 +24,9 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Final
+
+_CONTAINER_TMPFS: Final[str] = "/tmp:rw,nosuid,nodev,size=128m,mode=1777"
 
 
 def containerize_argv(
@@ -76,6 +79,20 @@ def containerize_argv(
         "run",
         "--rm",
         "--network=bridge",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--pids-limit=256",
+        "--read-only",
+        "--tmpfs",
+        _CONTAINER_TMPFS,
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "TMPDIR=/tmp",
+    ]
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
+    argv += [
         "--name",
         name,
         "-v",

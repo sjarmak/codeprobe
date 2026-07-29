@@ -9,6 +9,7 @@ best-effort ``<engine> rm -f <name>``.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -45,11 +46,25 @@ class TestContainerizeArgv:
             name="codeprobe-agent-abc",
         )
 
-        assert argv == [
+        expected = [
             ENGINE,
             "run",
             "--rm",
             "--network=bridge",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--pids-limit=256",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
+            "-e",
+            "HOME=/tmp",
+            "-e",
+            "TMPDIR=/tmp",
+        ]
+        if hasattr(os, "getuid") and hasattr(os, "getgid"):
+            expected += ["--user", f"{os.getuid()}:{os.getgid()}"]
+        expected += [
             "--name",
             "codeprobe-agent-abc",
             "-v",
@@ -68,6 +83,7 @@ class TestContainerizeArgv:
             "hi",
             "--verbose",
         ]
+        assert argv == expected
 
     def test_optional_mounts_omitted_when_absent(self) -> None:
         argv = containerize_argv(
@@ -83,7 +99,7 @@ class TestContainerizeArgv:
 
         mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
         assert mounts == ["/work/slot0:/work/slot0:rw"]
-        assert "-e" not in argv
+        assert "ANTHROPIC_API_KEY" not in argv
 
     def test_env_keys_filtered_against_explicit_mapping(
         self, monkeypatch: pytest.MonkeyPatch
@@ -103,7 +119,8 @@ class TestContainerizeArgv:
             env={"CLAUDE_CONFIG_DIR": "/cfg/slot0"},
         )
 
-        assert ["-e", "CLAUDE_CONFIG_DIR"] == argv[argv.index("-e") : argv.index("-e") + 2]
+        env_pairs = [argv[index : index + 2] for index, token in enumerate(argv) if token == "-e"]
+        assert ["-e", "CLAUDE_CONFIG_DIR"] in env_pairs
         assert "GITHUB_TOKEN" not in argv
 
     def test_empty_cmd_rejected(self) -> None:

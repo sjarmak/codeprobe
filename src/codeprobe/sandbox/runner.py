@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -50,6 +51,20 @@ SCORING_IMAGE_ENV: Final[str] = "CODEPROBE_SCORING_IMAGE"
 IMAGE_REGISTRY_ENV: Final[str] = "CODEPROBE_IMAGE_REGISTRY"
 IMAGE_NAMESPACE_ENV: Final[str] = "CODEPROBE_IMAGE_NAMESPACE"
 IMAGE_VERSION_ENV: Final[str] = "CODEPROBE_IMAGE_VERSION"
+
+_IMAGE_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z"
+)
+_DIGEST_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"sha256:[a-f0-9]{64}\Z"
+)
+_REGISTRY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?\Z"
+)
+_REPOSITORY_COMPONENT_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*\Z"
+)
+_CONTAINER_TMPFS: Final[str] = "/tmp:rw,nosuid,nodev,size=128m,mode=1777"
 
 # Lower-cased stderr fragments that indicate a write to a read-only mount.
 # Kept explicit because the exact wording varies between docker, podman, and
@@ -126,18 +141,79 @@ def _optional_env(name: str) -> str | None:
     return stripped
 
 
+def _validate_tag(name: str, tag: str) -> None:
+    if tag == "latest":
+        raise ValueError(f"{name} must not use the mutable latest tag")
+    if _IMAGE_TAG_PATTERN.fullmatch(tag) is None:
+        raise ValueError(f"{name} has an invalid image tag")
+
+
+def _validate_repository_name(name: str, repository: str) -> None:
+    if "://" in repository:
+        raise ValueError(f"{name} must be an OCI image reference, not a URL")
+    if repository.startswith("-"):
+        raise ValueError(f"{name} must not start with '-'")
+    if (
+        not repository
+        or repository.startswith("/")
+        or repository.endswith("/")
+        or "//" in repository
+    ):
+        raise ValueError(f"{name} has an invalid repository path")
+
+    parts = repository.split("/")
+    repo_parts = parts
+    if len(parts) > 1 and (
+        "." in parts[0] or ":" in parts[0] or parts[0] == "localhost"
+    ):
+        if _REGISTRY_PATTERN.fullmatch(parts[0]) is None:
+            raise ValueError(f"{name} has an invalid registry host")
+        repo_parts = parts[1:]
+    if not repo_parts:
+        raise ValueError(f"{name} has an invalid repository path")
+    for part in repo_parts:
+        if _REPOSITORY_COMPONENT_PATTERN.fullmatch(part) is None:
+            raise ValueError(f"{name} has an invalid repository component")
+
+
+def _validate_image_reference(name: str, reference: str) -> str:
+    if "@" in reference:
+        repository, digest = reference.rsplit("@", 1)
+        _validate_repository_name(name, repository)
+        if _DIGEST_PATTERN.fullmatch(digest) is None:
+            raise ValueError(f"{name} must use a sha256 digest when pinned")
+        return reference
+
+    tail = reference.rsplit("/", 1)[-1]
+    if ":" not in tail:
+        raise ValueError(f"{name} must include an explicit tag or digest")
+    repository, tag = reference.rsplit(":", 1)
+    _validate_repository_name(name, repository)
+    _validate_tag(name, tag)
+    return reference
+
+
 def _composed_image_reference(image_name: str) -> str:
     version = _optional_env(IMAGE_VERSION_ENV) or _installed_version()
-    registry = (_optional_env(IMAGE_REGISTRY_ENV) or "").strip("/")
-    namespace = (_optional_env(IMAGE_NAMESPACE_ENV) or "").strip("/")
+    _validate_tag(IMAGE_VERSION_ENV, version)
+    registry_raw = _optional_env(IMAGE_REGISTRY_ENV)
+    namespace_raw = _optional_env(IMAGE_NAMESPACE_ENV)
+    registry = registry_raw.strip("/") if registry_raw is not None else ""
+    namespace = namespace_raw.strip("/") if namespace_raw is not None else ""
+    if registry_raw is not None and not registry:
+        raise ValueError(f"{IMAGE_REGISTRY_ENV} has an invalid registry host")
+    if namespace_raw is not None and not namespace:
+        raise ValueError(f"{IMAGE_NAMESPACE_ENV} has an invalid repository path")
     repository_parts = [part for part in (registry, namespace, image_name) if part]
-    return f"{'/'.join(repository_parts)}:{version}"
+    return _validate_image_reference(
+        "composed image reference", f"{'/'.join(repository_parts)}:{version}"
+    )
 
 
 def _image_reference(image_name: str, *, exact_env: str) -> str:
     exact = _optional_env(exact_env)
     if exact is not None:
-        return exact
+        return _validate_image_reference(exact_env, exact)
     return _composed_image_reference(image_name)
 
 
@@ -250,7 +326,24 @@ def _build_run_command(
     container instead of orphaning it.
     """
     mode = "rw" if allow_writes else "ro"
-    argv: list[str] = [engine, "run", "--rm", f"--network={network}"]
+    argv: list[str] = [
+        engine,
+        "run",
+        "--rm",
+        f"--network={network}",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--pids-limit=256",
+        "--read-only",
+        "--tmpfs",
+        _CONTAINER_TMPFS,
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "TMPDIR=/tmp",
+    ]
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
     if container_name is not None:
         argv += ["--name", container_name]
 

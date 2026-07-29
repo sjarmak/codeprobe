@@ -90,11 +90,24 @@ def test_exact_agent_and_scoring_image_overrides_win(
 ) -> None:
     _clear_image_env(monkeypatch)
     monkeypatch.setenv("CODEPROBE_IMAGE_REGISTRY", "registry.example.test")
-    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", "mirror.example/agent@sha256:abc123")
-    monkeypatch.setenv("CODEPROBE_SCORING_IMAGE", "mirror.example/scoring@sha256:def456")
+    agent_digest = "a" * 64
+    scoring_digest = "b" * 64
+    monkeypatch.setenv(
+        "CODEPROBE_AGENT_IMAGE", f"mirror.example/agent@sha256:{agent_digest}"
+    )
+    monkeypatch.setenv(
+        "CODEPROBE_SCORING_IMAGE",
+        f"mirror.example/scoring@sha256:{scoring_digest}",
+    )
 
-    assert sandbox_runner.agent_image_reference() == "mirror.example/agent@sha256:abc123"
-    assert sandbox_runner.scoring_image_reference() == "mirror.example/scoring@sha256:def456"
+    assert (
+        sandbox_runner.agent_image_reference()
+        == f"mirror.example/agent@sha256:{agent_digest}"
+    )
+    assert (
+        sandbox_runner.scoring_image_reference()
+        == f"mirror.example/scoring@sha256:{scoring_digest}"
+    )
 
 
 def test_empty_image_override_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,6 +115,31 @@ def test_empty_image_override_fails_fast(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", " ")
 
     with pytest.raises(ValueError, match="CODEPROBE_AGENT_IMAGE"):
+        sandbox_runner.agent_image_reference()
+
+
+@pytest.mark.parametrize(
+    ("env_key", "value", "message"),
+    [
+        ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent", "explicit tag or digest"),
+        ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent:latest", "latest"),
+        ("CODEPROBE_AGENT_IMAGE", "https://mirror.example/agent:1.2.3", "not a URL"),
+        ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent@sha256:abc123", "sha256"),
+        ("CODEPROBE_IMAGE_REGISTRY", "REGISTRY.example.test", "registry host"),
+        ("CODEPROBE_IMAGE_NAMESPACE", "platform//codeprobe", "repository path"),
+        ("CODEPROBE_IMAGE_VERSION", "latest", "latest"),
+    ],
+)
+def test_invalid_image_reference_parts_fail_fast(
+    monkeypatch: pytest.MonkeyPatch,
+    env_key: str,
+    value: str,
+    message: str,
+) -> None:
+    _clear_image_env(monkeypatch)
+    monkeypatch.setenv(env_key, value)
+
+    with pytest.raises(ValueError, match=message):
         sandbox_runner.agent_image_reference()
 
 
@@ -124,6 +162,10 @@ def test_build_run_command_uses_ro_mode_by_default() -> None:
     assert "run" in argv
     assert "--rm" in argv
     assert "--network=none" in argv
+    assert "--cap-drop=ALL" in argv
+    assert "--security-opt=no-new-privileges" in argv
+    assert "--read-only" in argv
+    assert ["-e", "HOME=/tmp"] == argv[argv.index("-e") : argv.index("-e") + 2]
     assert "/host/src:/workspace:ro" in argv
     assert "/host/src:/workspace:rw" not in argv
     assert argv[-2:] == ["echo", "hi"]

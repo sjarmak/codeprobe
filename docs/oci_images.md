@@ -6,9 +6,10 @@ CodeProbe publishes two execution images for each release:
 - `codeprobe-scoring` runs mined test and verifier scripts with `--network=none`.
 
 Release tags build both images for `linux/amd64` and `linux/arm64`. The workflow
-pushes only the immutable package version tag, records the pushed digest in the
-`oci-image-identity-*` workflow artifacts, produces SBOM/provenance attestations,
-scans the digest reference, and signs the digest with keyless Cosign.
+pushes a unique candidate tag, scans both platform manifests, verifies
+SBOM/provenance attestations, signs the digest with keyless Cosign, and only then
+promotes the immutable package version tag. The promoted digest is recorded in
+the `oci-image-identity-*` workflow artifacts.
 
 ## Runtime Reference Resolution
 
@@ -44,6 +45,11 @@ export CODEPROBE_SCORING_IMAGE='registry.example.test/platform/codeprobe/codepro
 CodeProbe never pulls images automatically. Operators make the chosen references
 available to docker or podman before running `codeprobe run`.
 
+Runtime image overrides must be explicit OCI references: either a non-`latest`
+tag or a `sha256` digest pin. CodeProbe rejects URL-shaped values, whitespace,
+empty values, uppercase repository components, malformed digests, and implicit
+tag references before invoking docker or podman.
+
 ## Private-Registry Mirroring
 
 Mirror the release tag and all platform manifests with a registry-aware copier:
@@ -59,19 +65,45 @@ skopeo copy --all \
 ```
 
 After mirroring, inspect the private-registry digests and configure exact
-runtime references:
+runtime references. Copy OCI referrers with the same digest so signatures and
+attestations remain available at the destination:
 
 ```bash
 skopeo inspect --raw \
   docker://<private-registry>/<private-namespace>/codeprobe-agent:<version>
 
+oras copy --recursive \
+  <source-registry>/<source-namespace>/codeprobe-agent@sha256:<agent-digest> \
+  <private-registry>/<private-namespace>/codeprobe-agent@sha256:<agent-digest>
+
+oras copy --recursive \
+  <source-registry>/<source-namespace>/codeprobe-scoring@sha256:<scoring-digest> \
+  <private-registry>/<private-namespace>/codeprobe-scoring@sha256:<scoring-digest>
+
 export CODEPROBE_AGENT_IMAGE='<private-registry>/<private-namespace>/codeprobe-agent@sha256:<agent-digest>'
 export CODEPROBE_SCORING_IMAGE='<private-registry>/<private-namespace>/codeprobe-scoring@sha256:<scoring-digest>'
 ```
 
-Keep the workflow's `oci-image-identity-*` JSON artifacts with the release record
-so operators can compare the source digest, mirrored digest, and runtime digest
-pin during change review.
+Re-verify trust at the private-registry digest, not at the source tag:
+
+```bash
+cosign verify \
+  --certificate-identity '<release-workflow-identity>' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  '<private-registry>/<private-namespace>/codeprobe-agent@sha256:<agent-digest>'
+
+gh attestation verify \
+  'oci://<private-registry>/<private-namespace>/codeprobe-agent@sha256:<agent-digest>' \
+  --repo '<source-owner>/<source-repo>' \
+  --cert-identity '<release-workflow-identity>' \
+  --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  --bundle-from-oci
+```
+
+Repeat the verification for `codeprobe-scoring`. Keep the workflow's
+`oci-image-identity-*` JSON artifacts with the release record so operators can
+compare the source digest, mirrored digest, and runtime digest pin during change
+review.
 
 ## Offline OCI Archive Transfer
 
@@ -99,6 +131,8 @@ skopeo copy --all \
   docker://<private-registry>/<private-namespace>/codeprobe-scoring:<version>
 ```
 
-Record the archive checksums and resulting private-registry digests in the
-change ticket or release evidence store. Do not replace digest pins with mutable
-operator-local tags after transfer.
+After import, inspect the destination digest and run the same `cosign verify`
+and `gh attestation verify --bundle-from-oci` checks against the imported digest.
+Record the archive checksums, resulting private-registry digests, and verification
+output in the change ticket or release evidence store. Do not replace digest pins
+with mutable operator-local tags after transfer.
