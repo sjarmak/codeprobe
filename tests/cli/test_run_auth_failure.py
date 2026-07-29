@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import io
 import json
 import stat
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.cli.rich_display import RichLiveListener
 from codeprobe.cli.run_cmd import NdjsonStdoutListener, PlainTextListener
-from codeprobe.core.events import EventDispatcher, TaskScored
+from codeprobe.core.events import EventDispatcher, RunStarted, TaskScored
 from codeprobe.core.executor import execute_config
 from codeprobe.models.experiment import ExperimentConfig
 from tests.conftest import FakeAdapter
@@ -95,6 +98,39 @@ def test_ndjson_event_classifies_adapter_auth_error_without_score(
     assert payload["error_category"] == "auth_failure"
     assert "score" not in payload
     assert "invalid API key" in payload["error"]
+
+
+def test_rich_listener_renders_auth_error_without_scoring_it() -> None:
+    listener = RichLiveListener()
+    listener._console = Console(  # type: ignore[attr-defined]
+        file=io.StringIO(),
+        force_terminal=False,
+        width=200,
+        color_system=None,
+    )
+    listener.on_event(
+        RunStarted(total_tasks=1, config_label="candidate", timestamp=0.0)
+    )
+    try:
+        listener.on_event(_auth_task_scored())
+        rendered_buffer = io.StringIO()
+        Console(
+            file=rendered_buffer,
+            force_terminal=False,
+            width=200,
+            color_system=None,
+        ).print(listener._build_display())  # type: ignore[attr-defined]
+    finally:
+        if listener._live is not None:  # type: ignore[attr-defined]
+            listener._live.stop()  # type: ignore[attr-defined]
+
+    state = listener._configs["candidate"]  # type: ignore[attr-defined]
+    rendered = rendered_buffer.getvalue()
+    assert "AUTH_ERROR" in rendered
+    assert "0 scored, 1 infra" in rendered
+    assert state.scored_count == 0
+    assert state.infra_failure_count == 1
+    assert state.passed == 0
 
 
 def test_execute_config_sequential_halts_on_auth_failure(tmp_path: Path) -> None:

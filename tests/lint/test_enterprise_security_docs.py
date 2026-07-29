@@ -580,8 +580,8 @@ def _claude_session_materializes_private_credentials() -> bool:
     module_source = inspect.getsource(claude_adapter)
     return (
         "_materialize_credential_file(entry, target)" in mirror_source
-        and "os.link(source, target)" in credential_source
-        and "shutil.copy2(source, target)" in credential_source
+        and "os.link(source, target)" not in credential_source
+        and "shutil.copyfileobj(source_file, target_file)" in credential_source
         and "target.chmod(_CREDENTIAL_FILE_MODE)" in credential_source
         and "_CREDENTIAL_FILE_MODE = 0o600" in module_source
         and "symlink_to" in mirror_source

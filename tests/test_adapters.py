@@ -988,6 +988,68 @@ class TestClaudeParseOutput:
         assert output.cost_source == "unavailable"
         assert output.error is not None
 
+    def test_not_logged_in_literal_is_auth_failure(self) -> None:
+        adapter = ClaudeAdapter()
+        result = subprocess.CompletedProcess(
+            args=["claude", "-p", "test"],
+            returncode=1,
+            stdout="Not logged in · Please run /login\n",
+            stderr="",
+        )
+
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.error == "Not logged in · Please run /login"
+        assert output.error_category == "auth_failure"
+        assert output.error_terminal is False
+
+    def test_not_logged_in_error_envelope_is_auth_failure(self) -> None:
+        adapter = ClaudeAdapter()
+        result = subprocess.CompletedProcess(
+            args=["claude", "-p", "test"],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_during_execution",
+                    "is_error": True,
+                    "result": "Not logged in · Please run /login",
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                    "total_cost_usd": 0.0,
+                }
+            ),
+            stderr="",
+        )
+
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.error == "Not logged in · Please run /login"
+        assert output.error_category == "auth_failure"
+        assert output.error_terminal is False
+
+    def test_agent_authored_not_logged_in_error_is_not_auth_failure(self) -> None:
+        adapter = ClaudeAdapter()
+        result = subprocess.CompletedProcess(
+            args=["claude", "-p", "test"],
+            returncode=1,
+            stdout=json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error_max_turns",
+                    "is_error": True,
+                    "result": "Not logged in is the expected UI copy for this task",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                    "total_cost_usd": 0.001,
+                }
+            ),
+            stderr="",
+        )
+
+        output = adapter.parse_output(result, duration=1.0)
+
+        assert output.error_category is None
+        assert output.error_terminal is True
+
     def test_tool_call_count_from_messages(self) -> None:
         adapter = ClaudeAdapter()
         result = _make_result("claude_with_tools.json")
@@ -1800,7 +1862,7 @@ class TestIsolateSession:
     def test_claude_isolate_session_materializes_private_credentials(
         self, tmp_path: Path
     ) -> None:
-        """Creds are regular private files under the container-mounted slot dir."""
+        """Container-writable credentials never alias or update host credentials."""
         adapter = ClaudeAdapter()
 
         fake_home = tmp_path / "home"
@@ -1823,19 +1885,23 @@ class TestIsolateSession:
         slot1_cred = tmp_path / "tmp" / "codeprobe-claude" / "slot-1" / ".credentials.json"
         _assert_private_credential_file(slot0_cred)
         _assert_private_credential_file(slot1_cred)
-        assert slot0_cred.samefile(cred_file)
-        assert slot1_cred.samefile(cred_file)
+        assert not slot0_cred.samefile(cred_file)
+        assert not slot1_cred.samefile(cred_file)
 
-        # Refreshing the live creds is visible in every slot without a
-        # container-breaking symlink to the unmounted host config dir.
+        # A new isolation pass refreshes a slot from host state without
+        # exposing the host inode in the container-writable mount.
         cred_file.write_text('{"token": "v2"}', encoding="utf-8")
-        assert '"v2"' in slot0_cred.read_text()
-        assert '"v2"' in slot1_cred.read_text()
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            adapter.isolate_session(0)
+        assert '"v2"' in slot0_cred.read_text(encoding="utf-8")
 
-        # If the CLI refresh path replaces the slot credential file instead
-        # of writing in place, the next isolation pass reconciles the newer
-        # slot file back to the live host credential and restores the link.
-        slot0_cred.unlink()
+        # Agent-side refreshes stay local even when their mtime is newer.
         slot0_cred.write_text('{"token": "slot-refresh"}', encoding="utf-8")
         future = time.time() + 10
         os.utime(slot0_cred, (future, future))
@@ -1848,9 +1914,10 @@ class TestIsolateSession:
         ):
             adapter.isolate_session(0)
 
-        assert '"slot-refresh"' in cred_file.read_text(encoding="utf-8")
+        assert '"v2"' in cred_file.read_text(encoding="utf-8")
+        assert '"v2"' in slot0_cred.read_text(encoding="utf-8")
         _assert_private_credential_file(slot0_cred)
-        assert slot0_cred.samefile(cred_file)
+        assert not slot0_cred.samefile(cred_file)
 
     def test_claude_isolate_session_mutable_dirs_are_fresh(self, tmp_path: Path) -> None:
         """Per-session mutable state (session-env/, sessions/, history.jsonl)

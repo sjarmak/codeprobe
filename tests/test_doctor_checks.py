@@ -244,6 +244,33 @@ class TestDoctorChecks:
         assert "symlink" in by_name["claude auth"].detail
         assert "claude login" in by_name["claude auth"].fix
 
+    def test_claude_auth_rejects_malformed_credential_json(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from codeprobe.cli import doctor_agents
+
+        config_dir = tmp_path / ".claude"
+        config_dir.mkdir()
+        (config_dir / ".credentials.json").write_text(
+            '{"claudeAiOauth":',
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr(
+            doctor_agents,
+            "_claude_container_auth_required",
+            lambda: False,
+        )
+
+        result = doctor_agents._check_claude_auth(required=True)
+
+        assert result.passed is False
+        assert result.warn_only is False
+        assert result.detail == "file credentials are malformed or unreadable"
+        assert "claude login" in result.fix
+
     def test_copilot_auth_uses_supported_env_names(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:

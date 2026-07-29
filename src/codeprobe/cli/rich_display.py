@@ -29,6 +29,7 @@ from codeprobe.core.events import (
     TaskScored,
     TaskStarted,
     effective_run_counts,
+    effective_task_outcome,
     effective_task_verdict,
 )
 
@@ -140,18 +141,30 @@ class RichLiveListener:
 
     def _handle_task_scored(self, event: TaskScored) -> None:
         verdict = effective_task_verdict(event)
-        is_infra = verdict == "verifier_error"
-        status = self._format_score(event.automated_score, verdict)
+        outcome = effective_task_outcome(event)
+        is_infra = outcome in {"auth_failure", "infra_failure"}
+        if outcome == "auth_failure":
+            status = "AUTH_ERROR"
+        elif outcome == "error":
+            status = "ERROR"
+        elif outcome == "infra_failure":
+            status = "INFRA"
+        else:
+            status = self._format_score(event.automated_score, verdict)
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
         duration_str = f"{event.duration_seconds:.1f}s"
-        dual_suffix = format_dual_suffix(event.scoring_details)
+        dual_suffix = (
+            format_dual_suffix(event.scoring_details)
+            if outcome == "scored"
+            else ""
+        )
 
         with self._lock:
             state = self._get_or_create_config(event.config_label)
             state.tasks_completed += 1
             if is_infra:
                 state.infra_failure_count += 1
-            else:
+            elif outcome == "scored":
                 state.scored_count += 1
                 if score_passed(event.automated_score, event.scoring_details):
                     state.passed += 1

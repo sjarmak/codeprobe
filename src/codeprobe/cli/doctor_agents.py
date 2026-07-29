@@ -192,11 +192,12 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
             fix=result_fix,
         )
     else:
-        detail = (
-            "file credentials expired"
-            if status == "expired"
-            else "no environment or file credentials"
-        )
+        if status == "expired":
+            detail = "file credentials expired"
+        elif status == "invalid":
+            detail = "file credentials are malformed or unreadable"
+        else:
+            detail = "no environment or file credentials"
         result = CheckResult(
             name="claude auth",
             passed=False,
@@ -269,6 +270,11 @@ def _containerized_claude_credentials_status(config_dir: Path) -> tuple[bool, st
         return True, "containerized CLAUDE_CONFIG_DIR has readable credentials"
     if status == "expired":
         return False, "containerized CLAUDE_CONFIG_DIR has expired credentials"
+    if status == "invalid":
+        return (
+            False,
+            "containerized CLAUDE_CONFIG_DIR has malformed or unreadable credentials",
+        )
     return False, "containerized CLAUDE_CONFIG_DIR has no readable credentials"
 
 

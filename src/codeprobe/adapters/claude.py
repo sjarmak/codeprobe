@@ -48,6 +48,8 @@ _QUOTA_PATTERN = re.compile(
     r"|hit\s+your\s+session\s+limit)"
 )
 
+_AUTH_FAILURE_PREFIX = "not logged in"
+
 
 def _cli_origin_text(stdout: str) -> str:
     """Return only the CLI's own literal lines of *stdout*.
@@ -95,6 +97,22 @@ def _detect_quota_error(stdout: str, stderr: str | None) -> str | None:
     metadata.
     """
     return detect_quota_error(_cli_origin_text(stdout), stderr)
+
+
+def _detect_auth_failure(stdout: str, stderr: str | None) -> str | None:
+    """Return Claude CLI's literal unauthenticated-session message.
+
+    The stable ``Not logged in`` prefix is emitted by the CLI itself. Restrict
+    stdout matching to non-JSON CLI lines so agent-authored content cannot
+    classify a run as an authentication failure.
+    """
+    for stream in (_cli_origin_text(stdout), stderr or ""):
+        for line in stream.splitlines():
+            message = line.strip()
+            if message.casefold().startswith(_AUTH_FAILURE_PREFIX):
+                return message
+    return None
+
 
 # Result-record subtypes that mark a TERMINAL agent outcome — the CLI ran
 # the agent to a protocol-defined stop condition, so a 0.0 reward is a
@@ -190,12 +208,13 @@ def _credentials_file_status(config_dir: Path) -> str:
     * ``"missing"`` — no recognized credentials file exists.
     * ``"expired"`` — a credentials file exists but the OAuth token's
       ``expiresAt`` timestamp is in the past.
+    * ``"invalid"`` — a credentials file cannot be read as JSON.
     * ``"valid"`` — a credentials file exists and either has no expiry
       info or has not yet expired.
 
-    ``"valid"`` is the default when the file is present but its shape
-    is unknown (non-OAuth formats, unreadable JSON): we trust the CLI to
-    handle those cases and let it surface any auth errors natively.
+    ``"valid"`` is the default when parsed JSON has an unknown shape because
+    non-OAuth credential formats are supported. Malformed or unreadable JSON
+    fails closed so doctor cannot report unusable credentials as ready.
     """
     for name in _FILE_CRED_NAMES:
         path = config_dir / name
@@ -204,7 +223,7 @@ def _credentials_file_status(config_dir: Path) -> str:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return "valid"
+            return "invalid"
         oauth = raw.get("claudeAiOauth") if isinstance(raw, dict) else None
         if not isinstance(oauth, dict):
             return "valid"
@@ -230,33 +249,18 @@ def _remove_slot_entry(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _same_file(left: Path, right: Path) -> bool:
-    try:
-        return left.samefile(right)
-    except OSError:
-        return False
-
-
 def _materialize_credential_file(source: Path, target: Path) -> None:
-    """Expose a credential file in the mounted slot without symlinks."""
+    """Copy a credential into a private container-writable session file."""
     if target.exists() or target.is_symlink():
-        if (
-            target.exists()
-            and not target.is_symlink()
-            and target.is_file()
-            and target.stat().st_mtime_ns > source.stat().st_mtime_ns
-        ):
-            shutil.copy2(target, source)
-            source.chmod(_CREDENTIAL_FILE_MODE)
-        if _same_file(target, source) and not target.is_symlink():
-            target.chmod(_CREDENTIAL_FILE_MODE)
-            return
         _remove_slot_entry(target)
 
     try:
-        os.link(source, target)
+        target.touch(mode=_CREDENTIAL_FILE_MODE, exist_ok=False)
+        with source.open("rb") as source_file, target.open("wb") as target_file:
+            shutil.copyfileobj(source_file, target_file)
     except OSError:
-        shutil.copy2(source, target)
+        target.unlink(missing_ok=True)
+        raise
     target.chmod(_CREDENTIAL_FILE_MODE)
 
 
@@ -268,15 +272,15 @@ def _build_mirror_slot_env(
 ) -> dict[str, str]:
     """Build a per-slot ``CLAUDE_CONFIG_DIR`` that mirrors ``real_config``.
 
-    Credential files are materialized as private regular files in the
-    container-mounted slot dir. A hardlink is used when the filesystem allows
-    it, so in-place OAuth refreshes stay coherent without symlinks that would
-    dangle inside an agent container; copy fallback keeps the same least-
-    privilege file mode. Other read-mostly entries (settings.json, skills/,
-    agents/, hooks/, plugins/, commands/, rules/) are symlinked to the live
-    source so host execution keeps current configuration. Mutable per-session
-    state (``_MUTABLE_DIR_NAMES`` and ``_MUTABLE_FILE_NAMES``) is recreated as
-    fresh empty dirs/files inside the slot to prevent parallel-worker races.
+    Credential files are copied into private regular files in the
+    container-mounted slot dir. They never share an inode with live host
+    credentials, so an agent-side refresh cannot mutate or replace global
+    state through the read-write mount. Other read-mostly entries
+    (settings.json, skills/, agents/, hooks/, plugins/, commands/, rules/) are
+    symlinked to the live source so host execution keeps current configuration.
+    Mutable per-session state (``_MUTABLE_DIR_NAMES`` and
+    ``_MUTABLE_FILE_NAMES``) is recreated as fresh empty dirs/files inside the
+    slot to prevent parallel-worker races.
 
     When ``pristine`` is True, ``_PERSONALIZATION_NAMES`` entries are not
     mirrored — and are deliberately kept out of ``seen`` so the stale-entry
@@ -562,12 +566,12 @@ class ClaudeAdapter(BaseAdapter):
         ``CLAUDE_CONFIG_DIR`` env var, so account-specific configs are
         respected) into a slot-specific temp dir via symlinks, with fresh
         empty directories for mutable per-session state (``session-env/``,
-        ``sessions/``, ``history.jsonl``, etc.). Credential files are exposed
-        as private regular files in the slot (hardlinked when possible, copied
-        otherwise), so agent containers can read the exact mounted path while
-        in-place OAuth refreshes remain coherent across slots. Fresh mutable
-        subdirs prevent parallel workers from racing on shared state — which
-        under real load manifested as API 401 errors (codeprobe-nac).
+        ``sessions/``, ``history.jsonl``, etc.). Credential files are copied
+        into private regular files in the slot, so agent containers can read
+        the exact mounted path without gaining a write path to host credential
+        state. Fresh mutable subdirs prevent parallel workers from racing on
+        shared state — which under real load manifested as API 401 errors
+        (codeprobe-nac).
 
         When ``pristine`` is True, operator personalization
         (``_PERSONALIZATION_NAMES``: CLAUDE.md, settings, skills, agents,
@@ -642,16 +646,23 @@ class ClaudeAdapter(BaseAdapter):
                     stdout_text = ev.get("result", result.stdout)
                     break
 
-        # Quota detection runs against the raw stdout / stderr (not the
-        # extracted ``stdout_text``) because the OAuth "monthly usage
-        # limit" stub is the entire response — there is no JSON envelope
-        # to peel back. ``usage.error`` may be empty for the same reason
-        # (no envelope means no error field), so we explicitly synthesise
-        # one when quota is detected (codeprobe-9xrl).
+        # Transport-error detection runs against CLI-origin stdout/stderr.
+        # A structured no-work error envelope may carry the same transport
+        # message in ``usage.error``; token-bearing envelopes are excluded
+        # because their result text can be agent-authored.
+        auth_message = _detect_auth_failure(result.stdout, result.stderr)
+        ran_work = bool((usage.input_tokens or 0) + (usage.output_tokens or 0))
+        if auth_message is None and not ran_work:
+            auth_message = _detect_auth_failure("", usage.error)
         quota_message = _detect_quota_error(result.stdout, result.stderr)
-        if quota_message is not None:
-            error_text: str | None = f"OAuth quota exhausted: {quota_message}"
-            error_category: str | None = "quota"
+        error_text: str | None
+        error_category: str | None
+        if auth_message is not None:
+            error_text = auth_message
+            error_category = "auth_failure"
+        elif quota_message is not None:
+            error_text = f"OAuth quota exhausted: {quota_message}"
+            error_category = "quota"
         else:
             error_text = usage.error
             error_category = None
@@ -659,7 +670,8 @@ class ClaudeAdapter(BaseAdapter):
         # Quota wins over subtype: a quota stub is an infra casualty even
         # when the CLI also produced a result envelope.
         error_terminal = (
-            quota_message is None
+            auth_message is None
+            and quota_message is None
             and usage.result_subtype in _TERMINAL_RESULT_SUBTYPES
         )
 
