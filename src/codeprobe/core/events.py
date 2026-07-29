@@ -43,7 +43,7 @@ class TaskStarted:
 
 @dataclass(frozen=True)
 class TaskScored:
-    """Emitted after a task completes and is scored."""
+    """Emitted after a task result is recorded."""
 
     task_id: str
     config_label: str
@@ -58,6 +58,8 @@ class TaskScored:
     cost_source: str
     error: str | None
     timestamp: float
+    status: str = "completed"
+    error_category: str | None = None
     scoring_details: dict = field(default_factory=dict)
     verdict: str | None = None
 
@@ -95,6 +97,25 @@ def effective_task_verdict(event: TaskScored) -> str | None:
         return None
     nested_verdict = event.scoring_details.get("verdict")
     return nested_verdict if isinstance(nested_verdict, str) else None
+
+
+_INFRA_EVENT_ERROR_CATEGORIES: frozenset[str] = frozenset(
+    {"quota", "timeout", "system"}
+)
+
+
+def effective_task_outcome(event: TaskScored) -> str:
+    """Return the stable display outcome for a task event."""
+    if event.error_category == "auth_failure":
+        return "auth_failure"
+    if (
+        effective_task_verdict(event) == "verifier_error"
+        or event.error_category in _INFRA_EVENT_ERROR_CATEGORIES
+    ):
+        return "infra_failure"
+    if event.status == "error":
+        return "error"
+    return "scored"
 
 
 def effective_run_counts(event: RunFinished) -> tuple[int, int]:

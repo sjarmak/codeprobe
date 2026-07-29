@@ -51,6 +51,7 @@ from codeprobe.core.events import (
     RunFinished,
     TaskScored,
     effective_run_counts,
+    effective_task_outcome,
     effective_task_verdict,
 )
 from codeprobe.core.executor import (
@@ -209,10 +210,20 @@ def assert_clean_checkout(repo_root: Path, *, allow_dirty: bool = False) -> None
     )
 
 
-def _format_task_status(score: float, verdict: str | None = None) -> str:
+def _format_task_status(
+    score: float,
+    verdict: str | None = None,
+    *,
+    status: str = "completed",
+    error_category: str | None = None,
+) -> str:
     """Format score as PASS/FAIL for binary or as a numeric score for partial."""
+    if error_category == "auth_failure":
+        return "AUTH_ERROR"
     if verdict == "verifier_error":
         return "INFRA"
+    if status == "error":
+        return "ERROR"
     if score >= 1.0:
         return "PASS"
     if score <= 0.0:
@@ -270,7 +281,12 @@ def build_run_envelope_summary(
 
 def _on_task_complete(result: CompletedTask) -> None:
     """Print task result to stdout (legacy callback, kept for backward compat)."""
-    status = _format_task_status(result.automated_score, result.verdict)
+    status = _format_task_status(
+        result.automated_score,
+        result.verdict,
+        status=result.status,
+        error_category=result.error_category,
+    )
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
 
 
@@ -285,7 +301,12 @@ class PlainTextListener:
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
             verdict = effective_task_verdict(event)
-            status = _format_task_status(event.automated_score, verdict)
+            status = _format_task_status(
+                event.automated_score,
+                verdict,
+                status=event.status,
+                error_category=event.error_category,
+            )
             dual_suffix = format_dual_suffix(event.scoring_details)
             click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s){dual_suffix}")
         elif isinstance(event, BudgetWarning):
@@ -316,21 +337,22 @@ class NdjsonStdoutListener:
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
             verdict = effective_task_verdict(event)
-            emit_event(
-                {
-                    "event": "task_done",
-                    "task_id": event.task_id,
-                    "score": event.automated_score,
-                    "verdict": verdict,
-                    "outcome": (
-                        "infra_failure"
-                        if verdict == "verifier_error"
-                        else "scored"
-                    ),
-                    "duration_seconds": event.duration_seconds,
-                    "cost_usd": getattr(event, "cost_usd", None),
-                }
-            )
+            outcome = effective_task_outcome(event)
+            payload = {
+                "event": "task_done",
+                "task_id": event.task_id,
+                "verdict": verdict,
+                "outcome": outcome,
+                "duration_seconds": event.duration_seconds,
+                "cost_usd": getattr(event, "cost_usd", None),
+            }
+            if outcome == "scored":
+                payload["score"] = event.automated_score
+            if event.error_category is not None:
+                payload["error_category"] = event.error_category
+            if event.error is not None:
+                payload["error"] = event.error
+            emit_event(payload)
 
 
 def _find_tasks(d: Path, *, task_ids: tuple[str, ...] = ()) -> list[Path]:

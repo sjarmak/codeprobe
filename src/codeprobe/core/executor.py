@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from codeprobe.adapters.protocol import AdapterQuotaError
+from codeprobe.adapters.protocol import AdapterAuthenticationError, AdapterQuotaError
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.core.checkpoint import CheckpointStore
@@ -259,10 +259,12 @@ def _find_active_experiment_dir(
 def _classify_error(exc: BaseException) -> str:
     """Classify an exception into an error category.
 
-    Returns one of: 'quota', 'timeout', 'system', 'agent'.
+    Returns one of: 'quota', 'auth_failure', 'timeout', 'system', 'agent'.
     """
     if isinstance(exc, AdapterQuotaError):
         return "quota"
+    if isinstance(exc, AdapterAuthenticationError):
+        return "auth_failure"
     if isinstance(exc, subprocess.TimeoutExpired):
         return "timeout"
     if isinstance(exc, (OSError, MemoryError, IsolationError)):
@@ -640,6 +642,18 @@ def execute_task(
     # snapshot copytree) so concurrent runs can't race on the shared
     # task_dir and fixture files are never destroyed.
 
+    def _auth_failure_remediation() -> str:
+        return (
+            f"Refresh authentication for adapter '{adapter.name}' before "
+            "re-running this arm, or switch to a config with valid credentials."
+        )
+
+    def _error_metadata(error: str, error_category: str | None = None) -> dict:
+        metadata = {"error": sanitize_secrets(error), **_turn_cap_meta}
+        if error_category == "auth_failure":
+            metadata["remediation"] = _auth_failure_remediation()
+        return metadata
+
     def _error_result(error: str, error_category: str | None = None) -> TaskResult:
         return TaskResult(
             completed=CompletedTask(
@@ -647,7 +661,7 @@ def execute_task(
                 automated_score=0.0,
                 status="error",
                 error_category=error_category,
-                metadata={"error": error, **_turn_cap_meta},
+                metadata=_error_metadata(error, error_category),
             ),
         )
 
@@ -948,7 +962,9 @@ def execute_task(
                     automated_score=0.0,
                     status="error",
                     error_category=output.error_category or "agent",
-                    metadata={"error": sanitize_secrets(error_msg), **_turn_cap_meta},
+                    metadata=_error_metadata(
+                        error_msg, output.error_category or "agent"
+                    ),
                     **_output_fields(),
                 ),
                 agent_stdout=output.stdout,
@@ -978,7 +994,7 @@ def execute_task(
                     automated_score=0.0,
                     status="failed" if output.error_terminal else "error",
                     error_category=error_cat,
-                    metadata={"error": sanitize_secrets(output.error), **_turn_cap_meta},
+                    metadata=_error_metadata(output.error, error_cat),
                     **_output_fields(),
                 ),
                 agent_stdout=output.stdout,
@@ -1381,6 +1397,9 @@ def execute_config(
     # (codeprobe-9xrl).
     quota_exhausted = False
     quota_message: str | None = None
+    auth_failed = False
+    auth_message: str | None = None
+    auth_remediation: str | None = None
     # Set when a pooled worktree could not be reset after a trial. The slot is
     # quarantined by the isolation layer, so the run halts rather than scoring
     # later trials against a shrinking pool of possibly dirty slots
@@ -1390,6 +1409,7 @@ def execute_config(
     def _handle_result(task_result: TaskResult) -> None:
         nonlocal budget_warning_emitted
         nonlocal quota_exhausted, quota_message
+        nonlocal auth_failed, auth_message, auth_remediation
         result = task_result.completed
         results.append(result)
 
@@ -1405,6 +1425,19 @@ def execute_config(
                 f"OAuth quota exhausted — halting run after current "
                 f"in-flight tasks complete. Remaining trials will be "
                 f"cancelled. Message: {quota_message or '(no detail)'}"
+            )
+
+        if result.error_category == "auth_failure" and not auth_failed:
+            auth_failed = True
+            auth_message = result.metadata.get("error") if result.metadata else None
+            auth_remediation = (
+                result.metadata.get("remediation") if result.metadata else None
+            )
+            _budget_msg(
+                "Authentication failed — halting run after current in-flight "
+                "tasks complete. Remaining trials will be cancelled. "
+                f"Message: {auth_message or '(no detail)'}"
+                + (f" Remediation: {auth_remediation}" if auth_remediation else "")
             )
 
         if runs_dir is not None:
@@ -1436,6 +1469,8 @@ def execute_config(
                     cost_source=result.cost_source,
                     error=result.metadata.get("error") if result.metadata else None,
                     timestamp=time.time(),
+                    status=result.status,
+                    error_category=result.error_category,
                     scoring_details=dict(result.scoring_details),
                     verdict=result.verdict,
                 )
@@ -1485,10 +1520,10 @@ def execute_config(
 
     def _should_halt() -> bool:
         """Stop dispatching new trials when budget is exhausted, a quota
-        error has been detected (codeprobe-9xrl), or a worktree reset failed
-        and its slot was quarantined (codeprobe-qn2f).
+        error has been detected (codeprobe-9xrl), authentication failed, or a
+        worktree reset failed and its slot was quarantined (codeprobe-qn2f).
         """
-        return _budget_exceeded() or quota_exhausted or isolation_failed
+        return _budget_exceeded() or quota_exhausted or auth_failed or isolation_failed
 
     # Quarantine sibling experiment dirs at the repo root for the duration of
     # the dispatch.  Without this, an agent in a slot worktree can ``cd ../..``
@@ -1619,6 +1654,12 @@ def execute_config(
                                 f"{len(pending_work) - idx} trials"
                             )
                             break
+                        if auth_failed:
+                            _budget_msg(
+                                "Authentication failed — halting remaining "
+                                f"{len(pending_work) - idx} trials"
+                            )
+                            break
                         if isolation_failed:
                             _budget_msg(
                                 "Worktree reset failed — slot quarantined; "
@@ -1692,6 +1733,11 @@ def execute_config(
                                 if quota_exhausted:
                                     _budget_msg(
                                         "OAuth quota exhausted — cancelling "
+                                        "pending trials"
+                                    )
+                                elif auth_failed:
+                                    _budget_msg(
+                                        "Authentication failed — cancelling "
                                         "pending trials"
                                     )
                                 elif isolation_failed:

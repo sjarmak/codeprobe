@@ -131,3 +131,29 @@ def test_envelope_summary_all_errored_yields_zero_scored() -> None:
     assert cfg["scored_count"] == 0
     assert cfg["errored_count"] == 1
     assert cfg["perfect"] == 0
+
+
+def test_envelope_summary_auth_failure_is_not_scored() -> None:
+    results_by_config = {
+        "candidate": [
+            CompletedTask(task_id="t-001", automated_score=1.0, cost_usd=0.10),
+            CompletedTask(
+                task_id="t-002",
+                automated_score=0.0,
+                status="error",
+                error_category="auth_failure",
+                metadata={"error": "Authentication failed: invalid API key"},
+            ),
+        ]
+    }
+
+    (cfg,), total_tasks, total_cost = build_run_envelope_summary(results_by_config)
+
+    assert cfg["mean_score"] == pytest.approx(1.0)
+    assert cfg["scored_count"] == 1
+    assert cfg["errored_count"] == 1
+    assert cfg["infra_failure_count"] == 1
+    assert cfg["quota_error_count"] == 0
+    assert cfg["tasks"] == 2
+    assert total_tasks == 2
+    assert total_cost == pytest.approx(0.10)

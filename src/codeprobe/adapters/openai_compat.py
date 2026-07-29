@@ -12,6 +12,7 @@ import os
 import time
 
 from codeprobe.adapters.protocol import (
+    AdapterAuthenticationError,
     AdapterCapabilities,
     AdapterExecutionError,
     AdapterQuotaError,
@@ -110,7 +111,7 @@ class OpenAICompatAdapter:
                 messages=[{"role": "user", "content": prompt}],
             )
         except openai.AuthenticationError as exc:
-            raise AdapterSetupError(
+            raise AdapterAuthenticationError(
                 f"API key invalid ({self._api_key_env}): {exc}"
             ) from exc
         except openai.RateLimitError as exc:

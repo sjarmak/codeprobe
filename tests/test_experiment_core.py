@@ -416,6 +416,37 @@ def test_compute_summary_all_quota_yields_zero_mean(tmp_path: Path):
     assert "score_per_dollar" not in summary
 
 
+def test_compute_summary_auth_failure_excluded_from_reward_mean(tmp_path: Path):
+    exp = _sample_experiment()
+    exp_dir = create_experiment_dir(tmp_path, exp)
+
+    completed = [
+        CompletedTask(
+            task_id="t-001", automated_score=1.0, duration_seconds=2.0, cost_usd=0.5
+        ),
+        CompletedTask(
+            task_id="t-002",
+            automated_score=0.0,
+            status="error",
+            error_category="auth_failure",
+            duration_seconds=1.0,
+            cost_usd=0.1,
+            metadata={"error": "Authentication failed: invalid API key"},
+        ),
+    ]
+
+    path = save_config_results(exp_dir, "candidate", completed)
+    summary = json.loads(path.read_text())["summary"]
+
+    assert summary["mean_automated_score"] == pytest.approx(1.0)
+    assert summary["tasks_completed"] == 2
+    assert summary["infra_failure_count"] == 1
+    assert summary["quota_error_count"] == 0
+    assert summary["errored_count"] == 1
+    assert summary["total_duration_seconds"] == pytest.approx(2.0)
+    assert summary["total_cost_usd"] == pytest.approx(0.6)
+
+
 def test_save_config_results_omits_metrics_when_no_oracle_data(tmp_path: Path):
     """Backward compat: tasks without scoring_details produce no P/R fields."""
     exp = _sample_experiment()

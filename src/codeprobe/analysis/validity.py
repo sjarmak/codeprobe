@@ -64,11 +64,14 @@ class TrialClass(str, Enum):
 _TERMINAL_RESULT_SUBTYPES: frozenset[str] = frozenset({"error_max_turns"})
 
 # ``error_category`` values the executor assigns to non-agent faults: 'quota'
-# (OAuth-limit detection, codeprobe-9xrl), 'timeout' (subprocess wall-clock),
-# and 'system' (OSError / MemoryError) are infrastructure, never solution
-# quality. 'agent' is the ambiguous fallback — the agent process itself
-# failed — so it is decided by the error-text signature instead.
-_INFRA_ERROR_CATEGORIES: frozenset[str] = frozenset({"quota", "timeout", "system"})
+# (OAuth-limit detection, codeprobe-9xrl), 'auth_failure' (missing/expired
+# credentials), 'timeout' (subprocess wall-clock), and 'system' (OSError /
+# MemoryError) are infrastructure, never solution quality. 'agent' is the
+# ambiguous fallback — the agent process itself failed — so it is decided by the
+# error-text signature instead.
+_INFRA_ERROR_CATEGORIES: frozenset[str] = frozenset(
+    {"quota", "auth_failure", "timeout", "system"}
+)
 
 # Word-anchored fault signatures matched against the recorded error text.
 # Mechanical markers emitted by the CLI/runtime — NOT semantic quality signals.

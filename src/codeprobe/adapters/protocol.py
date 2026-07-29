@@ -25,6 +25,10 @@ class AdapterSetupError(AdapterError):
     """Binary not found, auth missing, or other pre-run setup failure."""
 
 
+class AdapterAuthenticationError(AdapterSetupError):
+    """Adapter credentials are missing, expired, or rejected by the provider."""
+
+
 class AdapterExecutionError(AdapterError):
     """Unrecoverable failure during agent execution."""
 
@@ -172,8 +176,8 @@ class AgentOutput:
     # Optional adapter-declared category for ``error``. When the adapter
     # can identify a recoverable-vs-unrecoverable / quota / auth class,
     # it sets this so the executor can route the failure correctly.
-    # Recognised values include "quota" (codeprobe-9xrl). None means
-    # "use the executor's default classification".
+    # Recognised values include "quota" (codeprobe-9xrl) and
+    # "auth_failure". None means "use the executor's default classification".
     error_category: str | None = None
     # Adapter-declared: ``error`` is a TERMINAL agent outcome (the agent
     # ran to a protocol-defined stop condition such as a turn cap, so the

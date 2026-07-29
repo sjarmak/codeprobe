@@ -7,6 +7,7 @@ import os
 import time
 
 from codeprobe.adapters.protocol import (
+    AdapterAuthenticationError,
     AdapterCapabilities,
     AdapterExecutionError,
     AdapterQuotaError,
@@ -129,7 +130,9 @@ class CodexAdapter:
                     chat_response.usage, "prompt_tokens", "completion_tokens"
                 )
         except openai.AuthenticationError as exc:
-            raise AdapterSetupError(f"OPENAI_API_KEY invalid: {exc}") from exc
+            raise AdapterAuthenticationError(
+                f"OPENAI_API_KEY invalid: {exc}"
+            ) from exc
         except openai.RateLimitError as exc:
             raise AdapterQuotaError(f"Rate limited: {exc}") from exc
         except openai.APIError as exc:

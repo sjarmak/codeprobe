@@ -16,7 +16,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codeprobe.adapters.claude import ClaudeAdapter
-from codeprobe.adapters.protocol import AdapterQuotaError, AgentConfig, AgentOutput
+from codeprobe.adapters.protocol import (
+    AdapterAuthenticationError,
+    AdapterQuotaError,
+    AgentConfig,
+    AgentOutput,
+)
 from codeprobe.core.executor import (
     DryRunEstimate,
     TaskResult,
@@ -807,6 +812,14 @@ class _QuotaRaisingAdapter(FakeAdapter):
         if self._run_delay:
             time.sleep(self._run_delay)
         raise AdapterQuotaError("Rate limited: 429 insufficient_quota")
+
+
+class _AuthRaisingAdapter(FakeAdapter):
+    """Adapter whose run() raises an authentication setup error."""
+
+    def run(self, prompt, config, session_env=None):
+        self.run_calls.append((prompt, config))
+        raise AdapterAuthenticationError("API key invalid: expired token")
 
 
 def test_execute_config_sequential_halts_on_quota_error(tmp_path: Path):
@@ -1928,6 +1941,10 @@ class TestErrorTaxonomy:
         exc = AdapterQuotaError("Rate limited: 429 insufficient_quota")
         assert _classify_error(exc) == "quota"
 
+    def test_classify_error_auth_failure(self) -> None:
+        exc = AdapterAuthenticationError("API key invalid")
+        assert _classify_error(exc) == "auth_failure"
+
     def test_execute_task_quota_error_sets_category(self, tmp_path: Path) -> None:
         """When adapter.run() raises AdapterQuotaError, error_category='quota'."""
         task_dir = _make_task(tmp_path / "task-001", passing=True)
@@ -1937,6 +1954,17 @@ class TestErrorTaxonomy:
         result = execute_task(adapter, task_dir, Path("/repo"), config).completed
         assert result.status == "error"
         assert result.error_category == "quota"
+
+    def test_execute_task_auth_error_sets_category(self, tmp_path: Path) -> None:
+        task_dir = _make_task(tmp_path / "task-001", passing=True)
+        config = AgentConfig()
+
+        adapter = _AuthRaisingAdapter(stdout="")
+        result = execute_task(adapter, task_dir, Path("/repo"), config).completed
+        assert result.status == "error"
+        assert result.error_category == "auth_failure"
+        assert "expired token" in result.metadata["error"]
+        assert "Refresh authentication" in result.metadata["remediation"]
 
     def test_execute_task_timeout_sets_category(self, tmp_path: Path) -> None:
         """When adapter.run() raises TimeoutExpired, error_category='timeout'."""

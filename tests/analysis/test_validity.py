@@ -311,7 +311,7 @@ class TestClassifyTrial:
     def test_infra_error_categories(self) -> None:
         """timeout / system / quota error categories are infra regardless of
         text — the executor already classified the fault (executor._classify_error)."""
-        for cat in ("timeout", "system", "quota"):
+        for cat in ("timeout", "system", "quota", "auth_failure"):
             t = CompletedTask(
                 task_id="t",
                 automated_score=0.0,
