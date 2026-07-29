@@ -254,14 +254,34 @@ def _materialize_credential_file(source: Path, target: Path) -> None:
     if target.exists() or target.is_symlink():
         _remove_slot_entry(target)
 
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    target_fd = -1
     try:
-        target.touch(mode=_CREDENTIAL_FILE_MODE, exist_ok=False)
-        with source.open("rb") as source_file, target.open("wb") as target_file:
+        target_fd = os.open(target, flags, _CREDENTIAL_FILE_MODE)
+        with source.open("rb") as source_file, os.fdopen(
+            target_fd, "wb"
+        ) as target_file:
+            target_fd = -1
+            os.fchmod(target_file.fileno(), _CREDENTIAL_FILE_MODE)
             shutil.copyfileobj(source_file, target_file)
+            target_file.flush()
+            descriptor_stat = os.fstat(target_file.fileno())
+            path_stat = os.stat(target, follow_symlinks=False)
+            if (descriptor_stat.st_dev, descriptor_stat.st_ino) != (
+                path_stat.st_dev,
+                path_stat.st_ino,
+            ):
+                raise OSError("Credential slot path changed during copy")
     except OSError:
-        target.unlink(missing_ok=True)
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
-    target.chmod(_CREDENTIAL_FILE_MODE)
+    finally:
+        if target_fd >= 0:
+            os.close(target_fd)
 
 
 def _build_mirror_slot_env(

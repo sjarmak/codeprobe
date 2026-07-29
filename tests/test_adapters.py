@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from codeprobe.adapters._base import (
     _adapter_safe_env,
     _terminate_agent_process_tree,
 )
-from codeprobe.adapters.claude import ClaudeAdapter
+from codeprobe.adapters.claude import ClaudeAdapter, _materialize_credential_file
 from codeprobe.adapters.copilot import CopilotAdapter
 from codeprobe.adapters.protocol import (
     ALLOWED_COST_MODELS,
@@ -1918,6 +1919,61 @@ class TestIsolateSession:
         assert '"v2"' in slot0_cred.read_text(encoding="utf-8")
         _assert_private_credential_file(slot0_cred)
         assert not slot0_cred.samefile(cred_file)
+
+    def test_credential_copy_cannot_be_redirected_by_symlink_swap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The credential write stays pinned if the slot path is replaced."""
+        source = tmp_path / "host-credentials.json"
+        source.write_text('{"token": "host-secret"}', encoding="utf-8")
+        target = tmp_path / "slot" / "credentials.json"
+        target.parent.mkdir()
+        victim = tmp_path / "unrelated.json"
+        victim.write_text("do-not-overwrite", encoding="utf-8")
+        original_open = Path.open
+
+        def swap_before_path_reopen(
+            path: Path, mode: str = "r", *args: object, **kwargs: object
+        ):
+            if path == target and mode == "wb":
+                path.unlink()
+                path.symlink_to(victim)
+            return original_open(path, mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", swap_before_path_reopen)
+
+        _materialize_credential_file(source, target)
+
+        assert victim.read_text(encoding="utf-8") == "do-not-overwrite"
+        assert not target.is_symlink()
+        assert target.read_text(encoding="utf-8") == '{"token": "host-secret"}'
+
+    def test_credential_copy_rejects_slot_replacement_mid_copy(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A replacement after descriptor open fails without touching its target."""
+        source = tmp_path / "host-credentials.json"
+        source.write_text('{"token": "host-secret"}', encoding="utf-8")
+        target = tmp_path / "slot" / "credentials.json"
+        target.parent.mkdir()
+        victim = tmp_path / "unrelated.json"
+        victim.write_text("do-not-overwrite", encoding="utf-8")
+        original_copy = shutil.copyfileobj
+
+        def swap_during_copy(source_file: object, target_file: object) -> None:
+            target.unlink()
+            target.symlink_to(victim)
+            original_copy(source_file, target_file)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(
+            "codeprobe.adapters.claude.shutil.copyfileobj", swap_during_copy
+        )
+
+        with pytest.raises(OSError, match="changed during copy"):
+            _materialize_credential_file(source, target)
+
+        assert victim.read_text(encoding="utf-8") == "do-not-overwrite"
+        assert not target.exists()
 
     def test_claude_isolate_session_mutable_dirs_are_fresh(self, tmp_path: Path) -> None:
         """Per-session mutable state (session-env/, sessions/, history.jsonl)
