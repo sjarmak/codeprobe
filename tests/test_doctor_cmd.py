@@ -366,6 +366,7 @@ class TestDoctorChecks:
     @pytest.mark.parametrize(
         "stdout",
         (
+            "github_pat_test-secret",
             " github_pat_test-secret\n",
             "github_pat_test-secret \n",
             "github_pat_test-secret\n\n",
