@@ -84,6 +84,20 @@ def test_render_preamble_does_not_hardcode_vendor_tool_names(
         )
 
 
+def test_render_preamble_does_not_hardcode_local_tool_names(
+    fixture_tool_table: list[dict[str, str]],
+) -> None:
+    rendered = render_preamble(
+        capability_set=sorted(CAPABILITIES.keys()),
+        tool_table=fixture_tool_table,
+    )
+    forbidden = ["local Grep", "`Grep`", "`Glob`", "`Bash`", "`Read`"]
+    for name in forbidden:
+        assert name not in rendered, (
+            f"custom template must not hardcode local tool name {name!r}"
+        )
+
+
 def test_render_preamble_subset_of_capabilities(
     fixture_tool_table: list[dict[str, str]],
 ) -> None:

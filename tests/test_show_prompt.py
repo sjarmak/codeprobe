@@ -119,7 +119,7 @@ def test_show_prompt_sourcegraph_uses_task_specific_guidance(tmp_path: Path) -> 
 
     assert result.exit_code == 0
     assert "github.com/acme/widgets" in result.output
-    assert "treat `sg_find_references` as authoritative" in result.output
+    assert "treat `mcp__sourcegraph__find_references` as authoritative" in result.output
     # jf28: file-removal mode replaces "grep union" with
     # "keyword-search union" (no local Grep when source is hidden).
     assert "do not replace it with a keyword-search union" in result.output

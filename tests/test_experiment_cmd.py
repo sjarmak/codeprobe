@@ -257,6 +257,36 @@ def test_add_config(runner: CliRunner, exp_dir: Path) -> None:
     assert "with-mcp" in labels
 
 
+def test_add_config_resolves_custom_preamble_path(
+    runner: CliRunner,
+    exp_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom = exp_dir.parent / "operator.md"
+    custom.write_text("Use the operator rubric.", encoding="utf-8")
+    monkeypatch.chdir(exp_dir.parent)
+
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "add-config",
+            str(exp_dir),
+            "--label",
+            "custom-path",
+            "--agent",
+            "claude",
+            "--preamble",
+            "operator.md",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    loaded = load_experiment(exp_dir)
+    config = next(c for c in loaded.configs if c.label == "custom-path")
+    assert config.preambles == (str(custom.resolve()),)
+
+
 def test_add_config_duplicate_label(runner: CliRunner, exp_dir: Path) -> None:
     result = runner.invoke(
         main,

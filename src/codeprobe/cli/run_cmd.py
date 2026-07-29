@@ -718,6 +718,7 @@ def show_prompt_and_exit(
         from codeprobe.core.preamble import task_preamble_context
         from codeprobe.core.scoring import read_task_metadata
 
+        assert exp_config is not None
         resolver = DefaultPreambleResolver(
             task_dir=first_task,
             project_dir=repo_root,
@@ -733,6 +734,7 @@ def show_prompt_and_exit(
                 read_task_metadata(first_task),
                 preamble_names=preamble_names,
                 task_id=first_task.name,
+                mcp_mode=exp_config.mcp_mode,
             )
             or None,
         )
@@ -1344,6 +1346,7 @@ def run_eval(
                             read_task_metadata(_td),
                             preamble_names=exp_config.preambles,
                             task_id=_td.name,
+                            mcp_mode=exp_config.mcp_mode,
                         )
                         _prompt, _ = compose_instruction(
                             _instr,

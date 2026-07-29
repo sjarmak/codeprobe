@@ -101,6 +101,15 @@ def _resolve_exp_dir(path: str) -> Path:
     return config_path.parent
 
 
+def _project_dir_for_exp_dir(exp_dir: Path) -> Path:
+    """Infer the project root that owns an experiment directory."""
+    if exp_dir.name == ".codeprobe":
+        return exp_dir.parent
+    if exp_dir.parent.name == ".codeprobe":
+        return exp_dir.parent.parent
+    return exp_dir.parent
+
+
 def experiment_init(
     path: str,
     name: str,
@@ -387,6 +396,16 @@ def experiment_add_config(
             mcp_path = Path(mcp_config_str).expanduser().resolve()
             if mcp_path.is_file():
                 mcp_config = json.loads(mcp_path.read_text(encoding="utf-8"))
+
+    if preambles:
+        from codeprobe.core.preamble import normalize_preamble_references
+
+        preambles = normalize_preamble_references(
+            preambles,
+            project_dir=_project_dir_for_exp_dir(exp_dir),
+            user_dir=Path.home(),
+            custom_base_dir=Path.cwd(),
+        )
 
     new_config = ExperimentConfig(
         label=label,

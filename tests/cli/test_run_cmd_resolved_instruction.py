@@ -318,8 +318,68 @@ def test_resolved_instruction_renders_task_preamble_context(
     # token no longer appears in the v2 sourcegraph preamble.
     assert "{{repo_scope}}" not in prompt_text
     assert "{{workflow_tail}}" not in prompt_text
-    assert "treat `sg_find_references` as authoritative" in prompt_text
+    assert "treat `mcp__sourcegraph__find_references` as authoritative" in prompt_text
     # jf28: "grep union" -> "keyword-search union" (no local Grep
     # under file-removal mode).
     assert "do not replace it with a keyword-search union" in prompt_text
     assert "maximum recall" not in prompt_text
+
+
+def test_resolved_instruction_uses_custom_preamble_path(
+    tmp_path: Path,
+) -> None:
+    """A documented custom preamble file path works through run preflight."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    custom_path = repo / "operator.md"
+    custom_path.write_text(
+        "Operator checklist.",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "operator.md"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "-m", "add operator preamble"],
+        check=True,
+        capture_output=True,
+    )
+    exp_dir, task_id = _setup_experiment(
+        repo,
+        instruction_text="Investigate the bug.",
+        configs=[
+            {
+                "label": "custom",
+                "agent": "fake",
+                "model": None,
+                "preambles": [str(custom_path)],
+                "extra": {"timeout_seconds": 60},
+            }
+        ],
+    )
+
+    adapter = FakeAdapter(stdout="ok", cost_usd=0.0, cost_model="unknown", duration=0.0)
+
+    from codeprobe.cli import run_cmd as run_cmd_mod
+
+    with patch.object(run_cmd_mod, "resolve", return_value=adapter):
+        run_cmd_mod.run_eval(
+            str(exp_dir),
+            agent="fake",
+            parallel=1,
+            quiet=True,
+            force_plain=True,
+        )
+
+    resolved = exp_dir / "runs" / "custom" / task_id / "instruction.resolved.md"
+    prompt_text = resolved.read_text(encoding="utf-8")
+
+    assert "Operator checklist." in prompt_text
+    assert adapter.run_calls, "FakeAdapter.run was never invoked"
+    assert _normalize_workspace(prompt_text) == _normalize_workspace(
+        adapter.run_calls[0][0]
+    )

@@ -144,6 +144,35 @@ def test_resolver_missing_preamble_raises(tmp_path: Path):
         resolver.resolve(["nonexistent"])
 
 
+def test_resolver_loads_custom_preamble_path(tmp_path: Path):
+    """Explicit .md preamble paths are loaded as trusted custom files."""
+    task_dir = tmp_path / "task-001"
+    task_dir.mkdir(parents=True)
+    custom_path = tmp_path / "operator-preamble.md"
+    custom_path.write_text("Use the operator checklist.", encoding="utf-8")
+
+    resolver = DefaultPreambleResolver(task_dir=task_dir, project_dir=tmp_path)
+    blocks = resolver.resolve([str(custom_path)])
+
+    assert len(blocks) == 1
+    assert blocks[0].name == str(custom_path)
+    assert blocks[0].template == "Use the operator checklist."
+
+
+def test_resolver_rejects_custom_preamble_path_outside_boundary(tmp_path: Path):
+    """Relative custom paths may not escape the trusted project boundary."""
+    project_dir = tmp_path / "repo"
+    task_dir = project_dir / "tasks" / "task-001"
+    task_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+
+    resolver = DefaultPreambleResolver(task_dir=task_dir, project_dir=project_dir)
+
+    with pytest.raises(ValueError, match="outside trusted preamble roots"):
+        resolver.resolve(["../outside.md"])
+
+
 def test_resolver_empty_names_returns_empty(tmp_path: Path):
     """Resolver returns empty list when no names are requested."""
     task_dir = tmp_path / "task-001"
@@ -275,16 +304,16 @@ def test_compose_instruction_sourcegraph_symbol_reference_is_authoritative(
         ),
     )
 
-    assert "treat `sg_find_references` as authoritative" in prompt
-    # jf28: under file-removal mode local Grep is unavailable; the
-    # corresponding union forbidden is the keyword-search union.
+    assert "treat `mcp__sourcegraph__find_references` as authoritative" in prompt
+    # jf28: under file-removal mode local search is unavailable; the
+    # corresponding union forbidden is the MCP keyword-search union.
     assert "do not replace it with a keyword-search union" in prompt
     assert "maximum recall" not in prompt
     # Regression: symbol-reference-trace must explicitly forbid sg_deepsearch.
     # We saw an Opus 4.7 run burn 3 deepsearch calls (most of the cost) on
     # a task that find_references answered correctly on the first call.
-    assert "DO NOT call `sg_deepsearch`" in prompt
-    assert "do not escalate to `sg_deepsearch`" in prompt
+    assert "DO NOT call `mcp__sourcegraph__deepsearch`" in prompt
+    assert "do not escalate to `mcp__sourcegraph__deepsearch`" in prompt
 
 
 def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
@@ -311,12 +340,12 @@ def test_compose_instruction_sourcegraph_default_keeps_broad_recall_guidance(
         ),
     )
 
-    # jf28: under sg-only mode "supplement with local Grep" is no
-    # longer applicable — the workspace has no local source. The broad
-    # recall directive is now scoped to MCP-tool unions instead.
+    # jf28: under sg-only mode local search is no longer assumed available.
+    # The broad recall directive is scoped to MCP-tool unions instead.
     assert "Union results when recall matters" in prompt
-    assert "sg_keyword_search" in prompt and "sg_nls_search" in prompt
-    assert "treat `sg_find_references` as authoritative" not in prompt
+    assert "mcp__sourcegraph__keyword_search" in prompt
+    assert "mcp__sourcegraph__nls_search" in prompt
+    assert "treat `mcp__sourcegraph__find_references` as authoritative" not in prompt
     # Regression (codeprobe-riad): default branch must carry the
     # verify-before-denying rule. Sourcegraph false-negatives were
     # leading agents to write confident denials of existence
@@ -365,13 +394,13 @@ def test_compose_instruction_sourcegraph_oracle_checks_uses_coverage_first(
     # Must NOT carry the broad-recall default that caused oc_004 to regress.
     assert "Union results when recall matters" not in prompt
     # Must NOT carry the symbol-reference-trace authoritative-only language.
-    assert "treat `sg_find_references` as authoritative" not in prompt
+    assert "treat `mcp__sourcegraph__find_references` as authoritative" not in prompt
     # Regression (codeprobe-riad): oracle_checks must carry an emphasised
     # verify-before-denying rule. oc_004 reproducibly failed because the
     # agent wrote "FlagAliases does not appear anywhere in the gascity
     # codebase" after Sourcegraph (with a stale index) returned no hits.
-    # The rubric guarantees the symbol exists; the agent must fall back
-    # to local Grep before denying.
+    # The rubric guarantees the symbol exists; the agent must broaden
+    # MCP search before denying.
     assert "Verify before denying existence" in prompt
     assert "rubric guarantees the named symbol exists" in prompt
     assert "Never write a denial of existence" in prompt
@@ -414,35 +443,10 @@ def test_compose_instruction_sourcegraph_sdlc_uses_stop_signal(tmp_path: Path):
     assert "Coverage-first synthesis" not in prompt
 
 
-def test_compose_instruction_sourcegraph_carries_workspace_priority_guardrail(
+def test_compose_instruction_sourcegraph_strict_uses_only_mcp_tool_names(
     tmp_path: Path,
 ):
-    """The sourcegraph preamble must carry the workspace-source-priority guardrail.
-
-    History (codeprobe-evjr): cross-rig audit showed codeprobe agents
-    routed all reads through `mcp__sourcegraph__read_file` even when the
-    file existed locally — driving 3× output tokens and +69% wall-clock
-    vs baseline. The v1 preamble had a "Prefer local-first" guardrail.
-
-    Detour (codeprobe-jf28): the v2 preamble dropped the guardrail and
-    declared local source absent on the assumption that file-removal
-    isolation would always be paired. That assumption is wrong for the
-    default `evalrc-mcp-comparison.yaml` template, which runs without
-    isolation — so the absolute "no local source" claim was misleading
-    and the agent still over-read remotely.
-
-    Resolution: re-add the EB-style guardrail so the preamble is
-    correct in both isolated (scaffold/hide) and non-isolated modes.
-
-    This test pins the current invariant:
-      1. The preamble carries a workspace-source-priority guardrail
-         that tells the agent to use local Read when files exist.
-      2. The preamble does NOT make the absolute "Local source files
-         are not present" claim (false in non-isolated runs).
-      3. The preamble still routes cross-repo reads through MCP.
-      4. The EFFICIENCY "don't over-read" rule still reaches every
-         category (covered by the dedicated test below).
-    """
+    """Strict Sourcegraph prompts must not direct agents to blocked built-ins."""
     task_dir = tmp_path / "sdlc-task"
     task_dir.mkdir(parents=True)
     resolver = DefaultPreambleResolver(task_dir=task_dir)
@@ -463,13 +467,13 @@ def test_compose_instruction_sourcegraph_carries_workspace_priority_guardrail(
         ),
     )
 
-    # Workspace-source-priority guardrail is present.
-    assert "Workspace Source Priority" in prompt
-    assert "do NOT call `sg_read_file`" in prompt
-    # The absolute no-local-source claim is gone.
-    assert "Local source files are not present" not in prompt
-    # MCP is still the canonical path for cross-repo reads.
-    assert "sg_read_file" in prompt
+    assert "Strict MCP mode is active" in prompt
+    assert "mcp__sourcegraph__read_file" in prompt
+    assert "mcp__sourcegraph__keyword_search" in prompt
+    for blocked in ("`Read`", "`Grep`", "`Glob`", "`Bash`"):
+        assert blocked not in prompt
+    for legacy in ("sg_read_file", "sg_keyword_search", "sg_find_references"):
+        assert legacy not in prompt
     # repo_scope is rendered with the actual sg_repo value, not left
     # as a literal template token.
     assert "github.com/acme/grpc-go" in prompt
@@ -477,6 +481,38 @@ def test_compose_instruction_sourcegraph_carries_workspace_priority_guardrail(
     assert "{{workflow_tail}}" not in prompt
     # The EFFICIENCY rule still reaches the SDLC branch.
     assert "Efficiency" in prompt
+
+
+def test_compose_instruction_sourcegraph_pragmatic_keeps_local_read_explicit(
+    tmp_path: Path,
+):
+    """Non-strict Sourcegraph prompts name local tools only when policy allows them."""
+    task_dir = tmp_path / "sdlc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Add a new field.",
+        repo_path=Path("/work/grpc-go"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="sdlc-001",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "sdlc",
+                    "sg_repo": "github.com/acme/grpc-go",
+                }
+            },
+            mcp_mode="pragmatic",
+        ),
+    )
+
+    assert "Pragmatic MCP mode is active" in prompt
+    assert "`Read` is available" in prompt
+    assert "mcp__sourcegraph__read_file" in prompt
+    for blocked in ("`Grep`", "`Glob`", "`Bash`"):
+        assert blocked not in prompt
 
 
 def test_compose_instruction_sourcegraph_efficiency_rule_in_all_branches(
@@ -600,9 +636,11 @@ def test_builtin_sourcegraph_preamble_exists():
     """
     block = get_builtin("sourcegraph")
     assert block.name == "sourcegraph"
-    assert "sg_keyword_search" in block.template
+    assert "mcp__sourcegraph__keyword_search" in block.template
+    assert "sg_keyword_search" not in block.template
     assert "{{repo_scope}}" in block.template
     assert "{{workflow_tail}}" in block.template
+    assert "{{source_access_policy}}" in block.template
 
 
 def test_builtin_preamble_renders_variables():
@@ -622,12 +660,14 @@ def test_builtin_preamble_renders_variables():
             "task_id": "task-42",
             "repo_scope": "**Indexed repository:** `github.com/sg-evals/my-repo`.",
             "workflow_tail": "3. **Trace references** — example tail step.",
+            "source_access_policy": "Strict MCP mode is active.",
         }
     )
     assert "github.com/sg-evals/my-repo" in rendered
     assert "Trace references" in rendered
     assert "{{repo_scope}}" not in rendered
     assert "{{workflow_tail}}" not in rendered
+    assert "{{source_access_policy}}" not in rendered
 
 
 def test_builtin_github_preamble_exists():

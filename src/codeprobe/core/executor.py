@@ -550,6 +550,7 @@ def execute_task(
     reward_type: str = "binary",
     preamble_names: tuple[str, ...] = (),
     preamble_resolver: PreambleResolver | None = None,
+    preamble_mcp_mode: str = "strict",
     worktree_path: Path | None = None,
     session_env: dict[str, str] | None = None,
     dual_worktree_factory: Callable[[Path, str], IsolationStrategy] | None = None,
@@ -763,6 +764,7 @@ def execute_task(
                     _task_meta,
                     preamble_names=preamble_names,
                     task_id=task_id,
+                    mcp_mode=preamble_mcp_mode,
                 )
             except ValueError as exc:
                 return _error_result(f"Preamble resolution failed: {exc}")
@@ -1333,6 +1335,7 @@ def execute_config(
                 reward_type=experiment_config.reward_type,
                 preamble_names=experiment_config.preambles,
                 preamble_resolver=preamble_resolver,
+                preamble_mcp_mode=experiment_config.mcp_mode,
                 worktree_path=worktree_path,
                 session_env=session_env,
                 hide_local_source=experiment_config.hide_local_source,

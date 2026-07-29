@@ -550,6 +550,7 @@ class TestGithubAccessCheck:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("COPILOT_API_KEY", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
         results = run_checks()
         gh = next(r for r in results if r.name == "GitHub auth")

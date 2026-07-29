@@ -65,6 +65,13 @@ class TestPreamblesList:
         # Built-in preambles use template vars like {{repo_path}}
         assert "{{" in result.output
 
+    def test_sourcegraph_lists_source_access_policy_var(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["preambles", "list"])
+        assert result.exit_code == 0
+        assert "sourcegraph" in result.output
+        assert "{{source_access_policy}}" in result.output
+
     def test_shows_user_preambles(self, tmp_path: Path, monkeypatch: object) -> None:
         user_dir = tmp_path / ".codeprobe" / "preambles"
         user_dir.mkdir(parents=True)
