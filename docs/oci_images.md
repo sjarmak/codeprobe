@@ -42,14 +42,14 @@ Set these environment variables to use a registry mirror or digest pin:
 ```bash
 export CODEPROBE_IMAGE_REGISTRY=registry.example.test
 export CODEPROBE_IMAGE_NAMESPACE=platform/codeprobe
-export CODEPROBE_IMAGE_VERSION=0.14.0rc1
+export CODEPROBE_IMAGE_VERSION=0.14.0rc2
 ```
 
 Those variables compose:
 
 ```text
-registry.example.test/platform/codeprobe/codeprobe-agent:0.14.0rc1
-registry.example.test/platform/codeprobe/codeprobe-scoring:0.14.0rc1
+registry.example.test/platform/codeprobe/codeprobe-agent:0.14.0rc2
+registry.example.test/platform/codeprobe/codeprobe-scoring:0.14.0rc2
 ```
 
 `CODEPROBE_IMAGE_REGISTRY` and `CODEPROBE_IMAGE_NAMESPACE` are a pair: if no

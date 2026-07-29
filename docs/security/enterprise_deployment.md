@@ -115,9 +115,9 @@ an endpoint allowlist.
 The published image names are versioned CodeProbe labels. Their base images
 are pinned by SHA-256 digest:
 `node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3`
-for `codeprobe-agent:0.14.0rc1` and
+for `codeprobe-agent:0.14.0rc2` and
 `debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818`
-for `codeprobe-scoring:0.14.0rc1`. Debian package installation uses a dated
+for `codeprobe-scoring:0.14.0rc2`. Debian package installation uses a dated
 snapshot. The Claude Code version and npm integrity are pinned, and both
 images declare the non-root `codeprobe` user. The release workflow emits SBOM
 and provenance attestations, scans both images, and signs their immutable
@@ -134,7 +134,7 @@ codeprobe bootstrap \
 ```
 
 The released source image names for this package version are
-`codeprobe-agent:0.14.0rc1` and `codeprobe-scoring:0.14.0rc1`. Bootstrap works with
+`codeprobe-agent:0.14.0rc2` and `codeprobe-scoring:0.14.0rc2`. Bootstrap works with
 Docker or Podman and needs no repository checkout or Dockerfiles. It verifies
 both expected digests before atomically recording immutable local IDs. Private
 registry authentication, proxy configuration, and private CA trust remain

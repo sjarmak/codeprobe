@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 0.14.0rc2 (2026-07-29)
+
+### Evaluation and authentication integrity
+
+- Agent authentication failures now surface as errors, stop affected
+  configurations early, and remain excluded from performance aggregates.
+- Claude authentication diagnostics now validate the same credential view and
+  runtime-user readability used by containerized agent sessions.
+
+### MCP and mining reliability
+
+- Custom preamble paths now validate and execute consistently, while the
+  Sourcegraph preamble derives canonical tool names from the configured MCP
+  server key and matches strict or pragmatic tool policy.
+- Empty Sourcegraph results no longer participate as valid consensus evidence,
+  preventing unavailable indexes from silently erasing local candidates.
+- Mining now prints a runnable evaluation command, and experiment
+  configurations can be listed, corrected, or removed without hand-editing
+  JSON.
+
+### Container onboarding
+
+- Bootstrap and doctor now distinguish missing image configuration, malformed
+  OCI references, and genuinely unprepared images, with actionable setup
+  guidance for each case.
+
 ## 0.14.0rc1 (2026-07-29)
 
 ### Enterprise self-serve workflow
