@@ -185,7 +185,11 @@ def _composed_image_reference(image_name: str) -> str:
     _validate_tag(IMAGE_VERSION_ENV, version)
     registry_raw = _optional_env(IMAGE_REGISTRY_ENV)
     namespace_raw = _optional_env(IMAGE_NAMESPACE_ENV)
-    missing_settings = _missing_composed_image_settings(registry_raw, namespace_raw)
+    missing_settings: list[str] = []
+    if registry_raw is None:
+        missing_settings.append(IMAGE_REGISTRY_ENV)
+    if namespace_raw is None:
+        missing_settings.append(IMAGE_NAMESPACE_ENV)
     if missing_settings:
         missing = ", ".join(missing_settings)
         raise ValueError(f"Missing required image setting(s): {missing}")
@@ -196,17 +200,6 @@ def _composed_image_reference(image_name: str) -> str:
     return _compose_validated_image_reference(
         image_name=image_name, version=version, registry=registry, namespace=namespace
     )
-
-
-def _missing_composed_image_settings(
-    registry: str | None, namespace: str | None
-) -> tuple[str, ...]:
-    missing: list[str] = []
-    if registry is None:
-        missing.append(IMAGE_REGISTRY_ENV)
-    if namespace is None:
-        missing.append(IMAGE_NAMESPACE_ENV)
-    return tuple(missing)
 
 
 def _compose_validated_image_reference(
