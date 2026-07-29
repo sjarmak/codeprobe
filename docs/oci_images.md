@@ -118,9 +118,12 @@ codeprobe bootstrap \
 ```
 
 Offline preparation requires both archives. Bootstrap checks each OCI archive
-digest before Skopeo copies it into the selected engine, then records the
-engine's immutable local IDs. A missing archive, missing Skopeo binary, or
-digest mismatch leaves the existing prepared-image record unchanged.
+digest from a private `0600` snapshot, uses Skopeo's `--preserve-digests`
+copy contract, and verifies that the copied manifest's configuration digest
+matches the selected engine's immutable local image ID. This binding works
+even when a local Docker or Podman import has no repository digest. A missing
+archive, missing Skopeo binary, substitution, digest mismatch, or identity
+mismatch leaves the existing prepared-image record unchanged.
 
 ## Private-Registry Mirroring
 

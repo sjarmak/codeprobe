@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
@@ -154,7 +158,6 @@ def _prepare_online(request: _ImageRequest, engine_path: str, runner: CommandRun
         engine_path,
         request.verified_reference,
         runner,
-        require_digest=True,
     )
 
 
@@ -165,41 +168,148 @@ def _prepare_offline(
     skopeo_path: str,
     runner: CommandRunner,
 ) -> PreparedImage:
-    archive = _validated_archive(request)
-    source = f"oci-archive:{archive}"
-    observed = runner(
-        [skopeo_path, "inspect", "--format", "{{.Digest}}", source],
-        INSPECT_TIMEOUT_SECONDS,
-    ).strip()
-    if observed != request.digest:
-        raise ImageBootstrapError(f"{request.label} archive digest mismatch")
     destination = _destination_reference(request)
     transport = "docker-daemon" if engine == "docker" else "containers-storage"
-    runner(
-        [skopeo_path, "copy", source, f"{transport}:{destination}"],
-        COMMAND_TIMEOUT_SECONDS,
-    )
-    return _inspect_prepared_image(request, engine_path, destination, runner, require_digest=False)
+    transported_destination = f"{transport}:{destination}"
+    with _private_archive_snapshot(request) as (archive, digest_path):
+        source = f"oci-archive:{archive}"
+        observed = runner(
+            [skopeo_path, "inspect", "--format", "{{.Digest}}", source],
+            INSPECT_TIMEOUT_SECONDS,
+        ).strip()
+        if observed != request.digest:
+            raise ImageBootstrapError(f"{request.label} archive digest mismatch")
+        runner(
+            [
+                skopeo_path,
+                "copy",
+                "--preserve-digests",
+                "--digestfile",
+                str(digest_path),
+                source,
+                transported_destination,
+            ],
+            COMMAND_TIMEOUT_SECONDS,
+        )
+        copied_digest = _read_copied_digest(request.label, digest_path)
+        raw_manifest = runner(
+            [skopeo_path, "inspect", "--raw", transported_destination],
+            INSPECT_TIMEOUT_SECONDS,
+        )
+        config_digest = _verified_config_digest(request.label, raw_manifest, copied_digest)
+        return _inspect_offline_image(
+            request,
+            engine_path,
+            destination,
+            copied_digest,
+            config_digest,
+            runner,
+        )
 
 
-def _validated_archive(request: _ImageRequest) -> Path:
+@contextmanager
+def _private_archive_snapshot(request: _ImageRequest) -> Iterator[tuple[Path, Path]]:
     archive = request.archive
     if archive is None:
         raise ImageBootstrapError(f"{request.label} archive is required")
-    if archive.is_symlink() or not archive.is_file():
-        raise ImageBootstrapError(f"{request.label} archive must be a regular non-symlink file")
-    return archive.resolve()
+    with tempfile.TemporaryDirectory(prefix="codeprobe-bootstrap-") as raw_directory:
+        directory = Path(raw_directory)
+        snapshot = directory / f"{request.label}.oci.tar"
+        digest_path = directory / f"{request.label}.digest"
+        _copy_regular_file(archive, snapshot, request.label)
+        yield snapshot, digest_path
+
+
+def _copy_regular_file(source: Path, destination: Path, label: str) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_fd = os.open(source, flags)
+    except OSError as exc:
+        raise ImageBootstrapError(f"{label} archive must be a regular non-symlink file") from exc
+    destination_fd = -1
+    try:
+        if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+            raise ImageBootstrapError(f"{label} archive must be a regular non-symlink file")
+        destination_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(source_fd, "rb") as source_stream:
+            source_fd = -1
+            with os.fdopen(destination_fd, "wb") as destination_stream:
+                destination_fd = -1
+                shutil.copyfileobj(source_stream, destination_stream)
+                destination_stream.flush()
+                os.fsync(destination_stream.fileno())
+    except OSError as exc:
+        raise ImageBootstrapError(f"{label} archive could not be copied into private storage") from exc
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+        if destination_fd >= 0:
+            os.close(destination_fd)
+
+
+def _read_copied_digest(label: str, path: Path) -> str:
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 128:
+            raise ImageBootstrapError(f"{label} copied image digest is invalid")
+        path.chmod(0o600)
+        digest = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ImageBootstrapError(f"{label} copied image digest is unavailable") from exc
+    except UnicodeError as exc:
+        raise ImageBootstrapError(f"{label} copied image digest is invalid") from exc
+    if DIGEST_PATTERN.fullmatch(digest) is None:
+        raise ImageBootstrapError(f"{label} copied image digest is invalid")
+    return digest
+
+
+def _verified_config_digest(label: str, raw_manifest: str, copied_digest: str) -> str:
+    observed = "sha256:" + hashlib.sha256(raw_manifest.encode("utf-8")).hexdigest()
+    if observed != copied_digest:
+        raise ImageBootstrapError(f"{label} copied image digest mismatch")
+    try:
+        manifest = json.loads(raw_manifest)
+    except json.JSONDecodeError as exc:
+        raise ImageBootstrapError(f"{label} copied image manifest is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise ImageBootstrapError(f"{label} copied image manifest is invalid")
+    config = manifest.get("config")
+    config_digest = config.get("digest") if isinstance(config, dict) else None
+    if not isinstance(config_digest, str) or LOCAL_IMAGE_ID_PATTERN.fullmatch(config_digest) is None:
+        raise ImageBootstrapError(f"{label} copied image manifest omitted a valid config digest")
+    return config_digest
+
+
+def _inspect_offline_image(
+    request: _ImageRequest,
+    engine_path: str,
+    destination: str,
+    copied_digest: str,
+    config_digest: str,
+    runner: CommandRunner,
+) -> PreparedImage:
+    output = runner([engine_path, "image", "inspect", destination], INSPECT_TIMEOUT_SECONDS)
+    record = _single_inspect_record(request.label, output)
+    local_id = _local_image_id(request.label, record)
+    if local_id != config_digest:
+        raise ImageBootstrapError(f"{request.label} image ID does not match its copied manifest")
+    observed_digests = _observed_digests(record)
+    if observed_digests and copied_digest not in observed_digests and request.digest not in observed_digests:
+        raise ImageBootstrapError(f"{request.label} image digest mismatch")
+    return PreparedImage(
+        source_reference=request.source_reference,
+        verified_reference=request.verified_reference,
+        digest=request.digest,
+        local_id=local_id,
+    )
 
 
 def _destination_reference(request: _ImageRequest) -> str:
     without_digest = request.source_reference.split("@", 1)[0]
     last_slash = without_digest.rfind("/")
     last_colon = without_digest.rfind(":")
-    destination = (
-        without_digest
-        if last_colon > last_slash
-        else f"{without_digest}:bootstrap-{request.digest.removeprefix('sha256:')[:12]}"
-    )
+    repository = without_digest[:last_colon] if last_colon > last_slash else without_digest
+    destination = f"{repository}:codeprobe-{request.digest.removeprefix('sha256:')}"
     try:
         return validate_image_reference(f"{request.label} offline destination", destination)
     except ValueError as exc:
@@ -211,13 +321,11 @@ def _inspect_prepared_image(
     engine_path: str,
     reference: str,
     runner: CommandRunner,
-    *,
-    require_digest: bool,
 ) -> PreparedImage:
     output = runner([engine_path, "image", "inspect", reference], INSPECT_TIMEOUT_SECONDS)
     record = _single_inspect_record(request.label, output)
     observed_digests = _observed_digests(record)
-    if (require_digest or observed_digests) and request.digest not in observed_digests:
+    if request.digest not in observed_digests:
         raise ImageBootstrapError(f"{request.label} image digest mismatch")
     local_id = _local_image_id(request.label, record)
     return PreparedImage(

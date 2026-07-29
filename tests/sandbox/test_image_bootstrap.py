@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -36,6 +38,91 @@ class RecordingRunner:
         if response is None:
             raise AssertionError(f"unexpected command: {key!r}")
         return response
+
+
+class OfflineRunner:
+    def __init__(
+        self,
+        *,
+        archive_digests: dict[str, str] | None = None,
+        manifest_local_ids: dict[str, str] | None = None,
+        engine_local_ids: dict[str, str] | None = None,
+        engine_digests: dict[str, str | None] | None = None,
+        original_archives: dict[str, Path] | None = None,
+    ) -> None:
+        self.archive_digests = archive_digests or {
+            "agent": _AGENT_DIGEST,
+            "scoring": _SCORING_DIGEST,
+        }
+        self.manifest_local_ids = manifest_local_ids or {
+            "agent": _AGENT_LOCAL_ID,
+            "scoring": _SCORING_LOCAL_ID,
+        }
+        self.engine_local_ids = engine_local_ids or dict(self.manifest_local_ids)
+        self.engine_digests = engine_digests or {"agent": None, "scoring": None}
+        self.original_archives = original_archives or {}
+        self.calls: list[tuple[tuple[str, ...], float]] = []
+        self.snapshot_modes: list[int] = []
+        self._manifests: dict[str, str] = {}
+        self._digest_paths: dict[str, Path] = {}
+        self.digest_modes: list[int] = []
+
+    def __call__(self, command: Sequence[str], timeout: float) -> str:
+        key = tuple(command)
+        self.calls.append((key, timeout))
+        if len(command) >= 5 and command[1:4] == ["inspect", "--format", "{{.Digest}}"]:
+            source = command[4]
+            label = self._archive_label(source)
+            snapshot = Path(source.removeprefix("oci-archive:"))
+            self.snapshot_modes.append(stat.S_IMODE(snapshot.stat().st_mode))
+            original = self.original_archives.get(label)
+            if original is not None:
+                assert snapshot != original
+                original.write_bytes(b"substituted-after-inspect")
+            return self.archive_digests[label]
+        if len(command) >= 7 and command[1:4] == ["copy", "--preserve-digests", "--digestfile"]:
+            digest_path = Path(command[4])
+            source = command[5]
+            destination = command[6]
+            label = self._archive_label(source)
+            manifest = json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "config": {
+                        "mediaType": "application/vnd.oci.image.config.v1+json",
+                        "digest": self.manifest_local_ids[label],
+                        "size": 1,
+                    },
+                    "layers": [],
+                },
+                separators=(",", ":"),
+            )
+            copied_digest = "sha256:" + hashlib.sha256(manifest.encode()).hexdigest()
+            digest_path.write_text(copied_digest + "\n", encoding="utf-8")
+            self._manifests[destination] = manifest
+            self._digest_paths[destination] = digest_path
+            return ""
+        if len(command) == 4 and command[1:3] == ["inspect", "--raw"]:
+            self.digest_modes.append(stat.S_IMODE(self._digest_paths[command[3]].stat().st_mode))
+            return self._manifests[command[3]]
+        if len(command) == 4 and command[1:3] == ["image", "inspect"]:
+            destination = command[3]
+            label = "agent" if "codeprobe-agent" in destination else "scoring"
+            record: dict[str, object] = {"Id": self.engine_local_ids[label]}
+            engine_digest = self.engine_digests[label]
+            if engine_digest is not None:
+                record["RepoDigests"] = [f"registry.example/team/image@{engine_digest}"]
+            return json.dumps([record])
+        raise AssertionError(f"unexpected command: {key!r}")
+
+    @staticmethod
+    def _archive_label(source: str) -> str:
+        name = Path(source.removeprefix("oci-archive:")).name
+        if name == "agent.oci.tar":
+            return "agent"
+        if name == "scoring.oci.tar":
+            return "scoring"
+        raise AssertionError(f"unexpected archive source: {source}")
 
 
 def _inspect(local_id: str, digest: str) -> str:
@@ -202,51 +289,30 @@ def test_local_digest_mismatch_does_not_write_config(tmp_path: Path) -> None:
     assert not config_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("engine", "transport"),
+    [("docker", "docker-daemon"), ("podman", "containers-storage")],
+)
 def test_offline_archives_are_verified_then_copied_without_pull(
     tmp_path: Path,
+    engine: str,
+    transport: str,
 ) -> None:
-    engine_path = "/usr/bin/docker"
+    engine_path = f"/usr/bin/{engine}"
     skopeo_path = "/usr/bin/skopeo"
     agent_archive = tmp_path / "agent.tar"
     scoring_archive = tmp_path / "scoring.tar"
     agent_archive.write_bytes(b"agent")
     scoring_archive.write_bytes(b"scoring")
-    agent_dest = _AGENT_REF
-    scoring_dest = _SCORING_REF
-    responses = {
-        (
-            skopeo_path,
-            "inspect",
-            "--format",
-            "{{.Digest}}",
-            f"oci-archive:{agent_archive}",
-        ): _AGENT_DIGEST,
-        (
-            skopeo_path,
-            "copy",
-            f"oci-archive:{agent_archive}",
-            f"docker-daemon:{agent_dest}",
-        ): "",
-        (engine_path, "image", "inspect", agent_dest): json.dumps([{"Id": _AGENT_LOCAL_ID}]),
-        (
-            skopeo_path,
-            "inspect",
-            "--format",
-            "{{.Digest}}",
-            f"oci-archive:{scoring_archive}",
-        ): _SCORING_DIGEST,
-        (
-            skopeo_path,
-            "copy",
-            f"oci-archive:{scoring_archive}",
-            f"docker-daemon:{scoring_dest}",
-        ): "",
-        (engine_path, "image", "inspect", scoring_dest): json.dumps([{"Id": _SCORING_LOCAL_ID}]),
-    }
-    runner = RecordingRunner(responses)
+    runner = OfflineRunner(
+        original_archives={
+            "agent": agent_archive,
+            "scoring": scoring_archive,
+        }
+    )
 
     result = prepare_images(
-        engine="docker",
+        engine=engine,
         agent_reference=_AGENT_REF,
         scoring_reference=_SCORING_REF,
         agent_digest=_AGENT_DIGEST,
@@ -256,13 +322,22 @@ def test_offline_archives_are_verified_then_copied_without_pull(
         config_path=tmp_path / "config.json",
         runner=runner,
         which=lambda name: {
-            "docker": engine_path,
+            engine: engine_path,
             "skopeo": skopeo_path,
         }.get(name),
     )
 
     assert result.agent.local_id == _AGENT_LOCAL_ID
+    assert result.scoring.local_id == _SCORING_LOCAL_ID
+    assert runner.snapshot_modes == [0o600, 0o600]
+    assert runner.digest_modes == [0o600, 0o600]
+    assert agent_archive.read_bytes() == b"substituted-after-inspect"
+    assert scoring_archive.read_bytes() == b"substituted-after-inspect"
     assert not any(call[0][1:3] == ("image", "pull") for call in runner.calls)
+    copy_calls = [call[0] for call in runner.calls if call[0][1] == "copy"]
+    assert all(call[2] == "--preserve-digests" and call[3] == "--digestfile" for call in copy_calls)
+    assert all(call[6].startswith(f"{transport}:") for call in copy_calls)
+    assert all(":codeprobe-" in call[6] for call in copy_calls)
 
 
 def test_offline_archives_must_be_supplied_as_a_pair(tmp_path: Path) -> None:
@@ -289,14 +364,12 @@ def test_offline_archive_digest_mismatch_fails_before_copy(
     agent_archive.write_bytes(b"agent")
     scoring_archive.write_bytes(b"scoring")
     skopeo_path = "/usr/bin/skopeo"
-    inspect_command = (
-        skopeo_path,
-        "inspect",
-        "--format",
-        "{{.Digest}}",
-        f"oci-archive:{agent_archive}",
+    runner = OfflineRunner(
+        archive_digests={
+            "agent": _SCORING_DIGEST,
+            "scoring": _SCORING_DIGEST,
+        }
     )
-    runner = RecordingRunner({inspect_command: _SCORING_DIGEST})
 
     with pytest.raises(ImageBootstrapError, match="archive digest mismatch"):
         prepare_images(
@@ -327,22 +400,12 @@ def test_offline_import_rejects_conflicting_engine_digest(
     scoring_archive = tmp_path / "scoring.tar"
     agent_archive.write_bytes(b"agent")
     scoring_archive.write_bytes(b"scoring")
-    responses = {
-        (
-            skopeo_path,
-            "inspect",
-            "--format",
-            "{{.Digest}}",
-            f"oci-archive:{agent_archive}",
-        ): _AGENT_DIGEST,
-        (
-            skopeo_path,
-            "copy",
-            f"oci-archive:{agent_archive}",
-            f"docker-daemon:{_AGENT_REF}",
-        ): "",
-        (engine_path, "image", "inspect", _AGENT_REF): _inspect(_AGENT_LOCAL_ID, _SCORING_DIGEST),
-    }
+    runner = OfflineRunner(
+        engine_digests={
+            "agent": _SCORING_DIGEST,
+            "scoring": None,
+        }
+    )
     config_path = tmp_path / "config.json"
 
     with pytest.raises(ImageBootstrapError, match="digest mismatch"):
@@ -355,7 +418,7 @@ def test_offline_import_rejects_conflicting_engine_digest(
             agent_archive=agent_archive,
             scoring_archive=scoring_archive,
             config_path=config_path,
-            runner=RecordingRunner(responses),
+            runner=runner,
             which=lambda name: {
                 "docker": engine_path,
                 "skopeo": skopeo_path,
@@ -363,6 +426,111 @@ def test_offline_import_rejects_conflicting_engine_digest(
         )
 
     assert not config_path.exists()
+
+
+def test_offline_import_rejects_local_id_not_bound_to_copied_manifest(
+    tmp_path: Path,
+) -> None:
+    engine_path = "/usr/bin/docker"
+    skopeo_path = "/usr/bin/skopeo"
+    agent_archive = tmp_path / "agent.tar"
+    scoring_archive = tmp_path / "scoring.tar"
+    agent_archive.write_bytes(b"agent")
+    scoring_archive.write_bytes(b"scoring")
+    runner = OfflineRunner(
+        engine_local_ids={
+            "agent": _SCORING_LOCAL_ID,
+            "scoring": _SCORING_LOCAL_ID,
+        }
+    )
+    config_path = tmp_path / "config.json"
+
+    with pytest.raises(ImageBootstrapError, match="ID does not match"):
+        prepare_images(
+            engine="docker",
+            agent_reference=_AGENT_REF,
+            scoring_reference=_SCORING_REF,
+            agent_digest=_AGENT_DIGEST,
+            scoring_digest=_SCORING_DIGEST,
+            agent_archive=agent_archive,
+            scoring_archive=scoring_archive,
+            config_path=config_path,
+            runner=runner,
+            which=lambda name: {
+                "docker": engine_path,
+                "skopeo": skopeo_path,
+            }.get(name),
+        )
+
+    assert not config_path.exists()
+
+
+def test_offline_import_rejects_copy_digest_not_bound_to_destination_manifest(
+    tmp_path: Path,
+) -> None:
+    agent_archive = tmp_path / "agent.tar"
+    scoring_archive = tmp_path / "scoring.tar"
+    agent_archive.write_bytes(b"agent")
+    scoring_archive.write_bytes(b"scoring")
+
+    class TamperedDigestRunner(OfflineRunner):
+        def __call__(self, command: Sequence[str], timeout: float) -> str:
+            output = super().__call__(command, timeout)
+            if len(command) >= 7 and command[1:4] == ["copy", "--preserve-digests", "--digestfile"]:
+                Path(command[4]).write_text(_SCORING_DIGEST + "\n", encoding="utf-8")
+            return output
+
+    config_path = tmp_path / "config.json"
+
+    with pytest.raises(ImageBootstrapError, match="copied image digest mismatch"):
+        prepare_images(
+            engine="docker",
+            agent_reference=_AGENT_REF,
+            scoring_reference=_SCORING_REF,
+            agent_digest=_AGENT_DIGEST,
+            scoring_digest=_SCORING_DIGEST,
+            agent_archive=agent_archive,
+            scoring_archive=scoring_archive,
+            config_path=config_path,
+            runner=TamperedDigestRunner(),
+            which=lambda name: {
+                "docker": "/usr/bin/docker",
+                "skopeo": "/usr/bin/skopeo",
+            }.get(name),
+        )
+
+    assert not config_path.exists()
+
+
+def test_offline_import_rejects_symlink_archive_before_skopeo(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.tar"
+    source.write_bytes(b"agent")
+    agent_archive = tmp_path / "agent.tar"
+    agent_archive.symlink_to(source)
+    scoring_archive = tmp_path / "scoring.tar"
+    scoring_archive.write_bytes(b"scoring")
+    runner = OfflineRunner()
+
+    with pytest.raises(ImageBootstrapError, match="regular non-symlink"):
+        prepare_images(
+            engine="docker",
+            agent_reference=_AGENT_REF,
+            scoring_reference=_SCORING_REF,
+            agent_digest=_AGENT_DIGEST,
+            scoring_digest=_SCORING_DIGEST,
+            agent_archive=agent_archive,
+            scoring_archive=scoring_archive,
+            config_path=tmp_path / "config.json",
+            runner=runner,
+            which=lambda name: {
+                "docker": "/usr/bin/docker",
+                "skopeo": "/usr/bin/skopeo",
+            }.get(name),
+        )
+
+    assert runner.calls == []
 
 
 def test_command_timeout_is_bounded_and_does_not_expose_stderr(

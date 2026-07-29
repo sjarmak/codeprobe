@@ -85,8 +85,8 @@ def write_prepared_images(prepared: PreparedImages, path: Path | None = None) ->
     encoded = (json.dumps(prepared.to_dict(), indent=2, sort_keys=True) + "\n").encode()
     temp_path = _write_temp_file(target, encoded)
     try:
+        temp_path.chmod(0o600)
         os.replace(temp_path, target)
-        target.chmod(0o600)
     except BaseException:
         _unlink_if_present(temp_path)
         raise

@@ -70,6 +70,26 @@ def test_write_then_load_round_trip_is_atomic_and_private(tmp_path: Path) -> Non
     assert not list(path.parent.glob(".container-images.json.*"))
 
 
+def test_permission_failure_preserves_existing_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "container-images.json"
+    original = b"existing-record\n"
+    path.write_bytes(original)
+
+    def fail_chmod(_path: Path, _mode: int) -> None:
+        raise OSError("fault injected")
+
+    monkeypatch.setattr(Path, "chmod", fail_chmod)
+
+    with pytest.raises(OSError, match="fault injected"):
+        write_prepared_images(_prepared(), path)
+
+    assert path.read_bytes() == original
+    assert not list(path.parent.glob(".container-images.json.*"))
+
+
 def test_load_rejects_unknown_fields(tmp_path: Path) -> None:
     path = write_prepared_images(_prepared(), tmp_path / "config.json")
     payload = json.loads(path.read_text(encoding="utf-8"))
