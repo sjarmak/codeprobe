@@ -2,13 +2,15 @@
 
 ## Supported Versions
 
-CodeProbe is pre-1.0 software. Security fixes are made against the latest
-released minor version and the current development branch. Older releases are
-not supported unless maintainers explicitly choose a backport for a critical
-issue.
+CodeProbe is beta, pre-1.0 software. Routine security fixes target the latest
+released minor and the current development branch. The immediately preceding
+published minor receives upgrade assistance for 90 days; it does not receive
+routine fixes. Maintainers may explicitly backport a critical fix.
 
 The current package version is declared in `pyproject.toml`. Upgrade to the
 latest release before reporting a vulnerability that may already be fixed.
+The complete platform, schema, deprecation, and migration boundary is versioned
+in `docs/support.md` and `docs/support_policy.json`.
 
 ## Reporting a Vulnerability
 

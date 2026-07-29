@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Enterprise compatibility
+
+- Added the versioned support, platform, schema-compatibility, deprecation,
+  migration, and source-free diagnostic contract in `docs/support.md`.
+- The release gate now installs the exact published 0.11.0 wheel, generates
+  representative persisted artifacts, upgrades to the candidate wheel, and
+  verifies supported reads.
+- Legacy hashes-only snapshots that contain copied file bodies now fail closed
+  with `SNAPSHOT_UNSAFE_LEGACY_FORMAT`. Recreate them from the original
+  experiment; do not repair or share the legacy directory.
+
 ## 0.13.0 (2026-07-26)
 
 ### Release evidence and output workflows

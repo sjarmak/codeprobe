@@ -162,6 +162,14 @@
       "remediation_pattern": "Run `codeprobe snapshot verify --verbose` and rebuild the snapshot if necessary."
     },
     {
+      "code": "SNAPSHOT_UNSAFE_LEGACY_FORMAT",
+      "kind": "diagnostic",
+      "exit_code": 2,
+      "since": "0.13.0",
+      "description": "A legacy hashes-only snapshot contains copied file bodies and cannot satisfy the hardened no-source snapshot contract.",
+      "remediation_pattern": "Recreate the snapshot from the original experiment with the installed CodeProbe version, verify the new directory, and do not share the legacy directory."
+    },
+    {
       "code": "METADATA_MISSING",
       "kind": "diagnostic",
       "exit_code": 2,

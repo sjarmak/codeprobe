@@ -1,17 +1,27 @@
 {
   "schema_version": 1,
-  "documents": ["SECURITY.md", "README.md", "docs/security/enterprise_deployment.md"],
+  "documents": [
+    "SECURITY.md",
+    "README.md",
+    "docs/security/enterprise_deployment.md",
+    "docs/support.md",
+    "docs/support_policy.json"
+  ],
   "drift_checked_documents": [
     "SECURITY.md",
     "README.md",
     "docs/security/enterprise_deployment.md",
-    "docs/security/enterprise_inventory.json"
+    "docs/security/enterprise_inventory.json",
+    "docs/support.md",
+    "docs/support_policy.json"
   ],
   "provider_neutral_documents": [
     "SECURITY.md",
     "README.md",
     "docs/security/enterprise_deployment.md",
-    "docs/security/enterprise_inventory.json"
+    "docs/security/enterprise_inventory.json",
+    "docs/support.md",
+    "docs/support_policy.json"
   ],
   "repository_paths": [
     "SECURITY.md",
@@ -19,6 +29,8 @@
     "pyproject.toml",
     "docs/security/enterprise_deployment.md",
     "docs/security/enterprise_inventory.json",
+    "docs/support.md",
+    "docs/support_policy.json",
     "docs/SNAPSHOT_REDACTION.md",
     "docs/EVIDENCE_BUNDLE.md",
     "docs/adapters.md",

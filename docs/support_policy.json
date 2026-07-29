@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "policy_version": "2026.1",
+  "effective_release": "0.13.0",
+  "lifecycle": "beta",
+  "release_support": {
+    "fully_supported": "latest released minor",
+    "upgrade_only": "immediately preceding published minor for 90 days",
+    "security_backports": "latest released minor; critical fixes may be backported at maintainer discretion"
+  },
+  "platforms": {
+    "python": {
+      "supported": ["3.11", "3.12", "3.13"],
+      "preview": [],
+      "unsupported": ["<=3.10", ">=3.14"]
+    },
+    "operating_system": {
+      "supported": ["Ubuntu 22.04 LTS Linux"],
+      "preview": ["other glibc-based x86_64 Linux distributions"],
+      "unsupported": ["Windows", "macOS", "musl-only Linux"]
+    },
+    "architecture": {
+      "supported": ["linux/amd64", "linux/arm64 OCI images"],
+      "preview": ["Linux arm64 host CLI"],
+      "unsupported": ["32-bit architectures", "non-Linux OCI platforms"]
+    },
+    "container_engine": {
+      "supported": ["Docker Engine on Ubuntu 22.04 release runners"],
+      "preview": ["Podman 4.x and 5.x on Linux"],
+      "unsupported": ["engines without OCI image digest and read-only mount support"]
+    },
+    "git": {
+      "supported": ["Git 2.34 and newer on Linux"],
+      "preview": [],
+      "unsupported": ["Git older than 2.34", "shallow repositories for mining"]
+    },
+    "agent_cli": {
+      "supported": ["claude 2.1.220 from the release agent image"],
+      "preview": ["copilot >=1.0.4 on the host"],
+      "unsupported": ["codex adapter for repository-edit comparisons", "unregistered agent CLIs"]
+    },
+    "repository_language": {
+      "supported": ["python", "go", "javascript-typescript"],
+      "preview": ["python-only architecture comprehension"],
+      "unsupported": ["other primary languages"]
+    }
+  },
+  "compatibility": {
+    "cli": {
+      "write_version": "envelope v1 and command payload v1",
+      "read_window": "all 0.11.x through 0.13.x v1 envelopes",
+      "unsupported_action": "refuse"
+    },
+    "configuration": {
+      "write_version": "0.13 experiment.json",
+      "read_window": "unversioned experiment.json written by 0.11.x through 0.13.x",
+      "unsupported_action": "migrate"
+    },
+    "task": {
+      "write_version": "0.13 task.toml plus metadata.json",
+      "read_window": "task directories written by 0.11.x through 0.13.x",
+      "unsupported_action": "migrate"
+    },
+    "result": {
+      "write_version": "0.13 per-config results.json",
+      "read_window": "results.json written by 0.11.x through 0.13.x",
+      "unsupported_action": "migrate"
+    },
+    "snapshot": {
+      "write_version": "1.0",
+      "read_window": "hardened schema 1.0 snapshots; legacy hashes-only snapshots containing bodies are refused",
+      "unsupported_action": "refuse"
+    },
+    "evidence": {
+      "write_version": "codeprobe.zero-code-access.*.v1",
+      "read_window": "exact five-artifact v1 schema set only",
+      "unsupported_action": "refuse"
+    }
+  },
+  "deprecation": {
+    "minimum_notice_minor_releases": 1,
+    "minimum_notice_days": 90,
+    "required_surfaces": ["CHANGELOG.md", "docs/support.md", "structured CLI warning"],
+    "security_exception": "unsafe behavior may be refused immediately with a dedicated error and migration instructions"
+  },
+  "upgrade_fixture": {
+    "prior_version": "0.11.0",
+    "wheel_sha256": "a7797a1f4be4a6b4bd9ce73cb4ac868d8e26e2d4a23a3ecda040ee19105bfbf5"
+  }
+}

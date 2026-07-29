@@ -146,6 +146,19 @@ jobs:
           --expected-agent-image "$CODEPROBE_RELEASE_AGENT_IMAGE"
           --expected-scoring-image "$CODEPROBE_RELEASE_SCORING_IMAGE"
           --max-cost-usd "$CODEPROBE_RELEASE_MAX_COST_USD"
+      - name: Download exact prior published wheel
+        run: |
+          mkdir -p prior-dist
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            'https://files.pythonhosted.org/packages/95/f0/cea9213040f78222a3c5bcfe47b8f90be2ef7f9fd50af76ebb22dcb9f2ad/codeprobe-0.11.0-py3-none-any.whl' \
+            --output prior-dist/codeprobe-0.11.0-py3-none-any.whl
+          echo 'a7797a1f4be4a6b4bd9ce73cb4ac868d8e26e2d4a23a3ecda040ee19105bfbf5  prior-dist/codeprobe-0.11.0-py3-none-any.whl' \
+            | sha256sum --check --strict
+      - name: Prior-release-to-candidate upgrade compatibility
+        run: >-
+          python scripts/e2e/upgrade_compatibility.py
+          --prior-wheel prior-dist/codeprobe-0.11.0-py3-none-any.whl
+          --candidate-wheel candidate-dist/codeprobe-*.whl
       # Acceptance readiness + fresh staging smoke. Its internal rebuild is
       # isolated from dist/, whose wheel bytes came from e2e-enterprise.
       - run: >-

@@ -151,13 +151,14 @@ puts the packaged skills (`codeprobe-mine`, `codeprobe-run`, `codeprobe-interpre
 `codeprobe-calibrate`, `codeprobe-check-infra`) into `.claude/skills/`; see
 [docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the workflow.
 
-Prerequisites: Python 3.11+, git, and one coding agent.
+Prerequisites: CPython 3.11–3.13, Git 2.34+, and one coding agent. The support
+status below applies to repository-edit comparisons.
 
-| Agent          | Install                                          | Auth                            |
-| -------------- | ------------------------------------------------ | ------------------------------- |
-| Claude Code    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY`             |
-| Codex          | ships with `codeprobe` (uses the OpenAI API)     | `OPENAI_API_KEY`                |
-| GitHub Copilot | `npm install -g @github/copilot-cli` (>= 1.0.4)  | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login` |
+| Agent          | Status      | Install                                          | Auth                            |
+| -------------- | ----------- | ------------------------------------------------ | ------------------------------- |
+| Claude Code    | Supported   | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY`             |
+| GitHub Copilot | Preview     | `npm install -g @github/copilot-cli` (>= 1.0.4)  | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login` |
+| Codex          | Unsupported | ships with `codeprobe` (uses the OpenAI API)     | `OPENAI_API_KEY`                |
 
 The Anthropic and OpenAI SDKs are core dependencies, so both are installed with
 the base package. Mining enrichment and LLM scoring auto-detect a backend in
@@ -210,7 +211,7 @@ usually get collapsed into a single number:
 
 - **Task generation.** Reconstructs tasks from merged PRs/commits with a quality
   gate; `codeprobe assess` scores a repo's suitability first.
-- **Agent execution.** Runs Claude Code, Codex, or Copilot headless in an
+- **Agent execution.** Runs supported or preview agent adapters headless in an
   isolated worktree, with configurable timeout, parallelism, and repeats.
 - **Correctness / verification.** Test-script, oracle-answer, checkpoint, and IR
   (file/symbol-overlap) scorers; dual verification combines a runnable test with
@@ -228,13 +229,19 @@ usually get collapsed into a single number:
 
 ## Supported agents
 
-First-class adapters are selectable by name with `--agent`:
+Built-in adapters are selectable by name with `--agent`; availability is not
+the same as enterprise support:
 
-| Agent          | `--agent`  | How it runs           | Telemetry                          |
-| -------------- | ---------- | --------------------- | ---------------------------------- |
-| Claude Code    | `claude`   | headless `claude -p`  | tokens, cost, tool calls, sessions |
-| Codex          | `codex`    | OpenAI API            | tokens, cost (calculated)          |
-| GitHub Copilot | `copilot`  | Copilot CLI           | tokens where exposed               |
+| Agent          | Status      | `--agent` | How it runs          | Telemetry                          |
+| -------------- | ----------- | --------- | -------------------- | ---------------------------------- |
+| Claude Code    | Supported   | `claude`  | headless `claude -p` | tokens, cost, tool calls, sessions |
+| GitHub Copilot | Preview     | `copilot` | Copilot CLI          | tokens where exposed               |
+| Codex          | Unsupported | `codex`   | OpenAI API           | tokens, cost (calculated)          |
+
+The Codex adapter is quarantined for repository-edit comparisons. Custom and
+unregistered adapters are unsupported unless an organization owns and tests
+its complete execution path. See the
+[enterprise compatibility matrix](docs/support.md) for the exact boundary.
 
 Beyond the built-ins:
 
@@ -289,7 +296,7 @@ worth mining at all before you start.
 commits make runs reproducible. `codeprobe check-infra` preflights capability
 drift and credential TTLs before an offline run.
 
-CodeProbe is alpha software. Scores are only as good as the mined tasks and the
+CodeProbe is beta software. Scores are only as good as the mined tasks and the
 verifier behind them; treat a curated suite as something to review, not a
 turnkey oracle.
 
@@ -364,7 +371,10 @@ mining, source-isolation modes, and aggregate bias detection lives in
 
 ## Limitations
 
-- **Alpha.** APIs, flags, and task formats change between minor versions.
+- **Beta compatibility boundary.** Supported paths, schema read windows,
+  deprecation notice, and upgrade rules are versioned in
+  [Enterprise support and compatibility](docs/support.md). Preview and
+  unsupported paths do not carry the same release-gate coverage.
 - **Verifier-bound.** A task is only as trustworthy as its test or oracle. A
   weak verifier passes wrong solutions; mining rejects changes with no usable
   verifier, but cannot certify the ones it keeps.
@@ -418,8 +428,10 @@ PyPI (`.github/workflows/publish.yml`).
 
 ## Security and enterprise deployment
 
-Security reporting and supported-version policy live in
-[SECURITY.md](SECURITY.md). Enterprise reviewers should start with
+Security reporting lives in [SECURITY.md](SECURITY.md), and the tested platform
+and upgrade boundary lives in
+[Enterprise support and compatibility](docs/support.md). Enterprise reviewers
+should start with
 [docs/security/enterprise_deployment.md](docs/security/enterprise_deployment.md)
 for the threat model, egress and mount matrices, credential flow, offline
 behavior, local telemetry, retention, deletion, export, backup, and incident

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 
@@ -60,7 +61,9 @@ from codeprobe.snapshot.scanners import (
     ScannerUnavailableError,
     TrufflehogScanner,
 )
-from codeprobe.snapshot.verify import verify_snapshot_extended
+from codeprobe.snapshot.verify import (
+    verify_snapshot_extended,
+)
 
 _VALID_MODES: tuple[RedactionMode, ...] = ("hashes-only", "contents", "secrets")
 
@@ -378,6 +381,8 @@ def verify_cmd(
     )
 
     result = verify_snapshot_extended(snapshot_dir, signing_key=signing_key)
+    if result.unsafe_legacy_reason is not None:
+        _raise_legacy_snapshot_refusal(result.unsafe_legacy_reason)
     payload = {
         "ok": result.ok,
         "reason": result.reason,
@@ -405,6 +410,21 @@ def verify_cmd(
             terminal=True,
             detail=payload,
         )
+
+
+def _raise_legacy_snapshot_refusal(reason: str) -> NoReturn:
+    raise DiagnosticError(
+        code="SNAPSHOT_UNSAFE_LEGACY_FORMAT",
+        message=reason,
+        message_for_agent=(
+            "Run `codeprobe snapshot create ORIGINAL_EXPERIMENT "
+            "--out NEW_SNAPSHOT --redact hashes-only`, then verify "
+            "and share only NEW_SNAPSHOT."
+        ),
+        diagnose_cmd="codeprobe snapshot create --help",
+        terminal=True,
+        detail={"migration": "recreate-from-original"},
+    )
 
 
 @snapshot.command("fairness")

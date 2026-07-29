@@ -16,6 +16,7 @@ No LLM is invoked — all checks are mechanical IO + sha256.
 
 from __future__ import annotations
 
+import json
 import posixpath
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -43,6 +44,7 @@ __all__ = [
     "FairnessLeak",
     "FairnessResult",
     "check_fairness",
+    "unsafe_legacy_snapshot_reason",
     "verify_snapshot_extended",
 ]
 
@@ -62,6 +64,44 @@ class ExtendedVerificationResult:
     symlinks_contained: bool
     file_hashes_match: bool
     offending_paths: list[str] = field(default_factory=list)
+    unsafe_legacy_reason: str | None = None
+
+
+def unsafe_legacy_snapshot_reason(snapshot_dir: Path) -> str | None:
+    """Describe unsafe legacy hashes-only snapshots without exposing paths."""
+    try:
+        inventory = inventory_tree(
+            snapshot_dir,
+            capture_paths=frozenset({"SNAPSHOT.json"}),
+            max_capture_bytes=_MAX_MANIFEST_BYTES,
+        )
+    except (FileNotFoundError, SymlinkEscapeError, ValueError):
+        return None
+    return _unsafe_legacy_reason_from_inventory(inventory)
+
+
+def _unsafe_legacy_reason_from_inventory(inventory: TreeInventory) -> str | None:
+    manifest_entry = inventory.entries.get("SNAPSHOT.json")
+    if manifest_entry is None or manifest_entry.body is None:
+        return None
+    try:
+        manifest = json.loads(manifest_entry.body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    has_publishable_bodies = any(
+        path.startswith("export/traces/") and entry.kind == "file"
+        for path, entry in inventory.entries.items()
+    )
+    if (
+        isinstance(manifest, dict)
+        and manifest.get("mode") == "hashes-only"
+        and has_publishable_bodies
+    ):
+        return (
+            "legacy hashes-only snapshot contains file bodies; recreate it "
+            "from the original experiment with the installed CodeProbe version"
+        )
+    return None
 
 
 def verify_snapshot_extended(
@@ -88,6 +128,7 @@ def verify_snapshot_extended(
     except (FileNotFoundError, SymlinkEscapeError):
         return _inventory_failure(snapshot_dir)
 
+    unsafe_legacy_reason = _unsafe_legacy_reason_from_inventory(inventory)
     manifest_entry = inventory.entries.get("SNAPSHOT.json")
     manifest: dict[str, object] | None
     load_error: str | None
@@ -150,6 +191,7 @@ def verify_snapshot_extended(
         symlinks_contained=symlinks_ok,
         file_hashes_match=files_ok,
         offending_paths=offending,
+        unsafe_legacy_reason=unsafe_legacy_reason,
     )
 
 
