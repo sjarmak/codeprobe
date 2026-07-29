@@ -21,18 +21,18 @@ __all__ = [
 _SYMBOL_REFERENCE_TRACE_CATEGORY = "symbol-reference-trace"
 _ORACLE_CHECKS_CATEGORY = "oracle_checks"
 _SDLC_CATEGORY = "sdlc"
-_SOURCEGRAPH_KEYWORD_SEARCH = "mcp__sourcegraph__keyword_search"
-_SOURCEGRAPH_NLS_SEARCH = "mcp__sourcegraph__nls_search"
-_SOURCEGRAPH_FIND_REFERENCES = "mcp__sourcegraph__find_references"
-_SOURCEGRAPH_GO_TO_DEFINITION = "mcp__sourcegraph__go_to_definition"
-_SOURCEGRAPH_READ_FILE = "mcp__sourcegraph__read_file"
-_SOURCEGRAPH_LIST_FILES = "mcp__sourcegraph__list_files"
-_SOURCEGRAPH_LIST_REPOS = "mcp__sourcegraph__list_repos"
-_SOURCEGRAPH_COMMIT_SEARCH = "mcp__sourcegraph__commit_search"
-_SOURCEGRAPH_DIFF_SEARCH = "mcp__sourcegraph__diff_search"
-_SOURCEGRAPH_COMPARE_REVISIONS = "mcp__sourcegraph__compare_revisions"
-_SOURCEGRAPH_DEEPSEARCH = "mcp__sourcegraph__deepsearch"
-_SOURCEGRAPH_DEEPSEARCH_READ = "mcp__sourcegraph__deepsearch_read"
+_SOURCEGRAPH_KEYWORD_SEARCH = "{{sourcegraph_tool_prefix}}__keyword_search"
+_SOURCEGRAPH_NLS_SEARCH = "{{sourcegraph_tool_prefix}}__nls_search"
+_SOURCEGRAPH_FIND_REFERENCES = "{{sourcegraph_tool_prefix}}__find_references"
+_SOURCEGRAPH_GO_TO_DEFINITION = "{{sourcegraph_tool_prefix}}__go_to_definition"
+_SOURCEGRAPH_READ_FILE = "{{sourcegraph_tool_prefix}}__read_file"
+_SOURCEGRAPH_LIST_FILES = "{{sourcegraph_tool_prefix}}__list_files"
+_SOURCEGRAPH_LIST_REPOS = "{{sourcegraph_tool_prefix}}__list_repos"
+_SOURCEGRAPH_COMMIT_SEARCH = "{{sourcegraph_tool_prefix}}__commit_search"
+_SOURCEGRAPH_DIFF_SEARCH = "{{sourcegraph_tool_prefix}}__diff_search"
+_SOURCEGRAPH_COMPARE_REVISIONS = "{{sourcegraph_tool_prefix}}__compare_revisions"
+_SOURCEGRAPH_DEEPSEARCH = "{{sourcegraph_tool_prefix}}__deepsearch"
+_SOURCEGRAPH_DEEPSEARCH_READ = "{{sourcegraph_tool_prefix}}__deepsearch_read"
 
 # Preambles whose templates render ``repo:^{{sg_repo}}$`` and therefore
 # silently degrade to a malformed ``repo:^$`` filter when ``sg_repo`` is
@@ -307,6 +307,7 @@ def task_preamble_context(
     preamble_names: Iterable[str] | None = None,
     task_id: str = "",
     mcp_mode: str = "strict",
+    mcp_config: Mapping[str, object] | None = None,
 ) -> dict[str, str]:
     """Extract task-aware context values that preamble templates can reference.
 
@@ -319,13 +320,14 @@ def task_preamble_context(
     sg_repo-dependent preamble can omit ``preamble_names`` and the guard is a
     no-op.
 
-    The function also populates two slots used by the v2 sourcegraph
+    The function also populates slots used by the v2 sourcegraph
     preamble (jf28):
 
     * ``repo_scope`` — single-line repository scoping directive.
     * ``workflow_tail`` — category-specialised continuation of the
       "Required Workflow" numbered list (steps 3+).
     * ``source_access_policy`` — strict/pragmatic/loose local-tool guidance.
+    * ``sourcegraph_tool_prefix`` — the configured MCP server tool prefix.
     """
     if not isinstance(task_metadata, Mapping):
         return {}
@@ -369,8 +371,31 @@ def task_preamble_context(
     )
     extra_context["workflow_tail"] = tail_builder()
     extra_context["source_access_policy"] = _source_access_policy(mcp_mode)
+    extra_context["sourcegraph_tool_prefix"] = _sourcegraph_tool_prefix(mcp_config)
 
     return extra_context
+
+
+def _sourcegraph_tool_prefix(mcp_config: Mapping[str, object] | None) -> str:
+    """Return the runtime prefix for the Sourcegraph MCP server."""
+    if mcp_config is None:
+        return "mcp__sourcegraph"
+
+    servers = mcp_config.get("mcpServers")
+    if not isinstance(servers, Mapping):
+        return "mcp__sourcegraph"
+
+    server_names = tuple(
+        name for name in servers if isinstance(name, str) and name.strip()
+    )
+    if "sourcegraph" in server_names:
+        return "mcp__sourcegraph"
+    if len(server_names) == 1:
+        return f"mcp__{server_names[0]}"
+    raise ValueError(
+        "The sourcegraph preamble requires an unambiguous MCP server key; "
+        f"configured keys: {list(server_names)}"
+    )
 
 
 def _source_access_policy(mcp_mode: str) -> str:

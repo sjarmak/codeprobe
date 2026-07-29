@@ -515,6 +515,38 @@ def test_compose_instruction_sourcegraph_pragmatic_keeps_local_read_explicit(
         assert blocked not in prompt
 
 
+def test_compose_instruction_sourcegraph_uses_runtime_mcp_server_key(
+    tmp_path: Path,
+):
+    """Sourcegraph tool names must match the configured MCP server key."""
+    task_dir = tmp_path / "sdlc-task"
+    task_dir.mkdir(parents=True)
+    resolver = DefaultPreambleResolver(task_dir=task_dir)
+
+    prompt, _ = compose_instruction(
+        instruction="Add a new field.",
+        repo_path=Path("/work/grpc-go"),
+        preamble_names=["sourcegraph"],
+        resolver=resolver,
+        task_id="sdlc-001",
+        extra_context=task_preamble_context(
+            {
+                "metadata": {
+                    "category": "sdlc",
+                    "sg_repo": "github.com/acme/grpc-go",
+                }
+            },
+            mcp_mode="strict",
+            mcp_config={"mcpServers": {"sg": {"type": "http"}}},
+        ),
+    )
+
+    assert "mcp__sg__keyword_search" in prompt
+    assert "mcp__sg__find_references" in prompt
+    assert "mcp__sg__read_file" in prompt
+    assert "mcp__sourcegraph__" not in prompt
+
+
 def test_compose_instruction_sourcegraph_efficiency_rule_in_all_branches(
     tmp_path: Path,
 ):
@@ -636,7 +668,8 @@ def test_builtin_sourcegraph_preamble_exists():
     """
     block = get_builtin("sourcegraph")
     assert block.name == "sourcegraph"
-    assert "mcp__sourcegraph__keyword_search" in block.template
+    assert "{{sourcegraph_tool_prefix}}__keyword_search" in block.template
+    assert "mcp__sourcegraph__" not in block.template
     assert "sg_keyword_search" not in block.template
     assert "{{repo_scope}}" in block.template
     assert "{{workflow_tail}}" in block.template

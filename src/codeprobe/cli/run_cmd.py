@@ -735,6 +735,7 @@ def show_prompt_and_exit(
                 preamble_names=preamble_names,
                 task_id=first_task.name,
                 mcp_mode=exp_config.mcp_mode,
+                mcp_config=exp_config.mcp_config,
             )
             or None,
         )
@@ -1347,6 +1348,7 @@ def run_eval(
                             preamble_names=exp_config.preambles,
                             task_id=_td.name,
                             mcp_mode=exp_config.mcp_mode,
+                            mcp_config=exp_config.mcp_config,
                         )
                         _prompt, _ = compose_instruction(
                             _instr,

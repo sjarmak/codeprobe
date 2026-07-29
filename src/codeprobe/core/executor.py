@@ -551,6 +551,7 @@ def execute_task(
     preamble_names: tuple[str, ...] = (),
     preamble_resolver: PreambleResolver | None = None,
     preamble_mcp_mode: str = "strict",
+    preamble_mcp_config: dict | None = None,
     worktree_path: Path | None = None,
     session_env: dict[str, str] | None = None,
     dual_worktree_factory: Callable[[Path, str], IsolationStrategy] | None = None,
@@ -765,6 +766,7 @@ def execute_task(
                     preamble_names=preamble_names,
                     task_id=task_id,
                     mcp_mode=preamble_mcp_mode,
+                    mcp_config=preamble_mcp_config,
                 )
             except ValueError as exc:
                 return _error_result(f"Preamble resolution failed: {exc}")
@@ -1336,6 +1338,7 @@ def execute_config(
                 preamble_names=experiment_config.preambles,
                 preamble_resolver=preamble_resolver,
                 preamble_mcp_mode=experiment_config.mcp_mode,
+                preamble_mcp_config=experiment_config.mcp_config,
                 worktree_path=worktree_path,
                 session_env=session_env,
                 hide_local_source=experiment_config.hide_local_source,

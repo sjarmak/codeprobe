@@ -282,6 +282,9 @@ def test_resolved_instruction_renders_task_preamble_context(
                 "agent": "fake",
                 "model": None,
                 "preambles": ["sourcegraph"],
+                "mcp_config": {
+                    "mcpServers": {"sg": {"type": "stdio", "command": "echo"}}
+                },
                 "extra": {"timeout_seconds": 60},
             }
         ],
@@ -318,7 +321,8 @@ def test_resolved_instruction_renders_task_preamble_context(
     # token no longer appears in the v2 sourcegraph preamble.
     assert "{{repo_scope}}" not in prompt_text
     assert "{{workflow_tail}}" not in prompt_text
-    assert "treat `mcp__sourcegraph__find_references` as authoritative" in prompt_text
+    assert "treat `mcp__sg__find_references` as authoritative" in prompt_text
+    assert "mcp__sourcegraph__" not in prompt_text
     # jf28: "grep union" -> "keyword-search union" (no local Grep
     # under file-removal mode).
     assert "do not replace it with a keyword-search union" in prompt_text
