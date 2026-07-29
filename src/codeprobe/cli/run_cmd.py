@@ -26,6 +26,7 @@ from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.cli._output_helpers import (
     emit_envelope,
     emit_event,
+    format_task_status,
     resolve_mode,
     validate_out_path,
 )
@@ -210,27 +211,6 @@ def assert_clean_checkout(repo_root: Path, *, allow_dirty: bool = False) -> None
     )
 
 
-def _format_task_status(
-    score: float,
-    verdict: str | None = None,
-    *,
-    status: str = "completed",
-    error_category: str | None = None,
-) -> str:
-    """Format score as PASS/FAIL for binary or as a numeric score for partial."""
-    if error_category == "auth_failure":
-        return "AUTH_ERROR"
-    if verdict == "verifier_error":
-        return "INFRA"
-    if status == "error":
-        return "ERROR"
-    if score >= 1.0:
-        return "PASS"
-    if score <= 0.0:
-        return "FAIL"
-    return f"{score:.2f}"
-
-
 def build_run_envelope_summary(
     results_by_config: dict[str, list[CompletedTask]],
 ) -> tuple[list[dict], int, float]:
@@ -281,7 +261,7 @@ def build_run_envelope_summary(
 
 def _on_task_complete(result: CompletedTask) -> None:
     """Print task result to stdout (legacy callback, kept for backward compat)."""
-    status = _format_task_status(
+    status = format_task_status(
         result.automated_score,
         result.verdict,
         status=result.status,
@@ -301,7 +281,7 @@ class PlainTextListener:
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
             verdict = effective_task_verdict(event)
-            status = _format_task_status(
+            status = format_task_status(
                 event.automated_score,
                 verdict,
                 status=event.status,

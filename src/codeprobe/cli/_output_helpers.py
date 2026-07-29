@@ -44,6 +44,27 @@ from codeprobe.cli.errors import PrescriptiveError
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+def format_task_status(
+    score: float,
+    verdict: str | None = None,
+    *,
+    status: str = "completed",
+    error_category: str | None = None,
+) -> str:
+    """Format a task result consistently across CLI output surfaces."""
+    if error_category == "auth_failure":
+        return "AUTH_ERROR"
+    if verdict == "verifier_error":
+        return "INFRA"
+    if status == "error":
+        return "ERROR"
+    if score >= 1.0:
+        return "PASS"
+    if score <= 0.0:
+        return "FAIL"
+    return f"{score:.2f}"
+
+
 def add_json_flags(command: F) -> F:
     """Decorate a click command with ``--json / --no-json / --json-lines``.
 

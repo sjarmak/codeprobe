@@ -22,6 +22,7 @@ from rich.text import Text
 
 from codeprobe.analysis.dual import format_dual_suffix
 from codeprobe.analysis.stats import score_passed
+from codeprobe.cli._output_helpers import format_task_status
 from codeprobe.core.events import (
     BudgetWarning,
     RunFinished,
@@ -129,28 +130,16 @@ class RichLiveListener:
             state.current_task = event.task_id
         self._refresh()
 
-    @staticmethod
-    def _format_score(score: float, verdict: str | None = None) -> str:
-        if verdict == "verifier_error":
-            return "INFRA"
-        if score >= 1.0:
-            return "PASS"
-        if score <= 0.0:
-            return "FAIL"
-        return f"{score:.2f}"
-
     def _handle_task_scored(self, event: TaskScored) -> None:
         verdict = effective_task_verdict(event)
         outcome = effective_task_outcome(event)
         is_infra = outcome in {"auth_failure", "infra_failure"}
-        if outcome == "auth_failure":
-            status = "AUTH_ERROR"
-        elif outcome == "error":
-            status = "ERROR"
-        elif outcome == "infra_failure":
-            status = "INFRA"
-        else:
-            status = self._format_score(event.automated_score, verdict)
+        status = format_task_status(
+            event.automated_score,
+            verdict,
+            status=event.status,
+            error_category=event.error_category,
+        )
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
         duration_str = f"{event.duration_seconds:.1f}s"
         dual_suffix = (
