@@ -24,7 +24,9 @@ from codeprobe.core.experiment import (
     create_experiment_dir,
     load_config_results,
     load_experiment,
+    remove_experiment_config,
     save_experiment,
+    update_experiment_config,
 )
 from codeprobe.core.registry import available
 from codeprobe.core.registry import resolve as resolve_agent
@@ -432,6 +434,283 @@ def experiment_add_config(
     click.echo(f"Configuration '{label}' added to experiment '{experiment.name}'")
     click.echo(f"  Agent: {agent}")
     click.echo(f"  Model: {model or '(not specified)'}")
+    click.echo(f"  Total configs: {len(updated.configs)}")
+
+
+def _config_not_found_error(
+    experiment: Experiment,
+    label: str,
+) -> PrescriptiveError:
+    labels = [config.label for config in experiment.configs]
+    return PrescriptiveError(
+        code="CONFIG_NOT_FOUND",
+        message=(
+            f"configuration '{label}' does not exist in experiment "
+            f"'{experiment.name}'"
+        ),
+        next_try_flag="--label",
+        next_try_value=labels[0] if labels else "<label>",
+        exit_code=1,
+        detail={"label": label, "existing_labels": labels},
+    )
+
+
+def _get_config_or_raise(
+    experiment: Experiment,
+    label: str,
+) -> ExperimentConfig:
+    for config in experiment.configs:
+        if config.label == label:
+            return config
+    raise _config_not_found_error(experiment, label)
+
+
+def _no_config_changes_error(
+    experiment: Experiment,
+    label: str,
+) -> PrescriptiveError:
+    existing_labels = [config.label for config in experiment.configs]
+    return PrescriptiveError(
+        code="NO_CONFIG_CHANGES",
+        message=f"no changes requested for configuration '{label}'",
+        next_try_flag="--new-label",
+        next_try_value=_next_free_label(label, existing_labels),
+        exit_code=1,
+        detail={"label": label},
+    )
+
+
+def _duplicate_config_label_error(
+    experiment: Experiment,
+    label: str,
+    flag: str = "--label",
+) -> PrescriptiveError:
+    existing_labels = [config.label for config in experiment.configs]
+    return PrescriptiveError(
+        code="DUPLICATE_CONFIG_LABEL",
+        message=(
+            f"configuration '{label}' already exists in experiment "
+            f"'{experiment.name}'"
+        ),
+        next_try_flag=flag,
+        next_try_value=_next_free_label(label, existing_labels),
+        exit_code=1,
+        detail={"label": label, "existing_labels": existing_labels},
+    )
+
+
+def _validate_updated_agent(agent: str) -> None:
+    try:
+        candidate_adapter: object | None = resolve_agent(agent)
+    except KeyError:
+        candidate_adapter = None
+    if candidate_adapter is not None and getattr(
+        candidate_adapter, "quarantined", False
+    ):
+        click.echo(f"Error: {quarantine_message(agent)}", err=True)
+        # lint-exempt: keep add-config's quarantined-backend exit contract.
+        raise SystemExit(1)
+
+    known_agents = available()
+    if agent not in known_agents:
+        raise PrescriptiveError(
+            code="UNKNOWN_BACKEND",
+            message=(
+                f"unknown agent backend {agent!r}. "
+                f"Available: {', '.join(known_agents)}"
+            ),
+            next_try_flag="--agent",
+            next_try_value="claude",
+            exit_code=1,
+            detail={"agent": agent, "available": known_agents},
+        )
+
+
+def _load_experiment_for_update(path: str) -> tuple[Path, Experiment]:
+    exp_dir = _resolve_exp_dir(path)
+    try:
+        return exp_dir, load_experiment(exp_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        raise _experiment_load_error(exp_dir, exc) from exc
+
+
+def experiment_update_config(
+    path: str,
+    label: str,
+    new_label: str | None = None,
+    agent: str | None = None,
+    model: str | None = None,
+    permission_mode: str | None = None,
+    mcp_config_str: str | None = None,
+    instruction_variant: str | None = None,
+    preambles: tuple[str, ...] = (),
+    allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
+    mcp_mode: str | None = None,
+    hide_local_source: str | None = None,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
+    """Update an existing experiment configuration in place."""
+    mode = resolve_explicit_mode(
+        "experiment update-config", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
+    exp_dir, experiment = _load_experiment_for_update(path)
+    current = _get_config_or_raise(experiment, label)
+
+    changes: dict[str, Any] = {}
+    if new_label is not None:
+        from codeprobe.core.experiment import _validate_path_component
+
+        try:
+            _validate_path_component(new_label, "config label")
+        except ValueError as exc:
+            raise _unsafe_component_error(
+                exc, "--new-label", new_label, "baseline"
+            ) from exc
+        if new_label != current.label and new_label in [
+            config.label for config in experiment.configs
+        ]:
+            raise _duplicate_config_label_error(
+                experiment, new_label, flag="--new-label"
+            )
+        changes["label"] = new_label
+    if agent is not None:
+        _validate_updated_agent(agent)
+        changes["agent"] = agent
+    if model is not None:
+        changes["model"] = model
+    if permission_mode is not None:
+        changes["permission_mode"] = permission_mode
+    if mcp_config_str is not None:
+        changes["mcp_config"] = _parse_mcp_config(mcp_config_str)
+    if instruction_variant is not None:
+        changes["instruction_variant"] = instruction_variant
+    if preambles:
+        changes["preambles"] = preambles
+    if allowed_tools is not None:
+        changes["allowed_tools"] = allowed_tools
+    if disallowed_tools is not None:
+        changes["disallowed_tools"] = disallowed_tools
+    if mcp_mode is not None:
+        changes["mcp_mode"] = mcp_mode
+    if hide_local_source is not None:
+        changes["hide_local_source"] = cast(
+            Literal["off", "hide", "scaffold"],
+            hide_local_source,
+        )
+
+    replacement = dataclasses.replace(current, **changes)
+    if replacement == current:
+        raise _no_config_changes_error(experiment, label)
+
+    try:
+        updated = update_experiment_config(exp_dir, label, replacement)
+    except KeyError as exc:
+        raise _config_not_found_error(experiment, label) from exc
+    except ValueError as exc:
+        message = str(exc)
+        if "already exists" in message and "configuration" in message:
+            raise _duplicate_config_label_error(
+                experiment, replacement.label, flag="--new-label"
+            ) from exc
+        raise DiagnosticError(
+            code="CONFIG_RUN_DIR_EXISTS",
+            message=message,
+            diagnose_cmd=f"ls -la {exp_dir / 'runs'}",
+            exit_code=1,
+            detail={
+                "experiment_dir": str(exp_dir),
+                "label": label,
+                "new_label": replacement.label,
+            },
+        ) from exc
+
+    if emit_json:
+        emit_envelope(
+            command="experiment update-config",
+            data={
+                "old_label": label,
+                "label": replacement.label,
+                "config_count": len(updated.configs),
+            },
+        )
+        return
+
+    click.echo(f"Configuration '{label}' updated in experiment '{experiment.name}'")
+    click.echo(f"  Label: {replacement.label}")
+    click.echo(f"  Agent: {replacement.agent}")
+    click.echo(f"  Model: {replacement.model or '(not specified)'}")
+    click.echo(f"  Total configs: {len(updated.configs)}")
+
+
+def experiment_remove_config(
+    path: str,
+    label: str,
+    yes: bool = False,
+    json_flag: bool = False,
+    no_json_flag: bool = False,
+    json_lines_flag: bool = False,
+) -> None:
+    """Remove an experiment configuration after an explicit confirmation flag."""
+    mode = resolve_explicit_mode(
+        "experiment remove-config", json_flag, no_json_flag, json_lines_flag
+    )
+    emit_json = mode.mode != "pretty"
+    exp_dir, experiment = _load_experiment_for_update(path)
+    config = _get_config_or_raise(experiment, label)
+    run_dir = exp_dir / "runs" / config.label
+    run_dir_exists = run_dir.exists() or run_dir.is_symlink()
+
+    if not yes:
+        if emit_json:
+            emit_envelope(
+                command="experiment remove-config",
+                data={
+                    "label": label,
+                    "deleted": False,
+                    "dry_run": True,
+                    "run_dir": str(run_dir),
+                    "run_dir_exists": run_dir_exists,
+                },
+            )
+            return
+        click.echo(
+            f"Configuration '{label}' would be removed from "
+            f"experiment '{experiment.name}'"
+        )
+        click.echo(f"  Agent: {config.agent}")
+        click.echo(f"  Model: {config.model or '(not specified)'}")
+        click.echo(f"  Run artifacts: {run_dir} ({'exists' if run_dir_exists else 'absent'})")
+        click.echo(
+            "Dry run: nothing removed. Re-run with --yes to remove this "
+            "configuration and its run artifacts."
+        )
+        return
+
+    try:
+        updated = remove_experiment_config(exp_dir, label)
+    except KeyError as exc:
+        raise _config_not_found_error(experiment, label) from exc
+
+    if emit_json:
+        emit_envelope(
+            command="experiment remove-config",
+            data={
+                "label": label,
+                "deleted": True,
+                "run_dir": str(run_dir),
+                "run_dir_deleted": run_dir_exists,
+                "config_count": len(updated.configs),
+            },
+        )
+        return
+
+    click.echo(f"Configuration '{label}' removed from experiment '{experiment.name}'")
+    if run_dir_exists:
+        click.echo(f"  Deleted run artifacts: {run_dir}")
     click.echo(f"  Total configs: {len(updated.configs)}")
 
 

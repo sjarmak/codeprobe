@@ -20,6 +20,7 @@ _HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point ``HOME`` at a temp directory so ~/.codeprobe resolves there."""
+    monkeypatch.delenv("CODEPROBE_STATE_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path
 

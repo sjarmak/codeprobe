@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -118,6 +119,31 @@ def fake_worktree_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "codeprobe.core.executor.WorktreeIsolation", PassthroughIsolation
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_codeprobe_state_root(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Keep tenant locks and run state local to this pytest process.
+
+    Full-suite runs can happen concurrently across Gas City worktrees. The
+    production default ``~/.codeprobe/state`` is intentionally shared, but tests
+    need an isolated state root so run-lock checks in one worktree do not fail
+    unrelated tests in another. Tests that assert HOME-derived state paths
+    explicitly delete this env var in their own fixtures.
+    """
+    previous = os.environ.get("CODEPROBE_STATE_ROOT")
+    os.environ["CODEPROBE_STATE_ROOT"] = str(
+        tmp_path_factory.mktemp("codeprobe-state")
+    )
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("CODEPROBE_STATE_ROOT", None)
+        else:
+            os.environ["CODEPROBE_STATE_ROOT"] = previous
 
 
 @pytest.fixture(autouse=True)

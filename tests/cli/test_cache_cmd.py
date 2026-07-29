@@ -19,6 +19,7 @@ def runner() -> CliRunner:
 @pytest.fixture
 def tmp_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Isolate ~/.codeprobe under a per-test temp HOME."""
+    monkeypatch.delenv("CODEPROBE_STATE_ROOT", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path
 

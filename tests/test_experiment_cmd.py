@@ -86,7 +86,15 @@ def test_experiment_command_registered(runner: CliRunner) -> None:
 def test_experiment_help(runner: CliRunner) -> None:
     result = runner.invoke(main, ["experiment", "--help"])
     assert result.exit_code == 0
-    for sub in ("init", "add-config", "validate", "status", "aggregate"):
+    for sub in (
+        "init",
+        "add-config",
+        "update-config",
+        "remove-config",
+        "validate",
+        "status",
+        "aggregate",
+    ):
         assert sub in result.output, f"Subcommand '{sub}' not in experiment help"
 
 
@@ -427,6 +435,119 @@ def test_add_config_preserves_every_field_except_configs(
     del after_fields["configs"]
     assert after_fields == before_fields
     assert "guard-arm" in [c.label for c in after.configs]
+
+
+# ---- update-config / remove-config ----
+
+
+def test_update_config_changes_requested_fields_and_moves_run_dir(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "update-config",
+            str(exp_dir),
+            "--label",
+            "variant",
+            "--new-label",
+            "variant-fixed",
+            "--model",
+            "claude-opus-4-1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "variant-fixed" in result.output
+    loaded = load_experiment(exp_dir)
+    configs = {c.label: c for c in loaded.configs}
+    assert "variant" not in configs
+    assert configs["variant-fixed"].model == "claude-opus-4-1"
+    assert configs["baseline"].model is None
+    assert not (exp_dir / "runs" / "variant").exists()
+    assert (exp_dir / "runs" / "variant-fixed").is_dir()
+
+
+def test_update_config_missing_label_is_nonzero(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "update-config",
+            str(exp_dir),
+            "--label",
+            "missing",
+            "--model",
+            "claude-opus-4-1",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "CONFIG_NOT_FOUND" in result.output
+    assert "missing" in result.output
+
+
+def test_update_config_rejects_no_changes(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        ["experiment", "update-config", str(exp_dir), "--label", "baseline"],
+    )
+
+    assert result.exit_code == 1
+    assert "NO_CONFIG_CHANGES" in result.output
+
+
+def test_remove_config_previews_without_yes(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        ["experiment", "remove-config", str(exp_dir), "--label", "variant"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output
+    assert "variant" in [c.label for c in load_experiment(exp_dir).configs]
+    assert (exp_dir / "runs" / "variant").is_dir()
+
+
+def test_remove_config_with_yes_deletes_config_and_run_dir(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "remove-config",
+            str(exp_dir),
+            "--label",
+            "variant",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "removed" in result.output
+    assert [c.label for c in load_experiment(exp_dir).configs] == ["baseline"]
+    assert not (exp_dir / "runs" / "variant").exists()
+
+
+def test_remove_config_missing_label_is_nonzero(
+    runner: CliRunner, exp_dir: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        ["experiment", "remove-config", str(exp_dir), "--label", "missing", "--yes"],
+    )
+
+    assert result.exit_code == 1
+    assert "CONFIG_NOT_FOUND" in result.output
+    assert "missing" in result.output
 
 
 # ---- validate ----

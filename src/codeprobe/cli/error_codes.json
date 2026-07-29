@@ -426,6 +426,30 @@
       "remediation_pattern": "Re-run with a distinct --label=<new-label>."
     },
     {
+      "code": "CONFIG_NOT_FOUND",
+      "kind": "prescriptive",
+      "exit_code": 1,
+      "since": "0.14.0",
+      "description": "`codeprobe experiment update-config` or `remove-config` was given a --label that does not exist in the resolved experiment.",
+      "remediation_pattern": "Re-run with an existing --label from `codeprobe experiment status <path>`."
+    },
+    {
+      "code": "NO_CONFIG_CHANGES",
+      "kind": "prescriptive",
+      "exit_code": 1,
+      "since": "0.14.0",
+      "description": "`codeprobe experiment update-config` was invoked without any option that changes the selected configuration.",
+      "remediation_pattern": "Pass at least one field option such as --new-label, --agent, --model, --mcp-config, --allowed-tools, or --hide-local-source."
+    },
+    {
+      "code": "CONFIG_RUN_DIR_EXISTS",
+      "kind": "diagnostic",
+      "exit_code": 1,
+      "since": "0.14.0",
+      "description": "`codeprobe experiment update-config --new-label` refused to move run artifacts because the destination runs/<label> path already exists.",
+      "remediation_pattern": "Inspect the reported run directory, move or purge the stale artifacts intentionally, then retry the config rename."
+    },
+    {
       "code": "INVALID_MCP_CONFIG",
       "kind": "prescriptive",
       "exit_code": 1,

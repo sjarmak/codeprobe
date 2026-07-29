@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -14,8 +15,10 @@ from codeprobe.core.experiment import (
     load_checkpoint,
     load_config_results,
     load_experiment,
+    remove_experiment_config,
     save_config_results,
     save_experiment,
+    update_experiment_config,
 )
 from codeprobe.models.experiment import (
     CompletedTask,
@@ -184,6 +187,48 @@ def test_save_experiment_overwrites(tmp_path: Path):
     save_experiment(exp_dir, updated)
     loaded = load_experiment(exp_dir)
     assert loaded.description == "Updated description"
+
+
+def test_update_experiment_config_renames_config_and_run_dir(tmp_path: Path) -> None:
+    exp_dir = create_experiment_dir(tmp_path, _sample_experiment())
+    before = load_experiment(exp_dir)
+    replacement = dataclasses.replace(
+        before.configs[0], label="baseline-fixed", model="claude-sonnet-4-6"
+    )
+
+    updated = update_experiment_config(exp_dir, "baseline", replacement)
+
+    assert [c.label for c in updated.configs] == ["baseline-fixed", "variant"]
+    assert updated.configs[0].model == "claude-sonnet-4-6"
+    assert not (exp_dir / "runs" / "baseline").exists()
+    assert (exp_dir / "runs" / "baseline-fixed").is_dir()
+    assert load_experiment(exp_dir) == updated
+
+
+def test_update_experiment_config_rejects_duplicate_label(tmp_path: Path) -> None:
+    exp_dir = create_experiment_dir(tmp_path, _sample_experiment())
+    before = load_experiment(exp_dir)
+    replacement = dataclasses.replace(before.configs[0], label="variant")
+
+    with pytest.raises(ValueError, match="already exists"):
+        update_experiment_config(exp_dir, "baseline", replacement)
+
+
+def test_remove_experiment_config_removes_config_and_run_dir(tmp_path: Path) -> None:
+    exp_dir = create_experiment_dir(tmp_path, _sample_experiment())
+
+    updated = remove_experiment_config(exp_dir, "variant")
+
+    assert [c.label for c in updated.configs] == ["baseline"]
+    assert not (exp_dir / "runs" / "variant").exists()
+    assert load_experiment(exp_dir) == updated
+
+
+def test_remove_experiment_config_rejects_missing_label(tmp_path: Path) -> None:
+    exp_dir = create_experiment_dir(tmp_path, _sample_experiment())
+
+    with pytest.raises(KeyError, match="missing"):
+        remove_experiment_config(exp_dir, "missing")
 
 
 def test_save_and_load_config_results(tmp_path: Path):

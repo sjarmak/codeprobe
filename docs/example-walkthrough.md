@@ -89,6 +89,10 @@ codeprobe experiment add-config ./compare \
   --label haiku --agent claude --model claude-haiku-4-5-20251001
 codeprobe experiment add-config ./compare \
   --label sonnet --agent claude --model claude-sonnet-4-6
+codeprobe experiment update-config ./compare \
+  --label sonnet --model claude-opus-4-1
+codeprobe experiment remove-config ./compare --label haiku
+codeprobe experiment remove-config ./compare --label haiku --yes
 ```
 
 ## 5. Run and interpret

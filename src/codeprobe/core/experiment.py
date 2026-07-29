@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 from collections.abc import Sequence
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -171,6 +172,91 @@ def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
         data["results_base_dir"] = experiment.results_base_dir
     path = exp_dir / "experiment.json"
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _config_index(experiment: Experiment, label: str) -> int:
+    for idx, config in enumerate(experiment.configs):
+        if config.label == label:
+            return idx
+    raise KeyError(f"configuration {label!r} not found")
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+
+
+def update_experiment_config(
+    exp_dir: Path,
+    label: str,
+    updated_config: ExperimentConfig,
+) -> Experiment:
+    """Replace one experiment config and keep its run directory in sync.
+
+    Raises ``KeyError`` when *label* is absent and ``ValueError`` for unsafe
+    or duplicate replacement labels. If the label changes, ``runs/<old>`` is
+    renamed to ``runs/<new>``; an existing destination is refused so a renamed
+    config cannot inherit unrelated results.
+    """
+    experiment = load_experiment(exp_dir)
+    idx = _config_index(experiment, label)
+    _validate_path_component(updated_config.label, "config label")
+
+    if any(
+        config.label == updated_config.label
+        for pos, config in enumerate(experiment.configs)
+        if pos != idx
+    ):
+        raise ValueError(
+            f"configuration '{updated_config.label}' already exists in "
+            f"experiment '{experiment.name}'"
+        )
+
+    old_label = experiment.configs[idx].label
+    old_run_dir = exp_dir / "runs" / old_label
+    new_run_dir = exp_dir / "runs" / updated_config.label
+    if old_label != updated_config.label:
+        if new_run_dir.exists() or new_run_dir.is_symlink():
+            raise ValueError(
+                f"run directory already exists for '{updated_config.label}': "
+                f"{new_run_dir}. Refusing to overwrite unrelated results."
+            )
+        new_run_dir.parent.mkdir(parents=True, exist_ok=True)
+        if old_run_dir.exists() or old_run_dir.is_symlink():
+            old_run_dir.rename(new_run_dir)
+        else:
+            new_run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        new_run_dir.mkdir(parents=True, exist_ok=True)
+
+    configs = [
+        updated_config if pos == idx else config
+        for pos, config in enumerate(experiment.configs)
+    ]
+    updated = replace(experiment, configs=configs)
+    save_experiment(exp_dir, updated)
+    return updated
+
+
+def remove_experiment_config(exp_dir: Path, label: str) -> Experiment:
+    """Remove one experiment config and its matching run artifacts."""
+    experiment = load_experiment(exp_dir)
+    idx = _config_index(experiment, label)
+    run_dir = exp_dir / "runs" / experiment.configs[idx].label
+    _remove_path(run_dir)
+    updated = replace(
+        experiment,
+        configs=[
+            config
+            for pos, config in enumerate(experiment.configs)
+            if pos != idx
+        ],
+    )
+    save_experiment(exp_dir, updated)
+    return updated
 
 
 def load_experiment(exp_dir: Path) -> Experiment:

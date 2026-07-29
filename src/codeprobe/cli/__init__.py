@@ -1478,6 +1478,133 @@ def add_config(
     )
 
 
+@experiment.command("update-config")
+@add_json_flags
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--label", required=True, help="Existing config label to update.")
+@click.option("--new-label", default=None, help="Rename the config label.")
+@click.option("--agent", default=None, help=f"Agent backend ({_AGENT_NAMES}).")
+@click.option("--model", default=None, help="Model ID (e.g., claude-sonnet-4-6).")
+@click.option("--permission-mode", default=None, help="Permission mode for agent.")
+@click.option(
+    "--mcp-config", default=None, help="MCP config as JSON string or file path."
+)
+@click.option(
+    "--instruction-variant",
+    default=None,
+    help="Instruction file variant (e.g., instruction_mcp.md).",
+)
+@click.option(
+    "--preamble",
+    "preambles",
+    multiple=True,
+    help=(
+        "Replace instruction preambles with this repeatable list. "
+        "Built-ins: sourcegraph, github. Or path to a custom .md file."
+    ),
+)
+@click.option(
+    "--allowed-tools",
+    default=None,
+    help=(
+        "Replace the allowed built-in tool list with this comma-separated "
+        "value. Pass an empty string ('') to disable all built-in tools."
+    ),
+)
+@click.option(
+    "--disallowed-tools",
+    default=None,
+    help="Replace the blocked built-in tool list with this comma-separated value.",
+)
+@click.option(
+    "--mcp-mode",
+    type=click.Choice(["strict", "pragmatic", "loose"]),
+    default=None,
+    help="Replace the tool-surface policy for configs with --mcp-config.",
+)
+@click.option(
+    "--hide-local-source",
+    type=click.Choice(["off", "hide", "scaffold"]),
+    default=None,
+    help="Replace the source-isolation mode for sg-only / sg-hybrid runs.",
+)
+def update_config(
+    path: str,
+    label: str,
+    new_label: str | None,
+    agent: str | None,
+    model: str | None,
+    permission_mode: str | None,
+    mcp_config: str | None,
+    instruction_variant: str | None,
+    preambles: tuple[str, ...],
+    allowed_tools: str | None,
+    disallowed_tools: str | None,
+    mcp_mode: str | None,
+    hide_local_source: str | None,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
+    """Update an existing experiment configuration."""
+    from codeprobe.cli.experiment_cmd import experiment_update_config
+
+    def _parse_tools(raw: str | None) -> list[str] | None:
+        if raw is None:
+            return None
+        return [t.strip() for t in raw.split(",") if t.strip()]
+
+    experiment_update_config(
+        path,
+        label=label,
+        new_label=new_label,
+        agent=agent,
+        model=model,
+        permission_mode=permission_mode,
+        mcp_config_str=mcp_config,
+        instruction_variant=instruction_variant,
+        preambles=preambles,
+        allowed_tools=_parse_tools(allowed_tools),
+        disallowed_tools=_parse_tools(disallowed_tools),
+        mcp_mode=mcp_mode,
+        hide_local_source=hide_local_source,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
+
+
+@experiment.command("remove-config")
+@add_json_flags
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--label", required=True, help="Config label to remove.")
+@click.option(
+    "--yes",
+    is_flag=True,
+    default=False,
+    help="Actually remove the config and its run artifacts. Without this, preview only.",
+)
+def remove_config(
+    path: str,
+    label: str,
+    yes: bool,
+    json_flag: bool,
+    no_json_flag: bool,
+    json_lines_flag: bool,
+) -> None:
+    """Preview or remove an experiment configuration."""
+    from codeprobe.cli.experiment_cmd import experiment_remove_config
+
+    experiment_remove_config(
+        path,
+        label=label,
+        yes=yes,
+        json_flag=json_flag,
+        no_json_flag=no_json_flag,
+        json_lines_flag=json_lines_flag,
+    )
+
+
 @experiment.command("validate")
 @add_json_flags
 @click.argument("path", type=click.Path(exists=True))

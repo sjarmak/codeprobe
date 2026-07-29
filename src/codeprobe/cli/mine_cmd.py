@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -35,6 +36,11 @@ from codeprobe.mining.extractor import MineResult, RejectionBreakdown
 from codeprobe.mining.org_scale import OrgScaleMineResult
 from codeprobe.mining.org_scale_families import TaskFamily
 from codeprobe.models.task import Task
+
+
+def _shell_join(args: list[str | Path]) -> str:
+    return " ".join(shlex.quote(str(arg)) for arg in args)
+
 
 # ---------------------------------------------------------------------------
 # URL → local clone
@@ -4233,22 +4239,42 @@ def _show_org_scale_results(
     click.echo("Next steps:")
     click.echo()
     click.echo("  1. Validate task structure (offline sanity check):")
-    click.echo(f"     codeprobe validate {tasks_dir}")
+    click.echo(f"     {_shell_join(['codeprobe', 'validate', tasks_dir])}")
     click.echo()
     click.echo("  2. Run eval:")
     click.echo(
-        f"     codeprobe run {out_dir if out_dir is not None else repo_path} "
-        "--agent claude"
+        "     "
+        + _shell_join(
+            [
+                "codeprobe",
+                "run",
+                repo_path,
+                "--suite",
+                suite_path,
+                "--agent",
+                "claude",
+            ]
+        )
     )
     click.echo()
     click.echo("  3. Check individual oracle scores:")
-    click.echo(f"     codeprobe oracle-check {tasks_dir}/<task_id>")
+    click.echo(
+        f"     {_shell_join(['codeprobe', 'oracle-check', tasks_dir / '<task_id>'])}"
+    )
     click.echo()
     if curated:
         click.echo("  4. Weighted F1 scoring (curated tasks):")
         click.echo(
-            f"     codeprobe oracle-check {tasks_dir}/<task_id> "
-            f"--metric weighted_f1"
+            "     "
+            + _shell_join(
+                [
+                    "codeprobe",
+                    "oracle-check",
+                    tasks_dir / "<task_id>",
+                    "--metric",
+                    "weighted_f1",
+                ]
+            )
         )
         click.echo()
 

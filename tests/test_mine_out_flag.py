@@ -16,6 +16,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from codeprobe.cli import main
+from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 
 def _make_merge_pr_repo(base: Path, *, n_prs: int = 3) -> Path:
@@ -288,6 +289,45 @@ class TestMineOutSdlcDispatch:
         assert result.exit_code == 0, result.output
         assert f"codeprobe run {out_dir} --agent claude" in result.output
         assert f"codeprobe run {repo} --agent claude" not in result.output
+
+    def test_org_scale_out_keeps_repo_positional_and_passes_suite(
+        self, tmp_path: Path
+    ) -> None:
+        from io import StringIO
+        from unittest.mock import patch
+
+        from codeprobe.cli.mine_cmd import _show_org_scale_results
+
+        task = Task(
+            id="org-001",
+            repo="repo",
+            metadata=TaskMetadata(
+                name="org-task",
+                difficulty="medium",
+                category="migration-inventory",
+                org_scale=True,
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("a.py",),
+            ),
+        )
+        repo = tmp_path / "repo"
+        tasks_dir = tmp_path / "tasks"
+        out_dir = tmp_path / "custom-org-out"
+        repo.mkdir()
+        tasks_dir.mkdir()
+        out_dir.mkdir()
+
+        buf = StringIO()
+        with patch(
+            "click.echo", side_effect=lambda msg="", **kw: buf.write(msg + "\n")
+        ):
+            _show_org_scale_results([task], tasks_dir, repo, out_dir=out_dir)
+
+        output = buf.getvalue()
+        assert f"codeprobe run {repo} --suite {tmp_path / 'suite.toml'}" in output
+        assert f"codeprobe run {out_dir} --agent claude" not in output
 
 
 class TestMineOutMixedDispatch:

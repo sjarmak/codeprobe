@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -11,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli import main
+from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 
 class TestCrossRepoMutualExclusion:
@@ -423,6 +425,48 @@ class TestMineAutoCreatesExperiment:
             "Created default experiment at .codeprobe/experiment.json"
             in captured.out
         )
+
+
+class TestOrgScaleNextSteps:
+    def test_run_command_quotes_repo_and_suite_paths(self, tmp_path: Path) -> None:
+        from io import StringIO
+
+        from codeprobe.cli.mine_cmd import _show_org_scale_results
+
+        task = Task(
+            id="org-001",
+            repo="repo",
+            metadata=TaskMetadata(
+                name="org-task",
+                difficulty="medium",
+                category="migration-inventory",
+                org_scale=True,
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("a.py",),
+            ),
+        )
+        repo = tmp_path / "repo with spaces"
+        output_root = tmp_path / "output with spaces"
+        tasks_dir = output_root / "tasks"
+        out_dir = tmp_path / "out with spaces"
+        repo.mkdir()
+        tasks_dir.mkdir(parents=True)
+        out_dir.mkdir()
+
+        buf = StringIO()
+        with patch(
+            "click.echo", side_effect=lambda msg="", **kw: buf.write(msg + "\n")
+        ):
+            _show_org_scale_results([task], tasks_dir, repo, out_dir=out_dir)
+
+        suite = output_root / "suite.toml"
+        assert (
+            f"codeprobe run {shlex.quote(str(repo))} "
+            f"--suite {shlex.quote(str(suite))} --agent claude"
+        ) in buf.getvalue()
+        assert f"codeprobe run {shlex.quote(str(out_dir))}" not in buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
