@@ -657,6 +657,17 @@
       ]
     },
     {
+      "id": "bootstrap_egress",
+      "required_phrases": [
+        "`codeprobe bootstrap`",
+        "configured OCI registry",
+        "archive mode requires no network egress"
+      ],
+      "checks": [
+        "bootstrap_egress_matches_implementation"
+      ]
+    },
+    {
       "id": "agent_container_mount_policy",
       "required_phrases": [
         "per-task slot worktree",

@@ -98,6 +98,7 @@ Out of scope:
 
 | Subsystem | Required egress | Notes |
 | --- | --- | --- |
+| `codeprobe bootstrap` | Configured OCI registry in online mode; none in paired archive mode | Online mode asks the container engine to pull each digest-pinned image. Archive mode requires no network egress and validates local OCI archives with Skopeo. Registry authentication, proxy, and private-CA trust belong to the engine. |
 | `codeprobe mine` | Git remotes, optional PR or issue APIs, optional LLM backend, optional MCP or code-search endpoint | Narrative and enrichment quality depend on configured sources. `--no-llm` and offline fallbacks reduce egress but may lower task quality. |
 | `codeprobe run` agent execution | Model API or configured agent gateway; configured MCP/tool endpoints when the agent arm enables them | Agent containers run with `--network=bridge` because the agent must reach the model API. |
 | Scoring and verifier execution | None in container mode | The scoring container uses `--network=none`. Host-consented verifier execution inherits the host network. |

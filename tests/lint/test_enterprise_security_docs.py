@@ -21,6 +21,7 @@ from codeprobe.cli.purge_cmd import _DISCLOSURE, _MCP_TEMPFILE_PATTERN
 from codeprobe.core import sandbox as core_sandbox
 from codeprobe.core.scoring import sandbox as scoring_sandbox
 from codeprobe.net.offline import guard_offline
+from codeprobe.sandbox import image_bootstrap
 from codeprobe.sandbox import runner as sandbox_runner
 from codeprobe.sandbox.agent_container import containerize_argv
 from codeprobe.sandbox.image_config import CONTAINER_CONFIG_ENV
@@ -592,6 +593,17 @@ def _agent_container_has_runtime_hardening() -> bool:
     } <= set(argv) and "/tmp:rw,nosuid,nodev,size=128m,mode=1777" in argv
 
 
+def _bootstrap_egress_matches_implementation() -> bool:
+    online_source = inspect.getsource(image_bootstrap._prepare_online)
+    offline_source = inspect.getsource(image_bootstrap._prepare_offline)
+    return (
+        '"image", "pull"' in online_source
+        and "request.verified_reference" in online_source
+        and "oci-archive:" in offline_source
+        and "skopeo_path" in offline_source
+    )
+
+
 def _scoring_container_has_runtime_hardening() -> bool:
     argv = _scoring_container_argv()
     return {
@@ -634,6 +646,7 @@ _SECURITY_CLAIMS: dict[str, Callable[[], bool]] = {
     "agent_container_mounts_expected_paths": _agent_container_mounts_expected_paths,
     "agent_container_mounts_private_ca_paths": _agent_container_mounts_private_ca_paths,
     "agent_container_valueless_secret_args": _agent_container_uses_valueless_secret_args,
+    "bootstrap_egress_matches_implementation": _bootstrap_egress_matches_implementation,
     "claude_session_live_symlinks": _claude_session_mirrors_live_config_with_symlinks,
     "agent_container_runtime_hardening": _agent_container_has_runtime_hardening,
     "scoring_container_network_none": _scoring_container_defaults_to_no_network,
