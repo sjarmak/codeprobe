@@ -353,6 +353,9 @@ class TestDoctorCLI:
         [
             ("HTTPS_PROXY", "https://proxy.example:8443\n"),
             ("HTTPS_PROXY", " https://proxy.example:8443"),
+            ("HTTPS_PROXY", "http://user name:secret@proxy.example:8080"),
+            ("HTTPS_PROXY", "http://user:secret value@proxy.example:8080"),
+            ("HTTPS_PROXY", "http://user\u00a0name:secret@proxy.example:8080"),
             ("NO_PROXY", "example.test,\ninternal.test"),
             ("NO_PROXY", "example.test, internal.test"),
             ("NO_PROXY", "example.test,"),

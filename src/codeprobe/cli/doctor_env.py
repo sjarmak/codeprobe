@@ -55,7 +55,11 @@ def env_has_value(key: str) -> bool:
 
 
 def _proxy_url_is_valid(raw: str) -> bool:
-    if raw != raw.strip() or _contains_control(raw):
+    if (
+        raw != raw.strip()
+        or any(char.isspace() for char in raw)
+        or _contains_control(raw)
+    ):
         return False
     try:
         parsed = urlparse(raw)
