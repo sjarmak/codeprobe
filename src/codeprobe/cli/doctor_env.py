@@ -55,7 +55,7 @@ def env_has_value(key: str) -> bool:
 
 
 def _proxy_url_is_valid(raw: str) -> bool:
-    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+    if raw != raw.strip() or _contains_control(raw):
         return False
     try:
         parsed = urlparse(raw)
@@ -76,14 +76,25 @@ def _proxy_url_is_valid(raw: str) -> bool:
 
 
 def _no_proxy_is_valid(raw: str) -> bool:
-    return all(part.strip() for part in raw.split(","))
+    parts = raw.split(",")
+    return all(
+        part
+        and part == part.strip()
+        and not any(char.isspace() for char in part)
+        and not _contains_control(part)
+        for part in parts
+    )
+
+
+def _contains_control(value: str) -> bool:
+    return any(ord(char) < 32 or ord(char) == 127 for char in value)
 
 
 def proxy_variables_status() -> tuple[bool, str]:
     configured_count = 0
     invalid: list[str] = []
     for key in PROXY_ENV_KEYS:
-        value = env_value(key)
+        value = os.environ.get(key, "")
         if not value:
             continue
         configured_count += 1
