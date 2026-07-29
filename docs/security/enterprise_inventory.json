@@ -702,12 +702,12 @@
     {
       "id": "claude_session_mirror",
       "required_phrases": [
-        "symlinks to live host configuration entries",
-        "OAuth credential file",
-        "transitively exposes those selected host files"
+        "credential files are private regular files",
+        "hardlink is used when possible",
+        "read-mostly host configuration entries remain symlinks"
       ],
       "checks": [
-        "claude_session_live_symlinks"
+        "claude_session_private_credentials"
       ]
     },
     {

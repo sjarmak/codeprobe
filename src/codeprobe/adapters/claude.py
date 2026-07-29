@@ -153,6 +153,7 @@ _PERSONALIZATION_NAMES: frozenset[str] = frozenset(
     }
 )
 _SAFE_NAMESPACE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+_CREDENTIAL_FILE_MODE = 0o600
 
 
 def _normalize_model_for_cli(model: str) -> str:
@@ -222,6 +223,43 @@ def _sanitize_namespace(namespace: str | None) -> str | None:
     return cleaned or None
 
 
+def _remove_slot_entry(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
+def _materialize_credential_file(source: Path, target: Path) -> None:
+    """Expose a credential file in the mounted slot without symlinks."""
+    if target.exists() or target.is_symlink():
+        if (
+            target.exists()
+            and not target.is_symlink()
+            and target.is_file()
+            and target.stat().st_mtime_ns > source.stat().st_mtime_ns
+        ):
+            shutil.copy2(target, source)
+            source.chmod(_CREDENTIAL_FILE_MODE)
+        if _same_file(target, source) and not target.is_symlink():
+            target.chmod(_CREDENTIAL_FILE_MODE)
+            return
+        _remove_slot_entry(target)
+
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+    target.chmod(_CREDENTIAL_FILE_MODE)
+
+
 def _build_mirror_slot_env(
     real_config: Path,
     slot_id: int,
@@ -230,12 +268,15 @@ def _build_mirror_slot_env(
 ) -> dict[str, str]:
     """Build a per-slot ``CLAUDE_CONFIG_DIR`` that mirrors ``real_config``.
 
-    Read-mostly entries (credentials file, settings.json, skills/, agents/,
-    hooks/, plugins/, commands/, rules/) are symlinked to the live source
-    so configuration and OAuth-refreshed credentials stay coherent across
-    slots.  Mutable per-session state (``_MUTABLE_DIR_NAMES`` and
-    ``_MUTABLE_FILE_NAMES``) is recreated as fresh empty dirs/files inside
-    the slot to prevent parallel-worker races.
+    Credential files are materialized as private regular files in the
+    container-mounted slot dir. A hardlink is used when the filesystem allows
+    it, so in-place OAuth refreshes stay coherent without symlinks that would
+    dangle inside an agent container; copy fallback keeps the same least-
+    privilege file mode. Other read-mostly entries (settings.json, skills/,
+    agents/, hooks/, plugins/, commands/, rules/) are symlinked to the live
+    source so host execution keeps current configuration. Mutable per-session
+    state (``_MUTABLE_DIR_NAMES`` and ``_MUTABLE_FILE_NAMES``) is recreated as
+    fresh empty dirs/files inside the slot to prevent parallel-worker races.
 
     When ``pristine`` is True, ``_PERSONALIZATION_NAMES`` entries are not
     mirrored — and are deliberately kept out of ``seen`` so the stale-entry
@@ -263,6 +304,10 @@ def _build_mirror_slot_env(
         target = slot_dir / entry.name
         is_mutable = entry.name in _MUTABLE_DIR_NAMES or entry.name in _MUTABLE_FILE_NAMES
 
+        if entry.name in _FILE_CRED_NAMES and entry.is_file():
+            _materialize_credential_file(entry, target)
+            continue
+
         if is_mutable:
             # Preserve existing slot-local state so tasks within the same
             # slot can keep their own session history; only seed missing
@@ -278,10 +323,7 @@ def _build_mirror_slot_env(
             continue
 
         if target.is_symlink() or target.exists():
-            if target.is_dir() and not target.is_symlink():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
+            _remove_slot_entry(target)
 
         try:
             target.symlink_to(entry)
@@ -520,11 +562,12 @@ class ClaudeAdapter(BaseAdapter):
         ``CLAUDE_CONFIG_DIR`` env var, so account-specific configs are
         respected) into a slot-specific temp dir via symlinks, with fresh
         empty directories for mutable per-session state (``session-env/``,
-        ``sessions/``, ``history.jsonl``, etc.). Symlinking the credentials
-        file keeps OAuth-refresh coherence across slots (all workers see
-        the same live creds) while the fresh mutable subdirs prevent
-        parallel workers from racing on shared state — which under real
-        load manifested as API 401 errors (codeprobe-nac).
+        ``sessions/``, ``history.jsonl``, etc.). Credential files are exposed
+        as private regular files in the slot (hardlinked when possible, copied
+        otherwise), so agent containers can read the exact mounted path while
+        in-place OAuth refreshes remain coherent across slots. Fresh mutable
+        subdirs prevent parallel workers from racing on shared state — which
+        under real load manifested as API 401 errors (codeprobe-nac).
 
         When ``pristine`` is True, operator personalization
         (``_PERSONALIZATION_NAMES``: CLAUDE.md, settings, skills, agents,

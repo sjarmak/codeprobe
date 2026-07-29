@@ -1697,6 +1697,12 @@ class TestClaudeMcpConfig:
 # -- isolate_session() tests --------------------------------------------------
 
 
+def _assert_private_credential_file(path: Path) -> None:
+    assert path.is_file()
+    assert not path.is_symlink()
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 class TestIsolateSession:
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1791,8 +1797,10 @@ class TestIsolateSession:
         env = adapter.isolate_session(0)
         assert env == {}
 
-    def test_claude_isolate_session_symlinks_credentials_live(self, tmp_path: Path) -> None:
-        """Creds file is symlinked so OAuth refreshes propagate across slots."""
+    def test_claude_isolate_session_materializes_private_credentials(
+        self, tmp_path: Path
+    ) -> None:
+        """Creds are regular private files under the container-mounted slot dir."""
         adapter = ClaudeAdapter()
 
         fake_home = tmp_path / "home"
@@ -1813,13 +1821,36 @@ class TestIsolateSession:
 
         slot0_cred = tmp_path / "tmp" / "codeprobe-claude" / "slot-0" / ".credentials.json"
         slot1_cred = tmp_path / "tmp" / "codeprobe-claude" / "slot-1" / ".credentials.json"
-        assert slot0_cred.is_symlink()
-        assert slot1_cred.is_symlink()
+        _assert_private_credential_file(slot0_cred)
+        _assert_private_credential_file(slot1_cred)
+        assert slot0_cred.samefile(cred_file)
+        assert slot1_cred.samefile(cred_file)
 
-        # Refreshing the live creds is visible in every slot — no stale copies.
+        # Refreshing the live creds is visible in every slot without a
+        # container-breaking symlink to the unmounted host config dir.
         cred_file.write_text('{"token": "v2"}', encoding="utf-8")
         assert '"v2"' in slot0_cred.read_text()
         assert '"v2"' in slot1_cred.read_text()
+
+        # If the CLI refresh path replaces the slot credential file instead
+        # of writing in place, the next isolation pass reconciles the newer
+        # slot file back to the live host credential and restores the link.
+        slot0_cred.unlink()
+        slot0_cred.write_text('{"token": "slot-refresh"}', encoding="utf-8")
+        future = time.time() + 10
+        os.utime(slot0_cred, (future, future))
+        with (
+            patch.object(Path, "home", return_value=fake_home),
+            patch(
+                "codeprobe.adapters.claude.tempfile.gettempdir",
+                return_value=str(tmp_path / "tmp"),
+            ),
+        ):
+            adapter.isolate_session(0)
+
+        assert '"slot-refresh"' in cred_file.read_text(encoding="utf-8")
+        _assert_private_credential_file(slot0_cred)
+        assert slot0_cred.samefile(cred_file)
 
     def test_claude_isolate_session_mutable_dirs_are_fresh(self, tmp_path: Path) -> None:
         """Per-session mutable state (session-env/, sessions/, history.jsonl)
@@ -1969,7 +2000,7 @@ class TestPristineMirror:
             env = _build_mirror_slot_env(real_config, 0, pristine=True)
 
         slot = Path(env["CLAUDE_CONFIG_DIR"])
-        assert (slot / "credentials.json").is_symlink()
+        _assert_private_credential_file(slot / "credentials.json")
         assert (slot / ".claude.json").is_symlink()
         for name in self._PERSONALIZATION:
             assert not (slot / name).exists(), (
@@ -1989,7 +2020,7 @@ class TestPristineMirror:
             env = _build_mirror_slot_env(real_config, 0, pristine=False)
 
         slot = Path(env["CLAUDE_CONFIG_DIR"])
-        assert (slot / "credentials.json").is_symlink()
+        _assert_private_credential_file(slot / "credentials.json")
         for name in self._PERSONALIZATION:
             assert (slot / name).is_symlink()
 
@@ -2018,7 +2049,7 @@ class TestPristineMirror:
             assert not (slot / name).exists(), (
                 f"stale personalization entry {name} survived pristine rebuild"
             )
-        assert (slot / "credentials.json").is_symlink()
+        _assert_private_credential_file(slot / "credentials.json")
         assert (slot / ".claude.json").is_symlink()
 
     def test_isolate_session_forwards_pristine(
@@ -2038,7 +2069,7 @@ class TestPristineMirror:
             env = adapter.isolate_session(0, pristine=True)
 
         slot = Path(env["CLAUDE_CONFIG_DIR"])
-        assert (slot / "credentials.json").is_symlink()
+        _assert_private_credential_file(slot / "credentials.json")
         for name in self._PERSONALIZATION:
             assert not (slot / name).exists()
 

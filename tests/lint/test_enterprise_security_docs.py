@@ -574,9 +574,18 @@ def _agent_container_uses_valueless_secret_args() -> bool:
     return "ANTHROPIC_API_KEY" in argv and "sk-test" not in argv
 
 
-def _claude_session_mirrors_live_config_with_symlinks() -> bool:
-    source = inspect.getsource(claude_adapter._build_mirror_slot_env)
-    return "symlink_to" in source and "credentials file" in source
+def _claude_session_materializes_private_credentials() -> bool:
+    mirror_source = inspect.getsource(claude_adapter._build_mirror_slot_env)
+    credential_source = inspect.getsource(claude_adapter._materialize_credential_file)
+    module_source = inspect.getsource(claude_adapter)
+    return (
+        "_materialize_credential_file(entry, target)" in mirror_source
+        and "os.link(source, target)" in credential_source
+        and "shutil.copy2(source, target)" in credential_source
+        and "target.chmod(_CREDENTIAL_FILE_MODE)" in credential_source
+        and "_CREDENTIAL_FILE_MODE = 0o600" in module_source
+        and "symlink_to" in mirror_source
+    )
 
 
 def _agent_container_has_runtime_hardening() -> bool:
@@ -647,7 +656,9 @@ _SECURITY_CLAIMS: dict[str, Callable[[], bool]] = {
     "agent_container_mounts_private_ca_paths": _agent_container_mounts_private_ca_paths,
     "agent_container_valueless_secret_args": _agent_container_uses_valueless_secret_args,
     "bootstrap_egress_matches_implementation": _bootstrap_egress_matches_implementation,
-    "claude_session_live_symlinks": _claude_session_mirrors_live_config_with_symlinks,
+    "claude_session_private_credentials": (
+        _claude_session_materializes_private_credentials
+    ),
     "agent_container_runtime_hardening": _agent_container_has_runtime_hardening,
     "scoring_container_network_none": _scoring_container_defaults_to_no_network,
     "scoring_container_runtime_hardening": _scoring_container_has_runtime_hardening,

@@ -178,6 +178,72 @@ class TestDoctorChecks:
         assert compact["ok"] is False
         assert compact["data"]["llm_available"] is False
 
+    def test_claude_auth_rejects_symlinked_container_session_credentials(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+        from codeprobe.adapters.claude import ClaudeAdapter
+        from codeprobe.core import containment
+        from codeprobe.core import sandbox as codeprobe_sandbox
+        from codeprobe.sandbox import runner as container_runner
+
+        _use_tool_paths(monkeypatch, tmp_path, ("claude",))
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: False)
+        monkeypatch.setattr(
+            container_runner, "detect_engine", lambda: "/usr/bin/docker"
+        )
+        monkeypatch.setattr(
+            container_runner,
+            "agent_image_reference",
+            lambda: "sha256:" + "a" * 64,
+        )
+        monkeypatch.setattr(
+            container_runner,
+            "scoring_image_reference",
+            lambda: "sha256:" + "b" * 64,
+        )
+        monkeypatch.setattr(container_runner, "image_available", lambda *a: True)
+        monkeypatch.setattr(
+            containment,
+            "active_plan",
+            lambda: containment.ContainmentPlan(
+                mode="container", engine="/usr/bin/docker"
+            ),
+        )
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        fake_home = tmp_path / "home"
+        real_claude = fake_home / ".claude"
+        real_claude.mkdir(parents=True)
+        host_cred = real_claude / ".credentials.json"
+        host_cred.write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        def _symlinked_session(
+            _self: ClaudeAdapter,
+            slot_id: int,
+            namespace: str | None = None,
+            pristine: bool = False,
+        ) -> dict[str, str]:
+            assert namespace == "doctor-preflight"
+            assert pristine is False
+            slot = tmp_path / "tmp" / "codeprobe-claude" / f"slot-{slot_id}"
+            slot.mkdir(parents=True)
+            (slot / ".credentials.json").symlink_to(host_cred)
+            return {"CLAUDE_CONFIG_DIR": str(slot)}
+
+        monkeypatch.setattr(ClaudeAdapter, "isolate_session", _symlinked_session)
+
+        by_name = {result.name: result for result in run_checks(agent="claude")}
+
+        assert by_name["claude auth"].passed is False
+        assert "host file credentials present" in by_name["claude auth"].detail
+        assert "containerized CLAUDE_CONFIG_DIR" in by_name["claude auth"].detail
+        assert "symlink" in by_name["claude auth"].detail
+        assert "claude login" in by_name["claude auth"].fix
+
     def test_copilot_auth_uses_supported_env_names(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
@@ -478,12 +544,12 @@ class TestGithubAccessCheck:
     ) -> None:
         _use_tool_paths(monkeypatch, tmp_path, ("claude", "copilot"))
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
         results = run_checks()
         gh = next(r for r in results if r.name == "GitHub auth")

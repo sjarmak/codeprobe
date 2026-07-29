@@ -36,6 +36,7 @@ _COPILOT_AUTH_ENV_KEYS: tuple[str, ...] = (
     "GITHUB_TOKEN",
 )
 _COPILOT_TOKEN_PREFIXES: tuple[str, ...] = ("gho_", "github_pat_", "ghu_")
+_CLAUDE_DOCTOR_SESSION_NAMESPACE = "doctor-preflight"
 _env_has_value = doctor_env.env_has_value
 
 
@@ -166,12 +167,39 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
 
     status = _credentials_file_status(_effective_claude_config_dir())
     if status == "valid":
-        result = CheckResult(
-            name="claude auth",
-            passed=True,
-            detail="file credentials present",
-            fix=fix,
-        )
+        if _claude_container_auth_required():
+            container_ok, container_detail = _containerized_claude_auth_status()
+            if container_ok:
+                result = CheckResult(
+                    name="claude auth",
+                    passed=True,
+                    detail="container file credentials present",
+                    fix=fix,
+                )
+            else:
+                result = CheckResult(
+                    name="claude auth",
+                    passed=False,
+                    detail=(
+                        "host file credentials present, but "
+                        f"{container_detail}"
+                    ),
+                    fix=(
+                        "Host Claude credentials exist, but the "
+                        "containerized session used by `codeprobe run` "
+                        "cannot read them. Run `claude login` to refresh "
+                        "file credentials, then retry `codeprobe doctor "
+                        "--agent claude`; if this persists, remove stale "
+                        "/tmp/codeprobe-claude session dirs."
+                    ),
+                )
+        else:
+            result = CheckResult(
+                name="claude auth",
+                passed=True,
+                detail="file credentials present",
+                fix=fix,
+            )
     else:
         detail = (
             "file credentials expired"
@@ -185,6 +213,72 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
             fix=fix,
         )
     return result if required else _optional_result(result)
+
+
+def _claude_container_auth_required() -> bool:
+    from codeprobe.core import containment
+    from codeprobe.core import sandbox as codeprobe_sandbox
+    from codeprobe.sandbox import runner as container_runner
+
+    plan = containment.active_plan()
+    if plan is not None:
+        return plan.mode == "container"
+    if codeprobe_sandbox.is_sandboxed():
+        return False
+
+    engine = container_runner.detect_engine()
+    if engine is None:
+        return False
+    try:
+        agent_image = container_runner.agent_image_reference()
+    except ValueError:
+        return False
+    return container_runner.image_available(engine, agent_image)
+
+
+def _containerized_claude_auth_status() -> tuple[bool, str]:
+    from codeprobe.adapters.claude import ClaudeAdapter
+
+    adapter = ClaudeAdapter()
+    try:
+        session_env = adapter.isolate_session(
+            0,
+            namespace=_CLAUDE_DOCTOR_SESSION_NAMESPACE,
+            pristine=False,
+        )
+        config_dir_raw = session_env.get("CLAUDE_CONFIG_DIR")
+        if not config_dir_raw:
+            return False, "containerized CLAUDE_CONFIG_DIR was not created"
+        return _containerized_claude_credentials_status(Path(config_dir_raw))
+    except OSError as exc:
+        return (
+            False,
+            "containerized CLAUDE_CONFIG_DIR could not be prepared "
+            f"({exc.__class__.__name__})",
+        )
+    finally:
+        adapter.cleanup_session_namespace(_CLAUDE_DOCTOR_SESSION_NAMESPACE)
+
+
+def _containerized_claude_credentials_status(config_dir: Path) -> tuple[bool, str]:
+    from codeprobe.adapters.claude import _FILE_CRED_NAMES, _credentials_file_status
+
+    for name in _FILE_CRED_NAMES:
+        credential_path = config_dir / name
+        if credential_path.is_symlink():
+            return (
+                False,
+                "containerized CLAUDE_CONFIG_DIR exposes credential file "
+                f"{credential_path} through a symlink; agent containers only "
+                "mount the session config directory",
+            )
+
+    status = _credentials_file_status(config_dir)
+    if status == "valid":
+        return True, "containerized CLAUDE_CONFIG_DIR has readable credentials"
+    if status == "expired":
+        return False, "containerized CLAUDE_CONFIG_DIR has expired credentials"
+    return False, "containerized CLAUDE_CONFIG_DIR has no readable credentials"
 
 
 def _copilot_env_auth_status() -> tuple[bool, str] | None:

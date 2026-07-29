@@ -157,12 +157,15 @@ mounted into the agent container. A host-global `CLAUDE_CONFIG_DIR` is not used
 as a fallback mount. The container receives a per-slot config dir only when
 session isolation produced one.
 
-Claude session isolation places symlinks to live host configuration entries
-inside that per-slot directory, including the OAuth credential file and
-read-mostly settings, skills, agents, hooks, plugins, commands, and rules.
-Mounting the per-slot directory therefore transitively exposes those selected
-host files to the agent container even though the host-global config directory
-is not mounted directly. Mutable session state is recreated inside the slot.
+Claude session isolation ensures credential files are private regular files
+inside that per-slot directory. A hardlink is used when possible so in-place
+OAuth refreshes remain coherent; the copy fallback keeps mode `0600`. Other
+read-mostly host configuration entries remain symlinks to the live host
+configuration, including settings, skills, agents, hooks, plugins, commands,
+and rules. Mounting the per-slot directory therefore exposes only that selected
+session layout to the agent container even though the host-global config
+directory is not mounted directly. Mutable session state is recreated inside
+the slot.
 
 The container posture is containment, not a hardened multi-tenant sandbox.
 Both images declare a non-root `codeprobe` user, and runtime commands also map
@@ -347,7 +350,7 @@ Deletion responsibilities:
 | `.codeprobe/<experiment>/runs/<config>/<task>/` | `codeprobe purge . --yes` | Contains task transcripts such as `agent_output.txt` and `agent_error.txt`. |
 | `codeprobe-mcp-*.json` | `codeprobe purge . --yes` | Swept from the system temp directory when it is a regular file and not a symlink. |
 | Task worktrees | Operator temp/worktree cleanup | Created outside `.codeprobe/`; purge does not delete them. |
-| Per-slot agent session directories | Operator temp/session cleanup | Includes per-slot `CLAUDE_CONFIG_DIR` contents when session isolation created them. |
+| Per-slot agent session directories | Operator temp/session cleanup | Includes per-slot `CLAUDE_CONFIG_DIR` contents when session isolation created them, including private credential hardlinks or copies outside `.codeprobe/` result artifacts. |
 | Scoring temp directories | Operator temp cleanup | Purge does not delete scoring temp directories outside `.codeprobe/`. |
 | `SNAPSHOT_DIR` | Operator filesystem deletion | Snapshot output is outside `.codeprobe/` unless the operator places it there. |
 | `evidence` | Operator filesystem deletion | Evidence bundle output is outside `.codeprobe/` unless the operator places it there. |
