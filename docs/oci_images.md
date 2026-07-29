@@ -123,12 +123,15 @@ manifest digest. Docker imports explicitly convert the verified snapshot's
 selected image to Docker schema 2 because the Docker daemon cannot store a
 multi-platform OCI index directly. In both cases Bootstrap records Skopeo's
 result digest, re-reads the destination manifest, and requires its
-configuration digest to match the selected engine's immutable local image ID.
-The Docker result digest may therefore differ from the archive's top-level
-index digest without weakening the snapshot-to-local-ID binding. This works
-even when a local Docker or Podman import has no repository digest. A missing
-archive, missing Skopeo binary, substitution, digest mismatch, or identity
-mismatch leaves the existing prepared-image record unchanged.
+configuration digest to match the selected engine's immutable local image ID. Podman also
+requires the result digest to equal the raw destination manifest digest. The
+Docker daemon reconstructs raw manifests, so its reconstructed byte digest may
+differ from Skopeo's conversion result; Docker's binding instead relies on the
+verified private snapshot, successful schema conversion into a digest-unique
+tag, and exact manifest-config-to-daemon-ID equality. This works even when a
+local Docker or Podman import has no repository digest. A missing archive,
+missing Skopeo binary, substitution, digest mismatch, or identity mismatch
+leaves the existing prepared-image record unchanged.
 
 ## Private-Registry Mirroring
 

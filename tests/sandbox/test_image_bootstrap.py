@@ -22,6 +22,8 @@ _AGENT_DIGEST = "sha256:" + "a" * 64
 _SCORING_DIGEST = "sha256:" + "b" * 64
 _AGENT_LOCAL_ID = "sha256:" + "c" * 64
 _SCORING_LOCAL_ID = "sha256:" + "d" * 64
+_AGENT_DOCKER_COPY_DIGEST = "sha256:" + "e" * 64
+_SCORING_DOCKER_COPY_DIGEST = "sha256:" + "f" * 64
 _AGENT_REF = "registry.example/team/codeprobe-agent:0.13.0"
 _SCORING_REF = "registry.example/team/codeprobe-scoring:0.13.0"
 
@@ -48,6 +50,7 @@ class OfflineRunner:
         manifest_local_ids: dict[str, str] | None = None,
         engine_local_ids: dict[str, str] | None = None,
         engine_digests: dict[str, str | None] | None = None,
+        copied_digests: dict[str, str] | None = None,
         original_archives: dict[str, Path] | None = None,
     ) -> None:
         self.archive_digests = archive_digests or {
@@ -60,6 +63,7 @@ class OfflineRunner:
         }
         self.engine_local_ids = engine_local_ids or dict(self.manifest_local_ids)
         self.engine_digests = engine_digests or {"agent": None, "scoring": None}
+        self.copied_digests = copied_digests
         self.original_archives = original_archives or {}
         self.calls: list[tuple[tuple[str, ...], float]] = []
         self.snapshot_modes: list[int] = []
@@ -98,7 +102,11 @@ class OfflineRunner:
                 },
                 separators=(",", ":"),
             )
-            copied_digest = "sha256:" + hashlib.sha256(manifest.encode()).hexdigest()
+            copied_digest = (
+                self.copied_digests[label]
+                if self.copied_digests is not None
+                else "sha256:" + hashlib.sha256(manifest.encode()).hexdigest()
+            )
             digest_path.write_text(copied_digest + "\n", encoding="utf-8")
             self._manifests[destination] = manifest
             self._digest_paths[destination] = digest_path
@@ -306,6 +314,14 @@ def test_offline_archives_are_verified_then_copied_without_pull(
     agent_archive.write_bytes(b"agent")
     scoring_archive.write_bytes(b"scoring")
     runner = OfflineRunner(
+        copied_digests=(
+            {
+                "agent": _AGENT_DOCKER_COPY_DIGEST,
+                "scoring": _SCORING_DOCKER_COPY_DIGEST,
+            }
+            if engine == "docker"
+            else None
+        ),
         original_archives={
             "agent": agent_archive,
             "scoring": scoring_archive,
@@ -471,7 +487,7 @@ def test_offline_import_rejects_local_id_not_bound_to_copied_manifest(
     assert not config_path.exists()
 
 
-def test_offline_import_rejects_copy_digest_not_bound_to_destination_manifest(
+def test_podman_offline_import_rejects_copy_digest_not_bound_to_destination_manifest(
     tmp_path: Path,
 ) -> None:
     agent_archive = tmp_path / "agent.tar"
@@ -491,7 +507,7 @@ def test_offline_import_rejects_copy_digest_not_bound_to_destination_manifest(
 
     with pytest.raises(ImageBootstrapError, match="copied image digest mismatch"):
         prepare_images(
-            engine="docker",
+            engine="podman",
             agent_reference=_AGENT_REF,
             scoring_reference=_SCORING_REF,
             agent_digest=_AGENT_DIGEST,
@@ -501,7 +517,7 @@ def test_offline_import_rejects_copy_digest_not_bound_to_destination_manifest(
             config_path=config_path,
             runner=TamperedDigestRunner(),
             which=lambda name: {
-                "docker": "/usr/bin/docker",
+                "podman": "/usr/bin/podman",
                 "skopeo": "/usr/bin/skopeo",
             }.get(name),
         )

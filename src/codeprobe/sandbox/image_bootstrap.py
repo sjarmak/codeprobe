@@ -197,7 +197,12 @@ def _prepare_offline(
             [skopeo_path, "inspect", "--raw", transported_destination],
             INSPECT_TIMEOUT_SECONDS,
         )
-        config_digest = _verified_config_digest(request.label, raw_manifest, copied_digest)
+        config_digest = _verified_config_digest(
+            request.label,
+            raw_manifest,
+            copied_digest,
+            require_digest_match=engine != "docker",
+        )
         return _inspect_offline_image(
             request,
             engine_path,
@@ -264,15 +269,21 @@ def _read_copied_digest(label: str, path: Path) -> str:
     return digest
 
 
-def _verified_config_digest(label: str, raw_manifest: str, copied_digest: str) -> str:
+def _verified_config_digest(
+    label: str,
+    raw_manifest: str,
+    copied_digest: str,
+    *,
+    require_digest_match: bool,
+) -> str:
     observed = "sha256:" + hashlib.sha256(raw_manifest.encode("utf-8")).hexdigest()
-    if observed != copied_digest:
+    if require_digest_match and observed != copied_digest:
         raise ImageBootstrapError(f"{label} copied image digest mismatch")
     try:
         manifest = json.loads(raw_manifest)
     except json.JSONDecodeError as exc:
         raise ImageBootstrapError(f"{label} copied image manifest is invalid") from exc
-    if not isinstance(manifest, dict):
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 2:
         raise ImageBootstrapError(f"{label} copied image manifest is invalid")
     config = manifest.get("config")
     config_digest = config.get("digest") if isinstance(config, dict) else None
