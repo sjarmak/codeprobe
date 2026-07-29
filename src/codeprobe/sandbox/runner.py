@@ -37,7 +37,13 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Final
 
-from docker_image import reference as oci_reference  # type: ignore[import-untyped]
+from codeprobe.sandbox.oci_references import (
+    DIGEST_PATTERN,
+    IMAGE_TAG_PATTERN,
+    is_qualified_registry_host,
+    validate_image_reference,
+    validate_tag,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +60,28 @@ IMAGE_REGISTRY_ENV: Final[str] = "CODEPROBE_IMAGE_REGISTRY"
 IMAGE_NAMESPACE_ENV: Final[str] = "CODEPROBE_IMAGE_NAMESPACE"
 IMAGE_VERSION_ENV: Final[str] = "CODEPROBE_IMAGE_VERSION"
 
-_IMAGE_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z"
-)
-_DIGEST_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"sha256:[a-f0-9]{64}\Z"
-)
+_IMAGE_TAG_PATTERN: Final[re.Pattern[str]] = IMAGE_TAG_PATTERN
+_DIGEST_PATTERN: Final[re.Pattern[str]] = DIGEST_PATTERN
+_ENV_KEY_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _CONTAINER_TMPFS: Final[str] = "/tmp:rw,nosuid,nodev,size=128m,mode=1777"
+_CONTAINER_CPUS: Final[str] = "2"
+_CONTAINER_MEMORY: Final[str] = "4g"
+_RUN_FLAGS_WITH_VALUE: Final[frozenset[str]] = frozenset(
+    {
+        "--name",
+        "-w",
+        "--workdir",
+        "-e",
+        "--env",
+        "-v",
+        "--volume",
+        "--tmpfs",
+        "--user",
+    }
+)
+_DIAGNOSTIC_REDACT_VALUE_FLAGS: Final[frozenset[str]] = frozenset(
+    {"-e", "--env", "-v", "--volume", "-w", "--workdir", "--tmpfs"}
+)
 
 # Lower-cased stderr fragments that indicate a write to a read-only mount.
 # Kept explicit because the exact wording varies between docker, podman, and
@@ -125,49 +146,27 @@ DEFAULT_AGENT_IMAGE: Final[str] = f"{_DEFAULT_AGENT_IMAGE_NAME}:{DEFAULT_IMAGE_V
 
 
 def _optional_env(name: str) -> str | None:
-    """Return a stripped env value, rejecting empty or whitespace-containing refs."""
+    """Return an env value, rejecting empty or whitespace-containing refs."""
     value = os.environ.get(name)
     if value is None:
         return None
-    stripped = value.strip()
-    if not stripped:
+    if not value:
         raise ValueError(f"{name} must not be empty")
-    if any(char.isspace() for char in stripped):
+    if value != value.strip() or any(char.isspace() for char in value):
         raise ValueError(f"{name} must not contain whitespace")
-    return stripped
+    return value
 
 
 def _validate_tag(name: str, tag: str) -> None:
-    if tag == "latest":
-        raise ValueError(f"{name} must not use the mutable latest tag")
-    if _IMAGE_TAG_PATTERN.fullmatch(tag) is None:
-        raise ValueError(f"{name} has an invalid image tag")
+    validate_tag(name, tag)
+
+
+def _is_qualified_registry_host(host: str) -> bool:
+    return is_qualified_registry_host(host)
 
 
 def _validate_image_reference(name: str, reference: str) -> str:
-    if "://" in reference:
-        raise ValueError(f"{name} must be an OCI image reference, not a URL")
-    if "@" in reference:
-        digest_candidate = reference.rsplit("@", 1)[1]
-        if (
-            digest_candidate.startswith("sha256:")
-            and _DIGEST_PATTERN.fullmatch(digest_candidate) is None
-        ):
-            raise ValueError(f"{name} must use a sha256 digest when pinned")
-    try:
-        parsed = oci_reference.Reference.parse(reference)
-    except oci_reference.InvalidReference as exc:
-        raise ValueError(f"{name} has an invalid image reference") from exc
-
-    tag = parsed.get("tag")
-    digest = parsed.get("digest")
-    if not isinstance(tag, str) and not isinstance(digest, str):
-        raise ValueError(f"{name} must include an explicit tag or digest")
-    if isinstance(tag, str):
-        _validate_tag(name, tag)
-    if isinstance(digest, str) and _DIGEST_PATTERN.fullmatch(digest) is None:
-        raise ValueError(f"{name} must use a sha256 digest when pinned")
-    return reference
+    return validate_image_reference(name, reference)
 
 
 def _composed_image_reference(image_name: str) -> str:
@@ -175,20 +174,43 @@ def _composed_image_reference(image_name: str) -> str:
     _validate_tag(IMAGE_VERSION_ENV, version)
     registry_raw = _optional_env(IMAGE_REGISTRY_ENV)
     namespace_raw = _optional_env(IMAGE_NAMESPACE_ENV)
-    registry = registry_raw.strip("/") if registry_raw is not None else ""
-    namespace = namespace_raw.strip("/") if namespace_raw is not None else ""
-    if registry_raw is not None and not registry:
+    if registry_raw is None or namespace_raw is None:
+        raise ValueError(
+            f"Set both {IMAGE_REGISTRY_ENV} and {IMAGE_NAMESPACE_ENV}, or set "
+            "an exact per-image override."
+        )
+    registry = registry_raw
+    namespace = namespace_raw
+    return _compose_validated_image_reference(
+        image_name=image_name, version=version, registry=registry, namespace=namespace
+    )
+
+
+def _compose_validated_image_reference(
+    *, image_name: str, version: str, registry: str, namespace: str
+) -> str:
+    if not registry:
         raise ValueError(f"{IMAGE_REGISTRY_ENV} has an invalid registry host")
-    if registry_raw is not None and any(char.isupper() for char in registry):
+    if any(char.isupper() for char in registry):
         raise ValueError(f"{IMAGE_REGISTRY_ENV} has an invalid registry host")
-    if namespace_raw is not None and not namespace:
+    if "/" in registry or not _is_qualified_registry_host(registry):
+        raise ValueError(f"{IMAGE_REGISTRY_ENV} has an invalid registry host")
+    if not namespace:
         raise ValueError(f"{IMAGE_NAMESPACE_ENV} has an invalid repository path")
-    if namespace_raw is not None and "//" in namespace:
+    if namespace.startswith("/") or namespace.endswith("/"):
+        raise ValueError(f"{IMAGE_NAMESPACE_ENV} has an invalid repository path")
+    if "//" in namespace:
         raise ValueError(f"{IMAGE_NAMESPACE_ENV} has an invalid repository path")
     repository_parts = [part for part in (registry, namespace, image_name) if part]
     return _validate_image_reference(
         "composed image reference", f"{'/'.join(repository_parts)}:{version}"
     )
+
+
+def _local_image_build_tag(image_name: str) -> str:
+    version = _optional_env(IMAGE_VERSION_ENV) or _installed_version()
+    _validate_tag(IMAGE_VERSION_ENV, version)
+    return f"{image_name}:{version}"
 
 
 def _image_reference(image_name: str, *, exact_env: str) -> str:
@@ -205,7 +227,7 @@ def agent_image_reference() -> str:
 
 def agent_image_build_tag() -> str:
     """Return a tag-shaped agent image reference suitable for local builds."""
-    return _composed_image_reference(_DEFAULT_AGENT_IMAGE_NAME)
+    return _local_image_build_tag(_DEFAULT_AGENT_IMAGE_NAME)
 
 
 def scoring_image_reference() -> str:
@@ -217,7 +239,7 @@ def scoring_image_reference() -> str:
 
 def scoring_image_build_tag() -> str:
     """Return a tag-shaped scoring image reference suitable for local builds."""
-    return _composed_image_reference(_DEFAULT_SCORING_IMAGE_NAME)
+    return _local_image_build_tag(_DEFAULT_SCORING_IMAGE_NAME)
 
 
 def __getattr__(name: str) -> object:
@@ -306,14 +328,31 @@ def _build_run_command(
     ``--name`` so a client-side timeout can ``<engine> rm -f`` the
     container instead of orphaning it.
     """
+    argv = _run_base_args(engine, network)
+    if container_name is not None:
+        argv += ["--name", container_name]
+    if workdir is not None:
+        argv += ["-w", workdir]
+    argv += _env_args(env)
     mode = "rw" if allow_writes else "ro"
-    argv: list[str] = [
+    argv += _mount_args(mounts, mode)
+    argv.append(image)
+    argv += _command_args(cmd)
+    return argv
+
+
+def _run_base_args(engine: str, network: str) -> list[str]:
+    argv = [
         engine,
         "run",
         "--rm",
+        "--pull=never",
         f"--network={network}",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        f"--cpus={_CONTAINER_CPUS}",
+        f"--memory={_CONTAINER_MEMORY}",
+        f"--memory-swap={_CONTAINER_MEMORY}",
         "--pids-limit=256",
         "--read-only",
         "--tmpfs",
@@ -325,35 +364,77 @@ def _build_run_command(
     ]
     if hasattr(os, "getuid") and hasattr(os, "getgid"):
         argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
-    if container_name is not None:
-        argv += ["--name", container_name]
-
-    if workdir is not None:
-        argv += ["-w", workdir]
-
-    if env:
-        # Validate keys before constructing the -e KEY=VALUE argv so a
-        # malformed key (empty, embedded '=', newline, or whitespace)
-        # cannot silently produce a wrong env var inside the container.
-        for key in env:
-            if not key or "=" in key or "\n" in key or " " in key:
-                raise ValueError(f"Invalid env var key: {key!r}")
-        for key, value in env.items():
-            argv += ["-e", f"{key}={value}"]
-
-    for host_path, container_path in mounts.items():
-        argv += ["-v", f"{host_path}:{container_path}:{mode}"]
-
-    argv.append(image)
-
-    if isinstance(cmd, str):
-        # Wrap string commands in `sh -c` so shell features (pipes,
-        # redirection, globbing) work as the caller expects.
-        argv += ["sh", "-c", cmd]
-    else:
-        argv += list(cmd)
-
     return argv
+
+
+def _env_args(env: dict[str, str] | None) -> list[str]:
+    if not env:
+        return []
+    args: list[str] = []
+    for key, value in env.items():
+        if _ENV_KEY_RE.fullmatch(key) is None:
+            raise ValueError(f"Invalid env var key: {key!r}")
+        args += ["-e", f"{key}={value}"]
+    return args
+
+
+def _mount_args(mounts: dict[str, str], mode: str) -> list[str]:
+    args: list[str] = []
+    for host_path, container_path in mounts.items():
+        args += ["-v", f"{host_path}:{container_path}:{mode}"]
+    return args
+
+
+def _command_args(cmd: list[str] | str) -> list[str]:
+    if isinstance(cmd, str):
+        return ["sh", "-c", cmd]
+    return list(cmd)
+
+
+def _diagnostic_argv(argv: list[str]) -> list[str]:
+    safe: list[str] = []
+    redact_next = ""
+    command_start = _command_start_index(argv)
+    for index, token in enumerate(argv):
+        if index >= command_start:
+            safe.append("<redacted-command>")
+            break
+        if index == 0:
+            safe.append(os.path.basename(token) if token.startswith("/") else token)
+            continue
+        if redact_next:
+            safe.append(_redacted_argument(redact_next, token))
+            redact_next = ""
+            continue
+        safe.append(token)
+        if token in _DIAGNOSTIC_REDACT_VALUE_FLAGS:
+            redact_next = token
+    return safe
+
+
+def _command_start_index(argv: list[str]) -> int:
+    index = 2
+    while index < len(argv):
+        token = argv[index]
+        if token in _RUN_FLAGS_WITH_VALUE:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return index + 1
+    return len(argv)
+
+
+def _redacted_argument(flag: str, token: str) -> str:
+    if flag in {"-e", "--env"}:
+        key = token.split("=", 1)[0]
+        return f"{key}=<redacted>" if "=" in token else key
+    if flag in {"-v", "--volume"}:
+        parts = token.rsplit(":", 2)
+        mode = parts[2] if len(parts) == 3 else "<mode>"
+        return f"<host-path>:<container-path>:{mode}"
+    return "<path>"
 
 
 def _looks_like_ro_write_failure(stderr: str) -> bool:
@@ -431,49 +512,7 @@ def run_in_sandbox(
     env: dict[str, str] | None = None,
     network: str = "none",
 ) -> SandboxResult:
-    """Run ``cmd`` inside a sandbox container and capture its output.
-
-    Parameters
-    ----------
-    cmd:
-        Either a shell string (wrapped in ``sh -c``) or a list of argv tokens
-        passed straight to the container entrypoint.
-    mounts:
-        Mapping of host path to container path. Host paths must already
-        exist. When ``allow_writes`` is False (the default) every mount is
-        bound ``:ro``.
-    allow_writes:
-        When True, mounts are bound ``:rw`` — required when the caller
-        actually wants the sandbox to mutate the worktree.
-    image:
-        Container image tag. Defaults to ``codeprobe-sandbox:sg-only``
-        (built from ``src/codeprobe/sandbox/Dockerfile.sg_only``).
-    timeout:
-        Wall-clock timeout in seconds. Exceeding it force-removes the
-        container (the subprocess timeout only kills the engine CLI) and
-        raises :class:`SandboxError`.
-    workdir:
-        Optional ``-w`` working directory inside the container.
-    env:
-        Optional environment variables forwarded with ``-e KEY=VAL``.
-    network:
-        Container network mode, emitted as ``--network=<value>``. Defaults
-        to ``"none"`` so sandboxed commands have no egress; pass
-        ``"bridge"`` only when the command genuinely needs the network.
-
-    Returns
-    -------
-    :class:`SandboxResult`
-
-    Raises
-    ------
-    SandboxError
-        No container engine on PATH, subprocess timeout, or unexpected OS
-        error while launching the engine.
-    SandboxWriteDeniedError
-        Command exited non-zero with stderr indicating a write to a
-        read-only mount.
-    """
+    """Run ``cmd`` inside a sandbox container and capture its output."""
     engine = _detect_engine()
     container_name = f"codeprobe-sb-{uuid.uuid4().hex}"
     argv = _build_run_command(
@@ -487,12 +526,17 @@ def run_in_sandbox(
         network=network,
         container_name=container_name,
     )
-
-    logger.debug("sandbox run: %s", argv)
-
     start = time.perf_counter()
+    logger.debug("sandbox run: %s", _diagnostic_argv(argv))
+    completed = _run_container_command(argv, engine, container_name, timeout)
+    return _sandbox_result(completed, start, allow_writes)
+
+
+def _run_container_command(
+    argv: list[str], engine: str, container_name: str, timeout: float
+) -> subprocess.CompletedProcess[str]:
     try:
-        completed = subprocess.run(  # noqa: S603 — argv list, no shell=True
+        return subprocess.run(  # noqa: S603 — argv list, no shell=True
             argv,
             capture_output=True,
             text=True,
@@ -500,28 +544,23 @@ def run_in_sandbox(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        # The timeout killed the engine client, not the container — force-
-        # remove it so a hung mined script cannot outlive the run.
         _force_remove_container(engine, container_name)
         raise SandboxError(
-            f"sandbox command timed out after {timeout:.1f}s: {argv!r}"
+            "sandbox command timed out after "
+            f"{timeout:.1f}s: {_diagnostic_argv(argv)!r}"
         ) from exc
-    except FileNotFoundError as exc:
-        # Defensive — _detect_engine already checked, but the engine binary
-        # could be removed between that call and subprocess.run.
-        raise SandboxError(f"sandbox engine not executable: {engine}") from exc
+    except OSError as exc:
+        raise SandboxError("sandbox engine failed to launch") from exc
 
+
+def _sandbox_result(
+    completed: subprocess.CompletedProcess[str], start: float, allow_writes: bool
+) -> SandboxResult:
     duration_ms = int((time.perf_counter() - start) * 1000)
-
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     exit_code = completed.returncode
-
-    if (
-        exit_code != 0
-        and not allow_writes
-        and _looks_like_ro_write_failure(stderr)
-    ):
+    if _should_raise_write_denied(exit_code, allow_writes, stderr):
         raise SandboxWriteDeniedError(
             f"sandbox blocked write to read-only mount (exit {exit_code}): "
             f"{stderr.strip()}"
@@ -532,4 +571,14 @@ def run_in_sandbox(
         stderr=stderr,
         exit_code=exit_code,
         duration_ms=duration_ms,
+    )
+
+
+def _should_raise_write_denied(
+    exit_code: int, allow_writes: bool, stderr: str
+) -> bool:
+    return (
+        exit_code != 0
+        and not allow_writes
+        and _looks_like_ro_write_failure(stderr)
     )

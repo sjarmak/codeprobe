@@ -22,7 +22,7 @@ from codeprobe.core import containment
 from codeprobe.sandbox.agent_container import containerize_argv
 
 ENGINE = "/usr/bin/docker"
-IMAGE = f"codeprobe-agent:{package_version('codeprobe')}"
+IMAGE = f"registry.example.test/codeprobe-agent:{package_version('codeprobe')}"
 
 
 # ---------------------------------------------------------------------------
@@ -46,44 +46,7 @@ class TestContainerizeArgv:
             name="codeprobe-agent-abc",
         )
 
-        expected = [
-            ENGINE,
-            "run",
-            "--rm",
-            "--network=bridge",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--pids-limit=256",
-            "--read-only",
-            "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
-            "-e",
-            "HOME=/tmp",
-            "-e",
-            "TMPDIR=/tmp",
-        ]
-        if hasattr(os, "getuid") and hasattr(os, "getgid"):
-            expected += ["--user", f"{os.getuid()}:{os.getgid()}"]
-        expected += [
-            "--name",
-            "codeprobe-agent-abc",
-            "-v",
-            "/work/slot0:/work/slot0:rw",
-            "-v",
-            "/cfg/slot0:/cfg/slot0:rw",
-            "-v",
-            "/tmp/codeprobe-mcp-x.json:/tmp/codeprobe-mcp-x.json:ro",
-            "-e",
-            "ANTHROPIC_API_KEY",
-            "-w",
-            "/work/slot0",
-            IMAGE,
-            "claude",
-            "-p",
-            "hi",
-            "--verbose",
-        ]
-        assert argv == expected
+        assert argv == _expected_full_container_argv()
 
     def test_optional_mounts_omitted_when_absent(self) -> None:
         argv = containerize_argv(
@@ -100,6 +63,29 @@ class TestContainerizeArgv:
         mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
         assert mounts == ["/work/slot0:/work/slot0:rw"]
         assert "ANTHROPIC_API_KEY" not in argv
+
+    @pytest.mark.parametrize("engine", ["/usr/bin/docker", "/usr/bin/podman"])
+    def test_runtime_limits_are_docker_and_podman_compatible(
+        self, engine: str
+    ) -> None:
+        argv = containerize_argv(
+            ["/host/bin/claude", "-p", "hi"],
+            engine=engine,
+            workspace=Path("/work/slot0"),
+            config_dir=None,
+            mcp_tmpfile=None,
+            env_keys=[],
+            image=IMAGE,
+            name="codeprobe-agent-abc",
+        )
+
+        assert argv[0] == engine
+        assert "--pull=never" in argv
+        assert "--cpus=2" in argv
+        assert "--memory=4g" in argv
+        assert "--memory-swap=4g" in argv
+        assert "--pids-limit=256" in argv
+        assert "--read-only" in argv
 
     def test_env_keys_filtered_against_explicit_mapping(
         self, monkeypatch: pytest.MonkeyPatch
@@ -137,6 +123,55 @@ class TestContainerizeArgv:
             )
 
 
+def _expected_full_container_argv() -> list[str]:
+    expected = [
+        ENGINE,
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network=bridge",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--cpus=2",
+        "--memory=4g",
+        "--memory-swap=4g",
+        "--pids-limit=256",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "TMPDIR=/tmp",
+    ]
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        expected += ["--user", f"{os.getuid()}:{os.getgid()}"]
+    expected += _expected_full_container_tail()
+    return expected
+
+
+def _expected_full_container_tail() -> list[str]:
+    return [
+        "--name",
+        "codeprobe-agent-abc",
+        "-v",
+        "/work/slot0:/work/slot0:rw",
+        "-v",
+        "/cfg/slot0:/cfg/slot0:rw",
+        "-v",
+        "/tmp/codeprobe-mcp-x.json:/tmp/codeprobe-mcp-x.json:ro",
+        "-e",
+        "ANTHROPIC_API_KEY",
+        "-w",
+        "/work/slot0",
+        IMAGE,
+        "claude",
+        "-p",
+        "hi",
+        "--verbose",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # BaseAdapter.run integration
 # ---------------------------------------------------------------------------
@@ -163,12 +198,19 @@ def capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
     return calls
 
 
+@pytest.fixture()
+def configured_agent_image(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", IMAGE)
+    return IMAGE
+
+
 class TestRunContainerization:
     def test_container_plan_wraps_argv(
         self,
         capture_run: list[list[str]],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        configured_agent_image: str,
     ) -> None:
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         containment.set_active_plan(
@@ -179,17 +221,25 @@ class TestRunContainerization:
 
         assert output.exit_code == 0
         (argv,) = capture_run
-        assert argv[:4] == [ENGINE, "run", "--rm", "--network=bridge"]
+        assert argv[:3] == [ENGINE, "run", "--rm"]
+        assert "--pull=never" in argv
+        assert "--network=bridge" in argv
         name = argv[argv.index("--name") + 1]
         assert name.startswith("codeprobe-agent-")
         assert f"{tmp_path}:{tmp_path}:rw" in argv
-        assert argv[argv.index(IMAGE) :] == [IMAGE, "fake-agent", "-p", "hello"]
+        assert argv[argv.index(configured_agent_image) :] == [
+            configured_agent_image,
+            "fake-agent",
+            "-p",
+            "hello",
+        ]
 
     def test_container_plan_mounts_session_config_dir(
         self,
         capture_run: list[list[str]],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        configured_agent_image: str,
     ) -> None:
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         containment.set_active_plan(
@@ -211,6 +261,7 @@ class TestRunContainerization:
         capture_run: list[list[str]],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        configured_agent_image: str,
     ) -> None:
         """Without a session config dir the container gets NO config-dir
         mount and no -e CLAUDE_CONFIG_DIR, even when the host-global env
@@ -235,6 +286,7 @@ class TestRunContainerization:
         capture_run: list[list[str]],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        configured_agent_image: str,
     ) -> None:
         """A session env that carries no CLAUDE_CONFIG_DIR must not fall
         back to the host-global one."""
@@ -281,6 +333,7 @@ class TestRunContainerization:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        configured_agent_image: str,
     ) -> None:
         calls: list[list[str]] = []
 

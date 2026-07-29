@@ -8,9 +8,9 @@ machines without docker installed.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
-from importlib.metadata import version as package_version
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +19,6 @@ import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli._sandbox import sandbox_options
-from codeprobe.sandbox import runner as sandbox_runner
 from codeprobe.sandbox.runner import (
     SandboxError,
     SandboxResult,
@@ -37,124 +36,6 @@ DOCKERFILE = (
     / "Dockerfile.sg_only"
 )
 TEST_IMAGE_TAG = "codeprobe-sandbox:sg-only-test"
-
-_IMAGE_ENV_KEYS = (
-    "CODEPROBE_AGENT_IMAGE",
-    "CODEPROBE_SCORING_IMAGE",
-    "CODEPROBE_IMAGE_REGISTRY",
-    "CODEPROBE_IMAGE_NAMESPACE",
-    "CODEPROBE_IMAGE_VERSION",
-)
-
-
-# ---------------------------------------------------------------------------
-# Runtime image references (pure config)
-# ---------------------------------------------------------------------------
-
-
-def _clear_image_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in _IMAGE_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-
-
-def test_agent_and_scoring_images_track_installed_package_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_image_env(monkeypatch)
-    release_version = package_version("codeprobe")
-
-    assert sandbox_runner.agent_image_reference() == f"codeprobe-agent:{release_version}"
-    assert sandbox_runner.scoring_image_reference() == f"codeprobe-scoring:{release_version}"
-
-
-def test_image_reference_composes_registry_namespace_and_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_image_env(monkeypatch)
-    monkeypatch.setenv("CODEPROBE_IMAGE_REGISTRY", "registry.example.test")
-    monkeypatch.setenv("CODEPROBE_IMAGE_NAMESPACE", "platform/codeprobe")
-    monkeypatch.setenv("CODEPROBE_IMAGE_VERSION", "1.2.3")
-
-    assert (
-        sandbox_runner.agent_image_reference()
-        == "registry.example.test/platform/codeprobe/codeprobe-agent:1.2.3"
-    )
-    assert (
-        sandbox_runner.scoring_image_reference()
-        == "registry.example.test/platform/codeprobe/codeprobe-scoring:1.2.3"
-    )
-
-
-def test_exact_agent_and_scoring_image_overrides_win(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_image_env(monkeypatch)
-    monkeypatch.setenv("CODEPROBE_IMAGE_REGISTRY", "registry.example.test")
-    agent_digest = "a" * 64
-    scoring_digest = "b" * 64
-    monkeypatch.setenv(
-        "CODEPROBE_AGENT_IMAGE", f"mirror.example/agent@sha256:{agent_digest}"
-    )
-    monkeypatch.setenv(
-        "CODEPROBE_SCORING_IMAGE",
-        f"mirror.example/scoring@sha256:{scoring_digest}",
-    )
-
-    assert (
-        sandbox_runner.agent_image_reference()
-        == f"mirror.example/agent@sha256:{agent_digest}"
-    )
-    assert (
-        sandbox_runner.scoring_image_reference()
-        == f"mirror.example/scoring@sha256:{scoring_digest}"
-    )
-
-
-def test_exact_image_override_accepts_ipv6_tag_and_digest(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _clear_image_env(monkeypatch)
-    digest = "a" * 64
-    reference = f"[2001:db8::1]:5000/platform/codeprobe-agent:1.2.3@sha256:{digest}"
-    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", reference)
-
-    assert sandbox_runner.agent_image_reference() == reference
-
-
-def test_empty_image_override_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear_image_env(monkeypatch)
-    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", " ")
-
-    with pytest.raises(ValueError, match="CODEPROBE_AGENT_IMAGE"):
-        sandbox_runner.agent_image_reference()
-
-
-@pytest.mark.parametrize(
-    ("env_key", "value", "message"),
-    [
-        ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent", "explicit tag or digest"),
-        ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent:latest", "latest"),
-        ("CODEPROBE_AGENT_IMAGE", "https://mirror.example/agent:1.2.3", "not a URL"),
-        ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent@sha256:abc123", "sha256"),
-        ("CODEPROBE_AGENT_IMAGE", "registry..example/team/agent:1.2.3", "invalid image reference"),
-        ("CODEPROBE_AGENT_IMAGE", "registry.-example/team/agent:1.2.3", "invalid image reference"),
-        ("CODEPROBE_IMAGE_REGISTRY", "REGISTRY.example.test", "registry host"),
-        ("CODEPROBE_IMAGE_NAMESPACE", "platform//codeprobe", "repository path"),
-        ("CODEPROBE_IMAGE_VERSION", "latest", "latest"),
-    ],
-)
-def test_invalid_image_reference_parts_fail_fast(
-    monkeypatch: pytest.MonkeyPatch,
-    env_key: str,
-    value: str,
-    message: str,
-) -> None:
-    _clear_image_env(monkeypatch)
-    monkeypatch.setenv(env_key, value)
-
-    with pytest.raises(ValueError, match=message):
-        sandbox_runner.agent_image_reference()
-
 
 # ---------------------------------------------------------------------------
 # Argv construction (pure, no subprocess)
@@ -178,6 +59,10 @@ def test_build_run_command_uses_ro_mode_by_default() -> None:
     assert "--cap-drop=ALL" in argv
     assert "--security-opt=no-new-privileges" in argv
     assert "--read-only" in argv
+    assert "--pull=never" in argv
+    assert "--cpus=2" in argv
+    assert "--memory=4g" in argv
+    assert "--memory-swap=4g" in argv
     assert ["-e", "HOME=/tmp"] == argv[argv.index("-e") : argv.index("-e") + 2]
     assert "/host/src:/workspace:ro" in argv
     assert "/host/src:/workspace:rw" not in argv
@@ -280,6 +165,11 @@ def test_build_run_command_includes_workdir_and_env() -> None:
         "A=B",
         "NAME WITH SPACE",
         "NEWLINE\nKEY",
+        "CARRIAGE\rKEY",
+        "TAB\tKEY",
+        "NUL\x00KEY",
+        "1STARTS_WITH_DIGIT",
+        "HAS-DASH",
     ],
 )
 def test_build_run_command_rejects_invalid_env_keys(bad_key: str) -> None:
@@ -456,6 +346,79 @@ def test_run_in_sandbox_timeout_translated_to_sandbox_error() -> None:
                 {"/tmp": "/workspace"},
                 timeout=0.1,
             )
+
+
+def test_run_in_sandbox_debug_log_redacts_env_values_and_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fake = _make_completed(stdout="", stderr="", returncode=0)
+    secret = "sk-test-secret"
+    command_secret = "command-token-that-must-not-leak"
+    host_path = "/tmp/codeprobe-secret-host"
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch("codeprobe.sandbox.runner.subprocess.run", return_value=fake):
+        caplog.set_level(logging.DEBUG, logger="codeprobe.sandbox.runner")
+        run_in_sandbox(
+            ["tool", "--token", command_secret],
+            {host_path: "/workspace"},
+            env={"ANTHROPIC_API_KEY": secret},
+        )
+
+    assert "sandbox run:" in caplog.text
+    assert secret not in caplog.text
+    assert command_secret not in caplog.text
+    assert "--token" not in caplog.text
+    assert host_path not in caplog.text
+    assert "ANTHROPIC_API_KEY=<redacted>" in caplog.text
+    assert "<redacted-command>" in caplog.text
+
+
+def test_run_in_sandbox_timeout_error_redacts_env_values_and_paths() -> None:
+    secret = "sk-timeout-secret"
+    command_secret = "command-timeout-token-that-must-not-leak"
+    host_path = "/tmp/codeprobe-secret-host"
+
+    def _raise_timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="docker", timeout=0.1)
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch(
+        "codeprobe.sandbox.runner.subprocess.run", side_effect=_raise_timeout
+    ), patch("codeprobe.sandbox.runner._force_remove_container", lambda *_: None):
+        with pytest.raises(SandboxError, match="timed out") as exc_info:
+            run_in_sandbox(
+                ["tool", "--token", command_secret],
+                {host_path: "/workspace"},
+                timeout=0.1,
+                env={"ANTHROPIC_API_KEY": secret},
+            )
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert command_secret not in message
+    assert "--token" not in message
+    assert host_path not in message
+    assert "ANTHROPIC_API_KEY=<redacted>" in message
+    assert "<redacted-command>" in message
+
+
+def test_run_in_sandbox_generic_oserror_is_sanitized() -> None:
+    def _raise_oserror(*_args, **_kwargs):
+        raise PermissionError("secret path /tmp/codeprobe-secret-host")
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch("codeprobe.sandbox.runner.subprocess.run", side_effect=_raise_oserror):
+        with pytest.raises(SandboxError) as exc_info:
+            run_in_sandbox(["true"], {"/tmp/codeprobe-secret-host": "/workspace"})
+
+    message = str(exc_info.value)
+    assert "failed to launch" in message
+    assert "secret" not in message
+    assert "/tmp/codeprobe-secret-host" not in message
 
 
 def test_run_in_sandbox_timeout_force_removes_container() -> None:
@@ -683,8 +646,12 @@ def test_docker_ls_does_not_leak_host_paths(
     """
     # Mount a tmpdir so we exercise a real mount but still verify containment.
     (tmp_path / "marker.txt").write_text("hi")
+    _assert_container_root_hides_host(docker_image, tmp_path)
+    _assert_container_home_hides_host(docker_image, tmp_path)
+    _assert_host_home_path_absent(docker_image, tmp_path)
 
-    # 1. `ls /` should show rootfs basenames only — no absolute host paths
+
+def _assert_container_root_hides_host(docker_image: str, tmp_path: Path) -> None:
     result_root = run_in_sandbox(
         ["ls", "/"],
         {str(tmp_path): "/workspace"},
@@ -694,12 +661,10 @@ def test_docker_ls_does_not_leak_host_paths(
     )
     assert result_root.exit_code == 0, result_root.stderr
     assert "workspace" in result_root.stdout
-    # No absolute host paths should appear anywhere in stdout
     assert "/home/" not in result_root.stdout
 
-    # 2. `ls /home` should be empty (or at most contain entries that exist
-    #    in the base image), never anything under the invoking user's
-    #    host homedir.
+
+def _assert_container_home_hides_host(docker_image: str, tmp_path: Path) -> None:
     result_home = run_in_sandbox(
         ["ls", "-la", "/home"],
         {str(tmp_path): "/workspace"},
@@ -716,8 +681,8 @@ def test_docker_ls_does_not_leak_host_paths(
             f"{result_home.stdout!r}"
         )
 
-    # 3. Direct attempt to access the host's real homedir path inside the
-    #    container must fail — the path simply does not exist there.
+
+def _assert_host_home_path_absent(docker_image: str, tmp_path: Path) -> None:
     host_home_path = str(Path.home())
     result_probe = run_in_sandbox(
         ["ls", host_home_path],

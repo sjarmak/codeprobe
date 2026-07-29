@@ -700,10 +700,10 @@ class TestGetScorer:
 
 
 class TestRunInSandboxOSError:
-    """When shutil.copytree raises OSError, _run_in_sandbox logs WARNING and sets error."""
+    """OSError at sandbox setup is reported without leaking raw OS details."""
 
-    def test_copytree_oserror_sets_error_field(self, tmp_path: Path) -> None:
-        """OSError from copytree is captured in _SandboxRun.error."""
+    def test_copytree_oserror_sets_sanitized_error_field(self, tmp_path: Path) -> None:
+        """OSError from copytree is translated into a controlled error."""
         from unittest.mock import patch
 
         from codeprobe.core.scoring import _run_in_sandbox
@@ -721,13 +721,14 @@ class TestRunInSandboxOSError:
             run = _run_in_sandbox(test_sh, "output", task_dir)
 
         assert run.returncode == -1
-        assert run.error is not None
-        assert "disk full" in run.error
+        assert run.error == "Sandbox setup failed"
+        assert run.stderr == ""
+        assert "disk full" not in str(run)
 
-    def test_copytree_oserror_emits_warning_log(
+    def test_copytree_oserror_emits_sanitized_warning_log(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """WARNING log is emitted when copytree raises OSError."""
+        """WARNING log is emitted without raw OSError message content."""
         import logging
         from unittest.mock import patch
 
@@ -749,5 +750,6 @@ class TestRunInSandboxOSError:
         ):
             _run_in_sandbox(test_sh, "output", task_dir)
 
-        assert any("disk full" in rec.message for rec in caplog.records)
+        assert not any("disk full" in rec.message for rec in caplog.records)
+        assert any("Sandbox setup failed" in rec.message for rec in caplog.records)
         assert any(rec.levelno == logging.WARNING for rec in caplog.records)

@@ -16,7 +16,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -171,7 +171,24 @@ class _SandboxRun:
         return self.sandbox_dir / "task" if self.sandbox_dir else None
 
 
-def _missing_image_refusal(engine: str | None) -> str | None:
+@dataclass(frozen=True)
+class _PreparedSandbox:
+    sandbox_dir: Path
+    sandbox_task: Path
+    sandbox_script: Path
+    env_extra: dict[str, str]
+
+
+def _configured_scoring_image() -> tuple[str | None, str | None]:
+    try:
+        return container_runner.scoring_image_reference(), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _missing_image_refusal(
+    engine: str | None, scoring_image: str | None, image_error: str | None
+) -> str | None:
     """Refusal message when host fallback is not consented, else ``None``.
 
     Called only when the container path is unavailable because the scoring
@@ -189,8 +206,18 @@ def _missing_image_refusal(engine: str | None) -> str | None:
     plan = active_plan()
     if plan is None or plan.mode == "host-consented":
         return None
-    scoring_image = container_runner.scoring_image_reference()
-    build_tag = container_runner.scoring_image_build_tag()
+    build_tag = container_runner.DEFAULT_SCORING_IMAGE
+    if scoring_image is None:
+        return (
+            "Container engine found but scoring image is not configured; "
+            f"{image_error or 'set an exact image reference'}. Set "
+            f"{container_runner.SCORING_IMAGE_ENV} or both "
+            f"{container_runner.IMAGE_REGISTRY_ENV} and "
+            f"{container_runner.IMAGE_NAMESPACE_ENV}. For local remediation, "
+            "build from the repo root with: docker build -f "
+            "src/codeprobe/sandbox/Dockerfile.scoring "
+            f"-t {build_tag} ."
+        )
     return (
         "Container engine found but scoring image "
         f"{scoring_image!r} is not available locally; refusing "
@@ -209,6 +236,7 @@ def _container_exec(
     sandbox_task: Path,
     env_extra: dict[str, str],
     timeout: int,
+    scoring_image: str,
 ) -> tuple[int, str, str] | str:
     """Run *sandbox_script* in the scoring container.
 
@@ -224,7 +252,6 @@ def _container_exec(
     tests that need egress fail closed, which is the intended posture.
     """
     try:
-        scoring_image = container_runner.scoring_image_reference()
         result = container_runner.run_in_sandbox(
             ["bash", str(sandbox_script)],
             {str(sandbox_dir): str(sandbox_dir)},
@@ -241,6 +268,179 @@ def _container_exec(
     return (result.exit_code, result.stdout, result.stderr)
 
 
+def _prepare_sandbox(
+    script_path: Path, agent_output: str, task_dir: Path
+) -> _PreparedSandbox:
+    sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
+    try:
+        sandbox_task = sandbox_dir / "task"
+        shutil.copytree(
+            task_dir,
+            sandbox_task,
+            symlinks=False,
+            ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
+        )
+        sandbox_script = sandbox_task / script_path.relative_to(task_dir)
+        output_file = sandbox_dir / "agent_output.txt"
+        output_file.write_text(agent_output, encoding="utf-8")
+        return _PreparedSandbox(
+            sandbox_dir=sandbox_dir,
+            sandbox_task=sandbox_task,
+            sandbox_script=sandbox_script,
+            env_extra={"AGENT_OUTPUT": str(output_file)},
+        )
+    except OSError:
+        _cleanup_dir(sandbox_dir)
+        raise
+
+
+def _maybe_materialize_workspace(
+    prepared: _PreparedSandbox, agent_state: AgentState | None
+) -> tuple[_PreparedSandbox, str, str | None]:
+    from codeprobe.core import scoring as _scoring_pkg
+
+    ws_state = agent_state
+    if not (
+        ws_state is not None
+        and ws_state.base_commit
+        and _scoring_pkg._is_git_repo(ws_state.workspace)
+    ):
+        return prepared, "in_place", None
+    checkout, err = _scoring_pkg._materialize_workspace(
+        ws_state, prepared.sandbox_dir
+    )
+    if err is not None:
+        return prepared, "git_apply", err
+    if checkout is None:
+        raise RuntimeError("_materialize_workspace returned invalid empty result")
+    env_extra = {**prepared.env_extra, "TASK_REPO_ROOT": str(checkout)}
+    return replace(prepared, env_extra=env_extra), "git_apply", None
+
+
+def _cleanup_dir(path: Path | None) -> None:
+    if path is not None:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _error_run(
+    *,
+    error: str,
+    stderr: str,
+    sandbox_dir: Path | None,
+    materialized_via: str,
+    execution_mode: str,
+    verifier_error: bool = False,
+) -> _SandboxRun:
+    return _SandboxRun(
+        returncode=-1,
+        stdout="",
+        stderr=stderr,
+        sandbox_dir=sandbox_dir,
+        error=error,
+        materialized_via=materialized_via,
+        verifier_error=verifier_error,
+        execution_mode=execution_mode,
+    )
+
+
+def _finish_error_run(
+    prepared: _PreparedSandbox,
+    error: str,
+    materialized_via: str,
+    execution_mode: str,
+    cleanup: bool,
+    *,
+    stderr: str | None = None,
+    verifier_error: bool = False,
+) -> _SandboxRun:
+    sandbox_dir = None if cleanup else prepared.sandbox_dir
+    if cleanup:
+        _cleanup_dir(prepared.sandbox_dir)
+    return _error_run(
+        error=error,
+        stderr=error if stderr is None else stderr,
+        sandbox_dir=sandbox_dir,
+        materialized_via=materialized_via,
+        execution_mode=execution_mode,
+        verifier_error=verifier_error,
+    )
+
+
+def _container_outcome(
+    prepared: _PreparedSandbox, timeout: int
+) -> tuple[tuple[int, str, str] | str | None, str | None]:
+    engine = container_runner.detect_engine()
+    scoring_image, image_error = _configured_scoring_image()
+    if engine is not None and scoring_image is not None:
+        if container_runner.image_available(engine, scoring_image):
+            outcome = _container_exec(
+                prepared.sandbox_script,
+                prepared.sandbox_dir,
+                prepared.sandbox_task,
+                prepared.env_extra,
+                timeout,
+                scoring_image,
+            )
+            return outcome, None
+    return None, _missing_image_refusal(engine, scoring_image, image_error)
+
+
+def _host_exec(prepared: _PreparedSandbox, timeout: int) -> tuple[int, str, str]:
+    result = subprocess.run(
+        ["bash", str(prepared.sandbox_script)],
+        env=_safe_env(prepared.env_extra),
+        cwd=str(prepared.sandbox_task),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return result.returncode, result.stdout, result.stderr
+
+
+def _execute_prepared_sandbox(
+    prepared: _PreparedSandbox, timeout: int, materialized_via: str, cleanup: bool
+) -> _SandboxRun:
+    outcome, refusal = _container_outcome(prepared, timeout)
+    if refusal is not None:
+        return _finish_error_run(
+            prepared, refusal, materialized_via, "none", cleanup,
+            verifier_error=True
+        )
+    if outcome is not None:
+        if isinstance(outcome, str):
+            return _finish_error_run(
+                prepared, outcome, materialized_via, "container", cleanup,
+                stderr=""
+            )
+        return _finish_success_run(
+            prepared, outcome, materialized_via, "container", cleanup
+        )
+    return _finish_success_run(
+        prepared, _host_exec(prepared, timeout), materialized_via, "host", cleanup
+    )
+
+
+def _finish_success_run(
+    prepared: _PreparedSandbox,
+    outcome: tuple[int, str, str],
+    materialized_via: str,
+    execution_mode: str,
+    cleanup: bool,
+) -> _SandboxRun:
+    returncode, stdout, stderr = outcome
+    sandbox_dir = None if cleanup else prepared.sandbox_dir
+    if cleanup:
+        _cleanup_dir(prepared.sandbox_dir)
+    return _SandboxRun(
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+        sandbox_dir=sandbox_dir,
+        materialized_via=materialized_via,
+        execution_mode=execution_mode,
+    )
+
+
 def _run_in_sandbox(
     script_path: Path,
     agent_output: str,
@@ -250,177 +450,37 @@ def _run_in_sandbox(
     cleanup: bool = True,
     agent_state: AgentState | None = None,
 ) -> _SandboxRun:
-    """Execute *script_path* inside a sandboxed copy of *task_dir*.
-
-    Returns a _SandboxRun with process results and paths into the sandbox
-    so callers can inspect files written by the script.  When *cleanup* is
-    True the sandbox is removed before returning; set to False when the
-    caller needs to read sandbox artefacts (caller must clean up).
-
-    When *agent_state* is set AND its workspace is a git repo, the
-    sandbox additionally materialises a clean checkout at
-    ``agent_state.base_commit`` with the agent's full diff applied;
-    ``TASK_REPO_ROOT`` is overridden to that checkout so the verifier
-    sees an isolated tree rather than the agent's dirty worktree.
-    Failures in the materialisation route to a ``_SandboxRun`` with
-    ``verifier_error=True`` — the script is NOT run.
-    """
-    # Resolve collaborators through the package namespace at call time:
-    # the pre-package module resolved these names via module globals, and
-    # tests rebind ``codeprobe.core.scoring.SCORE_TIMEOUT_SECONDS`` on the
-    # package. Importing ``materialize`` at module top would also be
-    # circular (it imports ``sanitize_secrets`` from this module).
+    """Execute *script_path* inside a sandboxed copy of *task_dir*."""
     from codeprobe.core import scoring as _scoring_pkg
 
     if timeout is None:
         timeout = _scoring_pkg.SCORE_TIMEOUT_SECONDS
     sandbox_dir = None
     try:
-        sandbox_dir = Path(tempfile.mkdtemp(prefix="codeprobe-score-"))
-        sandbox_task = sandbox_dir / "task"
-        shutil.copytree(
-            task_dir,
-            sandbox_task,
-            symlinks=False,
-            ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
+        prepared = _prepare_sandbox(script_path, agent_output, task_dir)
+        sandbox_dir = prepared.sandbox_dir
+        prepared, materialized_via, error = _maybe_materialize_workspace(
+            prepared, agent_state
         )
-
-        rel = script_path.relative_to(task_dir)
-        sandbox_script = sandbox_task / rel
-
-        output_file = sandbox_dir / "agent_output.txt"
-        output_file.write_text(agent_output, encoding="utf-8")
-
-        materialized_via = "in_place"
-        env_extra: dict[str, str] = {"AGENT_OUTPUT": str(output_file)}
-
-        # Bind ``agent_state`` to a local so the narrowing carries through
-        # without a mypy ``# for mypy`` assert. The double-condition reads
-        # cleanly: passed + non-empty commit + workspace is a git repo.
-        ws_state = agent_state
-        if (
-            ws_state is not None
-            and ws_state.base_commit
-            and _scoring_pkg._is_git_repo(ws_state.workspace)
-        ):
-            checkout, err = _scoring_pkg._materialize_workspace(
-                ws_state, sandbox_dir
+        if error is not None:
+            return _finish_error_run(
+                prepared, error, materialized_via, "none", cleanup,
+                verifier_error=True
             )
-            if err is not None:
-                # apply_check failure / clone failure / diff capture failure
-                # — surface as verifier_error and skip script execution.
-                if cleanup:
-                    shutil.rmtree(sandbox_dir, ignore_errors=True)
-                    sandbox_dir = None
-                return _SandboxRun(
-                    returncode=-1,
-                    stdout="",
-                    stderr=err,
-                    sandbox_dir=sandbox_dir,
-                    error=err,
-                    materialized_via="git_apply",
-                    verifier_error=True,
-                    execution_mode="none",
-                )
-            # The (checkout, err) contract of ``_materialize_workspace``
-            # is: exactly one of them is set. Defensive raise here
-            # surfaces a contract bug loudly rather than NoneType-
-            # crashing inside the test.sh subprocess.
-            if checkout is None:
-                raise RuntimeError(
-                    "_materialize_workspace returned (None, None) — "
-                    "contract violation"
-                )
-            materialized_via = "git_apply"
-            # test.sh that hardcodes ``cd $TASK_REPO_ROOT`` (mined dual
-            # tasks do) now lands inside the materialised checkout.
-            env_extra["TASK_REPO_ROOT"] = str(checkout)
-
-        # Containment branch (codeprobe-f7rl.4): mined scripts are untrusted
-        # third-party code. When a container engine and the scoring image
-        # are both available, execute inside the --network=none container;
-        # otherwise host execution needs consent (see _missing_image_refusal).
-        engine = container_runner.detect_engine()
-        scoring_image = container_runner.scoring_image_reference()
-        if engine is not None and container_runner.image_available(engine, scoring_image):
-            execution_mode = "container"
-            outcome = _container_exec(
-                sandbox_script, sandbox_dir, sandbox_task, env_extra, timeout
-            )
-            if isinstance(outcome, str):
-                if cleanup:
-                    shutil.rmtree(sandbox_dir, ignore_errors=True)
-                    sandbox_dir = None
-                return _SandboxRun(
-                    returncode=-1,
-                    stdout="",
-                    stderr="",
-                    sandbox_dir=sandbox_dir,
-                    error=outcome,
-                    materialized_via=materialized_via,
-                    execution_mode="container",
-                )
-            returncode, stdout, stderr = outcome
-        else:
-            refusal = _missing_image_refusal(engine)
-            if refusal is not None:
-                if cleanup:
-                    shutil.rmtree(sandbox_dir, ignore_errors=True)
-                    sandbox_dir = None
-                return _SandboxRun(
-                    returncode=-1,
-                    stdout="",
-                    stderr=refusal,
-                    sandbox_dir=sandbox_dir,
-                    error=refusal,
-                    materialized_via=materialized_via,
-                    verifier_error=True,
-                    execution_mode="none",
-                )
-            execution_mode = "host"
-            result = subprocess.run(
-                ["bash", str(sandbox_script)],
-                env=_safe_env(env_extra),
-                cwd=str(sandbox_task),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            returncode, stdout, stderr = (
-                result.returncode,
-                result.stdout,
-                result.stderr,
-            )
-        if cleanup:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
-            sandbox_dir = None
-        return _SandboxRun(
-            returncode=returncode,
-            stdout=stdout,
-            stderr=stderr,
-            sandbox_dir=sandbox_dir,
-            materialized_via=materialized_via,
-            execution_mode=execution_mode,
-        )
+        return _execute_prepared_sandbox(prepared, timeout, materialized_via, cleanup)
     except (subprocess.TimeoutExpired, OSError) as exc:
-        if sandbox_dir is not None:
-            shutil.rmtree(sandbox_dir, ignore_errors=True)
+        _cleanup_dir(sandbox_dir)
         if isinstance(exc, subprocess.TimeoutExpired):
-            # Only the host bash path raises TimeoutExpired here — the
-            # container path translates timeouts into SandboxError inside
-            # _container_exec (and force-removes the container).
             error = "Scoring timed out"
             execution_mode = "host"
         else:
-            # OSError is sandbox setup (mkdtemp/copytree/write) or a
-            # failed exec — nothing ran.
-            error = str(exc)
+            error = "Sandbox setup failed"
             execution_mode = "none"
-            logger.warning("Sandbox setup failed (OSError): %s", error)
-        return _SandboxRun(
-            returncode=-1,
-            stdout="",
-            stderr="",
+            logger.warning("Sandbox setup failed (OSError)")
+        return _error_run(
             error=error,
+            stderr="",
+            sandbox_dir=None,
+            materialized_via="in_place",
             execution_mode=execution_mode,
         )

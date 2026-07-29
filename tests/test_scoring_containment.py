@@ -16,13 +16,18 @@ from pathlib import Path
 
 import pytest
 
+import codeprobe.core.scoring.sandbox as scoring_sandbox
 from codeprobe.core import containment
 from codeprobe.core.scoring import BinaryScorer, CheckpointScorer
 from codeprobe.core.scoring.sandbox import _run_in_sandbox
 from codeprobe.sandbox import runner as container_runner
 from codeprobe.sandbox.runner import SandboxError, SandboxResult
 
-SCORING_IMAGE = f"codeprobe-scoring:{package_version('codeprobe')}"
+LOCAL_SCORING_IMAGE = f"codeprobe-scoring:{package_version('codeprobe')}"
+SCORING_IMAGE = (
+    f"registry.example.test/platform/codeprobe/codeprobe-scoring:"
+    f"{package_version('codeprobe')}"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -44,9 +49,54 @@ def _ok_result(stdout: str = "") -> SandboxResult:
     return SandboxResult(stdout=stdout, stderr="", exit_code=0, duration_ms=5)
 
 
+def _configure_scoring_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODEPROBE_SCORING_IMAGE", SCORING_IMAGE)
+
+
+def _capture_prepared_tempdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Path:
+    sandbox_dir = tmp_path / "prepared-sandbox"
+
+    def fake_mkdtemp(*_args: object, **_kwargs: object) -> str:
+        sandbox_dir.mkdir()
+        return str(sandbox_dir)
+
+    monkeypatch.setattr(scoring_sandbox.tempfile, "mkdtemp", fake_mkdtemp)
+    return sandbox_dir
+
+
+def _patch_host_subprocess_failure(
+    monkeypatch: pytest.MonkeyPatch, exc: BaseException
+) -> None:
+    def fake_run(*_args: object, **_kwargs: object) -> object:
+        raise exc
+
+    monkeypatch.setattr(scoring_sandbox.subprocess, "run", fake_run)
+
+
+def _patch_prepare_failure(monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+    if phase == "copytree":
+        monkeypatch.setattr(
+            scoring_sandbox.shutil,
+            "copytree",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("copy failed")),
+        )
+        return
+    real_write_text = Path.write_text
+
+    def fake_write_text(path: Path, text: str, *args: object, **kwargs: object) -> int:
+        if path.name == "agent_output.txt":
+            raise OSError("write failed")
+        return real_write_text(path, text, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+
 def _patch_container_mode(
     monkeypatch: pytest.MonkeyPatch, stdout: str = ""
 ) -> None:
+    _configure_scoring_image(monkeypatch)
     monkeypatch.setattr(
         container_runner, "detect_engine", lambda: "/usr/bin/docker"
     )
@@ -60,73 +110,68 @@ def _patch_container_mode(
     )
 
 
+def _capture_container_mode(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    calls: dict[str, object] = {}
+
+    def fake_run_in_sandbox(
+        cmd: list[str] | str,
+        mounts: dict[str, str],
+        *,
+        allow_writes: bool = False,
+        image: str = "",
+        timeout: float = 0.0,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> SandboxResult:
+        calls.update(
+            cmd=cmd, mounts=mounts, allow_writes=allow_writes, image=image,
+            timeout=timeout, workdir=workdir, env=env
+        )
+        return _ok_result()
+
+    _configure_scoring_image(monkeypatch)
+    monkeypatch.setattr(container_runner, "detect_engine", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(container_runner, "image_available", lambda *_: True)
+    monkeypatch.setattr(container_runner, "run_in_sandbox", fake_run_in_sandbox)
+    return calls
+
+
+def _assert_container_invocation(run: object, calls: dict[str, object]) -> None:
+    assert getattr(run, "execution_mode") == "container"
+    assert getattr(run, "returncode") == 0
+    assert getattr(run, "error") is None
+    mounts = calls["mounts"]
+    assert isinstance(mounts, dict)
+    ((host, cont),) = mounts.items()
+    assert host == cont
+    assert calls["allow_writes"] is True
+    assert calls["workdir"] == str(Path(host) / "task")
+    assert calls["image"] == SCORING_IMAGE
+    assert calls["timeout"] == 123.0
+    _assert_container_env_and_cmd(calls, host)
+
+
+def _assert_container_env_and_cmd(calls: dict[str, object], host: str) -> None:
+    env = calls["env"]
+    assert isinstance(env, dict)
+    assert set(env) == {"AGENT_OUTPUT"}
+    assert env["AGENT_OUTPUT"].startswith(host)
+    cmd = calls["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[:2] == ["bash", str(Path(host) / "task" / "tests" / "test.sh")]
+
+
 class TestContainerPath:
     def test_container_invocation_contract(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         task_dir = tmp_path / "task"
         script = _make_test_sh(task_dir)
-        calls: dict[str, object] = {}
-
-        def fake_run_in_sandbox(
-            cmd: list[str] | str,
-            mounts: dict[str, str],
-            *,
-            allow_writes: bool = False,
-            image: str = "",
-            timeout: float = 0.0,
-            workdir: str | None = None,
-            env: dict[str, str] | None = None,
-        ) -> SandboxResult:
-            calls.update(
-                cmd=cmd,
-                mounts=mounts,
-                allow_writes=allow_writes,
-                image=image,
-                timeout=timeout,
-                workdir=workdir,
-                env=env,
-            )
-            return _ok_result()
-
-        monkeypatch.setattr(
-            container_runner, "detect_engine", lambda: "/usr/bin/docker"
-        )
-        monkeypatch.setattr(
-            container_runner, "image_available", lambda engine, image: True
-        )
-        monkeypatch.setattr(
-            container_runner, "run_in_sandbox", fake_run_in_sandbox
-        )
+        calls = _capture_container_mode(monkeypatch)
 
         run = _run_in_sandbox(script, "agent says", task_dir, timeout=123)
 
-        assert run.execution_mode == "container"
-        assert run.returncode == 0
-        assert run.error is None
-
-        # Identity mount: host path == container path, single mount over
-        # the sandbox dir, so env paths stay valid without translation.
-        mounts = calls["mounts"]
-        assert isinstance(mounts, dict)
-        ((host, cont),) = mounts.items()
-        assert host == cont
-
-        assert calls["allow_writes"] is True
-        assert calls["workdir"] == str(Path(host) / "task")
-        assert calls["image"] == container_runner.DEFAULT_SCORING_IMAGE
-        assert calls["timeout"] == 123.0
-
-        # env is limited to env_extra — the image supplies its own PATH.
-        env = calls["env"]
-        assert isinstance(env, dict)
-        assert set(env) == {"AGENT_OUTPUT"}
-        assert env["AGENT_OUTPUT"].startswith(host)
-
-        cmd = calls["cmd"]
-        assert isinstance(cmd, list)
-        assert cmd[0] == "bash"
-        assert cmd[1] == str(Path(host) / "task" / "tests" / "test.sh")
+        _assert_container_invocation(run, calls)
 
     def test_sandbox_error_maps_to_error_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -144,6 +189,7 @@ class TestContainerPath:
             container_runner, "image_available", lambda engine, image: True
         )
         monkeypatch.setattr(container_runner, "run_in_sandbox", boom)
+        _configure_scoring_image(monkeypatch)
 
         run = _run_in_sandbox(script, "output", task_dir)
 
@@ -151,6 +197,7 @@ class TestContainerPath:
         assert run.error is not None
         assert "engine exploded" in run.error
         assert run.execution_mode == "container"
+        assert run.stderr == ""
 
 
 class TestHostFallback:
@@ -238,12 +285,35 @@ class TestMissingImageRefusal:
         assert run.verifier_error is True
         assert run.returncode == -1
         assert run.error is not None
-        assert (
-            "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
-            f"-t {SCORING_IMAGE} ." in run.error
-        )
+        assert "scoring image is not configured" in run.error
+        assert "CODEPROBE_SCORING_IMAGE" in run.error
+        assert f"-t {LOCAL_SCORING_IMAGE} ." in run.error
         # Nothing executed — the disclosure must not claim host execution.
         assert run.execution_mode == "none"
+        assert run.stderr == run.error
+
+    def test_invalid_image_config_fails_closed_under_sandboxed_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_dir = tmp_path / "task"
+        script = _make_test_sh(task_dir)
+        monkeypatch.setattr(
+            container_runner, "detect_engine", lambda: "/usr/bin/docker"
+        )
+        monkeypatch.setenv("CODEPROBE_IMAGE_VERSION", "invalid tag")
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="sandboxed")
+        )
+
+        run = _run_in_sandbox(script, "output", task_dir)
+
+        assert run.returncode == -1
+        assert run.verifier_error is True
+        assert run.execution_mode == "none"
+        assert run.error is not None
+        assert "CODEPROBE_IMAGE_VERSION" in run.error
+        assert "CODEPROBE_SCORING_IMAGE" in run.error
+        assert f"-t {LOCAL_SCORING_IMAGE} ." in run.error
 
 
 class TestNothingExecutedDisclosure:
@@ -273,6 +343,7 @@ class TestNothingExecutedDisclosure:
 
         assert run.verifier_error is True
         assert run.execution_mode == "none"
+        assert run.stderr == run.error
 
     def test_binary_scorer_reports_none_on_refusal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -295,6 +366,51 @@ class TestNothingExecutedDisclosure:
         assert result.passed is False
         assert result.verdict == "verifier_error"
         assert result.details["sandbox_execution"] == "none"
+
+
+class TestSandboxFailureCleanup:
+    @pytest.mark.parametrize(
+        ("exc", "expected_error", "expected_mode"),
+        [
+            (subprocess.TimeoutExpired(cmd=["bash"], timeout=1), "Scoring timed out", "host"),
+            (PermissionError("secret path /tmp/leaky"), "Sandbox setup failed", "none"),
+        ],
+    )
+    def test_host_failure_cleans_prepared_sandbox(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exc: BaseException,
+        expected_error: str,
+        expected_mode: str,
+    ) -> None:
+        task_dir = tmp_path / "task"
+        script = _make_test_sh(task_dir)
+        sandbox_dir = _capture_prepared_tempdir(monkeypatch, tmp_path)
+        monkeypatch.setattr(container_runner, "detect_engine", lambda: None)
+        _patch_host_subprocess_failure(monkeypatch, exc)
+
+        run = _run_in_sandbox(script, "output", task_dir)
+
+        assert run.error == expected_error
+        assert run.stderr == ""
+        assert run.execution_mode == expected_mode
+        assert not sandbox_dir.exists()
+
+    @pytest.mark.parametrize("phase", ["copytree", "write-output"])
+    def test_prepare_failure_cleans_created_tempdir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+    ) -> None:
+        task_dir = tmp_path / "task"
+        script = _make_test_sh(task_dir)
+        sandbox_dir = _capture_prepared_tempdir(monkeypatch, tmp_path)
+        _patch_prepare_failure(monkeypatch, phase)
+
+        run = _run_in_sandbox(script, "output", task_dir)
+
+        assert run.error == "Sandbox setup failed"
+        assert run.stderr == ""
+        assert not sandbox_dir.exists()
 
 
 class TestScorerDisclosure:

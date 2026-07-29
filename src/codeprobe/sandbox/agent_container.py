@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Final
 
 _CONTAINER_TMPFS: Final[str] = "/tmp:rw,nosuid,nodev,size=128m,mode=1777"
+_CONTAINER_CPUS: Final[str] = "2"
+_CONTAINER_MEMORY: Final[str] = "4g"
 
 
 def containerize_argv(
@@ -41,46 +43,31 @@ def containerize_argv(
     name: str,
     env: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Return *cmd* wrapped in a ``<engine> run`` argv.
-
-    Parameters
-    ----------
-    cmd:
-        The adapter argv. ``cmd[0]`` is a host binary path that does not
-        exist inside the image; it is replaced by its basename so the
-        image resolves the same CLI on its own PATH. The rest of the argv
-        is passed through unchanged.
-    engine:
-        Container engine binary (docker or podman path).
-    workspace:
-        Slot worktree — identity-mounted rw and used as ``-w`` workdir.
-    config_dir:
-        Session ``CLAUDE_CONFIG_DIR`` to identity-mount rw, or ``None``.
-    mcp_tmpfile:
-        MCP config tmpfile to identity-mount ro, or ``None``.
-    env_keys:
-        Candidate env var names; a valueless ``-e KEY`` is emitted for
-        each one present in *env*.
-    image:
-        Agent image tag.
-    name:
-        Container name (``--name``), so a client-side timeout can
-        ``<engine> rm -f`` the container.
-    env:
-        Mapping consulted for *env_keys* presence — the environment the
-        engine client will run with. Defaults to ``os.environ``.
-    """
+    """Return *cmd* wrapped in a ``<engine> run`` argv."""
     if not cmd:
         raise ValueError("cmd must be a non-empty argv list")
     present = os.environ if env is None else env
+    argv = _base_run_args(engine)
+    argv += ["--name", name]
+    argv += _mount_args(workspace, config_dir, mcp_tmpfile)
+    argv += _env_key_args(env_keys, present)
+    argv += ["-w", str(workspace), image]
+    argv += [os.path.basename(cmd[0]), *cmd[1:]]
+    return argv
 
-    argv: list[str] = [
+
+def _base_run_args(engine: str) -> list[str]:
+    argv = [
         engine,
         "run",
         "--rm",
+        "--pull=never",
         "--network=bridge",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        f"--cpus={_CONTAINER_CPUS}",
+        f"--memory={_CONTAINER_MEMORY}",
+        f"--memory-swap={_CONTAINER_MEMORY}",
         "--pids-limit=256",
         "--read-only",
         "--tmpfs",
@@ -92,18 +79,23 @@ def containerize_argv(
     ]
     if hasattr(os, "getuid") and hasattr(os, "getgid"):
         argv += ["--user", f"{os.getuid()}:{os.getgid()}"]
-    argv += [
-        "--name",
-        name,
-        "-v",
-        f"{workspace}:{workspace}:rw",
-    ]
+    return argv
+
+
+def _mount_args(
+    workspace: Path, config_dir: Path | None, mcp_tmpfile: str | None
+) -> list[str]:
+    args = ["-v", f"{workspace}:{workspace}:rw"]
     if config_dir is not None:
-        argv += ["-v", f"{config_dir}:{config_dir}:rw"]
+        args += ["-v", f"{config_dir}:{config_dir}:rw"]
     if mcp_tmpfile is not None:
-        argv += ["-v", f"{mcp_tmpfile}:{mcp_tmpfile}:ro"]
+        args += ["-v", f"{mcp_tmpfile}:{mcp_tmpfile}:ro"]
+    return args
+
+
+def _env_key_args(env_keys: list[str], present: Mapping[str, str]) -> list[str]:
+    args: list[str] = []
     for key in env_keys:
         if key in present:
-            argv += ["-e", key]
-    argv += ["-w", str(workspace), image, os.path.basename(cmd[0]), *cmd[1:]]
-    return argv
+            args += ["-e", key]
+    return args

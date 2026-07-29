@@ -25,9 +25,10 @@ enforcement, no model calls (ZFC-allowed).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NoReturn
 
 from codeprobe.core import sandbox
+from codeprobe.sandbox import runner as container_runner
 
 DISCLOSURE = (
     "codeprobe run executes an autonomous agent with "
@@ -70,26 +71,32 @@ def resolve_containment(uncontained: bool) -> ContainmentPlan:
     if uncontained:
         return ContainmentPlan(mode="host-consented")
 
-    from codeprobe.sandbox import runner as container_runner
-
-    agent_image = container_runner.agent_image_reference()
     engine = container_runner.detect_engine()
-    if engine is not None and container_runner.image_available(engine, agent_image):
-        return ContainmentPlan(mode="container", engine=engine)
+    agent_image, image_error = (None, None)
+    if engine is not None:
+        agent_image, image_error = _configured_agent_image()
+        if (
+            agent_image is not None
+            and container_runner.image_available(engine, agent_image)
+        ):
+            return ContainmentPlan(mode="container", engine=engine)
 
+    _raise_uncontained_refusal(engine, agent_image, image_error)
+
+
+def _configured_agent_image() -> tuple[str | None, str | None]:
+    try:
+        return container_runner.agent_image_reference(), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _raise_uncontained_refusal(
+    engine: str | None, agent_image: str | None, image_error: str | None
+) -> NoReturn:
     from codeprobe.cli.errors import PrescriptiveError
 
-    build_hint = ""
-    if engine is not None:
-        build_tag = container_runner.agent_image_build_tag()
-        build_hint = (
-            " A container engine was found but the agent image "
-            f"{agent_image!r} is not available locally. Pull a trusted "
-            "published digest, or build it from the repo root with: docker build -f "
-            "src/codeprobe/sandbox/Dockerfile.agent -t "
-            f"{build_tag} . Override the reference with "
-            f"{container_runner.AGENT_IMAGE_ENV} when using a private mirror."
-        )
+    build_hint = _agent_build_hint(engine, agent_image, image_error)
     raise PrescriptiveError(
         code="UNCONTAINED_REFUSED",
         message=(
@@ -98,7 +105,33 @@ def resolve_containment(uncontained: bool) -> ContainmentPlan:
         ),
         next_try_flag="--uncontained",
         next_try_value="",
-        detail={"container_detected": False, "uncontained": False},
+        detail={"container_detected": engine is not None, "uncontained": False},
+    )
+
+
+def _agent_build_hint(
+    engine: str | None, agent_image: str | None, image_error: str | None
+) -> str:
+    if engine is None:
+        return ""
+    build_tag = container_runner.DEFAULT_AGENT_IMAGE
+    if agent_image is None:
+        return (
+            " A container engine was found but the agent image is not "
+            f"configured; {image_error or 'set an exact image reference'}. "
+            f"Set {container_runner.AGENT_IMAGE_ENV} or both "
+            f"{container_runner.IMAGE_REGISTRY_ENV} and "
+            f"{container_runner.IMAGE_NAMESPACE_ENV}. For local remediation, "
+            "build from the repo root with: docker build -f "
+            f"src/codeprobe/sandbox/Dockerfile.agent -t {build_tag} ."
+        )
+    return (
+        " A container engine was found but the agent image "
+        f"{agent_image!r} is not available locally. Pull a trusted "
+        "published digest, or build it from the repo root with: docker build -f "
+        f"src/codeprobe/sandbox/Dockerfile.agent -t {build_tag} . Override "
+        f"the reference with {container_runner.AGENT_IMAGE_ENV} when using "
+        "a private mirror."
     )
 
 

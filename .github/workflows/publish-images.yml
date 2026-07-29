@@ -8,60 +8,49 @@ concurrency:
   group: publish-oci-images-${{ github.ref_name }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  packages: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+permissions: {}
 
 env:
   REGISTRY: ${{ vars.CODEPROBE_OCI_REGISTRY || 'ghcr.io' }}
   IMAGE_NAMESPACE: ${{ vars.CODEPROBE_OCI_NAMESPACE || github.repository }}
   QEMU_BINFMT_IMAGE: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-  BUILDX_VERSION: v0.25.0
-  BUILDKIT_IMAGE: moby/buildkit:v0.25.1@sha256:79cc6476ab1a3371c9afd8b44e7c55610057c43e18d9b39b68e2b0c2475cc1b6
+  BUILDX_VERSION: v0.35.0
+  BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
   SCOUT_SBOM_INDEXER_IMAGE: docker/scout-sbom-indexer:1@sha256:3579229a5ace351e4511903f3da976304990339da1c49a3cc0f00bcd7d793181
-  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
+  TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
   TRIVY_SEVERITY: ${{ vars.CODEPROBE_OCI_TRIVY_SEVERITY || 'CRITICAL,HIGH' }}
+  ORAS_VERSION: 1.3.3
+  UV_VERSION: 0.12.0
   DEBIAN_SNAPSHOT: 20260728T000000Z
   CLAUDE_CODE_VERSION: 2.1.220
   CLAUDE_CODE_INTEGRITY: sha512-ogBrvwkqF9f8okmnXKxmRNHuvtFxFEffe5pWdqOV3iQDxlUOKirFqnyWC7NGXXnDA4WkkbPH8pvSbwyCR2Auyw==
 
 jobs:
-  build-candidate-images:
+  authorize-release:
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - image: codeprobe-agent
-            dockerfile: src/codeprobe/sandbox/Dockerfile.agent
-            override_env: CODEPROBE_AGENT_IMAGE
-          - image: codeprobe-scoring
-            dockerfile: src/codeprobe/sandbox/Dockerfile.scoring
-            override_env: CODEPROBE_SCORING_IMAGE
-
+    environment: release-images
+    permissions:
+      contents: read
+    outputs:
+      release_sha: ${{ steps.authority.outputs.release_sha }}
+      version: ${{ steps.authority.outputs.version }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          python-version: "3.11"
+          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
-        with:
-          image: ${{ env.QEMU_BINFMT_IMAGE }}
-          platforms: arm64
-
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
-        with:
-          version: ${{ env.BUILDX_VERSION }}
-          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
-
-      - name: Check tag and package version
-        id: version
+      - name: Authorize tag target from main
+        id: authority
         run: |
+          set -euo pipefail
+          TAG_COMMIT=$(git rev-parse "${GITHUB_REF}^{commit}")
+          EVENT_COMMIT=$(git rev-parse "${GITHUB_SHA}^{commit}")
+          test "$TAG_COMMIT" = "$EVENT_COMMIT"
+          git rev-parse --verify refs/remotes/origin/main^{commit} >/dev/null
+          git merge-base --is-ancestor "$TAG_COMMIT" origin/main
+          export TAG_COMMIT
           python - <<'PY'
           import os
           import re
@@ -86,24 +75,54 @@ jobs:
               )
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"release_sha={os.environ['TAG_COMMIT']}", file=output)
               print(f"version={tag_version}", file=output)
           PY
 
-      - name: Resolve image references
-        id: image
-        env:
-          IMAGE_NAME: ${{ matrix.image }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          raw="${REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_NAME}"
-          image_ref="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
-          short_sha="${GITHUB_SHA::12}"
-          candidate_tag="${VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
-          {
-            echo "name=${image_ref}"
-            echo "version_ref=${image_ref}:${VERSION}"
-            echo "candidate_ref=${image_ref}:${candidate_tag}"
-          } >> "$GITHUB_OUTPUT"
+  reuse-release:
+    runs-on: ubuntu-22.04
+    needs: [authorize-release]
+    environment: release-images
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    outputs:
+      reuse: ${{ steps.reuse.outputs.reuse }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.authorize-release.outputs.release_sha }}
+          persist-credentials: false
+
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+
+      # astral-sh/setup-uv v9.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install locked Python dependencies
+        run: uv sync --frozen --no-dev
+
+      # oras-project/setup-oras v2.0.1
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d
+        with:
+          version: ${{ env.ORAS_VERSION }}
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      # sigstore/cosign-installer v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.2
 
       - name: Resolve registry credentials
         id: registry-auth
@@ -112,30 +131,134 @@ jobs:
           REGISTRY_PASSWORD: ${{ secrets.CODEPROBE_OCI_TOKEN }}
           DEFAULT_GITHUB_TOKEN: ${{ github.token }}
         run: |
-          username="${REGISTRY_USERNAME}"
-          password="${REGISTRY_PASSWORD}"
-          if [ "$REGISTRY" = "ghcr.io" ]; then
-            username="${username:-$GITHUB_ACTOR}"
-            password="${password:-$DEFAULT_GITHUB_TOKEN}"
-          elif [ -z "$username" ] || [ -z "$password" ]; then
-            echo "FATAL: CODEPROBE_OCI_USERNAME and CODEPROBE_OCI_TOKEN are required for non-ghcr.io registries." >&2
-            exit 1
-          fi
-          if [ -z "$username" ] || [ -z "$password" ]; then
-            echo "FATAL: registry credentials resolved empty." >&2
-            exit 1
-          fi
-          echo "::add-mask::$password"
-          {
-            echo "username=${username}"
-            echo "password=${password}"
-          } >> "$GITHUB_OUTPUT"
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_workflow_inputs credentials \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --github-output "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ steps.registry-auth.outputs.username }}
           password: ${{ steps.registry-auth.outputs.password }}
+
+      - name: Verify existing release-pair authority
+        id: reuse
+        env:
+          CERT_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/publish-images.yml@refs/tags/${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          TRIVY_USERNAME: ${{ steps.registry-auth.outputs.username }}
+          TRIVY_PASSWORD: ${{ steps.registry-auth.outputs.password }}
+        run: |
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_release check-reuse \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --version "${{ needs.authorize-release.outputs.version }}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --source-sha "${{ needs.authorize-release.outputs.release_sha }}" \
+            --cert-identity "$CERT_IDENTITY" \
+            --output-dir release-reuse \
+            --trivy-image "$TRIVY_IMAGE" \
+            --trivy-severity "$TRIVY_SEVERITY"
+
+      - name: Upload release reuse evidence
+        if: steps.reuse.outputs.reuse == 'true'
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oci-release-reuse-${{ github.ref_name }}
+          path: release-reuse/
+          if-no-files-found: error
+
+  build-candidate-images:
+    runs-on: ubuntu-22.04
+    needs: [authorize-release, reuse-release]
+    if: needs.reuse-release.outputs.reuse != 'true'
+    environment: release-images
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: codeprobe-agent
+            dockerfile: src/codeprobe/sandbox/Dockerfile.agent
+            override_env: CODEPROBE_AGENT_IMAGE
+          - image: codeprobe-scoring
+            dockerfile: src/codeprobe/sandbox/Dockerfile.scoring
+            override_env: CODEPROBE_SCORING_IMAGE
+
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.authorize-release.outputs.release_sha }}
+          persist-credentials: false
+
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+
+      # astral-sh/setup-uv v9.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install locked Python dependencies
+        run: uv sync --frozen --no-dev
+
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+        with:
+          image: ${{ env.QEMU_BINFMT_IMAGE }}
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Resolve image references
+        id: image
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          VERSION: ${{ needs.authorize-release.outputs.version }}
+          RELEASE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
+        run: |
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_workflow_inputs image-refs \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --image "$IMAGE_NAME" \
+            --version "$VERSION" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Resolve registry credentials
+        id: registry-auth
+        env:
+          REGISTRY_USERNAME: ${{ vars.CODEPROBE_OCI_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.CODEPROBE_OCI_TOKEN }}
+          DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_workflow_inputs credentials \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ steps.registry-auth.outputs.username }}
+          password: ${{ steps.registry-auth.outputs.password }}
+
+      # oras-project/setup-oras v2.0.1
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d
+        with:
+          version: ${{ env.ORAS_VERSION }}
 
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         id: build
@@ -147,8 +270,8 @@ jobs:
           tags: ${{ steps.image.outputs.candidate_ref }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.authorize-release.outputs.release_sha }}
+            org.opencontainers.image.version=${{ needs.authorize-release.outputs.version }}
           build-args: |
             DEBIAN_SNAPSHOT=${{ env.DEBIAN_SNAPSHOT }}
             CLAUDE_CODE_VERSION=${{ env.CLAUDE_CODE_VERSION }}
@@ -176,7 +299,16 @@ jobs:
           TRIVY_PASSWORD: ${{ steps.registry-auth.outputs.password }}
         run: |
           for platform in linux/amd64 linux/arm64; do
-            docker run --rm \
+            timeout 600s docker run --rm \
+              --cap-drop=ALL \
+              --security-opt=no-new-privileges \
+              --pids-limit=256 \
+              --memory=4g \
+              --memory-swap=4g \
+              --cpus=2 \
+              --read-only \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m \
+              --tmpfs /root/.cache:rw,nosuid,nodev,size=2g \
               -e TRIVY_USERNAME \
               -e TRIVY_PASSWORD \
               "$TRIVY_IMAGE" image \
@@ -190,103 +322,16 @@ jobs:
       - name: Verify BuildKit SBOM and provenance attestations
         env:
           IMAGE_REF: ${{ steps.image.outputs.name }}
+          CANDIDATE_REF: ${{ steps.image.outputs.candidate_ref }}
           DIGEST_REF: ${{ steps.identity.outputs.digest_ref }}
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import subprocess
-          import sys
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_attestations \
+            --image-ref "$IMAGE_REF" \
+            --candidate-ref "$CANDIDATE_REF" \
+            --digest-ref "$DIGEST_REF"
 
-          required_platforms = {"linux/amd64", "linux/arm64"}
-          required_predicates = {
-              "https://spdx.dev/Document",
-              "https://slsa.dev/provenance/",
-          }
-          image_ref = os.environ["IMAGE_REF"]
-          digest_ref = os.environ["DIGEST_REF"]
-
-          def raw(ref: str) -> dict[str, object]:
-              completed = subprocess.run(
-                  ["docker", "buildx", "imagetools", "inspect", "--raw", ref],
-                  check=True,
-                  capture_output=True,
-                  text=True,
-              )
-              loaded = json.loads(completed.stdout)
-              if not isinstance(loaded, dict):
-                  raise SystemExit(f"{ref} did not resolve to a JSON object")
-              return loaded
-
-          index = raw(digest_ref)
-          manifests = index.get("manifests")
-          if not isinstance(manifests, list):
-              raise SystemExit("pushed image is not a manifest list")
-
-          platform_digests: dict[str, str] = {}
-          attestation_subjects: dict[str, str | None] = {}
-          for manifest in manifests:
-              if not isinstance(manifest, dict):
-                  continue
-              digest = manifest.get("digest")
-              platform = manifest.get("platform")
-              annotations = manifest.get("annotations") or {}
-              if not isinstance(digest, str) or not isinstance(platform, dict):
-                  continue
-              key = f"{platform.get('os')}/{platform.get('architecture')}"
-              if key in required_platforms:
-                  platform_digests[digest] = key
-              if (
-                  isinstance(annotations, dict)
-                  and annotations.get("vnd.docker.reference.type")
-                  == "attestation-manifest"
-              ):
-                  subject_digest = annotations.get("vnd.docker.reference.digest")
-                  attestation_subjects[digest] = (
-                      subject_digest if isinstance(subject_digest, str) else None
-                  )
-
-          found_platforms = set(platform_digests.values())
-          missing = required_platforms - found_platforms
-          if missing:
-              raise SystemExit(f"missing platform manifests: {sorted(missing)}")
-
-          predicates_by_platform = {platform: set() for platform in required_platforms}
-          for digest, descriptor_subject in attestation_subjects.items():
-              attestation = raw(f"{image_ref}@{digest}")
-              subject = attestation.get("subject") or {}
-              subject_digest = descriptor_subject
-              if isinstance(subject, dict):
-                  manifest_subject = subject.get("digest")
-                  if isinstance(manifest_subject, str):
-                      subject_digest = manifest_subject
-              layers = attestation.get("layers") or []
-              if not isinstance(layers, list):
-                  continue
-              platform = platform_digests.get(subject_digest)
-              if platform is None:
-                  continue
-              for layer in layers:
-                  if not isinstance(layer, dict):
-                      continue
-                  annotations = layer.get("annotations") or {}
-                  if not isinstance(annotations, dict):
-                      continue
-                  predicate = annotations.get("in-toto.io/predicate-type")
-                  if isinstance(predicate, str):
-                      predicates_by_platform[platform].add(predicate)
-
-          failures: list[str] = []
-          for platform, predicates in predicates_by_platform.items():
-              for required in required_predicates:
-                  if not any(value.startswith(required) for value in predicates):
-                      failures.append(f"{platform} missing {required}")
-          if failures:
-              print("\n".join(failures), file=sys.stderr)
-              raise SystemExit(1)
-          PY
-
-      - uses: actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35
+      # actions/attest v4.2.0
+      - uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -297,18 +342,20 @@ jobs:
           DIGEST_REF: ${{ steps.identity.outputs.digest_ref }}
           CERT_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/publish-images.yml@refs/tags/${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
         run: |
           gh attestation verify "oci://${DIGEST_REF}" \
             --repo "$GITHUB_REPOSITORY" \
             --cert-identity "$CERT_IDENTITY" \
             --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
             --source-ref "refs/tags/${GITHUB_REF_NAME}" \
-            --source-digest "$GITHUB_SHA" \
+            --source-digest "$SOURCE_SHA" \
             --bundle-from-oci
 
-      - uses: sigstore/cosign-installer@0f983226cbf1ee0368469d3e2b33417ceec4c225
+      # sigstore/cosign-installer v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         with:
-          cosign-release: v3.0.2
+          cosign-release: v3.1.2
 
       - name: Keyless sign digest
         env:
@@ -331,10 +378,12 @@ jobs:
           IMAGE_NAME: ${{ matrix.image }}
           IMAGE_REF: ${{ steps.image.outputs.name }}
           VERSION_REF: ${{ steps.image.outputs.version_ref }}
-          VERSION: ${{ steps.version.outputs.version }}
+          CANDIDATE_REF: ${{ steps.image.outputs.candidate_ref }}
+          VERSION: ${{ needs.authorize-release.outputs.version }}
           DIGEST: ${{ steps.build.outputs.digest }}
           DIGEST_REF: ${{ steps.identity.outputs.digest_ref }}
           OVERRIDE_ENV: ${{ matrix.override_env }}
+          SOURCE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
         run: |
           mkdir -p oci-identities
           python - <<'PY'
@@ -347,10 +396,12 @@ jobs:
               "image": os.environ["IMAGE_NAME"],
               "version": os.environ["VERSION"],
               "tag_ref": os.environ["VERSION_REF"],
+              "candidate_ref": os.environ["CANDIDATE_REF"],
               "digest": os.environ["DIGEST"],
               "digest_ref": os.environ["DIGEST_REF"],
               "platforms": ["linux/amd64", "linux/arm64"],
               "runtime_override_env": os.environ["OVERRIDE_ENV"],
+              "source_sha": os.environ["SOURCE_SHA"],
           }
           path = Path("oci-identities") / f"{os.environ['IMAGE_NAME']}.json"
           path.write_text(
@@ -359,21 +410,173 @@ jobs:
           )
           PY
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: oci-image-identity-${{ matrix.image }}
           path: oci-identities/${{ matrix.image }}.json
           if-no-files-found: error
 
+      - name: Delete failed candidate tag
+        if: (failure() || cancelled()) && steps.image.outputs.candidate_ref != ''
+        env:
+          IMAGE_NAME: ${{ matrix.image }}
+          VERSION: ${{ needs.authorize-release.outputs.version }}
+          CANDIDATE_REF: ${{ steps.image.outputs.candidate_ref }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+          DIGEST_REF: ${{ steps.identity.outputs.digest_ref }}
+          SOURCE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
+        run: |
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_candidate_cleanup \
+            --candidate-ref "$CANDIDATE_REF" \
+            --image "$IMAGE_NAME" \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --build-digest "$BUILD_DIGEST" \
+            --digest-ref "$DIGEST_REF" \
+            --output-dir candidate-quarantine
+
+      - name: Upload candidate cleanup quarantine evidence
+        if: always() && hashFiles('candidate-quarantine/candidate-quarantine.json') != ''
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oci-candidate-quarantine-${{ matrix.image }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate-quarantine/
+          if-no-files-found: error
+
+  cleanup-unpromoted-candidates:
+    runs-on: ubuntu-22.04
+    needs: [authorize-release, reuse-release, build-candidate-images]
+    if: >-
+      always() &&
+      needs.authorize-release.result == 'success' &&
+      needs.reuse-release.result == 'success' &&
+      needs.reuse-release.outputs.reuse != 'true' &&
+      needs.build-candidate-images.result != 'success'
+    environment: release-images
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.authorize-release.outputs.release_sha }}
+          persist-credentials: false
+
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+
+      # astral-sh/setup-uv v9.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install locked Python dependencies
+        run: uv sync --frozen --no-dev
+
+      # oras-project/setup-oras v2.0.1
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d
+        with:
+          version: ${{ env.ORAS_VERSION }}
+
+      - name: Resolve registry credentials
+        id: registry-auth
+        env:
+          REGISTRY_USERNAME: ${{ vars.CODEPROBE_OCI_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.CODEPROBE_OCI_TOKEN }}
+          DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_workflow_inputs credentials \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ steps.registry-auth.outputs.username }}
+          password: ${{ steps.registry-auth.outputs.password }}
+
+      - name: Delete unpromoted run candidates
+        env:
+          VERSION: ${{ needs.authorize-release.outputs.version }}
+          SOURCE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
+        run: |
+          rc=0
+          short_sha="${SOURCE_SHA::12}"
+          for image in codeprobe-agent codeprobe-scoring; do
+            raw="${REGISTRY}/${IMAGE_NAMESPACE}/${image}"
+            repo="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+            candidate="${repo}:${VERSION}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${short_sha}"
+            uv run --frozen --no-dev python -m codeprobe.sandbox.oci_candidate_cleanup \
+              --candidate-ref "$candidate" \
+              --image "$image" \
+              --version "$VERSION" \
+              --source-sha "$SOURCE_SHA" \
+              --build-digest "" \
+              --digest-ref "" \
+              --output-dir "candidate-quarantine/${image}" || rc=1
+          done
+          exit "$rc"
+
+      - name: Upload aggregate candidate quarantine evidence
+        if: always() && hashFiles('candidate-quarantine/**/candidate-quarantine.json') != ''
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oci-candidate-quarantine-aggregate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate-quarantine/
+          if-no-files-found: error
+
   promote-images:
     runs-on: ubuntu-22.04
-    needs: [build-candidate-images]
+    needs: [build-candidate-images, authorize-release, reuse-release]
+    if: needs.reuse-release.outputs.reuse != 'true'
+    environment: release-images
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.authorize-release.outputs.release_sha }}
+          persist-credentials: false
+
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+
+      # astral-sh/setup-uv v9.0.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Install locked Python dependencies
+        run: uv sync --frozen --no-dev
+
+      # actions/download-artifact v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: oci-image-identity-*
           path: oci-identities
           merge-multiple: true
+
+      # sigstore/cosign-installer v4.1.2
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.2
+
+      # oras-project/setup-oras v2.0.1
+      - uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d
+        with:
+          version: ${{ env.ORAS_VERSION }}
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
         with:
@@ -387,24 +590,10 @@ jobs:
           REGISTRY_PASSWORD: ${{ secrets.CODEPROBE_OCI_TOKEN }}
           DEFAULT_GITHUB_TOKEN: ${{ github.token }}
         run: |
-          username="${REGISTRY_USERNAME}"
-          password="${REGISTRY_PASSWORD}"
-          if [ "$REGISTRY" = "ghcr.io" ]; then
-            username="${username:-$GITHUB_ACTOR}"
-            password="${password:-$DEFAULT_GITHUB_TOKEN}"
-          elif [ -z "$username" ] || [ -z "$password" ]; then
-            echo "FATAL: CODEPROBE_OCI_USERNAME and CODEPROBE_OCI_TOKEN are required for non-ghcr.io registries." >&2
-            exit 1
-          fi
-          if [ -z "$username" ] || [ -z "$password" ]; then
-            echo "FATAL: registry credentials resolved empty." >&2
-            exit 1
-          fi
-          echo "::add-mask::$password"
-          {
-            echo "username=${username}"
-            echo "password=${password}"
-          } >> "$GITHUB_OUTPUT"
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_workflow_inputs credentials \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --github-output "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c
         with:
@@ -412,119 +601,65 @@ jobs:
           username: ${{ steps.registry-auth.outputs.username }}
           password: ${{ steps.registry-auth.outputs.password }}
 
-      - name: Preflight immutable version tags
+      - name: Promote pair-level immutable version tags
         id: version-tags
         run: |
-          python - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-          from pathlib import Path
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_release promote-tags \
+            --identity-dir oci-identities \
+            --state-path promotion-state.json \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --version "${{ needs.authorize-release.outputs.version }}" \
+            --source-sha "${{ needs.authorize-release.outputs.release_sha }}"
 
-          expected_images = {'codeprobe-agent', 'codeprobe-scoring'}
-          required_platforms = ["linux/amd64", "linux/arm64"]
-
-          def load_identities() -> dict[str, dict[str, object]]:
-              identities: dict[str, dict[str, object]] = {}
-              for path in sorted(Path("oci-identities").glob("*.json")):
-                  loaded = json.loads(path.read_text(encoding="utf-8"))
-                  if not isinstance(loaded, dict):
-                      raise SystemExit(f"{path} did not contain a JSON object")
-                  image = loaded.get("image")
-                  if not isinstance(image, str):
-                      raise SystemExit(f"{path} is missing image")
-                  identities[image] = loaded
-              if set(identities) != expected_images:
-                  raise SystemExit(
-                      f"missing candidate identities: {sorted(expected_images - set(identities))}"
-                  )
-              return identities
-
-          def image_digest(ref: str) -> str | None:
-              completed = subprocess.run(
-                  ["docker", "buildx", "imagetools", "inspect", ref],
-                  capture_output=True,
-                  text=True,
-                  check=False,
-              )
-              if completed.returncode != 0:
-                  stderr = completed.stderr or ""
-                  if re.search(r"(not found|manifest unknown|name unknown)", stderr, re.I):
-                      return None
-                  raise SystemExit(stderr.strip() or f"could not inspect {ref}")
-              match = re.search(r"^Digest:\s+(sha256:[a-f0-9]{64})\s*$", completed.stdout, re.M)
-              if match is None:
-                  raise SystemExit(f"could not read digest for {ref}")
-              return match.group(1)
-
-          identities = load_identities()
-          existing: dict[str, str] = {}
-          for image, identity in sorted(identities.items()):
-              tag_ref = identity.get("tag_ref")
-              digest = identity.get("digest")
-              digest_ref = identity.get("digest_ref")
-              platforms = identity.get("platforms")
-              if not isinstance(tag_ref, str) or not isinstance(digest_ref, str):
-                  raise SystemExit(f"{image} identity is missing refs")
-              if not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
-                  raise SystemExit(f"{image} identity is missing a sha256 digest")
-              if platforms != required_platforms:
-                  raise SystemExit(f"{image} identity has unexpected platforms: {platforms!r}")
-              found = image_digest(tag_ref)
-              if found is not None:
-                  existing[image] = found
-
-          if existing and set(existing) != expected_images:
-              raise SystemExit(f"mixed existing version tags: {sorted(existing)}")
-
-          state = "new"
-          if existing:
-              state = "already-promoted"
-              for image, digest in sorted(existing.items()):
-                  expected = identities[image]["digest"]
-                  if digest != expected:
-                      raise SystemExit(
-                          f"immutable tag drift for {image}: {digest} != {expected}"
-                      )
-
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              print(f"version_tag_state={state}", file=output)
-          PY
-
-      - name: Promote pair-level immutable version tags
-        if: steps.version-tags.outputs.version_tag_state == 'new'
+      - name: Create, sign, and publish release pair authority
+        if: success()
+        env:
+          CERT_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/publish-images.yml@refs/tags/${{ github.ref_name }}
+          RELEASE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
         run: |
-          for identity in oci-identities/*.json; do
-            tag_ref="$(jq -r '.tag_ref' "$identity")"
-            digest_ref="$(jq -r '.digest_ref' "$identity")"
-            docker buildx imagetools create --tag "$tag_ref" "$digest_ref"
-          done
-          python - <<'PY'
-          import json
-          import re
-          import subprocess
-          from pathlib import Path
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_release publish-pair \
+            --identity-dir oci-identities \
+            --promotion-state-path promotion-state.json \
+            --registry "$REGISTRY" \
+            --namespace "$IMAGE_NAMESPACE" \
+            --version "${{ needs.authorize-release.outputs.version }}" \
+            --repository "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF" \
+            --source-sha "$RELEASE_SHA" \
+            --cert-identity "$CERT_IDENTITY" \
+            --output-dir release-pair
 
-          def image_digest(ref: str) -> str:
-              completed = subprocess.run(
-                  ["docker", "buildx", "imagetools", "inspect", ref],
-                  check=True,
-                  capture_output=True,
-                  text=True,
-              )
-              match = re.search(r"^Digest:\s+(sha256:[a-f0-9]{64})\s*$", completed.stdout, re.M)
-              if match is None:
-                  raise SystemExit(f"could not read digest for {ref}")
-              return match.group(1)
+      - name: Quarantine partial promotion on failure
+        if: (failure() || cancelled()) && hashFiles('promotion-state.json') != ''
+        env:
+          RELEASE_SHA: ${{ needs.authorize-release.outputs.release_sha }}
+        run: |
+          uv run --frozen --no-dev python -m codeprobe.sandbox.oci_release quarantine-promotion \
+            --identity-dir oci-identities \
+            --output-path promotion-quarantine.json \
+            --source-sha "$RELEASE_SHA"
 
-          for path in sorted(Path("oci-identities").glob("*.json")):
-              identity = json.loads(path.read_text(encoding="utf-8"))
-              tag_ref = identity["tag_ref"]
-              expected_digest = identity["digest"]
-              actual_digest = image_digest(tag_ref)
-              if actual_digest != expected_digest:
-                  raise SystemExit(
-                      f"immutable tag drift for {tag_ref}: {actual_digest} != {expected_digest}"
-                  )
-          PY
+      - name: Upload promotion quarantine evidence
+        if: always() && hashFiles('promotion-quarantine.json') != ''
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oci-release-pair-quarantine-${{ github.ref_name }}
+          path: |
+            promotion-state.json
+            promotion-quarantine.json
+          if-no-files-found: error
+
+      - name: Upload release pair evidence
+        if: success()
+        # actions/upload-artifact v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: oci-release-pair-${{ github.ref_name }}
+          path: |
+            release-pair/release-pair.json
+            release-pair/release-pair.bundle
+            release-pair/release-pair-ref.json
+            promotion-state.json
+          if-no-files-found: error

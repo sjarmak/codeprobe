@@ -11,19 +11,32 @@ from __future__ import annotations
 
 import dataclasses
 from importlib.metadata import version as package_version
+from unittest.mock import Mock
 
 import pytest
 
 from codeprobe.cli.errors import PrescriptiveError
 from codeprobe.core import containment
+from codeprobe.sandbox import runner as container_runner
 
-AGENT_IMAGE = f"codeprobe-agent:{package_version('codeprobe')}"
+LOCAL_AGENT_IMAGE = f"codeprobe-agent:{package_version('codeprobe')}"
+AGENT_IMAGE = (
+    f"registry.example.test/platform/codeprobe/codeprobe-agent:"
+    f"{package_version('codeprobe')}"
+)
 
 
 @pytest.fixture(autouse=True)
 def _fresh_plan_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """Isolate the module-level active-plan slot per test."""
     monkeypatch.setattr(containment, "_active_plan", None)
+    for name in (
+        container_runner.AGENT_IMAGE_ENV,
+        container_runner.IMAGE_REGISTRY_ENV,
+        container_runner.IMAGE_NAMESPACE_ENV,
+        container_runner.IMAGE_VERSION_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 class TestResolveContainment:
@@ -100,6 +113,7 @@ class TestContainerMode:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         seen: dict[str, str] = {}
+        monkeypatch.setenv(container_runner.AGENT_IMAGE_ENV, AGENT_IMAGE)
 
         def fake_image_available(engine: str, image: str) -> bool:
             seen["engine"] = engine
@@ -123,9 +137,32 @@ class TestContainerMode:
             "image": AGENT_IMAGE,
         }
 
-    def test_engine_without_agent_image_refuses_with_build_command(
+    def test_engine_without_agent_image_config_refuses_before_inspect(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        image_available = Mock(return_value=False)
+        monkeypatch.setattr(
+            "codeprobe.sandbox.runner.detect_engine",
+            lambda: "/usr/bin/docker",
+        )
+        monkeypatch.setattr(
+            "codeprobe.sandbox.runner.image_available", image_available
+        )
+
+        with pytest.raises(PrescriptiveError) as exc_info:
+            containment.resolve_containment(uncontained=False)
+
+        err = exc_info.value
+        assert err.code == "UNCONTAINED_REFUSED"
+        assert "agent image is not configured" in err.message
+        assert "CODEPROBE_AGENT_IMAGE" in err.message
+        assert f"-t {LOCAL_AGENT_IMAGE} ." in err.message
+        assert not image_available.called
+
+    def test_engine_with_missing_agent_image_refuses_with_build_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(container_runner.AGENT_IMAGE_ENV, AGENT_IMAGE)
         monkeypatch.setattr(
             "codeprobe.sandbox.runner.detect_engine",
             lambda: "/usr/bin/docker",
@@ -140,10 +177,34 @@ class TestContainerMode:
 
         err = exc_info.value
         assert err.code == "UNCONTAINED_REFUSED"
+        assert AGENT_IMAGE in err.message
         assert (
             "docker build -f src/codeprobe/sandbox/Dockerfile.agent "
-            f"-t {AGENT_IMAGE} ." in err.message
+            f"-t {LOCAL_AGENT_IMAGE} ." in err.message
         )
+
+    def test_invalid_agent_image_config_refuses_prescriptively(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        image_available = Mock(return_value=True)
+        monkeypatch.setenv(container_runner.IMAGE_VERSION_ENV, "invalid tag")
+        monkeypatch.setattr(
+            "codeprobe.sandbox.runner.detect_engine",
+            lambda: "/usr/bin/docker",
+        )
+        monkeypatch.setattr(
+            "codeprobe.sandbox.runner.image_available", image_available
+        )
+
+        with pytest.raises(PrescriptiveError) as exc_info:
+            containment.resolve_containment(uncontained=False)
+
+        err = exc_info.value
+        assert err.code == "UNCONTAINED_REFUSED"
+        assert "CODEPROBE_IMAGE_VERSION" in err.message
+        assert "CODEPROBE_AGENT_IMAGE" in err.message
+        assert f"-t {LOCAL_AGENT_IMAGE} ." in err.message
+        assert not image_available.called
 
     def test_uncontained_flag_wins_over_container_detection(
         self, monkeypatch: pytest.MonkeyPatch

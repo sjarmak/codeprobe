@@ -1,0 +1,228 @@
+{
+  "candidate_ref": "example.test/platform/codeprobe-agent:1.2.3-123-1-abcdefabcdef",
+  "digest_ref": "example.test/platform/codeprobe-agent@sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "image_ref": "example.test/platform/codeprobe-agent",
+  "raw_manifests": {
+    "example.test/platform/codeprobe-agent@sha256:9999999999999999999999999999999999999999999999999999999999999999": {
+      "manifests": [
+        {
+          "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "platform": {
+            "architecture": "amd64",
+            "os": "linux"
+          }
+        },
+        {
+          "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "platform": {
+            "architecture": "arm64",
+            "os": "linux"
+          }
+        },
+        {
+          "annotations": {
+            "vnd.docker.reference.digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        {
+          "annotations": {
+            "vnd.docker.reference.digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "vnd.docker.reference.type": "attestation-manifest"
+          },
+          "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      ]
+    },
+    "example.test/platform/codeprobe-agent@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+      "layers": [
+        {
+          "annotations": {
+            "in-toto.io/predicate-type": "https://spdx.dev/Document"
+          },
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        {
+          "annotations": {
+            "in-toto.io/predicate-type": "https://slsa.dev/provenance/v1"
+          },
+          "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      ],
+      "subject": {
+        "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    "example.test/platform/codeprobe-agent@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd": {
+      "layers": [
+        {
+          "annotations": {
+            "in-toto.io/predicate-type": "https://spdx.dev/Document"
+          },
+          "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "annotations": {
+            "in-toto.io/predicate-type": "https://slsa.dev/provenance/v1"
+          },
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "subject": {
+        "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  },
+  "statements": {
+    "example.test/platform/codeprobe-agent@sha256:1111111111111111111111111111111111111111111111111111111111111111": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "predicate": {
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "creationInfo": {
+          "created": "2026-07-29T00:00:00Z",
+          "creators": [
+            "Tool: docker-scout-sbom-indexer"
+          ]
+        },
+        "dataLicense": "CC0-1.0",
+        "documentNamespace": "https://example.test/spdx/codeprobe-agent-arm64",
+        "files": [
+          {
+            "SPDXID": "SPDXRef-File-bin-sh-arm64",
+            "fileName": "/bin/sh"
+          }
+        ],
+        "name": "codeprobe-agent linux/arm64 SBOM",
+        "packages": [
+          {
+            "SPDXID": "SPDXRef-Package-base-files-arm64",
+            "name": "base-files"
+          }
+        ],
+        "relationships": [
+          {
+            "relatedSpdxElement": "SPDXRef-Package-base-files-arm64",
+            "relationshipType": "DESCRIBES",
+            "spdxElementId": "SPDXRef-DOCUMENT"
+          }
+        ],
+        "spdxVersion": "SPDX-2.3"
+      },
+      "predicateType": "https://spdx.dev/Document",
+      "subject": [
+        {
+          "digest": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "name": "pkg:docker/example.test/platform/codeprobe-agent@1.2.3-123-1-abcdefabcdef?platform=linux%2Farm64"
+        }
+      ]
+    },
+    "example.test/platform/codeprobe-agent@sha256:2222222222222222222222222222222222222222222222222222222222222222": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "predicate": {
+        "buildDefinition": {
+          "buildType": "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md",
+          "resolvedDependencies": [
+            {
+              "digest": {
+                "sha1": "0000000000000000000000000000000000000000"
+              },
+              "uri": "git+https://github.com/source/repo"
+            }
+          ]
+        },
+        "runDetails": {
+          "builder": {
+            "id": ""
+          }
+        }
+      },
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "subject": [
+        {
+          "digest": {
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "name": "pkg:docker/example.test/platform/codeprobe-agent@1.2.3-123-1-abcdefabcdef?platform=linux%2Farm64"
+        }
+      ]
+    },
+    "example.test/platform/codeprobe-agent@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "predicate": {
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "creationInfo": {
+          "created": "2026-07-29T00:00:00Z",
+          "creators": [
+            "Tool: docker-scout-sbom-indexer"
+          ]
+        },
+        "dataLicense": "CC0-1.0",
+        "documentNamespace": "https://example.test/spdx/codeprobe-agent-amd64",
+        "files": [
+          {
+            "SPDXID": "SPDXRef-File-bin-sh-amd64",
+            "fileName": "/bin/sh"
+          }
+        ],
+        "name": "codeprobe-agent linux/amd64 SBOM",
+        "packages": [
+          {
+            "SPDXID": "SPDXRef-Package-base-files-amd64",
+            "name": "base-files",
+            "versionInfo": "1.0.0"
+          }
+        ],
+        "relationships": [
+          {
+            "relatedSpdxElement": "SPDXRef-Package-base-files-amd64",
+            "relationshipType": "DESCRIBES",
+            "spdxElementId": "SPDXRef-DOCUMENT"
+          }
+        ],
+        "spdxVersion": "SPDX-2.3"
+      },
+      "predicateType": "https://spdx.dev/Document",
+      "subject": [
+        {
+          "digest": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "name": "pkg:docker/example.test/platform/codeprobe-agent@1.2.3-123-1-abcdefabcdef?platform=linux%2Famd64"
+        }
+      ]
+    },
+    "example.test/platform/codeprobe-agent@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff": {
+      "_type": "https://in-toto.io/Statement/v1",
+      "predicate": {
+        "buildDefinition": {
+          "buildType": "https://github.com/moby/buildkit/blob/master/docs/attestations/slsa-definitions.md",
+          "resolvedDependencies": [
+            {
+              "digest": {
+                "sha1": "0000000000000000000000000000000000000000"
+              },
+              "uri": "git+https://github.com/source/repo"
+            }
+          ]
+        },
+        "runDetails": {
+          "builder": {
+            "id": ""
+          }
+        }
+      },
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "subject": [
+        {
+          "digest": {
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "name": "pkg:docker/example.test/platform/codeprobe-agent@1.2.3-123-1-abcdefabcdef?platform=linux%2Famd64"
+        }
+      ]
+    }
+  }
+}
