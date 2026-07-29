@@ -134,7 +134,11 @@ def test_oci_image_workflow_has_supply_chain_gates() -> None:
     assert "docker/setup-buildx-action@v4" in uses
     assert "docker/login-action@v4" in uses
     assert "actions/attest@v4" in uses
-    assert "sigstore/cosign-installer@v4" in uses
+    assert "sigstore/cosign-installer@v4" not in uses
+    assert (
+        "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6"
+        in uses
+    )
 
     run_text = "\n".join(
         str(step["run"]) for step in steps if isinstance(step.get("run"), str)
