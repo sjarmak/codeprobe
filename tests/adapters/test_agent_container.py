@@ -352,22 +352,18 @@ class TestRunContainerization:
         (argv,) = capture_run
         mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
         env_args = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-e"]
-        assert f"{tmp_path}:{tmp_path}:rw" in mounts
-        assert (
+        first_ca_mount = (
             f"{ca_file.resolve()}:/etc/codeprobe/ca/00-corp-ca.pem:ro"
-            in mounts
         )
-        assert (
+        second_ca_mount = (
             f"{same_name_ca.resolve()}:/etc/codeprobe/ca/01-corp-ca.pem:ro"
-            in mounts
         )
-        assert f"{ca_dir.resolve()}:/etc/codeprobe/ca/02-ca-dir:ro" in mounts
-        assert (
-            mounts.count(
-                f"{ca_file.resolve()}:/etc/codeprobe/ca/00-corp-ca.pem:ro"
-            )
-            == 1
-        )
+        ca_dir_mount = f"{ca_dir.resolve()}:/etc/codeprobe/ca/02-ca-dir:ro"
+        assert f"{tmp_path}:{tmp_path}:rw" in mounts
+        assert first_ca_mount in mounts
+        assert second_ca_mount in mounts
+        assert ca_dir_mount in mounts
+        assert mounts.count(first_ca_mount) == 1
         assert "SSL_CERT_FILE=/etc/codeprobe/ca/00-corp-ca.pem" in env_args
         assert "REQUESTS_CA_BUNDLE=/etc/codeprobe/ca/00-corp-ca.pem" in env_args
         assert "CURL_CA_BUNDLE=/etc/codeprobe/ca/01-corp-ca.pem" in env_args

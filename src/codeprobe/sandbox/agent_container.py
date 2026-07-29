@@ -49,38 +49,10 @@ def containerize_argv(
     readonly_mounts: list[tuple[Path, Path]] | None = None,
     env_values: Mapping[str, str] | None = None,
 ) -> list[str]:
-    """Return *cmd* wrapped in a ``<engine> run`` argv.
+    """Return *cmd* wrapped in a hardened ``<engine> run`` argv.
 
-    Parameters
-    ----------
-    cmd:
-        The adapter argv. ``cmd[0]`` is a host binary path that does not
-        exist inside the image; it is replaced by its basename so the
-        image resolves the same CLI on its own PATH. The rest of the argv
-        is passed through unchanged.
-    engine:
-        Container engine binary (docker or podman path).
-    workspace:
-        Slot worktree — identity-mounted rw and used as ``-w`` workdir.
-    config_dir:
-        Session ``CLAUDE_CONFIG_DIR`` to identity-mount rw, or ``None``.
-    mcp_tmpfile:
-        MCP config tmpfile to identity-mount ro, or ``None``.
-    readonly_mounts:
-        Additional ``(host, container)`` paths to mount read-only.
-    env_keys:
-        Candidate env var names; a valueless ``-e KEY`` is emitted for
-        each one present in *env*.
-    env_values:
-        Explicit container environment assignments emitted as ``-e KEY=value``.
-    image:
-        Verified immutable agent image ID.
-    name:
-        Container name (``--name``), so a client-side timeout can
-        ``<engine> rm -f`` the container.
-    env:
-        Mapping consulted for *env_keys* presence — the environment the
-        engine client will run with. Defaults to ``os.environ``.
+    Host-only paths are mounted explicitly. Environment keys use valueless
+    engine passthrough; rewritten CA paths use explicit container values.
     """
     if not cmd:
         raise ValueError("cmd must be a non-empty argv list")

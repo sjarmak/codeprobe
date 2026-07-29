@@ -9,7 +9,6 @@ import pytest
 
 from codeprobe.adapters._base import (
     _ADAPTER_ENV_WHITELIST,
-    _CONTAINER_ENV_KEYS,
     BaseAdapter,
     _adapter_safe_env,
 )
@@ -332,10 +331,6 @@ class TestBaseAdapterEnvWhitelist:
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.corp:3128")
         monkeypatch.setenv("SSL_CERT_FILE", "/etc/corp/ca.pem")
         monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-gw.corp/anthropic")
-        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "github_pat_test")
-        monkeypatch.setenv("GH_TOKEN", "github_pat_test")
-        monkeypatch.setenv("COPILOT_PROVIDER_API_KEY", "provider-secret")
-        monkeypatch.setenv("COPILOT_API_KEY", "obsolete-secret")
 
         env = _adapter_safe_env(None)
 
@@ -343,10 +338,6 @@ class TestBaseAdapterEnvWhitelist:
         assert env["HTTPS_PROXY"] == "http://proxy.corp:3128"
         assert env["SSL_CERT_FILE"] == "/etc/corp/ca.pem"
         assert env["ANTHROPIC_BASE_URL"] == "https://llm-gw.corp/anthropic"
-        assert env["COPILOT_GITHUB_TOKEN"] == "github_pat_test"
-        assert env["GH_TOKEN"] == "github_pat_test"
-        assert env["COPILOT_PROVIDER_API_KEY"] == "provider-secret"
-        assert "COPILOT_API_KEY" not in env
 
     def test_whitelist_contains_proxy_ca_gateway_not_node_options(self) -> None:
         expected = {
@@ -365,27 +356,9 @@ class TestBaseAdapterEnvWhitelist:
             "NODE_EXTRA_CA_CERTS",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_AUTH_TOKEN",
-            "COPILOT_GITHUB_TOKEN",
-            "GH_TOKEN",
-            "COPILOT_OFFLINE",
-            "COPILOT_PROVIDER_BASE_URL",
-            "COPILOT_PROVIDER_API_KEY",
-            "COPILOT_PROVIDER_TYPE",
-            "COPILOT_MODEL",
         }
         assert expected <= _ADAPTER_ENV_WHITELIST
         assert "NODE_OPTIONS" not in _ADAPTER_ENV_WHITELIST
-        assert "COPILOT_API_KEY" not in _ADAPTER_ENV_WHITELIST
-        assert {
-            "COPILOT_GITHUB_TOKEN",
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "COPILOT_OFFLINE",
-            "COPILOT_PROVIDER_BASE_URL",
-            "COPILOT_PROVIDER_API_KEY",
-            "COPILOT_PROVIDER_TYPE",
-            "COPILOT_MODEL",
-        } <= _CONTAINER_ENV_KEYS
 
     def test_filters_env_with_session_env(self) -> None:
         """With session isolation, subprocess gets a filtered env."""

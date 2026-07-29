@@ -215,6 +215,52 @@ def _container_private_ca(
     return mounts, env_values
 
 
+def _mcp_tmpfile_from(cmd: list[str]) -> str | None:
+    for flag in ("--mcp-config", "--additional-mcp-config"):
+        if flag not in cmd:
+            continue
+        index = cmd.index(flag)
+        if index + 1 >= len(cmd):
+            continue
+        raw_path = cmd[index + 1]
+        candidate = raw_path[1:] if raw_path.startswith("@") else raw_path
+        if candidate.startswith(tempfile.gettempdir()):
+            return candidate
+    return None
+
+
+def _containerized_command(
+    cmd: list[str],
+    config: AgentConfig,
+    session_env: dict[str, str] | None,
+    run_env: dict[str, str],
+    mcp_tmpfile: str | None,
+) -> tuple[list[str], str | None, str | None]:
+    plan = containment.active_plan()
+    if plan is None or plan.mode != "container" or not plan.engine:
+        return cmd, None, None
+    container_name = f"codeprobe-agent-{uuid.uuid4().hex}"
+    raw_config_dir = (session_env or {}).get("CLAUDE_CONFIG_DIR")
+    container_env_keys = set(_CONTAINER_ENV_KEYS)
+    if raw_config_dir is None:
+        container_env_keys.discard("CLAUDE_CONFIG_DIR")
+    private_ca_mounts, private_ca_env_values = _container_private_ca(run_env)
+    argv = containerize_argv(
+        cmd,
+        engine=plan.engine,
+        workspace=Path(config.cwd) if config.cwd else Path.cwd(),
+        config_dir=Path(raw_config_dir) if raw_config_dir else None,
+        mcp_tmpfile=mcp_tmpfile,
+        readonly_mounts=private_ca_mounts,
+        env_keys=sorted(container_env_keys),
+        env_values=private_ca_env_values,
+        image=agent_image_reference(),
+        name=container_name,
+        env=run_env,
+    )
+    return argv, plan.engine, container_name
+
+
 def _decode_timeout_output(raw: str | bytes | None) -> str:
     """Decode stdout/stderr from a TimeoutExpired exception.
 
@@ -319,65 +365,12 @@ class BaseAdapter:
         session_env: dict[str, str] | None = None,
     ) -> AgentOutput:
         cmd = self.build_command(prompt, config)
-        mcp_tmpfile: str | None = None
-
-        # Find and track MCP temp file for cleanup
-        for flag in ("--mcp-config", "--additional-mcp-config"):
-            if flag in cmd:
-                idx = cmd.index(flag)
-                if idx + 1 < len(cmd):
-                    path = cmd[idx + 1]
-                    # Copilot's --additional-mcp-config takes an @-prefixed
-                    # file reference; strip it so cleanup still tracks the file.
-                    candidate = path[1:] if path.startswith("@") else path
-                    if candidate.startswith(tempfile.gettempdir()):
-                        mcp_tmpfile = candidate
-
-        # Whitelist-filter unconditionally: serial dispatch (session_env is
-        # None) and adapters with no session isolation get the same
-        # filtered environment as parallel dispatch — never the full
-        # parent env.
+        mcp_tmpfile = _mcp_tmpfile_from(cmd)
         run_env = _adapter_safe_env(session_env)
-
-        # Containerize the agent argv when the run resolved a "container"
-        # plan (codeprobe-f7rl.5). Sandboxed / host-consented / plan-less
-        # (library and test) callers keep the exact build_command argv.
-        container_engine: str | None = None
-        container_name: str | None = None
-        plan = containment.active_plan()
-        if plan is not None and plan.mode == "container" and plan.engine:
-            container_engine = plan.engine
-            container_name = f"codeprobe-agent-{uuid.uuid4().hex}"
-            # Only a per-slot session config dir (adapter.isolate_session)
-            # is ever mounted. The host-global CLAUDE_CONFIG_DIR is
-            # deliberately NOT a fallback: mounting the user's real config
-            # dir rw would hand the agent live credential/settings state.
-            # Without a session dir, credentials reach the container solely
-            # via the -e whitelist (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_
-            # TOKEN, ...), and CLAUDE_CONFIG_DIR is withheld from the -e
-            # passthrough so the container never receives a host path that
-            # is not mounted.
-            raw_config_dir = (session_env or {}).get("CLAUDE_CONFIG_DIR")
-            container_env_keys = set(_CONTAINER_ENV_KEYS)
-            if raw_config_dir is None:
-                container_env_keys.discard("CLAUDE_CONFIG_DIR")
-            private_ca_mounts, private_ca_env_values = _container_private_ca(run_env)
-            cmd = containerize_argv(
-                cmd,
-                engine=container_engine,
-                workspace=Path(config.cwd) if config.cwd else Path.cwd(),
-                config_dir=Path(raw_config_dir) if raw_config_dir else None,
-                mcp_tmpfile=mcp_tmpfile,
-                readonly_mounts=private_ca_mounts,
-                env_keys=sorted(container_env_keys),
-                env_values=private_ca_env_values,
-                image=agent_image_reference(),
-                name=container_name,
-                env=run_env,
-            )
-
+        cmd, container_engine, container_name = _containerized_command(
+            cmd, config, session_env, run_env, mcp_tmpfile
+        )
         start = time.monotonic()
-
         try:
             result = subprocess.run(
                 cmd,
@@ -388,64 +381,66 @@ class BaseAdapter:
                 env=run_env,
             )
         except subprocess.TimeoutExpired as exc:
-            duration = time.monotonic() - start
-            if container_engine and container_name:
-                # The timeout killed the engine client, not the container.
-                _remove_container(container_engine, container_name)
-            timeout_error = f"Agent timed out after {config.timeout_seconds}s"
-
-            raw_stdout = _decode_timeout_output(exc.stdout)
-            raw_stderr = _decode_timeout_output(exc.stderr) or None
-
-            if raw_stdout:
-                try:
-                    partial_result = subprocess.CompletedProcess(
-                        args=cmd,
-                        returncode=-1,
-                        stdout=raw_stdout,
-                        stderr=raw_stderr or "",
-                    )
-                    parsed = self.parse_output(partial_result, duration)
-                    merged_error = timeout_error
-                    if parsed.error:
-                        merged_error = f"{timeout_error}; {parsed.error}"
-                    # dataclasses.replace preserves every adapter-declared
-                    # field (error_category, error_terminal, tool_use_by_name,
-                    # num_turns, mcp_init, ...) by construction — dropping
-                    # fields here previously lost e.g. a quota stub's category
-                    # inside a timed-out trial, and a quota stub must still
-                    # halt the run (codeprobe-f7rl.29, codeprobe-f7rl.34). An
-                    # adapter-declared category (quota) outranks the
-                    # generic timeout classification.
-                    return dataclasses.replace(
-                        parsed,
-                        exit_code=-1,
-                        duration_seconds=duration,
-                        error=merged_error,
-                        error_category=parsed.error_category or "timeout",
-                    )
-                except Exception as parse_exc:
-                    timeout_error = f"{timeout_error}; parse_output failed: {parse_exc}"
-
-            return AgentOutput(
-                stdout=raw_stdout,
-                stderr=raw_stderr,
-                exit_code=-1,
-                duration_seconds=duration,
-                error=timeout_error,
-                error_category="timeout",
+            return self._timeout_output(
+                exc, cmd, config, start, container_engine, container_name
             )
         except FileNotFoundError as exc:
             raise AdapterSetupError(f"Binary not found at runtime: {exc}") from exc
         finally:
-            if mcp_tmpfile:
-                try:
-                    os.unlink(mcp_tmpfile)
-                except OSError:
-                    pass
-
+            self._cleanup_mcp_tmpfile(mcp_tmpfile)
         duration = time.monotonic() - start
+        return self._parse_result(result, duration)
 
+    def _timeout_output(
+        self,
+        exc: subprocess.TimeoutExpired,
+        cmd: list[str],
+        config: AgentConfig,
+        start: float,
+        container_engine: str | None,
+        container_name: str | None,
+    ) -> AgentOutput:
+        duration = time.monotonic() - start
+        if container_engine and container_name:
+            _remove_container(container_engine, container_name)
+        timeout_error = f"Agent timed out after {config.timeout_seconds}s"
+        raw_stdout = _decode_timeout_output(exc.stdout)
+        raw_stderr = _decode_timeout_output(exc.stderr) or None
+        if raw_stdout:
+            try:
+                partial_result = subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=-1,
+                    stdout=raw_stdout,
+                    stderr=raw_stderr or "",
+                )
+                parsed = self.parse_output(partial_result, duration)
+                merged_error = timeout_error
+                if parsed.error:
+                    merged_error = f"{timeout_error}; {parsed.error}"
+                return dataclasses.replace(
+                    parsed,
+                    exit_code=-1,
+                    duration_seconds=duration,
+                    error=merged_error,
+                    error_category=parsed.error_category or "timeout",
+                )
+            except Exception as parse_exc:
+                timeout_error = f"{timeout_error}; parse_output failed: {parse_exc}"
+        return AgentOutput(
+            stdout=raw_stdout,
+            stderr=raw_stderr,
+            exit_code=-1,
+            duration_seconds=duration,
+            error=timeout_error,
+            error_category="timeout",
+        )
+
+    def _parse_result(
+        self,
+        result: subprocess.CompletedProcess[str],
+        duration: float,
+    ) -> AgentOutput:
         try:
             return self.parse_output(result, duration)
         except Exception as exc:
@@ -456,3 +451,11 @@ class BaseAdapter:
                 duration_seconds=duration,
                 error=f"Output parse failed: {exc}",
             )
+
+    def _cleanup_mcp_tmpfile(self, mcp_tmpfile: str | None) -> None:
+        if mcp_tmpfile is None:
+            return
+        try:
+            os.unlink(mcp_tmpfile)
+        except OSError:
+            logger.warning("failed to remove MCP config tempfile")
