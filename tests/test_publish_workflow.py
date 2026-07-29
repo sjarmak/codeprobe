@@ -108,6 +108,7 @@ def test_publish_job_requires_combined_release_gate() -> None:
     publish = jobs["publish"]
     assert isinstance(gate, dict)
     assert isinstance(publish, dict)
+    assert gate["needs"] == ["e2e-enterprise"]
     assert publish["needs"] == ["gate"]
 
     gate_steps = gate["steps"]
@@ -131,7 +132,7 @@ def test_pypi_credentials_exist_only_after_gate_job() -> None:
     gate_text = str(jobs["gate"])
     publish_text = str(jobs["publish"])
 
-    assert "CODEPROBE" not in gate_text
+    assert "secrets.CODEPROBE" not in gate_text
     assert "twine upload" not in gate_text
     assert "CODEPROBE" in publish_text
     assert "twine upload" in publish_text

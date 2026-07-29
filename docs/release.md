@@ -94,20 +94,54 @@ Pushing the tag triggers `.github/workflows/publish.yml`:
 
 ```
 test ───────────┐
-                ├→ gate → publish
+                ├→ e2e-enterprise → gate → publish
 e2e-self-serve ─┘
 ```
 
 - **`test`** — the normal pytest matrix (3.11/3.12/3.13), same as CI.
-- **`gate`** — builds `dist/` exactly once (`python -m build`), runs `twine
-  check dist/*`, then `scripts/check_release_artifacts.py dist/ --version
-  <tag-version>` — structural checks: exactly one wheel + one sdist; both
-  contain exactly the five packaged skills and nothing else (this is the
-  check that would have caught the 0.11.0 leak, see below); wheel/sdist
-  filename versions match `pyproject.toml`; `CHANGELOG.md` has a heading for
-  that version. **Immediately after that check passes**, `dist/` is uploaded
-  as the `release-dist` workflow artifact — before the next step runs.
-  Only then does `scripts/release_gate.py` run the complete acceptance gate.
+- **`e2e-self-serve`** — preserves the zero-cost `e2e-stub` wiring journey.
+  Its output is not accepted as real-agent release evidence.
+- **`e2e-enterprise`** — runs only after both jobs above pass and obtains its
+  credential from the protected `release-real-agent` environment. Configure
+  `CODEPROBE_RELEASE_AGENT`, `CODEPROBE_RELEASE_CREDENTIAL_ENV`,
+  `CODEPROBE_RELEASE_AGENT_IMAGE`, `CODEPROBE_RELEASE_SCORING_IMAGE`, and
+  `CODEPROBE_RELEASE_MAX_COST_USD` as environment variables, plus
+  `CODEPROBE_RELEASE_AGENT_CREDENTIAL` as the sole secret. Both image values
+  must be exact `@sha256:` references, and the selected credential environment
+  name must match the selected agent. The current published agent image carries
+  the Claude CLI, so this gate accepts `claude` with either
+  `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; the explicit variables make
+  a mismatch fail closed rather than silently switching adapters. Do not
+  approve the protected environment until the same tag's
+  `.github/workflows/publish-images.yml` run has promoted and verified both
+  image digests and those exact references are present in the environment.
+  The image-label check rejects a digest from another version or commit. The
+  job builds one wheel, installs it with
+  dependencies into a fresh venv, blocks reads from the CodeProbe checkout,
+  bootstraps and label-checks both trusted images, and runs doctor, assess,
+  mine, two arms using the same real agent, run, interpret, evidence preview,
+  evidence export, and receiving-side evidence validation against a synthetic
+  repository. It also checks worktree/container isolation, a proxy/private-CA
+  fixture, a private-registry fixture, the offline network guard, structured
+  errors, output locations, cost telemetry, and exact secret absence. It
+  retains the tested wheel as `release-dist` and a 30-day
+  `enterprise-journey-evidence` artifact bound to the tag version, tag commit,
+  wheel hash, image digests, real producer, and declared maximum spend. A dry
+  producer, missing credential, mutable image reference, image label mismatch,
+  failed leg, over-budget run, source read, or detected secret prevents either
+  artifact from authorizing publication.
+- **`gate`** — downloads the exact tested wheel and enterprise evidence,
+  keeps that wheel in `candidate-dist/`, builds the sdist beside it, runs
+  `twine check candidate-dist/*`, then runs
+  `scripts/check_release_artifacts.py candidate-dist/ --version <tag-version>` —
+  structural checks: exactly one wheel + one sdist; both contain exactly the
+  five packaged skills and nothing else (this is the check that would have
+  caught the 0.11.0 leak, see below); wheel/sdist filename versions match
+  `pyproject.toml`; `CHANGELOG.md` has a heading for that version.
+  `scripts/enterprise_release_gate.py` independently re-hashes the downloaded
+  wheel and rejects evidence not bound to the current tag commit, version,
+  configured image digests, and budget. Only then does
+  `scripts/release_gate.py` run the complete acceptance gate.
   It loads `acceptance/release-verdicts/manifest.json`, rejects a missing,
   stale-version, or hash-mismatched evidence set, and passes the two ordered
   verdicts directly to `ReleaseGate.check_ready()`. Staging is unreachable
@@ -115,18 +149,14 @@ e2e-self-serve ─┘
   the same `ReleaseGate` instance runs `build_and_stage()`: it rebuilds the
   wheel, installs it into a throwaway venv, runs `codeprobe --version`, and
   exercises five structural acceptance criteria against the freshly-staged
-  install. Every staging field must be true. That rebuild is deliberately
-  sequenced *after* the artifact upload: `python -m build` wheel output is
-  not byte-reproducible between invocations even against an unchanged source
-  tree (differing zip-entry timestamps/metadata), so if `release_gate.py`
-  ran before the upload step, the artifact would silently capture its
-  unchecked rebuild instead of the wheel `check_release_artifacts.py`
-  actually validated.
-- **`publish`** — downloads `release-dist` and runs `twine upload dist/*`.
-  It never rebuilds. The bytes `gate` uploaded (immediately after checking
-  them, before any later rebuild) are the exact bytes published — this is
-  deliberate: rebuilding between check and publish would mean the gate
-  proved nothing about what customers actually receive.
+  install. Every staging field must be true. Its internal rebuild uses
+  `dist/`, so it cannot replace the candidate wheel isolated in
+  `candidate-dist/`. The gate uploads the checked candidate wheel and sdist
+  together as `release-dist-checked`.
+- **`publish`** — downloads `release-dist-checked` and runs
+  `twine upload dist/*`. It never rebuilds. The wheel bytes installed by the
+  real-agent journey and independently re-hashed by the gate are the exact
+  wheel bytes published.
 
 If `gate` fails, the tag exists but nothing is published. Delete the tag,
 fix the issue, and re-tag once `pyproject.toml`'s version still matches

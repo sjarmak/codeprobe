@@ -4,94 +4,175 @@ on:
   push:
     tags: ["v*"]
 
+permissions: {}
+
+env:
+  CODEPROBE_RELEASE_MAX_COST_USD: ${{ vars.CODEPROBE_RELEASE_MAX_COST_USD || '1.25' }}
+
 jobs:
   test:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      # INV2 tenant guard: derive_tenant() fail-louds when CI=true and no tenant
-      # is set. Set it explicitly so the guard fires only for user error, not
-      # for our own test suite. Tests that exercise the guard itself override
-      # via monkeypatch and are unaffected.
       - run: pytest --cov=src/codeprobe --cov-report=term-missing --cov-fail-under=80
         env:
           CODEPROBE_TENANT: ci-${{ github.sha }}
 
-  # The self-serve acceptance exit gate (codeprobe-f7rl.46). Same job as
-  # ci.yml's e2e-self-serve, duplicated here rather than cross-referenced:
-  # GitHub Actions `needs:` can only depend on jobs within the same
-  # workflow file, so a release-blocking copy has to live in this
-  # workflow too. Locked decision 8: no release ships without this green.
+  # Zero-cost wiring coverage remains a normal release prerequisite, but its
+  # e2e-stub producer can never create the retained release evidence below.
   e2e-self-serve:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: python scripts/e2e/self_serve_acceptance.py
 
-  # Builds dist/ exactly once and checks its content/version/changelog
-  # invariants, then immediately uploads those checked bytes as a workflow
-  # artifact — before release_gate.py runs. release_gate.py's
-  # ReleaseGate.build_and_stage() rebuilds the wheel internally as part of
-  # its own install/smoke-test cycle (python -m build wheel output is not
-  # byte-reproducible between invocations even against an unchanged source
-  # tree), so it must never run before the upload step, or the artifact
-  # would silently capture an unchecked rebuild instead of the wheel
-  # check_release_artifacts.py actually validated. `publish` downloads this
-  # artifact rather than rebuilding, so the bytes twine uploads are the
-  # exact bytes this job checked.
-  gate:
+  # Protected real-agent gate. The wheel uploaded here is the exact wheel the
+  # clean venv installs and the exact wheel the publish job later receives.
+  e2e-enterprise:
     needs: [test, e2e-self-serve]
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    environment: release-real-agent
+    permissions:
+      contents: read
+    env:
+      CODEPROBE_RELEASE_AGENT: ${{ vars.CODEPROBE_RELEASE_AGENT || 'claude' }}
+      CODEPROBE_RELEASE_CREDENTIAL_ENV: ${{ vars.CODEPROBE_RELEASE_CREDENTIAL_ENV || 'ANTHROPIC_API_KEY' }}
+      CODEPROBE_RELEASE_AGENT_IMAGE: ${{ vars.CODEPROBE_RELEASE_AGENT_IMAGE }}
+      CODEPROBE_RELEASE_SCORING_IMAGE: ${{ vars.CODEPROBE_RELEASE_SCORING_IMAGE }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
-      - run: pip install build twine
-      - run: python -m build
-      - run: twine check dist/*
-      - run: python scripts/check_release_artifacts.py dist/ --version "${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - run: pip install build
+      - run: python -m build --wheel
+      - name: Clean-wheel real-agent enterprise journey
+        env:
+          CODEPROBE_RELEASE_AGENT_CREDENTIAL: ${{ secrets.CODEPROBE_RELEASE_AGENT_CREDENTIAL }}
+        run: >-
+          python scripts/e2e/enterprise_journey.py
+          --wheel dist/codeprobe-*.whl
+          --candidate-version "${GITHUB_REF_NAME#v}"
+          --candidate-commit "$GITHUB_SHA"
+          --agent "$CODEPROBE_RELEASE_AGENT"
+          --credential-env "$CODEPROBE_RELEASE_CREDENTIAL_ENV"
+          --agent-image "$CODEPROBE_RELEASE_AGENT_IMAGE"
+          --scoring-image "$CODEPROBE_RELEASE_SCORING_IMAGE"
+          --max-cost-usd "$CODEPROBE_RELEASE_MAX_COST_USD"
+          --out enterprise-evidence/enterprise-journey.json
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-dist
-          path: dist/
+          path: dist/*.whl
           if-no-files-found: error
-      # Acceptance readiness + staging gate. Its internal rebuild must not
-      # feed the published artifact (see comment above) — the upload already
-      # happened.
-      #
-      # No `pip install dist/codeprobe-*.whl` here (codeprobe-zqmr): the
-      # structural smoke's import_equals / dataclass_has_fields handlers now
-      # resolve imports inside the venv ReleaseGate.build_and_stage() stages
-      # internally (Verifier(..., python_interpreter=venv_python)), not in
-      # this job's interpreter. codeprobe is intentionally NOT importable
-      # here — that's what proves the smoke tests the staged install rather
-      # than whatever happens to be on this runner's Python path.
+          retention-days: 30
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: enterprise-journey-evidence
+          path: enterprise-evidence/enterprise-journey.json
+          if-no-files-found: error
+          retention-days: 30
+
+  gate:
+    needs: [e2e-enterprise]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      CODEPROBE_RELEASE_AGENT_IMAGE: ${{ vars.CODEPROBE_RELEASE_AGENT_IMAGE }}
+      CODEPROBE_RELEASE_SCORING_IMAGE: ${{ vars.CODEPROBE_RELEASE_SCORING_IMAGE }}
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      # actions/download-artifact v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-dist
+          path: candidate-dist/
+      # actions/download-artifact v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: enterprise-journey-evidence
+          path: enterprise-evidence/
+      - run: pip install build twine
+      - run: python -m build --sdist --outdir candidate-dist
+      - run: twine check candidate-dist/*
+      - run: >-
+          python scripts/check_release_artifacts.py candidate-dist/
+          --version "${GITHUB_REF_NAME#v}"
+      - name: Validate candidate-bound real-agent evidence
+        run: >-
+          python scripts/enterprise_release_gate.py
+          --evidence enterprise-evidence/enterprise-journey.json
+          --wheel candidate-dist/codeprobe-*.whl
+          --expected-version "${GITHUB_REF_NAME#v}"
+          --expected-commit "$GITHUB_SHA"
+          --expected-agent-image "$CODEPROBE_RELEASE_AGENT_IMAGE"
+          --expected-scoring-image "$CODEPROBE_RELEASE_SCORING_IMAGE"
+          --max-cost-usd "$CODEPROBE_RELEASE_MAX_COST_USD"
+      # Acceptance readiness + fresh staging smoke. Its internal rebuild is
+      # isolated from dist/, whose wheel bytes came from e2e-enterprise.
       - run: >-
           python scripts/release_gate.py
           --evidence-dir acceptance/release-verdicts
           --expected-version "${GITHUB_REF_NAME#v}"
+      # actions/upload-artifact v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-dist-checked
+          path: candidate-dist/
+          if-no-files-found: error
+          retention-days: 30
 
   publish:
     needs: [gate]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/download-artifact@v4
+      # actions/download-artifact v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: release-dist
+          name: release-dist-checked
           path: dist/
-      - uses: actions/setup-python@v6
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
       - run: pip install twine
