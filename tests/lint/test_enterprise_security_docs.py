@@ -463,8 +463,8 @@ def test_forwarded_sensitive_environment_variables_are_inventoried() -> None:
     )
 
 
-def _agent_container_uses_bridge_network() -> bool:
-    argv = containerize_argv(
+def _agent_container_argv_with_mounted_inputs() -> list[str]:
+    return containerize_argv(
         ["claude", "-p", "prompt"],
         engine="docker",
         workspace=Path("/workspace"),
@@ -475,11 +475,28 @@ def _agent_container_uses_bridge_network() -> bool:
         name="codeprobe-agent-test",
         env={"ANTHROPIC_API_KEY": "sk-test"},
     )
+
+
+def _agent_container_argv_without_optional_mounts() -> list[str]:
+    return containerize_argv(
+        ["claude", "-p", "prompt"],
+        engine="docker",
+        workspace=Path("/workspace"),
+        config_dir=None,
+        mcp_tmpfile=None,
+        env_keys=[],
+        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
+        name="codeprobe-agent-test",
+    )
+
+
+def _agent_container_uses_bridge_network() -> bool:
+    argv = _agent_container_argv_with_mounted_inputs()
     return "--network=bridge" in argv
 
 
-def _scoring_container_defaults_to_no_network() -> bool:
-    argv = sandbox_runner._build_run_command(
+def _scoring_container_argv() -> list[str]:
+    return sandbox_runner._build_run_command(
         "docker",
         ["bash", "tests/test.sh"],
         {"/tmp/codeprobe-score-abc": "/tmp/codeprobe-score-abc"},
@@ -488,21 +505,15 @@ def _scoring_container_defaults_to_no_network() -> bool:
         workdir="/tmp/codeprobe-score-abc/task",
         env={"AGENT_OUTPUT": "/tmp/codeprobe-score-abc/agent_output.txt"},
     )
+
+
+def _scoring_container_defaults_to_no_network() -> bool:
+    argv = _scoring_container_argv()
     return "--network=none" in argv
 
 
 def _agent_container_mounts_expected_paths() -> bool:
-    argv = containerize_argv(
-        ["claude", "-p", "prompt"],
-        engine="docker",
-        workspace=Path("/workspace"),
-        config_dir=Path("/tmp/codeprobe-claude/slot-0"),
-        mcp_tmpfile="/tmp/codeprobe-mcp-abcd.json",
-        env_keys=["ANTHROPIC_API_KEY"],
-        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
-        name="codeprobe-agent-test",
-        env={"ANTHROPIC_API_KEY": "sk-test"},
-    )
+    argv = _agent_container_argv_with_mounted_inputs()
     mounts = {
         argv[index + 1]
         for index, token in enumerate(argv[:-1])
@@ -520,29 +531,12 @@ def _agent_container_mounts_expected_paths() -> bool:
 
 
 def _agent_container_has_no_custom_seccomp() -> bool:
-    argv = containerize_argv(
-        ["claude", "-p", "prompt"],
-        engine="docker",
-        workspace=Path("/workspace"),
-        config_dir=None,
-        mcp_tmpfile=None,
-        env_keys=[],
-        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
-        name="codeprobe-agent-test",
-    )
+    argv = _agent_container_argv_without_optional_mounts()
     return "--security-opt" not in argv and "--cap-drop" not in argv
 
 
 def _scoring_container_has_no_custom_seccomp() -> bool:
-    argv = sandbox_runner._build_run_command(
-        "docker",
-        ["bash", "tests/test.sh"],
-        {"/tmp/codeprobe-score-abc": "/tmp/codeprobe-score-abc"},
-        allow_writes=True,
-        image=sandbox_runner.DEFAULT_SCORING_IMAGE,
-        workdir="/tmp/codeprobe-score-abc/task",
-        env={"AGENT_OUTPUT": "/tmp/codeprobe-score-abc/agent_output.txt"},
-    )
+    argv = _scoring_container_argv()
     return "--security-opt" not in argv and "--cap-drop" not in argv
 
 
