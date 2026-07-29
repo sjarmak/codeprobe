@@ -19,8 +19,8 @@ from codeprobe.mining.task_types import (
 )
 from codeprobe.models.task import TASK_TYPES as MODEL_TASK_TYPES
 
-_CSB_SUITES_PATH = Path(
-    "/home/ds/projects/CodeScaleBench/benchmarks/suites/csb-v2-dual264.json"
+_CSB_SUITES_PATH = (
+    Path.home() / "projects/CodeScaleBench/benchmarks/suites/csb-v2-dual264.json"
 )
 
 

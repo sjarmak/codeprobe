@@ -129,7 +129,7 @@ def _project_dir_name(cwd: str) -> str:
     """Convert a cwd path to the Claude project directory name.
 
     Claude Code encodes project directories by replacing ``/`` with ``-``.
-    E.g., ``/home/ds/codeprobe`` → ``-home-ds-codeprobe``.
+    E.g., ``/workspace/codeprobe`` → ``-workspace-codeprobe``.
     """
     return cwd.replace("/", "-")
 

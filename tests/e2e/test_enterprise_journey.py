@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from codeprobe import __version__
 from codeprobe.snapshot.evidence_bundle import (
     load_evidence_request,
     preview_evidence_bundle,
@@ -87,7 +88,7 @@ def test_builds_valid_insufficient_evidence_request_from_real_report(
     request = build_evidence_request(
         report=_report(),
         experiment=_experiment(),
-        candidate_version="0.13.0",
+        candidate_version=__version__,
     )
     request_path = tmp_path / "request.json"
     request_path.write_text(json.dumps(request), encoding="utf-8")
@@ -120,7 +121,7 @@ def test_request_builder_rejects_missing_cost_instead_of_claiming_zero() -> None
         build_evidence_request(
             report=report,
             experiment=_experiment(),
-            candidate_version="0.13.0",
+            candidate_version=__version__,
         )
 
 
@@ -132,7 +133,7 @@ def test_request_builder_rejects_incomplete_real_agent_cost_coverage() -> None:
         build_evidence_request(
             report=report,
             experiment=_experiment(),
-            candidate_version="0.13.0",
+            candidate_version=__version__,
         )
 
 

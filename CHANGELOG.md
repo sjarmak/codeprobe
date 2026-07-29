@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## 0.14.0rc1 (2026-07-29)
+
+### Enterprise self-serve workflow
+
+- Added provider-neutral evidence preview, approval, export, and receiving-side
+  validation so teams can share bounded findings without sharing source code,
+  raw model output, traces, repository identity, or operator identity.
+- Added the zero-code-access operator kit for running de-identified internal
+  validation with explicit consent, intervention logging, sampling, and
+  support boundaries.
+- Added `codeprobe bootstrap` and expanded `codeprobe doctor` checks for
+  selected agents, credentials, proxy and private-CA settings, output paths,
+  and verified containment images.
+
+### Containment and release safety
+
+- Added hardened agent and scoring image build pipelines with immutable digest
+  references, SBOMs, provenance, signatures, registry verification, offline
+  archive import, and fail-closed cleanup.
+- Added a clean-wheel enterprise journey that exercises installation, doctor,
+  assessment, mining, paired runs, interpretation, evidence export, secret
+  scanning, private infrastructure fixtures, upgrade compatibility, and
+  source-read isolation before publication.
+- Added a versioned enterprise security, deployment, compatibility, upgrade,
+  deprecation, and support contract.
+
+### Mining and scoring reliability
+
+- Mined task corpora are now published atomically, and verifier filename
+  problems fail before partial task output can replace a valid corpus.
+- Composite scorers must parse their declared output contract before a
+  successful process exit can produce positive reward.
+- Missing answer artifacts now fail cleanly, and comprehension tasks require
+  evidence that the relevant repository files were actually read.
+
 ### Enterprise compatibility
 
 - Added the versioned support, platform, schema-compatibility, deprecation,

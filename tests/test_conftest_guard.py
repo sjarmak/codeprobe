@@ -32,8 +32,8 @@ def test_wrong_checkout_message_none_when_paths_match(
 
 
 def test_wrong_checkout_message_set_when_paths_differ() -> None:
-    imported = Path("/home/ds/projects/codeprobe/src/codeprobe")
-    expected = Path("/home/ds/projects/codeprobe/worktrees/wt1/src/codeprobe")
+    imported = Path("/workspace/codeprobe/src/codeprobe")
+    expected = Path("/workspace/codeprobe-worktrees/wt1/src/codeprobe")
 
     message = wrong_checkout_message(imported, expected)
 
@@ -44,7 +44,7 @@ def test_wrong_checkout_message_set_when_paths_differ() -> None:
 
 
 def test_wrong_checkout_message_set_when_imported_is_none() -> None:
-    expected = Path("/home/ds/projects/codeprobe/worktrees/wt1/src/codeprobe")
+    expected = Path("/workspace/codeprobe-worktrees/wt1/src/codeprobe")
 
     message = wrong_checkout_message(None, expected)
 

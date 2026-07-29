@@ -79,8 +79,9 @@ class TestArmComparisons:
         assert build_arm_comparisons(trials)[0].zero_mcp_count == 0
 
     def test_reproduces_9tk_headline_if_present(self) -> None:
-        run = Path(
-            "/home/ds/test_repos/gascity/gascity-mcp-comparison/.codeprobe/runs"
+        run = (
+            Path.home()
+            / "test_repos/gascity/gascity-mcp-comparison/.codeprobe/runs"
         )
         if not run.is_dir():
             pytest.skip("9tk run data not present in this environment")
