@@ -4242,19 +4242,13 @@ def _show_org_scale_results(
     click.echo(f"     {_shell_join(['codeprobe', 'validate', tasks_dir])}")
     click.echo()
     click.echo("  2. Run eval:")
+    run_args: list[str | Path] = ["codeprobe", "run", repo_path]
+    if out_dir is not None:
+        run_args.extend(["--config", out_dir])
+    run_args.extend(["--suite", suite_path, "--agent", "claude"])
     click.echo(
         "     "
-        + _shell_join(
-            [
-                "codeprobe",
-                "run",
-                repo_path,
-                "--suite",
-                suite_path,
-                "--agent",
-                "claude",
-            ]
-        )
+        + _shell_join(run_args)
     )
     click.echo()
     click.echo("  3. Check individual oracle scores:")

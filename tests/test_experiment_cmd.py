@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shlex
 import statistics
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -499,6 +501,57 @@ def test_update_config_changes_requested_fields_and_moves_run_dir(
     assert (exp_dir / "runs" / "variant-fixed").is_dir()
 
 
+@pytest.mark.parametrize(
+    ("update_args", "updated_label"),
+    [
+        (("--model", "claude-opus-4-1"), "variant"),
+        (("--new-label", "variant-fixed"), "variant-fixed"),
+    ],
+    ids=("behavior-change", "label-change"),
+)
+def test_update_config_archives_stale_run_and_next_run_reruns_tasks(
+    runner: CliRunner,
+    exp_dir: Path,
+    fake_worktree_isolation: None,
+    update_args: tuple[str, ...],
+    updated_label: str,
+) -> None:
+    from codeprobe.api import run_experiment
+    from tests.conftest import FakeAdapter
+
+    first_adapter = FakeAdapter(stdout="PASS", exit_code=0)
+    with patch("codeprobe.api.resolve", return_value=first_adapter):
+        run_experiment(exp_dir)
+    assert len(first_adapter.run_calls) == 4
+
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "update-config",
+            str(exp_dir),
+            "--label",
+            "variant",
+            *update_args,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    active_run_dir = exp_dir / "runs" / updated_label
+    assert active_run_dir.is_dir()
+    assert list(active_run_dir.iterdir()) == []
+    archives = sorted((exp_dir / "runs" / ".archive").glob("variant*"))
+    assert len(archives) == 1
+    assert (archives[0] / "checkpoint.db").is_file()
+    assert (archives[0] / "results.json").is_file()
+
+    second_adapter = FakeAdapter(stdout="PASS", exit_code=0)
+    with patch("codeprobe.api.resolve", return_value=second_adapter):
+        run_experiment(exp_dir)
+
+    assert len(second_adapter.run_calls) == 2
+
+
 def test_update_config_missing_label_is_nonzero(
     runner: CliRunner, exp_dir: Path
 ) -> None:
@@ -530,6 +583,109 @@ def test_update_config_rejects_no_changes(
 
     assert result.exit_code == 1
     assert "NO_CONFIG_CHANGES" in result.output
+
+
+def test_update_config_diagnostic_quotes_metacharacter_path(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    base_dir = tmp_path / "experiment output; $(touch unsafe)"
+    exp_dir = create_experiment_dir(
+        base_dir,
+        Experiment(
+            name="test-exp",
+            configs=[ExperimentConfig(label="baseline", agent="claude")],
+        ),
+    )
+    (exp_dir / "runs" / "occupied").mkdir(parents=True)
+
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "update-config",
+            str(exp_dir),
+            "--label",
+            "baseline",
+            "--new-label",
+            "occupied",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "CONFIG_RUN_DIR_EXISTS"
+    assert shlex.split(payload["error"]["diagnose_cmd"]) == [
+        "ls",
+        "-la",
+        str(exp_dir / "runs"),
+    ]
+
+
+def test_update_config_invalid_experiment_diagnostic_quotes_path(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    exp_dir = tmp_path / "invalid experiment; $(touch unsafe)"
+    exp_dir.mkdir()
+    experiment_json = exp_dir / "experiment.json"
+    experiment_json.write_text("{not-json", encoding="utf-8")
+
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "update-config",
+            str(exp_dir),
+            "--label",
+            "baseline",
+            "--model",
+            "claude-opus-4-1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["error"]["code"] == "EXPERIMENT_INVALID"
+    assert shlex.split(payload["error"]["diagnose_cmd"]) == [
+        "cat",
+        str(experiment_json),
+    ]
+
+
+def test_update_config_archives_redirected_run_artifacts(
+    runner: CliRunner, exp_dir: Path, tmp_path: Path
+) -> None:
+    redirected_dir = tmp_path / "redirected-results"
+    experiment = dataclasses.replace(
+        load_experiment(exp_dir),
+        results_base_dir=str(redirected_dir),
+    )
+    save_experiment(exp_dir, experiment)
+
+    for results_dir in (exp_dir, redirected_dir):
+        run_dir = results_dir / "runs" / "variant"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "checkpoint.db").write_text("stale", encoding="utf-8")
+
+    result = runner.invoke(
+        main,
+        [
+            "experiment",
+            "update-config",
+            str(exp_dir),
+            "--label",
+            "variant",
+            "--model",
+            "claude-opus-4-1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    for results_dir in (exp_dir, redirected_dir):
+        assert list((results_dir / "runs" / "variant").iterdir()) == []
+        archived = results_dir / "runs" / ".archive" / "variant"
+        assert (archived / "checkpoint.db").read_text(encoding="utf-8") == "stale"
 
 
 def test_remove_config_previews_without_yes(

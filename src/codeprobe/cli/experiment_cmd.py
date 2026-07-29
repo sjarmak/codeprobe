@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import shlex
 import statistics
 import sys
 from collections import Counter
@@ -73,7 +74,7 @@ def _experiment_load_error(exp_dir: Path, exc: Exception) -> DiagnosticError:
     return DiagnosticError(
         code="EXPERIMENT_INVALID",
         message=f"failed to load experiment at {exp_dir}: {exc}",
-        diagnose_cmd=f"cat {exp_dir / 'experiment.json'}",
+        diagnose_cmd=shlex.join(["cat", str(exp_dir / "experiment.json")]),
         exit_code=1,
         detail={"experiment_dir": str(exp_dir)},
     )
@@ -612,7 +613,7 @@ def experiment_update_config(
         raise DiagnosticError(
             code="CONFIG_RUN_DIR_EXISTS",
             message=message,
-            diagnose_cmd=f"ls -la {exp_dir / 'runs'}",
+            diagnose_cmd=shlex.join(["ls", "-la", str(exp_dir / "runs")]),
             exit_code=1,
             detail={
                 "experiment_dir": str(exp_dir),

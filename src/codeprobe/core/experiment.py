@@ -189,17 +189,39 @@ def _remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _archive_path(runs_dir: Path, label: str) -> Path:
+    archive_dir = runs_dir / ".archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    candidate = archive_dir / label
+    suffix = 2
+    while candidate.exists() or candidate.is_symlink():
+        candidate = archive_dir / f"{label}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _archive_run_artifacts(runs_dir: Path, run_dir: Path, label: str) -> None:
+    """Move a config's non-empty run directory out of the resume path."""
+    if not (run_dir.exists() or run_dir.is_symlink()):
+        return
+    if run_dir.is_dir() and not run_dir.is_symlink() and not any(run_dir.iterdir()):
+        run_dir.rmdir()
+        return
+    run_dir.rename(_archive_path(runs_dir, label))
+
+
 def update_experiment_config(
     exp_dir: Path,
     label: str,
     updated_config: ExperimentConfig,
 ) -> Experiment:
-    """Replace one experiment config and keep its run directory in sync.
+    """Replace one experiment config and invalidate its prior run artifacts.
 
     Raises ``KeyError`` when *label* is absent and ``ValueError`` for unsafe
-    or duplicate replacement labels. If the label changes, ``runs/<old>`` is
-    renamed to ``runs/<new>``; an existing destination is refused so a renamed
-    config cannot inherit unrelated results.
+    or duplicate replacement labels. Existing artifacts are preserved under
+    ``runs/.archive/`` while the active run directory is recreated empty. This
+    prevents checkpoints and scores produced by the old config from being
+    reused after any behavior change or label rename.
     """
     experiment = load_experiment(exp_dir)
     idx = _config_index(experiment, label)
@@ -216,20 +238,27 @@ def update_experiment_config(
         )
 
     old_label = experiment.configs[idx].label
-    old_run_dir = exp_dir / "runs" / old_label
-    new_run_dir = exp_dir / "runs" / updated_config.label
+    results_roots = [exp_dir]
+    if experiment.results_base_dir is not None:
+        redirected_root = Path(experiment.results_base_dir)
+        if redirected_root != exp_dir:
+            results_roots.append(redirected_root)
+
     if old_label != updated_config.label:
-        if new_run_dir.exists() or new_run_dir.is_symlink():
-            raise ValueError(
-                f"run directory already exists for '{updated_config.label}': "
-                f"{new_run_dir}. Refusing to overwrite unrelated results."
-            )
-        new_run_dir.parent.mkdir(parents=True, exist_ok=True)
-        if old_run_dir.exists() or old_run_dir.is_symlink():
-            old_run_dir.rename(new_run_dir)
-        else:
-            new_run_dir.mkdir(parents=True, exist_ok=True)
-    else:
+        for results_root in results_roots:
+            new_run_dir = results_root / "runs" / updated_config.label
+            if new_run_dir.exists() or new_run_dir.is_symlink():
+                raise ValueError(
+                    f"run directory already exists for '{updated_config.label}': "
+                    f"{new_run_dir}. Refusing to overwrite unrelated results."
+                )
+
+    for results_root in results_roots:
+        runs_dir = results_root / "runs"
+        old_run_dir = runs_dir / old_label
+        new_run_dir = runs_dir / updated_config.label
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        _archive_run_artifacts(runs_dir, old_run_dir, old_label)
         new_run_dir.mkdir(parents=True, exist_ok=True)
 
     configs = [

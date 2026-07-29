@@ -10,12 +10,15 @@ omitting the flag keeps the pre-existing default location byte-identical).
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from codeprobe.cli import main
+from codeprobe.core.experiment import save_experiment
+from codeprobe.models.experiment import Experiment
 from codeprobe.models.task import Task, TaskMetadata, TaskVerification
 
 
@@ -313,11 +316,19 @@ class TestMineOutSdlcDispatch:
             ),
         )
         repo = tmp_path / "repo"
-        tasks_dir = tmp_path / "tasks"
         out_dir = tmp_path / "custom-org-out"
         repo.mkdir()
-        tasks_dir.mkdir()
         out_dir.mkdir()
+        tasks_dir = out_dir / "tasks"
+        tasks_dir.mkdir()
+        save_experiment(
+            out_dir,
+            Experiment(
+                name="org-scale",
+                tasks_dir="tasks",
+                task_ids=(task.id,),
+            ),
+        )
 
         buf = StringIO()
         with patch(
@@ -326,8 +337,27 @@ class TestMineOutSdlcDispatch:
             _show_org_scale_results([task], tasks_dir, repo, out_dir=out_dir)
 
         output = buf.getvalue()
-        assert f"codeprobe run {repo} --suite {tmp_path / 'suite.toml'}" in output
+        run_command = next(
+            line.strip()
+            for line in output.splitlines()
+            if line.strip().startswith("codeprobe run ")
+        )
+        run_argv = shlex.split(run_command)
+        assert run_argv[:3] == ["codeprobe", "run", str(repo)]
+        assert run_argv[run_argv.index("--config") + 1] == str(out_dir)
+        assert run_argv[run_argv.index("--suite") + 1] == str(
+            out_dir / "suite.toml"
+        )
         assert f"codeprobe run {out_dir} --agent claude" not in output
+
+        executed = CliRunner().invoke(
+            main,
+            [*run_argv[1:], "--dry-run", "--json"],
+        )
+        combined = executed.output + (executed.stderr or "")
+        assert "NO_EXPERIMENT" not in combined
+        assert executed.exit_code != 0
+        assert json.loads(executed.output)["error"]["code"] == "NO_TASKS"
 
 
 class TestMineOutMixedDispatch:
