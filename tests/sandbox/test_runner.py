@@ -110,6 +110,17 @@ def test_exact_agent_and_scoring_image_overrides_win(
     )
 
 
+def test_exact_image_override_accepts_ipv6_tag_and_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_image_env(monkeypatch)
+    digest = "a" * 64
+    reference = f"[2001:db8::1]:5000/platform/codeprobe-agent:1.2.3@sha256:{digest}"
+    monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", reference)
+
+    assert sandbox_runner.agent_image_reference() == reference
+
+
 def test_empty_image_override_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_image_env(monkeypatch)
     monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", " ")
@@ -125,6 +136,8 @@ def test_empty_image_override_fails_fast(monkeypatch: pytest.MonkeyPatch) -> Non
         ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent:latest", "latest"),
         ("CODEPROBE_AGENT_IMAGE", "https://mirror.example/agent:1.2.3", "not a URL"),
         ("CODEPROBE_AGENT_IMAGE", "mirror.example/agent@sha256:abc123", "sha256"),
+        ("CODEPROBE_AGENT_IMAGE", "registry..example/team/agent:1.2.3", "invalid image reference"),
+        ("CODEPROBE_AGENT_IMAGE", "registry.-example/team/agent:1.2.3", "invalid image reference"),
         ("CODEPROBE_IMAGE_REGISTRY", "REGISTRY.example.test", "registry host"),
         ("CODEPROBE_IMAGE_NAMESPACE", "platform//codeprobe", "repository path"),
         ("CODEPROBE_IMAGE_VERSION", "latest", "latest"),

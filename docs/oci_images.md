@@ -55,11 +55,11 @@ tag references before invoking docker or podman.
 Mirror the release tag and all platform manifests with a registry-aware copier:
 
 ```bash
-skopeo copy --all \
+skopeo copy --all --preserve-digests \
   docker://<source-registry>/<source-namespace>/codeprobe-agent:<version> \
   docker://<private-registry>/<private-namespace>/codeprobe-agent:<version>
 
-skopeo copy --all \
+skopeo copy --all --preserve-digests \
   docker://<source-registry>/<source-namespace>/codeprobe-scoring:<version> \
   docker://<private-registry>/<private-namespace>/codeprobe-scoring:<version>
 ```
@@ -108,31 +108,61 @@ review.
 ## Offline OCI Archive Transfer
 
 For an airgapped registry, copy the multi-platform image into an OCI archive,
-move it through the approved offline channel, then import it into the destination
-registry:
+copy the recursive signature and attestation referrers into OCI layouts, move
+those archives plus the offline trust material through the approved offline
+channel, then import them into the destination registry:
 
 ```bash
-skopeo copy --all \
+skopeo copy --all --preserve-digests \
   docker://<source-registry>/<source-namespace>/codeprobe-agent:<version> \
   oci-archive:codeprobe-agent-<version>.tar
 
-skopeo copy --all \
+skopeo copy --all --preserve-digests \
   docker://<source-registry>/<source-namespace>/codeprobe-scoring:<version> \
   oci-archive:codeprobe-scoring-<version>.tar
 
-sha256sum codeprobe-agent-<version>.tar codeprobe-scoring-<version>.tar
+oras copy --recursive --to-oci-layout \
+  <source-registry>/<source-namespace>/codeprobe-agent@sha256:<agent-digest> \
+  codeprobe-agent-referrers:<version>
 
-skopeo copy --all \
+oras copy --recursive --to-oci-layout \
+  <source-registry>/<source-namespace>/codeprobe-scoring@sha256:<scoring-digest> \
+  codeprobe-scoring-referrers:<version>
+
+tar -cf codeprobe-agent-referrers-<version>.tar codeprobe-agent-referrers
+tar -cf codeprobe-scoring-referrers-<version>.tar codeprobe-scoring-referrers
+
+sha256sum \
+  codeprobe-agent-<version>.tar \
+  codeprobe-scoring-<version>.tar \
+  codeprobe-agent-referrers-<version>.tar \
+  codeprobe-scoring-referrers-<version>.tar
+
+skopeo copy --all --preserve-digests \
   oci-archive:codeprobe-agent-<version>.tar \
   docker://<private-registry>/<private-namespace>/codeprobe-agent:<version>
 
-skopeo copy --all \
+skopeo copy --all --preserve-digests \
   oci-archive:codeprobe-scoring-<version>.tar \
   docker://<private-registry>/<private-namespace>/codeprobe-scoring:<version>
+
+tar -xf codeprobe-agent-referrers-<version>.tar
+tar -xf codeprobe-scoring-referrers-<version>.tar
+
+oras copy --recursive --from-oci-layout \
+  codeprobe-agent-referrers:<version> \
+  <private-registry>/<private-namespace>/codeprobe-agent@sha256:<agent-digest>
+
+oras copy --recursive --from-oci-layout \
+  codeprobe-scoring-referrers:<version> \
+  <private-registry>/<private-namespace>/codeprobe-scoring@sha256:<scoring-digest>
 ```
 
 After import, inspect the destination digest and run the same `cosign verify`
 and `gh attestation verify --bundle-from-oci` checks against the imported digest.
-Record the archive checksums, resulting private-registry digests, and verification
-output in the change ticket or release evidence store. Do not replace digest pins
-with mutable operator-local tags after transfer.
+Carry the release workflow identity, expected source repository, OIDC issuer,
+and your environment's approved Sigstore/GitHub verification roots as offline
+trust material. Record the archive checksums, resulting private-registry
+digests, verification inputs, and verification output in the change ticket or
+release evidence store. Do not replace digest pins with mutable operator-local
+tags after transfer.

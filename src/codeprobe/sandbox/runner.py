@@ -37,6 +37,8 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Final
 
+from docker_image import reference as oci_reference  # type: ignore[import-untyped]
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,12 +59,6 @@ _IMAGE_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 _DIGEST_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"sha256:[a-f0-9]{64}\Z"
-)
-_REGISTRY_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?\Z"
-)
-_REPOSITORY_COMPONENT_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*\Z"
 )
 _CONTAINER_TMPFS: Final[str] = "/tmp:rw,nosuid,nodev,size=128m,mode=1777"
 
@@ -148,48 +144,29 @@ def _validate_tag(name: str, tag: str) -> None:
         raise ValueError(f"{name} has an invalid image tag")
 
 
-def _validate_repository_name(name: str, repository: str) -> None:
-    if "://" in repository:
-        raise ValueError(f"{name} must be an OCI image reference, not a URL")
-    if repository.startswith("-"):
-        raise ValueError(f"{name} must not start with '-'")
-    if (
-        not repository
-        or repository.startswith("/")
-        or repository.endswith("/")
-        or "//" in repository
-    ):
-        raise ValueError(f"{name} has an invalid repository path")
-
-    parts = repository.split("/")
-    repo_parts = parts
-    if len(parts) > 1 and (
-        "." in parts[0] or ":" in parts[0] or parts[0] == "localhost"
-    ):
-        if _REGISTRY_PATTERN.fullmatch(parts[0]) is None:
-            raise ValueError(f"{name} has an invalid registry host")
-        repo_parts = parts[1:]
-    if not repo_parts:
-        raise ValueError(f"{name} has an invalid repository path")
-    for part in repo_parts:
-        if _REPOSITORY_COMPONENT_PATTERN.fullmatch(part) is None:
-            raise ValueError(f"{name} has an invalid repository component")
-
-
 def _validate_image_reference(name: str, reference: str) -> str:
+    if "://" in reference:
+        raise ValueError(f"{name} must be an OCI image reference, not a URL")
     if "@" in reference:
-        repository, digest = reference.rsplit("@", 1)
-        _validate_repository_name(name, repository)
-        if _DIGEST_PATTERN.fullmatch(digest) is None:
+        digest_candidate = reference.rsplit("@", 1)[1]
+        if (
+            digest_candidate.startswith("sha256:")
+            and _DIGEST_PATTERN.fullmatch(digest_candidate) is None
+        ):
             raise ValueError(f"{name} must use a sha256 digest when pinned")
-        return reference
+    try:
+        parsed = oci_reference.Reference.parse(reference)
+    except oci_reference.InvalidReference as exc:
+        raise ValueError(f"{name} has an invalid image reference") from exc
 
-    tail = reference.rsplit("/", 1)[-1]
-    if ":" not in tail:
+    tag = parsed.get("tag")
+    digest = parsed.get("digest")
+    if not isinstance(tag, str) and not isinstance(digest, str):
         raise ValueError(f"{name} must include an explicit tag or digest")
-    repository, tag = reference.rsplit(":", 1)
-    _validate_repository_name(name, repository)
-    _validate_tag(name, tag)
+    if isinstance(tag, str):
+        _validate_tag(name, tag)
+    if isinstance(digest, str) and _DIGEST_PATTERN.fullmatch(digest) is None:
+        raise ValueError(f"{name} must use a sha256 digest when pinned")
     return reference
 
 
@@ -202,7 +179,11 @@ def _composed_image_reference(image_name: str) -> str:
     namespace = namespace_raw.strip("/") if namespace_raw is not None else ""
     if registry_raw is not None and not registry:
         raise ValueError(f"{IMAGE_REGISTRY_ENV} has an invalid registry host")
+    if registry_raw is not None and any(char.isupper() for char in registry):
+        raise ValueError(f"{IMAGE_REGISTRY_ENV} has an invalid registry host")
     if namespace_raw is not None and not namespace:
+        raise ValueError(f"{IMAGE_NAMESPACE_ENV} has an invalid repository path")
+    if namespace_raw is not None and "//" in namespace:
         raise ValueError(f"{IMAGE_NAMESPACE_ENV} has an invalid repository path")
     repository_parts = [part for part in (registry, namespace, image_name) if part]
     return _validate_image_reference(

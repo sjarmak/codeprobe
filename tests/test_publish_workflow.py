@@ -15,6 +15,7 @@ AGENT_DOCKERFILE_PATH = REPO_ROOT / "src" / "codeprobe" / "sandbox" / "Dockerfil
 SCORING_DOCKERFILE_PATH = (
     REPO_ROOT / "src" / "codeprobe" / "sandbox" / "Dockerfile.scoring"
 )
+PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 
 
 def _workflow() -> dict[str, object]:
@@ -29,12 +30,23 @@ def _image_workflow() -> dict[str, object]:
     return loaded
 
 
-def _publish_image_steps() -> list[dict[str, object]]:
+def _candidate_image_steps() -> list[dict[str, object]]:
     jobs = _image_workflow()["jobs"]
     assert isinstance(jobs, dict)
-    publish = jobs["publish-images"]
-    assert isinstance(publish, dict)
-    steps = publish["steps"]
+    build = jobs["build-candidate-images"]
+    assert isinstance(build, dict)
+    steps = build["steps"]
+    assert isinstance(steps, list)
+    assert all(isinstance(step, dict) for step in steps)
+    return steps
+
+
+def _promotion_steps() -> list[dict[str, object]]:
+    jobs = _image_workflow()["jobs"]
+    assert isinstance(jobs, dict)
+    promote = jobs["promote-images"]
+    assert isinstance(promote, dict)
+    steps = promote["steps"]
     assert isinstance(steps, list)
     assert all(isinstance(step, dict) for step in steps)
     return steps
@@ -99,15 +111,20 @@ def test_oci_image_workflow_is_tag_triggered_with_publish_permissions() -> None:
         "attestations": "write",
         "artifact-metadata": "write",
     }
+    assert workflow["concurrency"] == {
+        "group": "publish-oci-images-${{ github.ref_name }}",
+        "cancel-in-progress": "false",
+    }
 
 
 def test_oci_image_workflow_builds_both_images_for_required_platforms() -> None:
     jobs = _image_workflow()["jobs"]
     assert isinstance(jobs, dict)
-    publish = jobs["publish-images"]
-    assert isinstance(publish, dict)
-    strategy = publish["strategy"]
+    build = jobs["build-candidate-images"]
+    assert isinstance(build, dict)
+    strategy = build["strategy"]
     assert isinstance(strategy, dict)
+    assert strategy["fail-fast"] == "true"
     matrix = strategy["matrix"]
     assert isinstance(matrix, dict)
     include = matrix["include"]
@@ -126,7 +143,7 @@ def test_oci_image_workflow_builds_both_images_for_required_platforms() -> None:
 
     build_steps = [
         step
-        for step in _publish_image_steps()
+        for step in _candidate_image_steps()
         if str(step.get("uses", "")).startswith("docker/build-push-action@")
     ]
     assert len(build_steps) == 1
@@ -135,7 +152,7 @@ def test_oci_image_workflow_builds_both_images_for_required_platforms() -> None:
     assert with_config["platforms"] == "linux/amd64,linux/arm64"
     assert with_config["push"] == "true"
     assert with_config["tags"] == "${{ steps.image.outputs.candidate_ref }}"
-    assert with_config["sbom"] == "true"
+    assert with_config["sbom"] == "generator=${{ env.SCOUT_SBOM_INDEXER_IMAGE }}"
     assert with_config["provenance"] == "mode=max"
 
 
@@ -143,7 +160,7 @@ def test_oci_image_workflow_pins_actions_scanner_and_base_images() -> None:
     action_ref = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
     uses = [
         str(step["uses"])
-        for step in _publish_image_steps()
+        for step in _candidate_image_steps() + _promotion_steps()
         if isinstance(step.get("uses"), str)
     ]
 
@@ -152,6 +169,13 @@ def test_oci_image_workflow_pins_actions_scanner_and_base_images() -> None:
 
     workflow_text = IMAGE_WORKFLOW_PATH.read_text()
     assert "TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:" in workflow_text
+    assert "QEMU_BINFMT_IMAGE: tonistiigi/binfmt@sha256:" in workflow_text
+    assert "BUILDX_VERSION: v" in workflow_text
+    assert "BUILDKIT_IMAGE: moby/buildkit:v" in workflow_text and "@sha256:" in workflow_text
+    assert "SCOUT_SBOM_INDEXER_IMAGE: docker/scout-sbom-indexer:1@sha256:" in workflow_text
+    assert "DEBIAN_SNAPSHOT:" in workflow_text
+    assert "CLAUDE_CODE_VERSION: " in workflow_text
+    assert "CLAUDE_CODE_INTEGRITY: sha512-" in workflow_text
 
     assert re.search(
         r"^FROM node:22-bookworm-slim@sha256:[0-9a-f]{64}$",
@@ -164,9 +188,22 @@ def test_oci_image_workflow_pins_actions_scanner_and_base_images() -> None:
         re.MULTILINE,
     )
 
+    agent = AGENT_DOCKERFILE_PATH.read_text()
+    scoring = SCORING_DOCKERFILE_PATH.read_text()
+    for dockerfile in (agent, scoring):
+        assert "ARG DEBIAN_SNAPSHOT=" in dockerfile
+        assert "snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" in dockerfile
+        assert "snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" in dockerfile
+        assert re.search(r"^USER codeprobe$", dockerfile, re.MULTILINE)
+    assert "ARG CLAUDE_CODE_VERSION=" in agent
+    assert "ARG CLAUDE_CODE_INTEGRITY=sha512-" in agent
+    assert "npm pack \"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}\" --json" in agent
+    assert "actual !== process.env.CLAUDE_CODE_INTEGRITY" in agent
+    assert 'npm install -g "./${package_file}"' in agent
+
 
 def test_oci_image_workflow_has_supply_chain_gates() -> None:
-    steps = _publish_image_steps()
+    steps = _candidate_image_steps() + _promotion_steps()
     uses = {str(step.get("uses")).split("@", 1)[0] for step in steps if "uses" in step}
 
     assert "actions/setup-python" in uses
@@ -175,6 +212,7 @@ def test_oci_image_workflow_has_supply_chain_gates() -> None:
     assert "docker/login-action" in uses
     assert "actions/attest" in uses
     assert "sigstore/cosign-installer" in uses
+    assert "actions/download-artifact" in uses
 
     run_text = "\n".join(
         str(step["run"]) for step in steps if isinstance(step.get("run"), str)
@@ -182,17 +220,28 @@ def test_oci_image_workflow_has_supply_chain_gates() -> None:
     names = {str(step.get("name")) for step in steps}
     setup_python = next(step for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@"))
     assert setup_python["with"] == {"python-version": "3.11"}
+    setup_qemu = next(step for step in steps if str(step.get("uses", "")).startswith("docker/setup-qemu-action@"))
+    assert setup_qemu["with"] == {
+        "image": "${{ env.QEMU_BINFMT_IMAGE }}",
+        "platforms": "arm64",
+    }
+    setup_buildx = next(step for step in steps if str(step.get("uses", "")).startswith("docker/setup-buildx-action@"))
+    assert setup_buildx["with"] == {
+        "version": "${{ env.BUILDX_VERSION }}",
+        "driver-opts": "image=${{ env.BUILDKIT_IMAGE }}",
+    }
 
     assert "Resolve registry credentials" in names
-    assert "Refuse existing immutable version tag" in names
+    assert "Preflight immutable version tags" in names
     assert "Vulnerability policy scan for each platform" in names
     assert "Verify BuildKit SBOM and provenance attestations" in names
     assert "Verify GitHub provenance attestation" in names
-    assert "Promote immutable version tag" in names
+    assert "Promote pair-level immutable version tags" in names
 
     assert "pyproject.toml version" in run_text
     assert "CODEPROBE_OCI_USERNAME and CODEPROBE_OCI_TOKEN are required" in run_text
-    assert "version image tag already exists" in run_text
+    assert "mixed existing version tags" in run_text
+    assert "immutable tag drift" in run_text
     assert "--exit-code 1" in run_text
     assert "--severity \"$TRIVY_SEVERITY\"" in run_text
     assert "for platform in linux/amd64 linux/arm64" in run_text
@@ -203,12 +252,21 @@ def test_oci_image_workflow_has_supply_chain_gates() -> None:
     assert "gh attestation verify \"oci://${DIGEST_REF}\"" in run_text
     assert "cosign sign --yes \"$DIGEST_REF\"" in run_text
     assert "cosign verify" in run_text
-    assert "docker buildx imagetools create --tag \"$VERSION_REF\" \"$DIGEST_REF\"" in run_text
+    assert "docker buildx imagetools create --tag \"$tag_ref\" \"$digest_ref\"" in run_text
     assert "oci-identities" in run_text
 
 
 def test_oci_image_workflow_promotes_version_tag_only_after_gates() -> None:
-    steps = _publish_image_steps()
+    jobs = _image_workflow()["jobs"]
+    assert isinstance(jobs, dict)
+    build_job = jobs["build-candidate-images"]
+    promote_job = jobs["promote-images"]
+    assert isinstance(build_job, dict)
+    assert isinstance(promote_job, dict)
+    assert promote_job["needs"] == ["build-candidate-images"]
+    assert "strategy" not in promote_job
+
+    steps = _candidate_image_steps()
     build = next(
         step
         for step in steps
@@ -219,7 +277,15 @@ def test_oci_image_workflow_promotes_version_tag_only_after_gates() -> None:
     assert "version_ref" not in str(build_with)
     assert build_with["tags"] == "${{ steps.image.outputs.candidate_ref }}"
 
-    promote_index = _step_index(steps, "Promote immutable version tag")
+    promote_steps = _promotion_steps()
+    promote_index = _step_index(promote_steps, "Promote pair-level immutable version tags")
+    preflight_index = _step_index(promote_steps, "Preflight immutable version tags")
+    assert preflight_index < promote_index
+    promote_text = "\n".join(str(step.get("run", "")) for step in promote_steps)
+    assert "expected_images = {'codeprobe-agent', 'codeprobe-scoring'}" in promote_text
+    assert "version_tag_state" in promote_text
+    assert "already-promoted" in promote_text
+
     for gate in (
         "Vulnerability policy scan for each platform",
         "Verify BuildKit SBOM and provenance attestations",
@@ -227,7 +293,7 @@ def test_oci_image_workflow_promotes_version_tag_only_after_gates() -> None:
         "Keyless sign digest",
         "Verify keyless signature",
     ):
-        assert _step_index(steps, gate) < promote_index
+        assert _step_index(steps, gate) < len(steps)
 
 
 def test_oci_image_workflow_records_version_and_digest_without_latest_tags() -> None:
@@ -251,8 +317,18 @@ def test_oci_image_docs_cover_mirroring_offline_transfer_and_runtime_config() ->
     assert "CODEPROBE_IMAGE_REGISTRY" in doc
     assert "CODEPROBE_IMAGE_NAMESPACE" in doc
     assert "skopeo copy --all" in doc
+    assert "--preserve-digests" in doc
     assert "oci-archive:" in doc
     assert "oras copy --recursive" in doc
+    assert "--to-oci-layout" in doc
+    assert "--from-oci-layout" in doc
+    assert "offline trust material" in doc
     assert "cosign verify" in doc
     assert "gh attestation verify" in doc
     assert "--bundle-from-oci" in doc
+
+
+def test_runtime_parser_dependency_is_declared() -> None:
+    pyproject = PYPROJECT_PATH.read_text()
+
+    assert '"docker-image-py>=0.2,<0.3"' in pyproject

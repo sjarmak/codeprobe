@@ -12,11 +12,21 @@
 # of the container filesystem is throwaway.
 FROM node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
 
+ARG DEBIAN_SNAPSHOT=20260728T000000Z
+ARG CLAUDE_CODE_VERSION=2.1.220
+ARG CLAUDE_CODE_INTEGRITY=sha512-ogBrvwkqF9f8okmnXKxmRNHuvtFxFEffe5pWdqOV3iQDxlUOKirFqnyWC7NGXXnDA4WkkbPH8pvSbwyCR2Auyw==
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update \
+RUN set -eux; \
+    printf '%s\n' \
+        "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
+        "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
+        > /etc/apt/sources.list; \
+    rm -f /etc/apt/sources.list.d/*; \
+    apt-get -o Acquire::Check-Valid-Until=false update \
  && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
@@ -26,6 +36,19 @@ RUN apt-get update \
         python3-venv \
  && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g @anthropic-ai/claude-code
+RUN set -eux; \
+    pack_json="$(npm pack "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" --json)"; \
+    package_file="$(printf '%s' "$pack_json" | node -e 'const fs = require("fs"); const data = JSON.parse(fs.readFileSync(0, "utf8")); const actual = data[0].integrity; if (actual !== process.env.CLAUDE_CODE_INTEGRITY) { throw new Error(`Claude Code integrity mismatch: ${actual}`); } process.stdout.write(data[0].filename);')"; \
+    npm install -g "./${package_file}"; \
+    rm -f "$package_file"; \
+    npm cache clean --force
+
+RUN groupadd --gid 10001 codeprobe \
+ && useradd --uid 10001 --gid codeprobe --home-dir /home/codeprobe --create-home --shell /bin/bash codeprobe \
+ && mkdir -p /workspace \
+ && chown codeprobe:codeprobe /workspace /home/codeprobe
+
+USER codeprobe
+WORKDIR /workspace
 
 CMD ["/bin/bash"]

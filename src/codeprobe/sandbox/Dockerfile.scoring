@@ -10,11 +10,19 @@
 # at runtime, and mined tests that need it fail closed by design.
 FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
 
+ARG DEBIAN_SNAPSHOT=20260728T000000Z
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-RUN apt-get update \
+RUN set -eux; \
+    printf '%s\n' \
+        "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
+        "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" \
+        > /etc/apt/sources.list; \
+    rm -f /etc/apt/sources.list.d/*; \
+    apt-get -o Acquire::Check-Valid-Until=false update \
  && apt-get install -y --no-install-recommends \
         bash \
         ca-certificates \
@@ -26,5 +34,13 @@ RUN apt-get update \
         python3 \
         python3-venv \
  && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd --gid 10001 codeprobe \
+ && useradd --uid 10001 --gid codeprobe --home-dir /home/codeprobe --create-home --shell /bin/bash codeprobe \
+ && mkdir -p /workspace \
+ && chown codeprobe:codeprobe /workspace /home/codeprobe
+
+USER codeprobe
+WORKDIR /workspace
 
 CMD ["/bin/bash"]

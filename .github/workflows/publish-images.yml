@@ -4,6 +4,10 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: publish-oci-images-${{ github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
@@ -14,14 +18,21 @@ permissions:
 env:
   REGISTRY: ${{ vars.CODEPROBE_OCI_REGISTRY || 'ghcr.io' }}
   IMAGE_NAMESPACE: ${{ vars.CODEPROBE_OCI_NAMESPACE || github.repository }}
+  QEMU_BINFMT_IMAGE: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+  BUILDX_VERSION: v0.25.0
+  BUILDKIT_IMAGE: moby/buildkit:v0.25.1@sha256:79cc6476ab1a3371c9afd8b44e7c55610057c43e18d9b39b68e2b0c2475cc1b6
+  SCOUT_SBOM_INDEXER_IMAGE: docker/scout-sbom-indexer:1@sha256:3579229a5ace351e4511903f3da976304990339da1c49a3cc0f00bcd7d793181
   TRIVY_IMAGE: ghcr.io/aquasecurity/trivy@sha256:016eae51fdcf989332a5404af7e8f625cd5d95d7c0907a221d080a996f556500
   TRIVY_SEVERITY: ${{ vars.CODEPROBE_OCI_TRIVY_SEVERITY || 'CRITICAL,HIGH' }}
+  DEBIAN_SNAPSHOT: 20260728T000000Z
+  CLAUDE_CODE_VERSION: 2.1.220
+  CLAUDE_CODE_INTEGRITY: sha512-ogBrvwkqF9f8okmnXKxmRNHuvtFxFEffe5pWdqOV3iQDxlUOKirFqnyWC7NGXXnDA4WkkbPH8pvSbwyCR2Auyw==
 
 jobs:
-  publish-images:
+  build-candidate-images:
     runs-on: ubuntu-22.04
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - image: codeprobe-agent
@@ -39,8 +50,14 @@ jobs:
           python-version: "3.11"
 
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+        with:
+          image: ${{ env.QEMU_BINFMT_IMAGE }}
+          platforms: arm64
 
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
 
       - name: Check tag and package version
         id: version
@@ -120,20 +137,6 @@ jobs:
           username: ${{ steps.registry-auth.outputs.username }}
           password: ${{ steps.registry-auth.outputs.password }}
 
-      - name: Refuse existing immutable version tag
-        env:
-          VERSION_REF: ${{ steps.image.outputs.version_ref }}
-        run: |
-          if docker buildx imagetools inspect "$VERSION_REF" >/tmp/codeprobe-version-tag.out 2>/tmp/codeprobe-version-tag.err; then
-            echo "FATAL: version image tag already exists: $VERSION_REF" >&2
-            exit 1
-          fi
-          if ! grep -Eiq '(not found|manifest unknown|name unknown)' /tmp/codeprobe-version-tag.err; then
-            cat /tmp/codeprobe-version-tag.err >&2
-            echo "FATAL: could not prove version tag is absent: $VERSION_REF" >&2
-            exit 1
-          fi
-
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         id: build
         with:
@@ -146,7 +149,11 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
-          sbom: true
+          build-args: |
+            DEBIAN_SNAPSHOT=${{ env.DEBIAN_SNAPSHOT }}
+            CLAUDE_CODE_VERSION=${{ env.CLAUDE_CODE_VERSION }}
+            CLAUDE_CODE_INTEGRITY=${{ env.CLAUDE_CODE_INTEGRITY }}
+          sbom: generator=${{ env.SCOUT_SBOM_INDEXER_IMAGE }}
           provenance: mode=max
 
       - name: Capture candidate digest identity
@@ -319,15 +326,6 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "$DIGEST_REF"
 
-      - name: Promote immutable version tag
-        env:
-          DIGEST_REF: ${{ steps.identity.outputs.digest_ref }}
-          VERSION_REF: ${{ steps.image.outputs.version_ref }}
-        run: |
-          docker buildx imagetools create --tag "$VERSION_REF" "$DIGEST_REF"
-          docker buildx imagetools inspect "$VERSION_REF" | tee /tmp/codeprobe-promoted-image.txt
-          grep -F "Digest:    ${DIGEST_REF#*@}" /tmp/codeprobe-promoted-image.txt
-
       - name: Record digest identity
         env:
           IMAGE_NAME: ${{ matrix.image }}
@@ -366,3 +364,167 @@ jobs:
           name: oci-image-identity-${{ matrix.image }}
           path: oci-identities/${{ matrix.image }}.json
           if-no-files-found: error
+
+  promote-images:
+    runs-on: ubuntu-22.04
+    needs: [build-candidate-images]
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: oci-image-identity-*
+          path: oci-identities
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Resolve registry credentials
+        id: registry-auth
+        env:
+          REGISTRY_USERNAME: ${{ vars.CODEPROBE_OCI_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.CODEPROBE_OCI_TOKEN }}
+          DEFAULT_GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          username="${REGISTRY_USERNAME}"
+          password="${REGISTRY_PASSWORD}"
+          if [ "$REGISTRY" = "ghcr.io" ]; then
+            username="${username:-$GITHUB_ACTOR}"
+            password="${password:-$DEFAULT_GITHUB_TOKEN}"
+          elif [ -z "$username" ] || [ -z "$password" ]; then
+            echo "FATAL: CODEPROBE_OCI_USERNAME and CODEPROBE_OCI_TOKEN are required for non-ghcr.io registries." >&2
+            exit 1
+          fi
+          if [ -z "$username" ] || [ -z "$password" ]; then
+            echo "FATAL: registry credentials resolved empty." >&2
+            exit 1
+          fi
+          echo "::add-mask::$password"
+          {
+            echo "username=${username}"
+            echo "password=${password}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ steps.registry-auth.outputs.username }}
+          password: ${{ steps.registry-auth.outputs.password }}
+
+      - name: Preflight immutable version tags
+        id: version-tags
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          expected_images = {'codeprobe-agent', 'codeprobe-scoring'}
+          required_platforms = ["linux/amd64", "linux/arm64"]
+
+          def load_identities() -> dict[str, dict[str, object]]:
+              identities: dict[str, dict[str, object]] = {}
+              for path in sorted(Path("oci-identities").glob("*.json")):
+                  loaded = json.loads(path.read_text(encoding="utf-8"))
+                  if not isinstance(loaded, dict):
+                      raise SystemExit(f"{path} did not contain a JSON object")
+                  image = loaded.get("image")
+                  if not isinstance(image, str):
+                      raise SystemExit(f"{path} is missing image")
+                  identities[image] = loaded
+              if set(identities) != expected_images:
+                  raise SystemExit(
+                      f"missing candidate identities: {sorted(expected_images - set(identities))}"
+                  )
+              return identities
+
+          def image_digest(ref: str) -> str | None:
+              completed = subprocess.run(
+                  ["docker", "buildx", "imagetools", "inspect", ref],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              if completed.returncode != 0:
+                  stderr = completed.stderr or ""
+                  if re.search(r"(not found|manifest unknown|name unknown)", stderr, re.I):
+                      return None
+                  raise SystemExit(stderr.strip() or f"could not inspect {ref}")
+              match = re.search(r"^Digest:\s+(sha256:[a-f0-9]{64})\s*$", completed.stdout, re.M)
+              if match is None:
+                  raise SystemExit(f"could not read digest for {ref}")
+              return match.group(1)
+
+          identities = load_identities()
+          existing: dict[str, str] = {}
+          for image, identity in sorted(identities.items()):
+              tag_ref = identity.get("tag_ref")
+              digest = identity.get("digest")
+              digest_ref = identity.get("digest_ref")
+              platforms = identity.get("platforms")
+              if not isinstance(tag_ref, str) or not isinstance(digest_ref, str):
+                  raise SystemExit(f"{image} identity is missing refs")
+              if not isinstance(digest, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", digest):
+                  raise SystemExit(f"{image} identity is missing a sha256 digest")
+              if platforms != required_platforms:
+                  raise SystemExit(f"{image} identity has unexpected platforms: {platforms!r}")
+              found = image_digest(tag_ref)
+              if found is not None:
+                  existing[image] = found
+
+          if existing and set(existing) != expected_images:
+              raise SystemExit(f"mixed existing version tags: {sorted(existing)}")
+
+          state = "new"
+          if existing:
+              state = "already-promoted"
+              for image, digest in sorted(existing.items()):
+                  expected = identities[image]["digest"]
+                  if digest != expected:
+                      raise SystemExit(
+                          f"immutable tag drift for {image}: {digest} != {expected}"
+                      )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"version_tag_state={state}", file=output)
+          PY
+
+      - name: Promote pair-level immutable version tags
+        if: steps.version-tags.outputs.version_tag_state == 'new'
+        run: |
+          for identity in oci-identities/*.json; do
+            tag_ref="$(jq -r '.tag_ref' "$identity")"
+            digest_ref="$(jq -r '.digest_ref' "$identity")"
+            docker buildx imagetools create --tag "$tag_ref" "$digest_ref"
+          done
+          python - <<'PY'
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def image_digest(ref: str) -> str:
+              completed = subprocess.run(
+                  ["docker", "buildx", "imagetools", "inspect", ref],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              match = re.search(r"^Digest:\s+(sha256:[a-f0-9]{64})\s*$", completed.stdout, re.M)
+              if match is None:
+                  raise SystemExit(f"could not read digest for {ref}")
+              return match.group(1)
+
+          for path in sorted(Path("oci-identities").glob("*.json")):
+              identity = json.loads(path.read_text(encoding="utf-8"))
+              tag_ref = identity["tag_ref"]
+              expected_digest = identity["digest"]
+              actual_digest = image_digest(tag_ref)
+              if actual_digest != expected_digest:
+                  raise SystemExit(
+                      f"immutable tag drift for {tag_ref}: {actual_digest} != {expected_digest}"
+                  )
+          PY
