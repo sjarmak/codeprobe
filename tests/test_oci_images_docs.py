@@ -103,6 +103,10 @@ def test_docs_cover_installed_digest_verified_bootstrap_paths() -> None:
     assert "private CA" in doc
     assert "digest" in doc.casefold()
     assert "fail" in doc.casefold()
+    assert "multi-platform OCI index" in doc
+    assert "Docker schema 2" in doc
+    assert "result digest" in doc
+    assert "configuration digest" in doc
 
 
 def test_operator_quickstarts_use_bootstrap_instead_of_local_builds() -> None:

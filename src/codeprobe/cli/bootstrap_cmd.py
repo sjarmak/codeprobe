@@ -57,13 +57,13 @@ __all__ = ["bootstrap"]
 )
 @click.option(
     "--agent-archive",
-    type=click.Path(exists=True, dir_okay=False, readable=True, resolve_path=True, path_type=Path),
+    type=click.Path(exists=True, dir_okay=False, readable=True, resolve_path=False, path_type=Path),
     default=None,
     help="Offline OCI archive for the agent image; requires --scoring-archive.",
 )
 @click.option(
     "--scoring-archive",
-    type=click.Path(exists=True, dir_okay=False, readable=True, resolve_path=True, path_type=Path),
+    type=click.Path(exists=True, dir_okay=False, readable=True, resolve_path=False, path_type=Path),
     default=None,
     help="Offline OCI archive for the scoring image; requires --agent-archive.",
 )

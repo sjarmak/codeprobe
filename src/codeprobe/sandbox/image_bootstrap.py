@@ -179,11 +179,12 @@ def _prepare_offline(
         ).strip()
         if observed != request.digest:
             raise ImageBootstrapError(f"{request.label} archive digest mismatch")
+        copy_options = ["--format", "v2s2"] if engine == "docker" else ["--preserve-digests"]
         runner(
             [
                 skopeo_path,
                 "copy",
-                "--preserve-digests",
+                *copy_options,
                 "--digestfile",
                 str(digest_path),
                 source,

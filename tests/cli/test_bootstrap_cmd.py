@@ -211,6 +211,47 @@ def test_bootstrap_rejects_partial_archive_pair_before_implementation(
     assert "both" in result.exception.message.lower()
 
 
+def test_bootstrap_preserves_archive_symlinks_for_secure_boundary_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_target = tmp_path / "agent-target.tar"
+    scoring_target = tmp_path / "scoring-target.tar"
+    agent_target.write_bytes(b"agent")
+    scoring_target.write_bytes(b"scoring")
+    agent_link = tmp_path / "agent.tar"
+    scoring_link = tmp_path / "scoring.tar"
+    agent_link.symlink_to(agent_target)
+    scoring_link.symlink_to(scoring_target)
+
+    def reject_symlinks(**kwargs: object) -> BootstrapResult:
+        assert kwargs["agent_archive"] == agent_link
+        assert kwargs["scoring_archive"] == scoring_link
+        assert agent_link.is_symlink()
+        assert scoring_link.is_symlink()
+        raise ImageBootstrapError("agent archive must be a regular non-symlink file")
+
+    monkeypatch.setattr(bootstrap_module, "prepare_images", reject_symlinks)
+
+    result = CliRunner().invoke(
+        bootstrap,
+        [
+            "--agent-image",
+            f"{_AGENT_REF}@{_AGENT_DIGEST}",
+            "--scoring-image",
+            f"{_SCORING_REF}@{_SCORING_DIGEST}",
+            "--agent-archive",
+            str(agent_link),
+            "--scoring-archive",
+            str(scoring_link),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, DiagnosticError)
+    assert "regular non-symlink" in result.exception.message
+
+
 def test_bootstrap_rejects_conflicting_output_flags_before_engine_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

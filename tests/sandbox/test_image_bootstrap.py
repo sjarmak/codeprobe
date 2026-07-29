@@ -80,10 +80,11 @@ class OfflineRunner:
                 assert snapshot != original
                 original.write_bytes(b"substituted-after-inspect")
             return self.archive_digests[label]
-        if len(command) >= 7 and command[1:4] == ["copy", "--preserve-digests", "--digestfile"]:
-            digest_path = Path(command[4])
-            source = command[5]
-            destination = command[6]
+        if len(command) >= 7 and command[1] == "copy" and "--digestfile" in command:
+            digest_index = command.index("--digestfile")
+            digest_path = Path(command[digest_index + 1])
+            source = command[digest_index + 2]
+            destination = command[digest_index + 3]
             label = self._archive_label(source)
             manifest = json.dumps(
                 {
@@ -335,9 +336,14 @@ def test_offline_archives_are_verified_then_copied_without_pull(
     assert scoring_archive.read_bytes() == b"substituted-after-inspect"
     assert not any(call[0][1:3] == ("image", "pull") for call in runner.calls)
     copy_calls = [call[0] for call in runner.calls if call[0][1] == "copy"]
-    assert all(call[2] == "--preserve-digests" and call[3] == "--digestfile" for call in copy_calls)
-    assert all(call[6].startswith(f"{transport}:") for call in copy_calls)
-    assert all(":codeprobe-" in call[6] for call in copy_calls)
+    assert all(call[-1].startswith(f"{transport}:") for call in copy_calls)
+    assert all(":codeprobe-" in call[-1] for call in copy_calls)
+    if engine == "docker":
+        assert all(call[2:4] == ("--format", "v2s2") for call in copy_calls)
+        assert all("--preserve-digests" not in call for call in copy_calls)
+    else:
+        assert all(call[2] == "--preserve-digests" for call in copy_calls)
+        assert all("--format" not in call for call in copy_calls)
 
 
 def test_offline_archives_must_be_supplied_as_a_pair(tmp_path: Path) -> None:
@@ -476,8 +482,9 @@ def test_offline_import_rejects_copy_digest_not_bound_to_destination_manifest(
     class TamperedDigestRunner(OfflineRunner):
         def __call__(self, command: Sequence[str], timeout: float) -> str:
             output = super().__call__(command, timeout)
-            if len(command) >= 7 and command[1:4] == ["copy", "--preserve-digests", "--digestfile"]:
-                Path(command[4]).write_text(_SCORING_DIGEST + "\n", encoding="utf-8")
+            if len(command) >= 7 and command[1] == "copy" and "--digestfile" in command:
+                digest_index = command.index("--digestfile")
+                Path(command[digest_index + 1]).write_text(_SCORING_DIGEST + "\n", encoding="utf-8")
             return output
 
     config_path = tmp_path / "config.json"

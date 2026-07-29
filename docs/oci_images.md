@@ -118,9 +118,14 @@ codeprobe bootstrap \
 ```
 
 Offline preparation requires both archives. Bootstrap checks each OCI archive
-digest from a private `0600` snapshot, uses Skopeo's `--preserve-digests`
-copy contract, and verifies that the copied manifest's configuration digest
-matches the selected engine's immutable local image ID. This binding works
+digest from a private `0600` snapshot. Podman imports preserve the selected
+manifest digest. Docker imports explicitly convert the verified snapshot's
+selected image to Docker schema 2 because the Docker daemon cannot store a
+multi-platform OCI index directly. In both cases Bootstrap records Skopeo's
+result digest, re-reads the destination manifest, and requires its
+configuration digest to match the selected engine's immutable local image ID.
+The Docker result digest may therefore differ from the archive's top-level
+index digest without weakening the snapshot-to-local-ID binding. This works
 even when a local Docker or Podman import has no repository digest. A missing
 archive, missing Skopeo binary, substitution, digest mismatch, or identity
 mismatch leaves the existing prepared-image record unchanged.
