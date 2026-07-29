@@ -1,7 +1,11 @@
 """Tests for agent adapter protocol and implementations."""
 
 import json
+import os
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -308,8 +312,36 @@ class _StubAdapter(BaseAdapter):
         return ["/usr/bin/fake-agent", "-p", prompt]
 
 
+def _process_running(pid: int) -> bool:
+    proc_stat = Path("/proc") / str(pid) / "stat"
+    try:
+        fields = proc_stat.read_text().split()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    if len(fields) >= 3 and fields[2] == "Z":
+        return False
+    return True
+
+
+def _wait_for_process_exit(pid: int, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _process_running(pid):
+            return True
+        time.sleep(0.05)
+    return not _process_running(pid)
+
+
 class TestBaseAdapterEnvWhitelist:
-    """Verify subprocess.run() env is whitelist-filtered on every dispatch path."""
+    """Verify adapter subprocess env is whitelist-filtered on every dispatch path."""
 
     def test_serial_dispatch_is_filtered_without_session_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """session_env=None (serial dispatch) still gets a whitelist-only env."""
@@ -317,7 +349,7 @@ class TestBaseAdapterEnvWhitelist:
         adapter = _StubAdapter()
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
-        with patch("subprocess.run", return_value=fake_result) as mock_run:
+        with patch("codeprobe.adapters._base._run_agent_process", return_value=fake_result) as mock_run:
             adapter.run("test", config)
 
         env = mock_run.call_args[1]["env"]
@@ -366,7 +398,7 @@ class TestBaseAdapterEnvWhitelist:
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
-        with patch("subprocess.run", return_value=fake_result) as mock_run:
+        with patch("codeprobe.adapters._base._run_agent_process", return_value=fake_result) as mock_run:
             adapter.run("test", config, session_env=session_env)
 
         env = mock_run.call_args[1]["env"]
@@ -378,7 +410,7 @@ class TestBaseAdapterEnvWhitelist:
         config = AgentConfig(timeout_seconds=5)
         fake_result = subprocess.CompletedProcess(args=["fake-agent"], returncode=0, stdout="ok", stderr="")
         session_env = {"CLAUDE_CONFIG_DIR": "/tmp/test"}
-        with patch("subprocess.run", return_value=fake_result) as mock_run:
+        with patch("codeprobe.adapters._base._run_agent_process", return_value=fake_result) as mock_run:
             import os
 
             old_path = os.environ.get("PATH", "")
@@ -400,7 +432,7 @@ class TestBaseAdapterEnvWhitelist:
 
         os.environ["MY_SUPER_SECRET_DB_PASSWORD"] = "hunter2"
         try:
-            with patch("subprocess.run", return_value=fake_result) as mock_run:
+            with patch("codeprobe.adapters._base._run_agent_process", return_value=fake_result) as mock_run:
                 adapter.run("test", config, session_env=session_env)
             env = mock_run.call_args[1]["env"]
             assert "MY_SUPER_SECRET_DB_PASSWORD" not in env
@@ -415,7 +447,7 @@ class TestBaseAdapterRunErrors:
         exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
         exc.stdout = "partial out"
         exc.stderr = "partial err"
-        with patch("subprocess.run", side_effect=exc):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=exc):
             output = adapter.run("test prompt", config)
         assert "timed out" in output.error
         assert output.exit_code == -1
@@ -428,16 +460,84 @@ class TestBaseAdapterRunErrors:
         exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=10)
         exc.stdout = None
         exc.stderr = None
-        with patch("subprocess.run", side_effect=exc):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=exc):
             output = adapter.run("test", config)
         assert output.stdout == ""
         assert output.stderr is None
         assert output.error is not None
 
+    @pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-only")
+    def test_timeout_kills_only_trial_process_tree_and_preserves_diagnostics(
+        self, tmp_path: Path
+    ) -> None:
+        """A timed-out uncontained Claude run kills its descendant process tree."""
+
+        script = tmp_path / "fake_claude.py"
+        child_pid_file = tmp_path / "child.pid"
+        script.write_text(
+            """
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child_pid_file = Path(sys.argv[1])
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(30)"],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+child_pid_file.write_text(str(child.pid))
+print(json.dumps({
+    "result": "partial transcript",
+    "usage": {"input_tokens": 11, "output_tokens": 7},
+    "total_cost_usd": 0.0042,
+}), flush=True)
+print("diagnostic before timeout", file=sys.stderr, flush=True)
+time.sleep(30)
+"""
+        )
+
+        bystander = subprocess.Popen(  # noqa: S603 - argv list, no shell=True
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        class ScriptClaudeAdapter(ClaudeAdapter):
+            def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+                return [sys.executable, str(script), str(child_pid_file)]
+
+        adapter = ScriptClaudeAdapter()
+        child_pid: int | None = None
+        try:
+            output = adapter.run("test prompt", AgentConfig(timeout_seconds=1))
+            child_pid = int(child_pid_file.read_text())
+
+            assert output.exit_code == -1
+            assert output.error_category == "timeout"
+            assert output.error is not None
+            assert "timed out" in output.error
+            assert output.stdout == "partial transcript"
+            assert output.stderr == "diagnostic before timeout\n"
+            assert output.input_tokens == 11
+            assert output.output_tokens == 7
+            assert output.cost_usd == pytest.approx(0.0042)
+            assert _wait_for_process_exit(child_pid)
+            assert _process_running(bystander.pid)
+        finally:
+            for pid in (child_pid, bystander.pid):
+                if pid is None:
+                    continue
+                if _process_running(pid):
+                    os.kill(pid, signal.SIGKILL)
+            bystander.wait(timeout=5)
+
     def test_file_not_found_raises_setup_error(self) -> None:
         adapter = _StubAdapter()
         config = AgentConfig()
-        with patch("subprocess.run", side_effect=FileNotFoundError("/usr/bin/fake-agent")):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=FileNotFoundError("/usr/bin/fake-agent")):
             with pytest.raises(AdapterSetupError, match="Binary not found"):
                 adapter.run("test", config)
 
@@ -474,7 +574,7 @@ class TestTimeoutTelemetryExtraction:
         exc.stdout = partial_json
         exc.stderr = ""
         with (
-            patch("subprocess.run", side_effect=exc),
+            patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
             patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
         ):
             output = adapter.run("test prompt", config)
@@ -494,7 +594,7 @@ class TestTimeoutTelemetryExtraction:
         exc.stdout = "not valid json {{"
         exc.stderr = "some stderr"
         with (
-            patch("subprocess.run", side_effect=exc),
+            patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
             patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
         ):
             output = adapter.run("test prompt", config)
@@ -511,7 +611,7 @@ class TestTimeoutTelemetryExtraction:
         exc.stdout = None
         exc.stderr = None
         with (
-            patch("subprocess.run", side_effect=exc),
+            patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
             patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
         ):
             output = adapter.run("test prompt", config)
@@ -535,7 +635,7 @@ class TestTimeoutTelemetryExtraction:
         exc.stdout = partial_json.encode("utf-8")
         exc.stderr = b"err"
         with (
-            patch("subprocess.run", side_effect=exc),
+            patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
             patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
         ):
             output = adapter.run("test prompt", config)
@@ -552,7 +652,7 @@ class TestTimeoutTelemetryExtraction:
         exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
         exc.stdout = None
         exc.stderr = None
-        with patch("subprocess.run", side_effect=exc):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=exc):
             output = adapter.run("test", config)
         assert output.error_category == "timeout"
 
@@ -564,7 +664,7 @@ class TestTimeoutTelemetryExtraction:
         exc = subprocess.TimeoutExpired(cmd=["fake-agent"], timeout=5)
         exc.stdout = "partial out"
         exc.stderr = ""
-        with patch("subprocess.run", side_effect=exc):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=exc):
             output = adapter.run("test", config)
         assert output.error_category == "timeout"
 
@@ -577,7 +677,7 @@ class TestTimeoutTelemetryExtraction:
         exc.stdout = "You've hit your session limit · resets 1:10pm"
         exc.stderr = ""
         with (
-            patch("subprocess.run", side_effect=exc),
+            patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
             patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
         ):
             output = adapter.run("test prompt", config)
@@ -627,7 +727,7 @@ class TestTimeoutTelemetryExtraction:
         exc.stdout = stream
         exc.stderr = ""
         with (
-            patch("subprocess.run", side_effect=exc),
+            patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
             patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
         ):
             output = adapter.run("test prompt", config)
@@ -659,7 +759,7 @@ class TestTimeoutTelemetryExtraction:
         exc = subprocess.TimeoutExpired(cmd=["exploding"], timeout=5)
         exc.stdout = "some output"
         exc.stderr = ""
-        with patch("subprocess.run", side_effect=exc):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=exc):
             output = adapter.run("test", config)
         assert "timed out" in output.error
         assert output.exit_code == -1
@@ -720,7 +820,7 @@ def test_timeout_preserves_adapter_telemetry() -> None:
     exc.stdout = "\n".join(stream_lines)
     exc.stderr = ""
     with (
-        patch("subprocess.run", side_effect=exc),
+        patch("codeprobe.adapters._base._run_agent_process", side_effect=exc),
         patch.object(adapter, "find_binary", return_value="/usr/bin/claude"),
     ):
         output = adapter.run("test prompt", config)
@@ -770,7 +870,7 @@ class TestParseOutput:
         adapter = BrokenParser()
         config = AgentConfig()
         fake_result = subprocess.CompletedProcess(args=["broken"], returncode=0, stdout="raw output", stderr="err")
-        with patch("subprocess.run", return_value=fake_result):
+        with patch("codeprobe.adapters._base._run_agent_process", return_value=fake_result):
             output = adapter.run("test", config)
         assert "Output parse failed" in output.error
         assert output.stdout == "raw output"
@@ -2020,7 +2120,7 @@ class TestCheckParallelAuth:
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
-            patch("subprocess.run", return_value=fake_result) as mock_run,
+            patch("codeprobe.adapters._base._run_agent_process", return_value=fake_result) as mock_run,
         ):
             adapter.run("test prompt", config, session_env=session_env)
 

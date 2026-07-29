@@ -8,7 +8,7 @@ cleanup scan in ``BaseAdapter.run`` used to match the flag value against
 matched and the secret-bearing file was never unlinked. These tests lock
 in cleanup for the @-prefixed (Copilot), bare (Claude), and timeout paths.
 
-The agent CLI binary is stubbed at the ``subprocess.run`` seam and
+The agent CLI binary is stubbed at the adapter process-runner seam and
 ``find_binary`` is patched so the tests are hermetic — no copilot/claude
 install required.
 """
@@ -57,10 +57,10 @@ def _extract_mcp_path(cmd: list[str]) -> str:
 
 
 def _capturing_fake_run(captured: dict[str, Any]):
-    """subprocess.run stand-in: records cmd and the temp file body.
+    """Adapter process-runner stand-in: records cmd and the temp file body.
 
     The body must be read INSIDE the stub — run()'s finally block unlinks
-    the file right after subprocess.run returns.
+    the file right after the adapter runner returns.
     """
 
     def _fake_run(cmd, **kwargs):
@@ -93,7 +93,10 @@ def test_copilot_mcp_tmpfile_deleted_after_run(
     config = AgentConfig(mcp_config=_mcp_config_with_env_ref(), timeout_seconds=5)
 
     captured: dict[str, Any] = {}
-    with patch("subprocess.run", side_effect=_capturing_fake_run(captured)):
+    with patch(
+        "codeprobe.adapters._base._run_agent_process",
+        side_effect=_capturing_fake_run(captured),
+    ):
         adapter.run("prompt", config)
 
     flag_value = captured["cmd"][captured["cmd"].index("--additional-mcp-config") + 1]
@@ -115,7 +118,10 @@ def test_claude_mcp_tmpfile_deleted_after_run(
     config = AgentConfig(mcp_config=_mcp_config_with_env_ref(), timeout_seconds=5)
 
     captured: dict[str, Any] = {}
-    with patch("subprocess.run", side_effect=_capturing_fake_run(captured)):
+    with patch(
+        "codeprobe.adapters._base._run_agent_process",
+        side_effect=_capturing_fake_run(captured),
+    ):
         adapter.run("prompt", config)
 
     flag_value = captured["cmd"][captured["cmd"].index("--mcp-config") + 1]
@@ -139,7 +145,10 @@ def test_copilot_mcp_tmpfile_deleted_on_timeout(
         captured["mcp_path"] = _extract_mcp_path(cmd)
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
 
-    with patch("subprocess.run", side_effect=_timing_out_run):
+    with patch(
+        "codeprobe.adapters._base._run_agent_process",
+        side_effect=_timing_out_run,
+    ):
         output = adapter.run("prompt", config)
 
     assert output.error_category == "timeout"

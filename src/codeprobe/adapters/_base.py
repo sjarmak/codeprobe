@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -150,6 +151,8 @@ _PRIVATE_CA_FILE_ENV_KEYS: tuple[str, ...] = (
 )
 _PRIVATE_CA_DIR_ENV_KEYS: tuple[str, ...] = ("SSL_CERT_DIR",)
 _CONTAINER_CA_ROOT = Path("/etc/codeprobe/ca")
+_AGENT_TERMINATE_GRACE_SECONDS = 2.0
+_AGENT_KILL_GRACE_SECONDS = 2.0
 
 
 def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -294,6 +297,71 @@ def _remove_container(engine: str, name: str) -> None:
         logger.warning("failed to remove timed-out agent container %s", name)
 
 
+def _signal_agent_process(process: subprocess.Popen[str], sig: signal.Signals) -> None:
+    """Signal only the adapter child boundary created for this trial."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, sig)
+        else:
+            process.send_signal(sig)
+    except ProcessLookupError:
+        return
+    except OSError:
+        logger.warning("failed to signal timed-out agent process", exc_info=True)
+
+
+def _terminate_agent_process_tree(
+    process: subprocess.Popen[str],
+) -> tuple[str | bytes | None, str | bytes | None]:
+    _signal_agent_process(process, signal.SIGTERM)
+    try:
+        return process.communicate(timeout=_AGENT_TERMINATE_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        _signal_agent_process(process, signal.SIGKILL)
+        try:
+            return process.communicate(timeout=_AGENT_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            return exc.stdout, exc.stderr
+
+
+def _run_agent_process(
+    cmd: list[str],
+    *,
+    timeout: int,
+    cwd: str | None,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(  # noqa: S603 — argv list, no shell=True
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+        start_new_session=os.name == "posix",
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        timeout_stdout, timeout_stderr = _terminate_agent_process_tree(process)
+        raise subprocess.TimeoutExpired(
+            cmd=cmd,
+            timeout=exc.timeout,
+            output=timeout_stdout,
+            stderr=timeout_stderr,
+        ) from exc
+
+    returncode = process.returncode if process.returncode is not None else 0
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 class BaseAdapter:
     """Base class for CLI-based agent adapters.
 
@@ -372,10 +440,8 @@ class BaseAdapter:
         )
         start = time.monotonic()
         try:
-            result = subprocess.run(
+            result = _run_agent_process(
                 cmd,
-                capture_output=True,
-                text=True,
                 timeout=config.timeout_seconds,
                 cwd=config.cwd,
                 env=run_env,

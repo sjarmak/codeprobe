@@ -602,7 +602,7 @@ class TestEndToEndWriteAndMcp:
         fake_run, captured = self._stub_claude_writing_answer(
             workspace, answer_payload
         )
-        with patch("subprocess.run", side_effect=fake_run):
+        with patch("codeprobe.adapters._base._run_agent_process", side_effect=fake_run):
             output = adapter.run("find controllers", config)
 
         # --- Command plumbing assertions (r7 fix shape) ---

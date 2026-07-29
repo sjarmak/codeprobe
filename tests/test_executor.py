@@ -443,6 +443,55 @@ def test_execute_config_runs_all_tasks(tmp_path: Path):
     assert len(adapter.run_calls) == 3
 
 
+def test_execute_config_continues_after_timeout_infrastructure_error(tmp_path: Path):
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(2)]
+
+    class TimeoutThenSuccessAdapter(FakeAdapter):
+        def run(
+            self,
+            prompt: str,
+            config: AgentConfig,
+            session_env: dict[str, str] | None = None,
+        ) -> AgentOutput:
+            self.run_calls.append((prompt, config))
+            if len(self.run_calls) == 1:
+                return AgentOutput(
+                    stdout="partial transcript",
+                    stderr="diagnostic before timeout",
+                    exit_code=-1,
+                    duration_seconds=1.0,
+                    error="Agent timed out after 1s",
+                    error_category="timeout",
+                    input_tokens=11,
+                    output_tokens=7,
+                    cost_usd=0.0042,
+                    cost_source="api_reported",
+                )
+            return AgentOutput(
+                stdout="output",
+                stderr=None,
+                exit_code=0,
+                duration_seconds=0.1,
+            )
+
+    adapter = TimeoutThenSuccessAdapter(stdout="ignored")
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="baseline"),
+        agent_config=AgentConfig(),
+    )
+
+    assert len(results) == 2
+    assert len(adapter.run_calls) == 2
+    assert results[0].status == "error"
+    assert results[0].error_category == "timeout"
+    assert results[0].metadata["error"] == "Agent timed out after 1s"
+    assert results[0].input_tokens == 11
+    assert results[1].status == "completed"
+
+
 class _RaisingScorer:
     """A scorer whose .score() raises an unexpected exception (not one of the
     OSError/JSONDecodeError/ValueError/TypeError types execute_task handles)."""

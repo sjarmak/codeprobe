@@ -204,14 +204,14 @@ class _FakeAdapter(BaseAdapter):
 
 @pytest.fixture()
 def capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
-    """Patch subprocess.run inside the adapter module; return captured argvs."""
+    """Patch the adapter process runner; return captured argvs."""
     calls: list[list[str]] = []
 
     def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(list(argv))
         return subprocess.CompletedProcess(args=argv, returncode=0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("codeprobe.adapters._base.subprocess.run", fake_run)
+    monkeypatch.setattr("codeprobe.adapters._base._run_agent_process", fake_run)
     return calls
 
 
@@ -402,16 +402,23 @@ class TestRunContainerization:
     ) -> None:
         calls: list[list[str]] = []
 
+        def fake_agent_process(
+            argv: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(list(argv))
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
+
         def fake_run(
             argv: list[str], **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
-            if len(calls) == 1:
-                raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
             return subprocess.CompletedProcess(
                 args=argv, returncode=0, stdout="", stderr=""
             )
 
+        monkeypatch.setattr(
+            "codeprobe.adapters._base._run_agent_process", fake_agent_process
+        )
         monkeypatch.setattr("codeprobe.adapters._base.subprocess.run", fake_run)
         containment.set_active_plan(
             containment.ContainmentPlan(mode="container", engine=ENGINE)
@@ -435,13 +442,15 @@ class TestRunContainerization:
     ) -> None:
         calls: list[list[str]] = []
 
-        def fake_run(
+        def fake_agent_process(
             argv: list[str], **kwargs: object
         ) -> subprocess.CompletedProcess[str]:
             calls.append(list(argv))
             raise subprocess.TimeoutExpired(cmd=argv, timeout=1)
 
-        monkeypatch.setattr("codeprobe.adapters._base.subprocess.run", fake_run)
+        monkeypatch.setattr(
+            "codeprobe.adapters._base._run_agent_process", fake_agent_process
+        )
 
         output = _FakeAdapter().run(
             "hello", AgentConfig(cwd=str(tmp_path), timeout_seconds=1)
