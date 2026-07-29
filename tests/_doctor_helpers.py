@@ -31,6 +31,8 @@ def _use_tool_paths(
 
     paths = {name: _fake_cli(tmp_path, name) for name in names}
     monkeypatch.setattr(mod.shutil, "which", lambda name: paths.get(name))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
 
 def _use_claude_agent_path(

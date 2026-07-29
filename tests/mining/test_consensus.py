@@ -9,7 +9,9 @@ themselves are tested via monkey-patching so the test never depends on
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -156,6 +158,7 @@ def _patch_backends(
     grep_unavailable: bool = False,
     ast_unavailable: bool = False,
     sg_unavailable: bool = False,
+    sg_no_evidence: bool = False,
 ) -> None:
     """Replace the three backend dispatchers with deterministic stubs."""
 
@@ -186,6 +189,12 @@ def _patch_backends(
                 backend="sourcegraph",
                 available=False,
                 error="stubbed unavailable",
+            )
+        if sg_no_evidence:
+            return BackendResult(
+                backend="sourcegraph",
+                evidence="no_evidence",
+                error="zero-result lookup supplied no evidence",
             )
         return BackendResult(
             backend="sourcegraph", files=frozenset(sg or set())
@@ -315,6 +324,79 @@ class TestComputeConsensus:
         assert "sourcegraph" not in decision.available_backends
         assert set(decision.available_backends) == {"grep", "ast"}
 
+    def test_sourcegraph_no_evidence_does_not_erase_local_consensus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_backends(
+            monkeypatch,
+            grep={"local.go"},
+            ast={"local.go"},
+            sg_no_evidence=True,
+        )
+        decision = compute_consensus(
+            symbol="X",
+            defining_file="pkg/foo.go",
+            repo_paths=self.repo_paths,
+            sg_repo="github.com/x/y",
+            threshold=0.8,
+        )
+
+        assert decision.shipped is True
+        assert decision.consensus_files == frozenset({"local.go"})
+        assert decision.available_backends == ("ast", "grep")
+        assert decision.divergence_report["participating_backends"] == [
+            "ast",
+            "grep",
+        ]
+        assert [
+            (m["backend_a"], m["backend_b"])
+            for m in decision.divergence_report["pair_metrics"]
+        ] == [("ast", "grep")]
+
+        by_backend = {
+            br["backend"]: br
+            for br in decision.divergence_report["backend_results"]
+        }
+        assert by_backend["sourcegraph"]["available"] is True
+        assert by_backend["sourcegraph"]["participating"] is False
+        assert by_backend["sourcegraph"]["participation"] == "no_evidence"
+        assert (
+            by_backend["sourcegraph"]["reason"]
+            == "zero-result lookup supplied no evidence"
+        )
+
+    def test_non_empty_sourcegraph_conflict_still_participates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_backends(
+            monkeypatch,
+            grep={"local.go"},
+            ast={"local.go"},
+            sg={"remote.go"},
+        )
+        decision = compute_consensus(
+            symbol="X",
+            defining_file="pkg/foo.go",
+            repo_paths=self.repo_paths,
+            sg_repo="github.com/x/y",
+            threshold=0.8,
+        )
+
+        assert decision.shipped is True
+        assert decision.consensus_files == frozenset()
+        assert set(decision.available_backends) == {
+            "grep",
+            "ast",
+            "sourcegraph",
+        }
+        assert len(decision.divergence_report["pair_metrics"]) == 3
+        by_backend = {
+            br["backend"]: br
+            for br in decision.divergence_report["backend_results"]
+        }
+        assert by_backend["sourcegraph"]["participating"] is True
+        assert by_backend["sourcegraph"]["participation"] == "participating"
+
     def test_only_one_backend_available_quarantines(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -396,6 +478,36 @@ class TestComputeConsensus:
                 assert br["files"] == ["z.go"]
         assert rep["pair_metrics"]  # at least one pair recorded
         assert rep["consensus_files"] == []  # intersection of disjoint sets
+
+    def test_empty_sourcegraph_response_is_no_evidence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class AuthError(Exception):
+            pass
+
+        sg_auth = ModuleType("codeprobe.mining.sg_auth")
+        sg_auth.AuthError = AuthError
+        sg_auth.get_valid_token = lambda: "token"
+        sg_ground_truth = ModuleType("codeprobe.mining.sg_ground_truth")
+        sg_ground_truth._call_find_references = lambda **kwargs: []
+        monkeypatch.setitem(sys.modules, "codeprobe.mining.sg_auth", sg_auth)
+        monkeypatch.setitem(
+            sys.modules,
+            "codeprobe.mining.sg_ground_truth",
+            sg_ground_truth,
+        )
+
+        result = consensus._run_sourcegraph_backend(
+            "X",
+            self.repo_paths,
+            defining_file="pkg/foo.go",
+            sg_repo="github.com/x/y",
+        )
+
+        assert result.available is True
+        assert result.participating is False
+        assert result.participation == "no_evidence"
+        assert result.error == "find_references returned no files"
 
     def test_decision_is_immutable(
         self, monkeypatch: pytest.MonkeyPatch

@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 BackendName = Literal["sourcegraph", "ast", "grep"]
 ConsensusMode = Literal["intersection", "union"]
+BackendEvidence = Literal["evidence", "no_evidence"]
+BackendParticipation = Literal[
+    "participating", "no_evidence", "unavailable"
+]
 
 DEFAULT_BACKENDS: tuple[BackendName, ...] = ("sourcegraph", "ast", "grep")
 DEFAULT_THRESHOLD: float = 0.8
@@ -60,14 +64,32 @@ class BackendResult:
 
     ``available`` is False when the backend could not run at all (missing
     auth, missing toolchain, repo not on disk). The caller skips it from
-    the pairwise comparison rather than treating it as an empty set.
-    ``error`` carries a short reason for the divergence report.
+    the pairwise comparison rather than treating it as an empty set. An
+    available backend may also return ``evidence="no_evidence"`` when it
+    ran successfully but did not produce a contractually authoritative
+    absence proof. ``error`` carries a short reason for the divergence
+    report.
     """
 
     backend: BackendName
     files: frozenset[str] = frozenset()
     available: bool = True
     error: str | None = None
+    evidence: BackendEvidence = "evidence"
+
+    @property
+    def participating(self) -> bool:
+        """Whether this result should count in agreement calculations."""
+        return self.available and self.evidence == "evidence"
+
+    @property
+    def participation(self) -> BackendParticipation:
+        """Diagnostic state used by consensus reports."""
+        if not self.available:
+            return "unavailable"
+        if self.evidence == "no_evidence":
+            return "no_evidence"
+        return "participating"
 
 
 def _run_grep_backend(
@@ -159,7 +181,14 @@ def _run_sourcegraph_backend(
             available=False,
             error="find_references returned None (API failure)",
         )
-    return BackendResult(backend="sourcegraph", files=frozenset(sg_files))
+    files = frozenset(sg_files)
+    if not files:
+        return BackendResult(
+            backend="sourcegraph",
+            evidence="no_evidence",
+            error="find_references returned no files",
+        )
+    return BackendResult(backend="sourcegraph", files=files)
 
 
 def _run_backend(
@@ -238,6 +267,9 @@ def _build_divergence_report(
     Schema is stable: callers (the writer, the CLI summary, tests) read
     these keys directly. Any new field must be additive.
     """
+    participating_backends = [
+        br.backend for br in backend_results if br.participating
+    ]
     return {
         "schema_version": "consensus.v1",
         "symbol": symbol,
@@ -245,13 +277,26 @@ def _build_divergence_report(
         "threshold": threshold,
         "mode": mode,
         "decision": decision,  # "shipped" or "quarantined"
+        "participating_backends": participating_backends,
+        "excluded_backends": [
+            {
+                "backend": br.backend,
+                "participation": br.participation,
+                "reason": br.error,
+            }
+            for br in backend_results
+            if not br.participating
+        ],
         "backend_results": [
             {
                 "backend": br.backend,
                 "available": br.available,
+                "participating": br.participating,
+                "participation": br.participation,
                 "n_files": len(br.files),
                 "files": sorted(br.files),
                 "error": br.error,
+                "reason": br.error,
             }
             for br in backend_results
         ],
@@ -261,18 +306,18 @@ def _build_divergence_report(
 
 
 def _pairwise_metrics(
-    available: Sequence[BackendResult],
+    participating: Sequence[BackendResult],
 ) -> tuple[list[dict], float, float]:
-    """Compute symmetric F1 between every pair of available backends.
+    """Compute symmetric F1 between every pair of participating backends.
 
     Returns ``(pair_metrics, min_f1, max_f1)``. When fewer than two backends
-    are available the F1 bounds default to ``0.0`` (treated as full
+    participate the F1 bounds default to ``0.0`` (treated as full
     disagreement) so a single-backend candidate cannot ship under
     consensus mode.
     """
     pair_metrics: list[dict] = []
     f1s: list[float] = []
-    for ba, bb in combinations(available, 2):
+    for ba, bb in combinations(participating, 2):
         metrics = compute_pair_metrics(ba.files, bb.files)
         pair_metrics.append(
             {
@@ -291,29 +336,29 @@ def _pairwise_metrics(
 
 
 def _combine_files(
-    available: Sequence[BackendResult], mode: ConsensusMode
+    participating: Sequence[BackendResult], mode: ConsensusMode
 ) -> frozenset[str]:
-    """Combine file sets across available backends.
+    """Combine file sets across participating backends.
 
-    intersection (default): files reported by *every* available backend —
+    intersection (default): files reported by *every* participating backend —
         high-precision oracle, conservative answer key.
-    union: files reported by *any* available backend — high-recall, useful
+    union: files reported by *any* participating backend — high-recall, useful
         when the task framing tolerates over-inclusion.
 
-    With a single available backend, both modes degenerate to that
+    With a single participating backend, both modes degenerate to that
     backend's file set, but :func:`compute_consensus` will still mark the
     candidate as quarantined because the agreement check requires at
     least two backends.
     """
-    if not available:
+    if not participating:
         return frozenset()
     if mode == "union":
         out: frozenset[str] = frozenset()
-        for br in available:
+        for br in participating:
             out = out | br.files
         return out
     # intersection
-    iterator = iter(available)
+    iterator = iter(participating)
     out = next(iterator).files
     for br in iterator:
         out = out & br.files
@@ -399,14 +444,14 @@ def compute_consensus(
     ordered_results = tuple(
         results[name] for name in backends_attempted if name in results
     )
-    available = tuple(br for br in ordered_results if br.available)
-    available_names = tuple(br.backend for br in available)
+    participating = tuple(br for br in ordered_results if br.participating)
+    participating_names = tuple(br.backend for br in participating)
 
-    pair_metrics, min_f1, max_f1 = _pairwise_metrics(available)
-    consensus_files = _combine_files(available, mode)
+    pair_metrics, min_f1, max_f1 = _pairwise_metrics(participating)
+    consensus_files = _combine_files(participating, mode)
 
-    # Ship when at least two backends ran AND any pair agrees above threshold.
-    shipped = len(available) >= 2 and max_f1 >= threshold
+    # Ship when at least two backends participate and any pair agrees above threshold.
+    shipped = len(participating) >= 2 and max_f1 >= threshold
     decision_label = "shipped" if shipped else "quarantined"
 
     divergence_report = _build_divergence_report(
@@ -421,11 +466,11 @@ def compute_consensus(
     )
 
     logger.info(
-        "Consensus %s for %s: %d/%d backends available, "
+        "Consensus %s for %s: %d/%d backends participating, "
         "max_pair_f1=%.3f (threshold=%.2f), n_consensus=%d",
         decision_label,
         symbol,
-        len(available),
+        len(participating),
         len(ordered_results),
         max_f1,
         threshold,
@@ -439,7 +484,7 @@ def compute_consensus(
         threshold=threshold,
         min_pair_f1=min_f1,
         max_pair_f1=max_f1,
-        available_backends=available_names,
+        available_backends=participating_names,
         backends_attempted=backends_attempted,
         backend_results=ordered_results,
         divergence_report=divergence_report,

@@ -303,10 +303,17 @@ def test_verify_ships_agreeing_tasks_with_two_backends(
         report = tc.report
         assert report["schema_version"] == "consensus.v1"
         assert report["decision"] == "shipped"
+        assert report["participating_backends"] == [
+            GENERATOR_BACKEND,
+            AST_BACKEND,
+        ]
         backends = [b["backend"] for b in report["backend_results"]]
         assert backends == [GENERATOR_BACKEND, AST_BACKEND]
         for b in report["backend_results"]:
             assert b["available"] is True
+            assert b["participating"] is True
+            assert b["participation"] == "participating"
+            assert b["reason"] is None
             assert b["error"] is None
 
 
@@ -425,8 +432,20 @@ def test_writer_records_commit_and_divergence_report(
         report = json.loads(report_path.read_text())
         # The exact field names the aoa-bench loader deserializes.
         assert report["decision"] == "shipped"
+        assert set(report["participating_backends"]) == {
+            GENERATOR_BACKEND,
+            AST_BACKEND,
+        }
         for b in report["backend_results"]:
-            assert set(b) >= {"backend", "available", "files", "error"}
+            assert set(b) >= {
+                "backend",
+                "available",
+                "participating",
+                "participation",
+                "files",
+                "error",
+                "reason",
+            }
         names = {b["backend"] for b in report["backend_results"]}
         assert len(names) >= 2, "NativeComposed needs >= 2 distinct backends"
 

@@ -180,8 +180,8 @@ def curate_consensus(
     ``"supplementary"``; rejected items are quarantined with the
     rationale.
 
-    Single-backend fallback: when only one backend ran (``available
-    == 1``), every file is kept as ``"required"`` because there is
+    Single-backend fallback: when only one backend has evidence and
+    participates, every file is kept as ``"required"`` because there is
     nothing to consensus-filter against. This preserves behavior in
     ripgrep-only environments and is documented in
     ``docs/oracle_curator.md``.
@@ -194,10 +194,10 @@ def curate_consensus(
     if min_backends < 1:
         raise ValueError(f"min_backends must be >= 1, got {min_backends!r}")
 
-    available = [br for br in backend_results if br.available]
-    if not available:
+    participating = [br for br in backend_results if br.participating]
+    if not participating:
         logger.warning(
-            "Oracle curator: no available backends — returning empty oracle"
+            "Oracle curator: no participating backends - returning empty oracle"
         )
         return CuratedOracle(
             items=(),
@@ -207,17 +207,17 @@ def curate_consensus(
             llm_used=False,
         )
 
-    n_available = len(available)
+    n_participating = len(participating)
 
     # Build per-path → set[backend_name] map.
     per_path: dict[str, set[str]] = {}
-    for br in available:
+    for br in participating:
         for path in br.files:
             per_path.setdefault(path, set()).add(br.backend)
 
     # Single-backend fallback: skip both tier filtering and LLM curation.
-    if n_available == 1:
-        only_backend = available[0].backend
+    if n_participating == 1:
+        only_backend = participating[0].backend
         single_items = tuple(
             CuratedItem(
                 path=path,

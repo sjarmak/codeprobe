@@ -33,6 +33,7 @@ def _stub_backends(
     monkeypatch: pytest.MonkeyPatch,
     *,
     by_symbol: dict[str, dict[str, set[str]]],
+    no_evidence_by_symbol: dict[str, set[str]] | None = None,
 ) -> None:
     """Stub the three backend resolvers with deterministic per-symbol output.
 
@@ -43,6 +44,11 @@ def _stub_backends(
 
     def _lookup(symbol: str, backend: str) -> set[str]:
         return by_symbol.get(symbol, {}).get(backend, set())
+
+    def _has_no_evidence(symbol: str, backend: str) -> bool:
+        if no_evidence_by_symbol is None:
+            return False
+        return backend in no_evidence_by_symbol.get(symbol, set())
 
     def _fake_grep(symbol: str, repo_paths: Any) -> BackendResult:
         return BackendResult(
@@ -64,6 +70,12 @@ def _stub_backends(
         sg_repo: str,
         sg_url: str = "",
     ) -> BackendResult:
+        if _has_no_evidence(symbol, "sourcegraph"):
+            return BackendResult(
+                backend="sourcegraph",
+                evidence="no_evidence",
+                error="zero-result lookup supplied no evidence",
+            )
         return BackendResult(
             backend="sourcegraph",
             files=frozenset(_lookup(symbol, "sourcegraph")),
@@ -188,6 +200,51 @@ def test_consensus_default_mode_is_intersection(
     assert len(tasks) == 1
     # Intersection drops "noise.go" because grep/ast didn't see it.
     assert set(tasks[0].verification.oracle_answer) == {"a.go", "b.go"}
+
+
+def test_sourcegraph_no_evidence_does_not_quarantine_local_consensus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        org_scale,
+        "discover_reference_targets",
+        lambda repo_paths, tracked_files, language: [
+            ("Sym", "pkg/foo.go", frozenset({"a.go"})),
+        ],
+    )
+    _stub_backends(
+        monkeypatch,
+        by_symbol={
+            "Sym": {
+                "grep": {"a.go"},
+                "ast": {"a.go"},
+                "sourcegraph": set(),
+            },
+        },
+        no_evidence_by_symbol={"Sym": {"sourcegraph"}},
+    )
+    config = ConsensusConfig(
+        backends=("grep", "ast", "sourcegraph"),
+        threshold=0.8,
+        mode="intersection",
+    )
+    quarantined: list[QuarantinedCandidate] = []
+    tasks = _mine_symbol_reference_tasks(
+        repo_paths=[tmp_path],
+        tracked_files=frozenset(),
+        language="go",
+        commit_sha="abc" * 13,
+        consensus_config=config,
+        quarantined_out=quarantined,
+    )
+
+    assert len(tasks) == 1
+    assert quarantined == []
+    assert set(tasks[0].verification.oracle_answer) == {"a.go"}
+    assert set(tasks[0].metadata.oracle_backends_consensus) == {
+        "ast",
+        "grep",
+    }
 
 
 def test_consensus_union_mode_routes_singleton_backend_files_through_curator(
