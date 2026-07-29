@@ -2,7 +2,7 @@
   "schema_version": "codeprobe.zero-code-access.intervention-log.v1",
   "record_schema": {
     "sequence": "contiguous_integer_starting_at_1",
-    "actor_role": "runtime_allowlisted_actor_role",
+    "actor_role": "provider_neutral_runtime_actor_role",
     "kind": "runtime_allowlisted_support_kind"
   },
   "permitted_examples": [

@@ -144,5 +144,5 @@ with the separately authenticated data-owner digest before reviewing its
 bounded conclusion.
 
 The complete install-to-export sequence, role boundaries, sampling worksheet,
-and participant consent checklist are in the
-[zero-code-access operator kit](pilot/zero-code-access/README.md).
+and data-owner consent checklist are in the
+[zero-code-access operator kit](zero-code-access/README.md).

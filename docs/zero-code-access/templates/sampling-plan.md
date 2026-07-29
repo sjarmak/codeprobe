@@ -1,12 +1,12 @@
 # Predeclared Sampling Plan
 
-Keep this worksheet inside the participant environment. Freeze it before
+Keep this worksheet inside the data-owner environment. Freeze it before
 viewing results. Export only the schema-approved hashes and counts produced
 through the evidence request.
 
 ## Scope
 
-- Strategy: `CP-ZCA-PILOT-2026`
+- Operator contract: `codeprobe.zero-code-access.operator.v1`
 - Selection method: `predeclared_explicit` / `predeclared_stratified` /
   `predeclared_window`
 - Window start (`YYYY-MM-DD`):
@@ -54,7 +54,7 @@ For every selected task, record locally:
 - [ ] Attrition equals selected minus paired scorable counts.
 - [ ] At least ten paired rows remain.
 - [ ] The sample did not change after results were visible.
-- [ ] The participant technical owner attests the frozen sample represents the
+- [ ] The data-owner technical owner attests the frozen sample represents the
   declared workload.
 
 If any final checkbox is false, use `insufficient_evidence`.

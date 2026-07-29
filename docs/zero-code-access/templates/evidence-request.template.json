@@ -5,7 +5,7 @@
     "environment": {
       "execution_location": "data_owner_environment",
       "repository_access": "data_owner_only",
-      "network_posture": "__NETWORK_POSTURE__"
+      "network_posture": "__APPROVED_NETWORK_POSTURE__"
     },
     "configurations": [
       {

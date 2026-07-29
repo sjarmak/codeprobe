@@ -1,18 +1,18 @@
 # Asynchronous Intake and Consent
 
-Participant budget: ten minutes maximum. Complete without repository names,
+Data-owner budget: ten minutes maximum. Complete without repository names,
 URLs, paths, code, prompts, patches, traces, task-level results, credentials,
 logs, or diagnostics.
 
 ## Readiness
 
-- [ ] I am the participant technical owner or have authority to operate the
+- [ ] I am the data-owner technical owner or have authority to operate the
   evaluation and approve any export.
-- [ ] Python 3.11+ and an approved container or sandbox are available.
+- [ ] CPython 3.11, 3.12, or 3.13 and an approved container or sandbox are available.
 - [ ] The repository language and merge history are supported by the selected
   CodeProbe mining goal.
 - [ ] Both selected agent configurations can run locally; credentials and cost
-  limits are managed inside the participant environment.
+  limits are managed inside the data-owner environment.
 - [ ] Network posture is predeclared as `offline`, `restricted`, or `approved`.
 - [ ] I can select and attest at least ten paired distinct tasks and run three
   repeats per task and configuration.

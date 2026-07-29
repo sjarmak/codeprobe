@@ -23,14 +23,14 @@ from codeprobe.snapshot.evidence_bundle import (
 from codeprobe.snapshot.evidence_models import SupportEvent
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-KIT_ROOT = REPO_ROOT / "docs" / "pilot" / "zero-code-access"
+KIT_ROOT = REPO_ROOT / "docs" / "zero-code-access"
 TEMPLATES = KIT_ROOT / "templates"
 REQUIRED_FILES = (
     KIT_ROOT / "README.md",
     KIT_ROOT / "kit-contract.json",
-    KIT_ROOT / "participant-runbook.md",
-    KIT_ROOT / "se-methodology.md",
-    KIT_ROOT / "fe-coordination.md",
+    KIT_ROOT / "data-owner-runbook.md",
+    KIT_ROOT / "support-methodology.md",
+    KIT_ROOT / "coordination.md",
     TEMPLATES / "intake-and-consent.md",
     TEMPLATES / "sampling-plan.md",
     TEMPLATES / "bounded-findings.md",
@@ -39,7 +39,14 @@ REQUIRED_FILES = (
     TEMPLATES / "evidence-request.template.json",
 )
 LOCAL_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
-BRANDED_PROVIDER = re.compile(r"\bSourcegraph\b", re.IGNORECASE)
+FORBIDDEN_ENGAGEMENT_MARKERS = (
+    "codeprobe-2z76",
+    "cp-zca-pilot",
+    "field engineering",
+    "participant",
+    "solutions engineering",
+    "sourcegraph",
+)
 QA_VALID_EXAMPLES = (
     "comprehension/count-classes",
     "comprehension/count-functions",
@@ -72,7 +79,7 @@ def _materialize_evidence_template(value: Any) -> Any:
         return "2026-01-01"
     if value == "__END_DATE__":
         return "2026-06-30"
-    if value == "__NETWORK_POSTURE__":
+    if value == "__APPROVED_NETWORK_POSTURE__":
         return "restricted"
     if isinstance(value, str) and value.startswith("__SHA256_"):
         return _digest(value)
@@ -202,7 +209,8 @@ def test_operator_kit_has_every_required_file_and_resolvable_link() -> None:
         if not document.is_file():
             continue
         content = document.read_text(encoding="utf-8")
-        assert BRANDED_PROVIDER.search(content) is None
+        normalized = content.casefold()
+        assert all(marker not in normalized for marker in FORBIDDEN_ENGAGEMENT_MARKERS)
         if document.suffix != ".md":
             continue
         for target in LOCAL_LINK.findall(content):
@@ -214,10 +222,11 @@ def test_operator_kit_has_every_required_file_and_resolvable_link() -> None:
             )
 
 
-def test_kit_contract_preserves_pilot_thresholds_and_boundary() -> None:
+def test_kit_contract_preserves_operator_thresholds_and_boundary() -> None:
     contract = _json(KIT_ROOT / "kit-contract.json")
 
     assert contract["schema_version"] == "codeprobe.zero-code-access.operator-kit.v1"
+    assert contract["contract_id"] == "codeprobe.zero-code-access.operator.v1"
     assert contract["data_owner_time_budget_minutes"] == {
         "asynchronous_intake_maximum": 10,
         "structured_session_maximum": 45,
@@ -251,13 +260,15 @@ def test_standard_profile_declares_exactly_two_symmetric_arms() -> None:
     profile = _json(TEMPLATES / "experiment.template.json")
     configs = profile["configs"]
 
-    assert profile["name"] == "zero-code-access-pilot"
+    assert profile["name"] == "zero-code-access-evaluation"
     assert profile["tasks_dir"] == "tasks"
     assert [item["label"] for item in configs] == ["A", "B"]
     assert len(configs) == 2
     for config in configs:
         assert config["max_turns"] is None
-        assert config["extra"]["pilot_protocol"] == "CP-ZCA-PILOT-2026"
+        assert config["extra"]["operator_protocol"] == (
+            "codeprobe.zero-code-access.operator.v1"
+        )
         assert config["extra"]["minimum_paired_tasks"] == 10
         assert config["extra"]["required_repeats"] == 3
     symmetric_fields = {
@@ -276,7 +287,7 @@ def test_evidence_request_template_previews_after_local_values_are_filled(
 ) -> None:
     template = _json(TEMPLATES / "evidence-request.template.json")
     assert template["run"]["environment"]["network_posture"] == (
-        "__NETWORK_POSTURE__"
+        "__APPROVED_NETWORK_POSTURE__"
     )
     materialized = _materialize_evidence_template(template)
     request_path = tmp_path / "request.json"
@@ -314,7 +325,7 @@ def test_intervention_log_examples_match_runtime_disqualification_policy() -> No
 
 
 def test_data_owner_runbook_names_only_resolvable_cli_surfaces() -> None:
-    runbook = (KIT_ROOT / "participant-runbook.md").read_text(encoding="utf-8")
+    runbook = (KIT_ROOT / "data-owner-runbook.md").read_text(encoding="utf-8")
     required = {
         ("doctor",),
         ("mine",),
@@ -334,6 +345,8 @@ def test_data_owner_runbook_names_only_resolvable_cli_surfaces() -> None:
         runbook.index("codeprobe experiment init")
     )
     assert 'python3 -m venv "$CODEPROBE_VENV"' in runbook
+    assert "CPython 3.11, 3.12, or 3.13" in runbook
+    assert "Python 3.11+" not in runbook
     assert ".codeprobe-venv" not in runbook
     assert required <= set(commands)
     for command in commands:

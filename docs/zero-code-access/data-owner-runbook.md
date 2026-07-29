@@ -2,7 +2,7 @@
 
 The data-owner technical owner performs every step in the data-owner
 environment. Do not screen-share source, repository paths, prompts, patches,
-traces, task-level results, raw results, logs, or diagnostics. SE and FE may
+traces, task-level results, raw results, logs, or diagnostics. Provider support may
 receive only coded progress and sanitized, non-identifying observations.
 
 Keep the full `.codeprobe/` directory, the sampling worksheet, and the local
@@ -23,7 +23,7 @@ to any material intended for export.
 
 ## 2. Install, configure, and preflight
 
-Use an approved Python 3.11+ environment and install the reviewed CodeProbe
+Use an approved CPython 3.11, 3.12, or 3.13 environment and install the reviewed CodeProbe
 release through the data owner's normal package process. Set
 `CODEPROBE_VENV` to a data-owner-approved path outside the target repository:
 
@@ -35,7 +35,8 @@ codeprobe --version
 codeprobe doctor
 ```
 
-FE provides the reviewed release number out of band as `CODEPROBE_VERSION`.
+Provider support provides the reviewed release number out of band as
+`CODEPROBE_VERSION`.
 Refuse an unpinned install or a runtime version that differs from the reviewed
 release.
 
@@ -61,7 +62,7 @@ dropping them.
 
 Run the evaluation in a data-owner-approved container or sandbox. Do not use
 `--uncontained` for the pilot. Confirm agent credentials and the cost ceiling
-locally; never send their values to SE or FE.
+locally; never send their values to provider support.
 
 ## 3. Mine the frozen sample
 

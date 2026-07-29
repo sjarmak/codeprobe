@@ -1,5 +1,5 @@
 {
-  "name": "zero-code-access-pilot",
+  "name": "zero-code-access-evaluation",
   "description": "Data-owner-operated two-configuration zero-code-access comparison",
   "tasks_dir": "tasks",
   "configs": [
@@ -19,7 +19,7 @@
       "hide_local_source": "off",
       "low_confidence_threshold": 0.5,
       "extra": {
-        "pilot_protocol": "CP-ZCA-PILOT-2026",
+        "operator_protocol": "codeprobe.zero-code-access.operator.v1",
         "minimum_paired_tasks": 10,
         "required_repeats": 3
       }
@@ -40,7 +40,7 @@
       "hide_local_source": "off",
       "low_confidence_threshold": 0.5,
       "extra": {
-        "pilot_protocol": "CP-ZCA-PILOT-2026",
+        "operator_protocol": "codeprobe.zero-code-access.operator.v1",
         "minimum_paired_tasks": 10,
         "required_repeats": 3
       }

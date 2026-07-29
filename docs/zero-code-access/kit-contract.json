@@ -1,6 +1,6 @@
 {
   "schema_version": "codeprobe.zero-code-access.operator-kit.v1",
-  "strategy_id": "CP-ZCA-PILOT-2026",
+  "contract_id": "codeprobe.zero-code-access.operator.v1",
   "data_owner_time_budget_minutes": {
     "asynchronous_intake_maximum": 10,
     "structured_session_maximum": 45
@@ -37,8 +37,7 @@
     "support-log.json"
   ],
   "roles": {
-    "solutions_engineering": "methodology_and_bounded_findings",
-    "field_engineering": "coordination_and_external_session",
+    "provider_support": "methodology_coordination_and_bounded_findings",
     "data_owner_technical_owner": "execution_data_approval_and_signoff",
     "provider_engineering": "internal_defect_repair_only"
   }

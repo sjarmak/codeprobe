@@ -1,6 +1,6 @@
 # Bounded Findings Review
 
-Use this worksheet to review the participant-approved bundle. It is not an
+Use this worksheet to review the data-owner-approved bundle. It is not an
 additional export artifact and must not contain supplemental customer data.
 The generated `findings.md` remains the report of record.
 
@@ -36,12 +36,12 @@ Select exactly the value already present in the approved bundle:
 - [ ] `insufficient_evidence`
 
 The conclusion applies only to the two anonymized configurations, frozen
-sample, recorded CodeProbe version, participant environment, and executed
+sample, recorded CodeProbe version, data-owner environment, and executed
 runs. It does not establish organization-wide ROI, causal productivity,
 production-outcome prediction, procurement readiness, security certification,
 or customer-grade calibration.
 
-## Participant sign-off
+## Data-owner sign-off
 
 - [ ] Privacy approved.
 - [ ] Sample fidelity approved.
