@@ -23,6 +23,37 @@ class _FakeProc:
         self.stderr = ""
 
 
+def _use_claude_agent_path(
+    monkeypatch: object, tmp_path: Path, *, authenticated: bool = True
+) -> None:
+    import codeprobe.cli.doctor_cmd as mod
+    from codeprobe.core import sandbox as codeprobe_sandbox
+
+    monkeypatch.setattr(
+        mod.shutil,
+        "which",
+        lambda name: "/usr/bin/claude" if name == "claude" else None,
+    )
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
+    monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: True)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    if authenticated:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    else:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for key in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "OPENAI_API_KEY",
+        "GITHUB_TOKEN",
+        "COPILOT_API_KEY",
+        *mod._PROXY_ENV_KEYS,
+        *mod._PRIVATE_CA_FILE_ENV_KEYS,
+        *mod._PRIVATE_CA_DIR_ENV_KEYS,
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 class TestDoctorChecks:
     """Unit tests for individual check functions."""
 
@@ -126,18 +157,7 @@ class TestDoctorCLI:
     def test_selected_agent_ignores_absent_unselected_agents(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
-        import codeprobe.cli.doctor_cmd as mod
-
-        monkeypatch.setattr(
-            mod.shutil,
-            "which",
-            lambda name: "/usr/bin/claude" if name == "claude" else None,
-        )
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        _use_claude_agent_path(monkeypatch, tmp_path)
 
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--agent", "claude", "--no-json"])
@@ -150,18 +170,7 @@ class TestDoctorCLI:
     def test_doctor_auto_selects_one_usable_agent(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
-        import codeprobe.cli.doctor_cmd as mod
-
-        monkeypatch.setattr(
-            mod.shutil,
-            "which",
-            lambda name: "/usr/bin/claude" if name == "claude" else None,
-        )
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        _use_claude_agent_path(monkeypatch, tmp_path)
 
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--no-json"])
@@ -173,20 +182,7 @@ class TestDoctorCLI:
     def test_selected_agent_requires_auth(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
-        import codeprobe.cli.doctor_cmd as mod
-
-        monkeypatch.setattr(
-            mod.shutil,
-            "which",
-            lambda name: "/usr/bin/claude" if name == "claude" else None,
-        )
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.setenv("HOME", str(tmp_path))
+        _use_claude_agent_path(monkeypatch, tmp_path, authenticated=False)
 
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--agent", "claude", "--no-json"])
@@ -198,18 +194,9 @@ class TestDoctorCLI:
     def test_private_ca_failure_does_not_print_path(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
-        import codeprobe.cli.doctor_cmd as mod
-
         ca_path = tmp_path / "secret-ca.pem"
-        monkeypatch.setattr(
-            mod.shutil,
-            "which",
-            lambda name: "/usr/bin/claude" if name == "claude" else None,
-        )
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        _use_claude_agent_path(monkeypatch, tmp_path)
         monkeypatch.setenv("SSL_CERT_FILE", str(ca_path))
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--agent", "claude", "--no-json"])
@@ -221,20 +208,9 @@ class TestDoctorCLI:
     def test_proxy_values_are_not_printed(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
-        import codeprobe.cli.doctor_cmd as mod
-
         proxy = "https://user:secret-password@example.test:8443"
-        for key in mod._PROXY_ENV_KEYS:
-            monkeypatch.delenv(key, raising=False)
-        monkeypatch.setattr(
-            mod.shutil,
-            "which",
-            lambda name: "/usr/bin/claude" if name == "claude" else None,
-        )
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        _use_claude_agent_path(monkeypatch, tmp_path)
         monkeypatch.setenv("HTTPS_PROXY", proxy)
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--agent", "claude", "--no-json"])
@@ -277,7 +253,6 @@ class TestDoctorCLI:
     ) -> None:
         import importlib
 
-        import codeprobe.cli.doctor_cmd as mod
         from codeprobe.cli.errors import DiagnosticError
 
         infra = importlib.import_module("codeprobe.cli.check_infra")
@@ -290,15 +265,8 @@ class TestDoctorCLI:
                 terminal=True,
             )
 
-        monkeypatch.setattr(
-            mod.shutil,
-            "which",
-            lambda name: "/usr/bin/claude" if name == "claude" else None,
-        )
-        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
+        _use_claude_agent_path(monkeypatch, tmp_path)
         monkeypatch.setattr(infra, "run_offline_preflight", _fail_offline_preflight)
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        monkeypatch.setenv("HOME", str(tmp_path))
 
         runner = CliRunner()
         result = runner.invoke(
@@ -523,12 +491,12 @@ class TestGithubAccessCheck:
         envelope = _build_compact_envelope(run_checks())
         assert envelope["data"]["gh_auth_ok"] is True
 
-    def test_doctor_exits_zero_in_clean_env(
+    def test_doctor_fails_when_no_agent_path_is_authenticated(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
-        """CI-portability regression: no maintainer credentials at all, agent
-        CLIs present → doctor exits 0 (codeprobe-f7rl.17)."""
+        """No GitHub auth stays advisory, but no usable agent path is blocking."""
         import codeprobe.cli.doctor_cmd as mod
+        from codeprobe.core import sandbox as codeprobe_sandbox
 
         monkeypatch.setattr(
             mod.shutil,
@@ -536,11 +504,16 @@ class TestGithubAccessCheck:
             lambda name: None if name == "gh" else "/usr/bin/" + name,
         )
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("COPILOT_API_KEY", raising=False)
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: True)
         monkeypatch.setenv("HOME", str(tmp_path))
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--no-json"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 2, result.output
+        assert "FAIL  selected agent (no supported agent path usable)" in result.output
         assert "WARN  GitHub auth" in result.output
-        assert "FAIL" not in result.output
+        assert "FAIL  GitHub auth" not in result.output

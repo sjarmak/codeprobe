@@ -129,11 +129,6 @@ def _check_github_access() -> CheckResult:
 
 
 def _check_claude_auth(*, required: bool) -> CheckResult:
-    result = _check_claude_auth_required()
-    return result if required else _optional_result(result)
-
-
-def _check_claude_auth_required() -> CheckResult:
     fix = (
         "Set ANTHROPIC_API_KEY, set CLAUDE_CODE_OAUTH_TOKEN, "
         "or run `claude login`."
@@ -141,12 +136,13 @@ def _check_claude_auth_required() -> CheckResult:
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get(
         "CLAUDE_CODE_OAUTH_TOKEN"
     ):
-        return CheckResult(
+        result = CheckResult(
             name="claude auth",
             passed=True,
             detail="environment auth configured",
             fix=fix,
         )
+        return result if required else _optional_result(result)
 
     from codeprobe.adapters.claude import (
         _credentials_file_status,
@@ -155,46 +151,45 @@ def _check_claude_auth_required() -> CheckResult:
 
     status = _credentials_file_status(_effective_claude_config_dir())
     if status == "valid":
-        return CheckResult(
+        result = CheckResult(
             name="claude auth",
             passed=True,
             detail="file credentials present",
             fix=fix,
         )
-    detail = (
-        "file credentials expired"
-        if status == "expired"
-        else "no environment or file credentials"
-    )
-    return CheckResult(
-        name="claude auth",
-        passed=False,
-        detail=detail,
-        fix=fix,
-    )
-
-
-def _check_copilot_auth(*, required: bool) -> CheckResult:
-    result = _check_copilot_auth_required()
+    else:
+        detail = (
+            "file credentials expired"
+            if status == "expired"
+            else "no environment or file credentials"
+        )
+        result = CheckResult(
+            name="claude auth",
+            passed=False,
+            detail=detail,
+            fix=fix,
+        )
     return result if required else _optional_result(result)
 
 
-def _check_copilot_auth_required() -> CheckResult:
+def _check_copilot_auth(*, required: bool) -> CheckResult:
     fix = "Set GITHUB_TOKEN, set COPILOT_API_KEY, or run `gh auth login`."
     if os.environ.get("COPILOT_API_KEY"):
-        return CheckResult(
+        result = CheckResult(
             name="copilot auth",
             passed=True,
             detail="COPILOT_API_KEY set",
             fix=fix,
         )
-    gh_ok, detail = _github_auth_status()
-    return CheckResult(
-        name="copilot auth",
-        passed=gh_ok,
-        detail=detail,
-        fix=fix,
-    )
+    else:
+        gh_ok, detail = _github_auth_status()
+        result = CheckResult(
+            name="copilot auth",
+            passed=gh_ok,
+            detail=detail,
+            fix=fix,
+        )
+    return result if required else _optional_result(result)
 
 
 def _check_openai_sdk(*, required: bool) -> CheckResult:
@@ -209,12 +204,11 @@ def _check_openai_sdk(*, required: bool) -> CheckResult:
 
 
 def _check_codex_auth(*, required: bool) -> CheckResult:
+    configured = bool(os.environ.get("OPENAI_API_KEY"))
     result = CheckResult(
         name="codex auth",
-        passed=bool(os.environ.get("OPENAI_API_KEY")),
-        detail="OPENAI_API_KEY set"
-        if os.environ.get("OPENAI_API_KEY")
-        else "OPENAI_API_KEY not set",
+        passed=configured,
+        detail="OPENAI_API_KEY set" if configured else "OPENAI_API_KEY not set",
         fix="Set OPENAI_API_KEY.",
     )
     return result if required else _optional_result(result)
@@ -377,14 +371,15 @@ def _check_container_images() -> CheckResult:
             warn_only=True,
         )
 
-    missing: list[str] = []
-    for image in (
-        container_runner.DEFAULT_AGENT_IMAGE,
-        container_runner.DEFAULT_SCORING_IMAGE,
-    ):
-        if not container_runner.image_available(engine, image):
-            missing.append(image)
-    if not missing:
+    missing_count = sum(
+        1
+        for image in (
+            container_runner.DEFAULT_AGENT_IMAGE,
+            container_runner.DEFAULT_SCORING_IMAGE,
+        )
+        if not container_runner.image_available(engine, image)
+    )
+    if missing_count == 0:
         return CheckResult(
             name="container images",
             passed=True,
@@ -394,7 +389,7 @@ def _check_container_images() -> CheckResult:
     return CheckResult(
         name="container images",
         passed=False,
-        detail=f"{len(missing)} required image(s) missing",
+        detail=f"{missing_count} required image(s) missing",
         fix=(
             "Build missing images from the repository root: "
             "docker build -f src/codeprobe/sandbox/Dockerfile.agent "
@@ -406,13 +401,13 @@ def _check_container_images() -> CheckResult:
 
 
 def _check_proxy_variables() -> CheckResult:
-    configured = [key for key in _PROXY_ENV_KEYS if os.environ.get(key)]
+    configured_count = sum(1 for key in _PROXY_ENV_KEYS if os.environ.get(key))
     return CheckResult(
         name="proxy variables",
         passed=True,
         detail=(
-            f"{len(configured)} configured"
-            if configured
+            f"{configured_count} configured"
+            if configured_count
             else "not configured"
         ),
         fix="",
