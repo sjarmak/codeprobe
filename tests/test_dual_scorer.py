@@ -254,8 +254,30 @@ def test_missing_answer_json_artifact_leg_fails_direct_runs(tmp_path: Path):
     assert result.details["passed_direct"] is True
     assert result.details["score_artifact"] == 0.0
     assert result.details["passed_artifact"] is False
-    assert "error_artifact" in result.details
-    assert result.details["error_artifact"]  # non-empty
+    assert "error_artifact" not in result.details
+    assert result.details["verdict_artifact"] == "incorrect"
+    assert result.details["diagnostics_artifact"]["agent_output_error"] == (
+        "answer.json not found"
+    )
+
+
+def test_malformed_answer_json_artifact_leg_is_clean_failure(tmp_path: Path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    _write_metadata(task_dir)
+    _write_test_sh(task_dir, exit_code=0)
+    _write_ground_truth(task_dir, answer_type="boolean", answer=True)
+    (task_dir / "answer.json").write_text("{not json", encoding="utf-8")
+
+    result = DualScorer().score("", task_dir)
+
+    assert result.details["passed_direct"] is True
+    assert result.details["passed_artifact"] is False
+    assert "error_artifact" not in result.details
+    assert result.details["verdict_artifact"] == "incorrect"
+    assert result.details["diagnostics_artifact"]["agent_output_error"] == (
+        "answer.json is invalid JSON"
+    )
 
 
 def test_missing_test_sh_direct_leg_fails_artifact_runs(tmp_path: Path):

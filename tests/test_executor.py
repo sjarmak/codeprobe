@@ -2222,7 +2222,9 @@ def test_repo_root_answer_never_scored(tmp_path: Path) -> None:
     assert result.completed.automated_score == 0.0
     details = result.completed.scoring_details or {}
     assert details["passed"] is False
-    assert details["error"] == "answer.json not found"
+    assert details["error"] is None
+    assert details["verdict"] == "incorrect"
+    assert details["diagnostics"]["agent_output_error"] == "answer.json not found"
 
 
 def test_worktree_answer_scored(tmp_path: Path) -> None:

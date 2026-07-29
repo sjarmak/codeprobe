@@ -334,8 +334,28 @@ class TestEdgeCases:
         )
         result = scorer.score("", tmp_path)
         assert result.passed is False
-        assert result.error is not None
-        assert "answer.json" in result.error
+        assert result.error is None
+        assert result.verdict == "incorrect"
+        assert result.diagnostics["agent_output_error"] == "answer.json not found"
+
+    def test_malformed_answer_is_agent_failure(
+        self, tmp_path: Path, scorer: ArtifactScorer
+    ) -> None:
+        _write_json(
+            tmp_path / "ground_truth.json",
+            {"answer_type": "text", "answer": "x", "confidence": 0.9},
+        )
+        (tmp_path / "answer.json").write_text("{not json", encoding="utf-8")
+
+        result = scorer.score("", tmp_path)
+
+        assert result.passed is False
+        assert result.error is None
+        assert result.verdict == "incorrect"
+        assert (
+            result.diagnostics["agent_output_error"]
+            == "answer.json is invalid JSON"
+        )
 
     def test_answer_in_tests_subdir(
         self, tmp_path: Path, scorer: ArtifactScorer

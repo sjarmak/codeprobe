@@ -718,6 +718,10 @@ The migrated scorer families use the following verdict boundary:
   that envelope before interpreting the process exit code. A valid numeric
   reward reports `correct` or `incorrect` according to that family's existing
   pass rule.
+* `ArtifactScorer` reports a missing or malformed agent-authored `answer.json`
+  as `incorrect`, with the reason in `diagnostics["agent_output_error"]`.
+  Missing, malformed, or unscoreable `ground_truth.json` remains a
+  `verifier_error`, because the oracle is verifier infrastructure.
 * `CheckpointScorer` and `OracleChecksScorer` report `verifier_error` for
   malformed manifests, invalid weights, missing verifier scripts, sandbox
   failures, and malformed non-empty JSON output. Valid verifier results,

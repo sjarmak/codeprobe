@@ -1445,16 +1445,18 @@ class ArtifactScorer:
             return ScoreResult(
                 score=0.0,
                 passed=False,
-                error="answer.json not found",
                 scorer_family=ir_family,
+                verdict="incorrect",
+                diagnostics={"agent_output_error": "answer.json not found"},
             )
         answer_data = _load_json_file(answer_path)
         if answer_data is None or not isinstance(answer_data, dict):
             return ScoreResult(
                 score=0.0,
                 passed=False,
-                error="answer.json is invalid JSON",
                 scorer_family=ir_family,
+                verdict="incorrect",
+                diagnostics={"agent_output_error": "answer.json is invalid JSON"},
             )
 
         # Detect format and dispatch. The IR family declared in
@@ -1882,6 +1884,10 @@ class DualScorer:
             details["error_direct"] = direct_result.error
         if artifact_result.error:
             details["error_artifact"] = artifact_result.error
+        if artifact_result.verdict:
+            details["verdict_artifact"] = artifact_result.verdict
+        if artifact_result.diagnostics:
+            details["diagnostics_artifact"] = artifact_result.diagnostics
 
         weight_errors: list[str] = []
         if scoring_policy == "weighted":
