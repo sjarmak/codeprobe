@@ -384,6 +384,79 @@ def test_parallel_runs_leave_checkout_byte_clean(tmp_path: Path, monkeypatch: py
     assert _root_untracked(repo) == [], "checkout root dirty after parallel run"
 
 
+def test_parallel_configs_share_source_root_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A late config must not snapshot a sibling config's transient leak.
+
+    Config A writes ``answer.json`` before config B starts. B therefore reaches
+    ``execute_config`` while the transient file exists. A then sweeps its leak,
+    after which B recreates the same filename. The second file must also be
+    swept instead of being mistaken for a legitimate pre-run artifact.
+    """
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    task_a = _make_comprehension_task(tmp_path / "task-a")
+    task_b = _make_comprehension_task(tmp_path / "task-b")
+    monkeypatch.setattr("codeprobe.core.executor.get_scorer", lambda rt: _PassScorer())
+
+    a_leaked = threading.Event()
+    b_started = threading.Event()
+    a_finished = threading.Event()
+
+    class _SynchronizedLeakAdapter(_RootLeakAdapter):
+        def __init__(self, phase: str) -> None:
+            super().__init__(repo)
+            self._phase = phase
+
+        def run(
+            self,
+            prompt: str,
+            config: AgentConfig,
+            session_env: dict[str, str] | None = None,
+        ) -> AgentOutput:
+            if self._phase == "a":
+                output = super().run(prompt, config, session_env)
+                a_leaked.set()
+                assert b_started.wait(timeout=5), "config B never entered its agent run"
+                return output
+
+            b_started.set()
+            assert a_finished.wait(timeout=5), "config A never completed its sweep"
+            return super().run(prompt, config, session_env)
+
+    def _run_a() -> list:
+        try:
+            return execute_config(
+                adapter=_SynchronizedLeakAdapter("a"),
+                task_dirs=[task_a],
+                repo_path=repo,
+                experiment_config=ExperimentConfig(label="arm-a"),
+                agent_config=AgentConfig(),
+            )
+        finally:
+            a_finished.set()
+
+    def _run_b() -> list:
+        return execute_config(
+            adapter=_SynchronizedLeakAdapter("b"),
+            task_dirs=[task_b],
+            repo_path=repo,
+            experiment_config=ExperimentConfig(label="arm-b"),
+            agent_config=AgentConfig(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(_run_a)
+        assert a_leaked.wait(timeout=5), "config A never created its transient leak"
+        future_b = pool.submit(_run_b)
+        results = [future_a.result(), future_b.result()]
+
+    assert all(result[0].status == "completed" for result in results)
+    assert not (repo / "answer.json").exists()
+    assert _root_untracked(repo) == []
+
+
 def test_concurrent_execute_task_calls_do_not_delete_each_others_workspaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

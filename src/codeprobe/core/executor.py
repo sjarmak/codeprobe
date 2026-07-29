@@ -14,7 +14,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +100,67 @@ def _drop_stale_answers(base: Path) -> None:
 def _existing_root_answers(base: Path) -> frozenset[str]:
     """Names of agent answer artifacts already present directly under *base*."""
     return frozenset(name for name in _STALE_ANSWER_FILES if (base / name).exists())
+
+
+@dataclass(frozen=True)
+class _SourceCheckoutCleanupGroup:
+    """Shared baseline and participant count for one source checkout."""
+
+    baseline: frozenset[str]
+    participants: int
+
+
+class _SourceCheckoutCleanupCoordinator:
+    """Share one leak-cleanup baseline across overlapping config runs."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._groups: dict[Path, _SourceCheckoutCleanupGroup] = {}
+
+    @contextlib.contextmanager
+    def baseline(self, base: Path) -> Iterator[frozenset[str]]:
+        """Yield the first overlapping config's pre-run artifact baseline."""
+        checkout = base.resolve()
+        with self._lock:
+            active = self._groups.get(checkout)
+            group = (
+                _SourceCheckoutCleanupGroup(
+                    baseline=_existing_root_answers(base),
+                    participants=1,
+                )
+                if active is None
+                else dataclasses.replace(
+                    active,
+                    participants=active.participants + 1,
+                )
+            )
+            self._groups = {**self._groups, checkout: group}
+
+        try:
+            yield group.baseline
+        finally:
+            self._release(checkout)
+
+    def _release(self, checkout: Path) -> None:
+        with self._lock:
+            active = self._groups[checkout]
+            if active.participants == 1:
+                self._groups = {
+                    path: group
+                    for path, group in self._groups.items()
+                    if path != checkout
+                }
+                return
+            self._groups = {
+                **self._groups,
+                checkout: dataclasses.replace(
+                    active,
+                    participants=active.participants - 1,
+                ),
+            }
+
+
+_SOURCE_CHECKOUT_CLEANUP_COORDINATOR = _SourceCheckoutCleanupCoordinator()
 
 
 def _sweep_leaked_answers(
@@ -1232,22 +1293,6 @@ def execute_config(
     """
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
-    # Snapshot answer artifacts already at the source-checkout root before any
-    # trial runs (codeprobe-o8pw). Parallel trials share one repo_path
-    # concurrently, so the per-trial leak guard needs a single run-level
-    # baseline: anything not in this set that appears at the root during the
-    # run is a leaked artifact and gets swept, while a caller's own pre-run
-    # file is preserved.
-    #
-    # Under config_parallel > 1 (run_cmd.py) several execute_config calls run
-    # concurrently against the same repo_path, each capturing its own baseline
-    # here. That is still correct: this snapshot is taken before any of THIS
-    # config's trials run, so a trial can never see its own future leak as
-    # pre-existing. A sibling config's leak may or may not be in this baseline,
-    # but either way that leak is swept by its own originating trial's finally,
-    # so no leaked file survives.
-    source_root_baseline = _existing_root_answers(repo_path)
-
     # Filter checkpointed results to only include tasks in the current
     # experiment.  Without this, stale entries from prior runs with different
     # task_ids leak into the results list and inflate/deflate scores.
@@ -1632,7 +1677,16 @@ def execute_config(
         assert released_result is not None
         return released_result
 
-    with quarantine_cm:
+    # Overlapping config-parallel arms for the same checkout share the first
+    # arm's baseline. A later arm can enter while a sibling's transient leak
+    # exists; taking an independent snapshot would misclassify that filename
+    # as a legitimate pre-run artifact and preserve a later recreation.
+    with (
+        _SOURCE_CHECKOUT_CLEANUP_COORDINATOR.baseline(
+            repo_path
+        ) as source_root_baseline,
+        quarantine_cm,
+    ):
         try:
             if workers <= 1:
                 # Sequential — one namespaced slot env for the whole config,
