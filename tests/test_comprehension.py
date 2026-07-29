@@ -346,6 +346,19 @@ def test_instruction_md_contains_question(chain_repo: Path, tmp_path: Path) -> N
     assert "architecture_comprehension" in instruction_text
 
 
+def test_instruction_requires_file_read_evidence(
+    chain_repo: Path, tmp_path: Path
+) -> None:
+    gen = ComprehensionGenerator(chain_repo)
+    tasks = gen.generate(count=1)
+    written = write_comprehension_tasks(tasks, tmp_path / "out")
+
+    instruction_text = (written[0] / "instruction.md").read_text()
+
+    assert "read at least one relevant repository source file" in instruction_text
+    assert "Search-only navigation is not sufficient evidence" in instruction_text
+
+
 # ---------------------------------------------------------------------------
 # Dual-verify support (comprehension is a dual-eligible category; the AOA R0
 # gate consumes only scorer_family == "dual_composite" results)
