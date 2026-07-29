@@ -37,11 +37,13 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import Final
 
+from codeprobe.sandbox.image_config import load_prepared_images
 from codeprobe.sandbox.oci_references import (
     DIGEST_PATTERN,
     IMAGE_TAG_PATTERN,
     is_qualified_registry_host,
     validate_image_reference,
+    validate_runtime_image_reference,
     validate_tag,
 )
 
@@ -214,6 +216,38 @@ def _local_image_build_tag(image_name: str) -> str:
 
 
 def _image_reference(image_name: str, *, exact_env: str) -> str:
+    explicit_source = _explicit_source_reference(image_name, exact_env=exact_env)
+    prepared = load_prepared_images()
+    if prepared is None:
+        return explicit_source or _composed_image_reference(image_name)
+    image = (
+        prepared.agent
+        if image_name == _DEFAULT_AGENT_IMAGE_NAME
+        else prepared.scoring
+    )
+    if explicit_source is not None and explicit_source not in (
+        image.source_reference,
+        image.verified_reference,
+        image.local_id,
+    ):
+        raise ValueError(
+            f"{exact_env} differs from the prepared image identity; "
+            "re-run codeprobe bootstrap"
+        )
+    return image.local_id
+
+
+def _explicit_source_reference(image_name: str, *, exact_env: str) -> str | None:
+    exact = _optional_env(exact_env)
+    if exact is not None:
+        return _validate_image_reference(exact_env, exact)
+    composed_keys = (IMAGE_REGISTRY_ENV, IMAGE_NAMESPACE_ENV, IMAGE_VERSION_ENV)
+    if any(key in os.environ for key in composed_keys):
+        return _composed_image_reference(image_name)
+    return None
+
+
+def _source_image_reference(image_name: str, *, exact_env: str) -> str:
     exact = _optional_env(exact_env)
     if exact is not None:
         return _validate_image_reference(exact_env, exact)
@@ -225,6 +259,13 @@ def agent_image_reference() -> str:
     return _image_reference(_DEFAULT_AGENT_IMAGE_NAME, exact_env=AGENT_IMAGE_ENV)
 
 
+def agent_source_image_reference() -> str:
+    """Return the configured registry source for agent image preparation."""
+    return _source_image_reference(
+        _DEFAULT_AGENT_IMAGE_NAME, exact_env=AGENT_IMAGE_ENV
+    )
+
+
 def agent_image_build_tag() -> str:
     """Return a tag-shaped agent image reference suitable for local builds."""
     return _local_image_build_tag(_DEFAULT_AGENT_IMAGE_NAME)
@@ -233,6 +274,13 @@ def agent_image_build_tag() -> str:
 def scoring_image_reference() -> str:
     """Return the configured scoring container image reference."""
     return _image_reference(
+        _DEFAULT_SCORING_IMAGE_NAME, exact_env=SCORING_IMAGE_ENV
+    )
+
+
+def scoring_source_image_reference() -> str:
+    """Return the configured registry source for scoring image preparation."""
+    return _source_image_reference(
         _DEFAULT_SCORING_IMAGE_NAME, exact_env=SCORING_IMAGE_ENV
     )
 
@@ -263,6 +311,18 @@ def _detect_engine() -> str:
 
     Raises :class:`SandboxError` when neither is installed on PATH.
     """
+    try:
+        prepared = load_prepared_images()
+    except ValueError:
+        prepared = None
+    if prepared is not None:
+        prepared_path = shutil.which(prepared.engine)
+        if prepared_path:
+            return prepared_path
+        raise SandboxError(
+            f"Prepared container engine {prepared.engine!r} is not on PATH. "
+            "Re-run codeprobe bootstrap with an available engine."
+        )
     docker_path = shutil.which("docker")
     if docker_path:
         return docker_path
@@ -287,6 +347,20 @@ def detect_engine() -> str | None:
         return None
 
 
+def prepared_engine_error() -> str | None:
+    """Explain an unusable prepared-engine record, if one exists."""
+    try:
+        prepared = load_prepared_images()
+    except ValueError as exc:
+        return f"Prepared image config is invalid: {exc}. Re-run codeprobe bootstrap."
+    if prepared is None or shutil.which(prepared.engine) is not None:
+        return None
+    return (
+        f"Prepared container engine {prepared.engine!r} is not on PATH. "
+        "Re-run codeprobe bootstrap with an available engine."
+    )
+
+
 def image_available(engine: str, image: str) -> bool:
     """Return True when *image* exists locally for *engine*.
 
@@ -294,7 +368,7 @@ def image_available(engine: str, image: str) -> bool:
     Any failure — nonzero exit, missing binary, timeout — reads as "image
     not available"; callers fall through to their no-container branch.
     """
-    validate_image_reference("sandbox image", image)
+    validate_runtime_image_reference("sandbox image", image)
     try:
         completed = subprocess.run(  # noqa: S603 — argv list, no shell=True
             [engine, "image", "inspect", image],
@@ -329,7 +403,7 @@ def _build_run_command(
     ``--name`` so a client-side timeout can ``<engine> rm -f`` the
     container instead of orphaning it.
     """
-    validate_image_reference("sandbox image", image)
+    validate_runtime_image_reference("sandbox image", image)
     argv = _run_base_args(engine, network)
     if container_name is not None:
         argv += ["--name", container_name]

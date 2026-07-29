@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 from importlib.metadata import version as package_version
+from pathlib import Path
 
 import pytest
 
 from codeprobe.sandbox import runner as sandbox_runner
+from codeprobe.sandbox.agent_container import containerize_argv
+from codeprobe.sandbox.image_config import (
+    CONTAINER_CONFIG_ENV,
+    PreparedImage,
+    PreparedImages,
+    write_prepared_images,
+)
 
 _IMAGE_ENV_KEYS = (
     "CODEPROBE_AGENT_IMAGE",
@@ -14,12 +22,38 @@ _IMAGE_ENV_KEYS = (
     "CODEPROBE_IMAGE_REGISTRY",
     "CODEPROBE_IMAGE_NAMESPACE",
     "CODEPROBE_IMAGE_VERSION",
+    CONTAINER_CONFIG_ENV,
 )
+_AGENT_DIGEST = "sha256:" + "a" * 64
+_SCORING_DIGEST = "sha256:" + "b" * 64
+_AGENT_LOCAL_ID = "sha256:" + "c" * 64
+_SCORING_LOCAL_ID = "sha256:" + "d" * 64
 
 
 def _clear_image_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in _IMAGE_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+def _write_prepared_config(path: Path, *, engine: str = "docker") -> None:
+    write_prepared_images(
+        PreparedImages(
+            engine=engine,  # type: ignore[arg-type]
+            agent=PreparedImage(
+                "registry.example/team/codeprobe-agent:0.13.0",
+                f"registry.example/team/codeprobe-agent:0.13.0@{_AGENT_DIGEST}",
+                _AGENT_DIGEST,
+                _AGENT_LOCAL_ID,
+            ),
+            scoring=PreparedImage(
+                "registry.example/team/codeprobe-scoring:0.13.0",
+                f"registry.example/team/codeprobe-scoring:0.13.0@{_SCORING_DIGEST}",
+                _SCORING_DIGEST,
+                _SCORING_LOCAL_ID,
+            ),
+        ),
+        path,
+    )
 
 
 def test_runtime_image_refs_require_registry_and_namespace(
@@ -31,6 +65,105 @@ def test_runtime_image_refs_require_registry_and_namespace(
         sandbox_runner.agent_image_reference()
     with pytest.raises(ValueError, match="Set both CODEPROBE_IMAGE_REGISTRY"):
         sandbox_runner.scoring_image_reference()
+
+
+def test_prepared_config_resolves_immutable_local_image_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_image_env(monkeypatch)
+    path = tmp_path / "container-images.json"
+    _write_prepared_config(path)
+    monkeypatch.setenv(CONTAINER_CONFIG_ENV, str(path))
+
+    assert sandbox_runner.agent_image_reference() == _AGENT_LOCAL_ID
+    assert sandbox_runner.scoring_image_reference() == _SCORING_LOCAL_ID
+
+
+def test_source_reference_helpers_ignore_prepared_runtime_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_image_env(monkeypatch)
+    path = tmp_path / "container-images.json"
+    _write_prepared_config(path)
+    monkeypatch.setenv(CONTAINER_CONFIG_ENV, str(path))
+    monkeypatch.setenv(
+        sandbox_runner.AGENT_IMAGE_ENV,
+        "private.example/team/agent:0.13.0",
+    )
+    monkeypatch.setenv(
+        sandbox_runner.SCORING_IMAGE_ENV,
+        "private.example/team/scoring:0.13.0",
+    )
+
+    assert (
+        sandbox_runner.agent_source_image_reference()
+        == "private.example/team/agent:0.13.0"
+    )
+    assert (
+        sandbox_runner.scoring_source_image_reference()
+        == "private.example/team/scoring:0.13.0"
+    )
+
+
+def test_changed_source_override_requires_rebootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_image_env(monkeypatch)
+    path = tmp_path / "container-images.json"
+    _write_prepared_config(path)
+    monkeypatch.setenv(CONTAINER_CONFIG_ENV, str(path))
+    monkeypatch.setenv(
+        sandbox_runner.AGENT_IMAGE_ENV,
+        "private.example/team/other-agent:0.13.0",
+    )
+
+    with pytest.raises(ValueError, match="re-run codeprobe bootstrap"):
+        sandbox_runner.agent_image_reference()
+
+
+def test_prepared_engine_wins_when_both_engines_are_installed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear_image_env(monkeypatch)
+    path = tmp_path / "container-images.json"
+    _write_prepared_config(path, engine="podman")
+    monkeypatch.setenv(CONTAINER_CONFIG_ENV, str(path))
+    monkeypatch.setattr(
+        sandbox_runner.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in ("docker", "podman") else None,
+    )
+    monkeypatch.setattr(
+        sandbox_runner, "detect_engine", sandbox_runner._detect_engine
+    )
+
+    assert sandbox_runner.detect_engine() == "/usr/bin/podman"
+
+
+def test_prepared_local_ids_are_valid_runtime_references(tmp_path: Path) -> None:
+    agent_argv = containerize_argv(
+        ["claude", "-p", "prompt"],
+        engine="docker",
+        workspace=tmp_path,
+        config_dir=None,
+        mcp_tmpfile=None,
+        env_keys=[],
+        image=_AGENT_LOCAL_ID,
+        name="codeprobe-agent-test",
+        env={},
+    )
+    scoring_argv = sandbox_runner._build_run_command(
+        "docker",
+        ["bash", "tests/test.sh"],
+        {str(tmp_path): str(tmp_path)},
+        allow_writes=True,
+        image=_SCORING_LOCAL_ID,
+        workdir=str(tmp_path),
+        env=None,
+    )
+
+    assert _AGENT_LOCAL_ID in agent_argv
+    assert _SCORING_LOCAL_ID in scoring_argv
 
 
 def test_local_image_build_tags_track_installed_package_version(

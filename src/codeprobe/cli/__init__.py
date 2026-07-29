@@ -1871,3 +1871,8 @@ main.add_command(models)
 from codeprobe.cli.purge_cmd import purge  # noqa: E402
 
 main.add_command(purge)
+
+# Register the digest-verified containment-image bootstrap command.
+from codeprobe.cli.bootstrap_cmd import bootstrap  # noqa: E402
+
+main.add_command(bootstrap)

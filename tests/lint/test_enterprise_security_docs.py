@@ -19,6 +19,7 @@ from codeprobe.core.scoring import sandbox as scoring_sandbox
 from codeprobe.net.offline import guard_offline
 from codeprobe.sandbox import runner as sandbox_runner
 from codeprobe.sandbox.agent_container import containerize_argv
+from codeprobe.sandbox.image_config import CONTAINER_CONFIG_ENV
 from codeprobe.snapshot.redact import PUBLISHABLE_DEFAULT, SIGNING_KEY_ENV
 from codeprobe.trace.content_policy import REDACTED_AUTH, REDACTED_ENV
 
@@ -105,6 +106,7 @@ _ENV_CHECKS: dict[str, Callable[[str], bool]] = {
     "container_passthrough": lambda name: name in adapter_base._CONTAINER_ENV_KEYS,
     "container_excluded": lambda name: name in adapter_base._CONTAINER_ENV_EXCLUDED,
     "credential_ttl": _credential_ttl_mentions,
+    "container_config": lambda name: name == CONTAINER_CONFIG_ENV,
     "offline_helper": lambda name: name == "CODEPROBE_OFFLINE" and name in inspect.getsource(guard_offline),
     "run_sets_offline": lambda name: name == "CODEPROBE_OFFLINE" and name in inspect.getsource(run_cmd.run_eval),
     "sandbox_helper": lambda name: name == "CODEPROBE_SANDBOX" and name in inspect.getsource(core_sandbox),

@@ -65,13 +65,62 @@ export CODEPROBE_AGENT_IMAGE='registry.example.test/platform/codeprobe/codeprobe
 export CODEPROBE_SCORING_IMAGE='registry.example.test/platform/codeprobe/codeprobe-scoring@sha256:<scoring-digest>'
 ```
 
-CodeProbe never pulls images automatically. Operators make the chosen references
-available to docker or podman before running `codeprobe run`.
+Normal evaluation commands never pull images automatically. Operators run the
+explicit `codeprobe bootstrap` trust-boundary command before `codeprobe run`.
 
 Runtime image overrides must be explicit OCI references: either a non-`latest`
 tag or a `sha256` digest pin. CodeProbe rejects URL-shaped values, whitespace,
 empty values, uppercase repository components, malformed digests, and implicit
 tag references before invoking docker or podman.
+
+## Installed-Wheel Bootstrap
+
+From any working directory, use one command to prepare both images for Docker
+or Podman. No CodeProbe source checkout or Dockerfiles are required:
+
+```bash
+codeprobe bootstrap \
+  --engine docker \
+  --agent-image 'registry.example.test/platform/codeprobe/codeprobe-agent@sha256:<agent-digest>' \
+  --scoring-image 'registry.example.test/platform/codeprobe/codeprobe-scoring@sha256:<scoring-digest>'
+```
+
+Omit `--engine` to select the first available Docker or Podman engine. A
+tag-based `--agent-image` or `--scoring-image` is accepted only with its
+corresponding `--agent-digest` or `--scoring-digest`.
+
+Bootstrap pulls each digest-pinned reference, confirms the engine-reported
+digest, captures the immutable local image ID, and writes both identities only
+after both images pass verification. It fails closed on a missing tool,
+malformed reference, digest mismatch, invalid engine response, timeout, or
+partial preparation. The default record is
+`~/.codeprobe/container-images.json`; set `CODEPROBE_CONTAINER_CONFIG` to an
+absolute path to place it elsewhere. The record is written atomically with
+mode `0600` and contains image identities, not registry credentials.
+
+For a private registry, authenticate the selected engine before bootstrap.
+The Docker, Podman, and Skopeo subprocesses inherit the operator environment,
+including proxy variables and private CA variables. Configure the container
+engine daemon or client trust store for the private CA as required by that
+engine. CodeProbe does not copy authentication tokens or CA material into its
+prepared-image record.
+
+In an air-gapped environment, transfer verified OCI archives and import both
+with Skopeo:
+
+```bash
+codeprobe bootstrap \
+  --engine podman \
+  --agent-image 'registry.example.test/platform/codeprobe/codeprobe-agent@sha256:<agent-digest>' \
+  --scoring-image 'registry.example.test/platform/codeprobe/codeprobe-scoring@sha256:<scoring-digest>' \
+  --agent-archive /transfer/codeprobe-agent.oci.tar \
+  --scoring-archive /transfer/codeprobe-scoring.oci.tar
+```
+
+Offline preparation requires both archives. Bootstrap checks each OCI archive
+digest before Skopeo copies it into the selected engine, then records the
+engine's immutable local IDs. A missing archive, missing Skopeo binary, or
+digest mismatch leaves the existing prepared-image record unchanged.
 
 ## Private-Registry Mirroring
 

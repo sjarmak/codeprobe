@@ -63,8 +63,8 @@ def resolve_containment(uncontained: bool) -> ContainmentPlan:
     ``--uncontained``, a ``container`` plan when a container engine is on
     PATH and the agent image is built (codeprobe-f7rl.5), and otherwise
     refuses with ``UNCONTAINED_REFUSED`` carrying the full disclosure.
-    An engine without the agent image still refuses, with the ``docker
-    build`` remediation appended.
+    An engine without the agent image still refuses with an executable
+    ``codeprobe bootstrap`` remediation.
     """
     if sandbox.is_sandboxed():
         return ContainmentPlan(mode="sandboxed")
@@ -72,6 +72,9 @@ def resolve_containment(uncontained: bool) -> ContainmentPlan:
         return ContainmentPlan(mode="host-consented")
 
     engine = container_runner.detect_engine()
+    engine_error = (
+        container_runner.prepared_engine_error() if engine is None else None
+    )
     agent_image, image_error = (None, None)
     if engine is not None:
         agent_image, image_error = _configured_agent_image()
@@ -81,7 +84,7 @@ def resolve_containment(uncontained: bool) -> ContainmentPlan:
         ):
             return ContainmentPlan(mode="container", engine=engine)
 
-    _raise_uncontained_refusal(engine, agent_image, image_error)
+    _raise_uncontained_refusal(engine, agent_image, image_error, engine_error)
 
 
 def _configured_agent_image() -> tuple[str | None, str | None]:
@@ -92,16 +95,21 @@ def _configured_agent_image() -> tuple[str | None, str | None]:
 
 
 def _raise_uncontained_refusal(
-    engine: str | None, agent_image: str | None, image_error: str | None
+    engine: str | None,
+    agent_image: str | None,
+    image_error: str | None,
+    engine_error: str | None,
 ) -> NoReturn:
     from codeprobe.cli.errors import PrescriptiveError
 
-    build_hint = _agent_build_hint(engine, agent_image, image_error)
+    bootstrap_hint = _agent_bootstrap_hint(
+        engine, agent_image, image_error, engine_error
+    )
     raise PrescriptiveError(
         code="UNCONTAINED_REFUSED",
         message=(
             f"{DISCLOSURE} Run inside a container, or pass --uncontained "
-            f"to accept this.{build_hint}"
+            f"to accept this.{bootstrap_hint}"
         ),
         next_try_flag="--uncontained",
         next_try_value="",
@@ -109,29 +117,27 @@ def _raise_uncontained_refusal(
     )
 
 
-def _agent_build_hint(
-    engine: str | None, agent_image: str | None, image_error: str | None
+def _agent_bootstrap_hint(
+    engine: str | None,
+    agent_image: str | None,
+    image_error: str | None,
+    engine_error: str | None,
 ) -> str:
     if engine is None:
-        return ""
-    build_tag = container_runner.DEFAULT_AGENT_IMAGE
+        return f" {engine_error}" if engine_error is not None else ""
     if agent_image is None:
         return (
             " A container engine was found but the agent image is not "
             f"configured; {image_error or 'set an exact image reference'}. "
             f"Set {container_runner.AGENT_IMAGE_ENV} or both "
             f"{container_runner.IMAGE_REGISTRY_ENV} and "
-            f"{container_runner.IMAGE_NAMESPACE_ENV}. For local remediation, "
-            "build from the repo root with: docker build -f "
-            f"src/codeprobe/sandbox/Dockerfile.agent -t {build_tag} ."
+            f"{container_runner.IMAGE_NAMESPACE_ENV}, then run: "
+            "codeprobe bootstrap"
         )
     return (
         " A container engine was found but the agent image "
-        f"{agent_image!r} is not available locally. Pull a trusted "
-        "published digest, or build it from the repo root with: docker build -f "
-        f"src/codeprobe/sandbox/Dockerfile.agent -t {build_tag} . Override "
-        f"the reference with {container_runner.AGENT_IMAGE_ENV} when using "
-        "a private mirror."
+        f"{agent_image!r} is not available locally. Pull and verify the "
+        "configured trusted images with: codeprobe bootstrap"
     )
 
 

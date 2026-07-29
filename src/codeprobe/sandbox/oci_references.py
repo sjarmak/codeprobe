@@ -11,6 +11,7 @@ IMAGE_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}\Z"
 )
 DIGEST_PATTERN: Final[re.Pattern[str]] = re.compile(r"sha256:[a-f0-9]{64}\Z")
+LOCAL_IMAGE_ID_PATTERN: Final[re.Pattern[str]] = DIGEST_PATTERN
 
 
 def is_qualified_registry_host(host: str) -> bool:
@@ -42,6 +43,13 @@ def validate_image_reference(name: str, reference: str) -> str:
         raise ValueError(f"{name} has an invalid image reference") from exc
     _validate_parsed_reference(name, parsed)
     return reference
+
+
+def validate_runtime_image_reference(name: str, reference: str) -> str:
+    """Validate a registry reference or immutable local engine image ID."""
+    if LOCAL_IMAGE_ID_PATTERN.fullmatch(reference) is not None:
+        return reference
+    return validate_image_reference(name, reference)
 
 
 def _require_qualified_image_reference(name: str, reference: str) -> None:

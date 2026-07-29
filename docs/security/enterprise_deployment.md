@@ -11,7 +11,9 @@ this document include `src/codeprobe/adapters/_base.py`,
 `src/codeprobe/cli/run_cmd.py`, `src/codeprobe/core/containment.py`,
 `src/codeprobe/core/scoring/sandbox.py`, `src/codeprobe/net/credential_ttl.py`,
 `src/codeprobe/net/offline.py`, `src/codeprobe/sandbox/agent_container.py`,
-`src/codeprobe/sandbox/runner.py`, `src/codeprobe/sandbox/Dockerfile.agent`,
+`src/codeprobe/sandbox/image_bootstrap.py`,
+`src/codeprobe/sandbox/image_config.py`, `src/codeprobe/sandbox/runner.py`,
+`src/codeprobe/cli/bootstrap_cmd.py`, `src/codeprobe/sandbox/Dockerfile.agent`,
 `src/codeprobe/sandbox/Dockerfile.scoring`, `src/codeprobe/snapshot/redact.py`,
 `src/codeprobe/trace/content_policy.py`, and `src/codeprobe/trace/store.py`.
 Related public contracts are `SECURITY.md`, `README.md`,
@@ -105,17 +107,23 @@ Out of scope:
 
 ## Container Images and Mounts
 
-Build the agent image:
+Prepare the released agent and scoring images from an installed wheel. Replace
+the example digests with the verified release or private-registry digests:
 
 ```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.13.0 .
+codeprobe bootstrap \
+  --agent-image 'registry.example.test/platform/codeprobe-agent@sha256:<agent-digest>' \
+  --scoring-image 'registry.example.test/platform/codeprobe-scoring@sha256:<scoring-digest>'
 ```
 
-Build the scoring image:
-
-```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.13.0 .
-```
+The released source image names for this package version are
+`codeprobe-agent:0.13.0` and `codeprobe-scoring:0.13.0`. Bootstrap works with
+Docker or Podman and needs no repository checkout or Dockerfiles. It verifies
+both expected digests before atomically recording immutable local IDs. Private
+registry authentication, proxy configuration, and private CA trust remain
+operator-controlled engine settings. For air-gapped loading, pass both
+`--agent-archive` and `--scoring-archive`; Skopeo validates and imports the OCI
+archives.
 
 Mount matrix:
 
@@ -153,6 +161,7 @@ The documented credential and routing variables are:
 | `ANTHROPIC_BASE_URL` | Enterprise LLM gateway URL | Forwarded by key name |
 | `ANTHROPIC_AUTH_TOKEN` | Enterprise LLM gateway auth token | Forwarded by key name |
 | `CODEPROBE_SANDBOX` | User-set containment signal | Read by sandbox detection |
+| `CODEPROBE_CONTAINER_CONFIG` | Absolute prepared-image record path | Read by bootstrap and container runtime |
 | `CODEPROBE_OFFLINE` | Offline guard signal | Set by `codeprobe run --offline` after preflight |
 | `CODEPROBE_SIGNING_KEY` | Snapshot HMAC key | Read by snapshot signing |
 

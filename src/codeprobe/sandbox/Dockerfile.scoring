@@ -1,9 +1,7 @@
 # Scoring image for mined test/verifier scripts (codeprobe-f7rl.4).
 #
-# Build from the repository root:
-#
-#   docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:<version> .
-#
+# Release automation builds this image. Installed users prepare its published
+# digest with `codeprobe bootstrap`; they do not need this Dockerfile.
 # Toolchain matches the committed mining matrix (Python / Go / JS-TS) plus
 # bash, git, and coreutils for the scripts themselves. Scoring containers
 # run with --network=none: nothing in this image may assume network egress

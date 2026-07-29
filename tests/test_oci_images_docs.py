@@ -6,6 +6,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OCI_IMAGES_DOC_PATH = REPO_ROOT / "docs" / "oci_images.md"
+README_PATH = REPO_ROOT / "README.md"
+ENTERPRISE_DEPLOYMENT_PATH = REPO_ROOT / "docs" / "security" / "enterprise_deployment.md"
 
 
 def _doc() -> str:
@@ -84,3 +86,42 @@ def test_docs_cover_release_authority_protections() -> None:
     assert "`release-images` environment" in doc
     assert "immutable version tags" in doc
     assert "immutable release-pair" in doc
+
+
+def test_docs_cover_installed_digest_verified_bootstrap_paths() -> None:
+    doc = _doc()
+
+    assert "codeprobe bootstrap" in doc
+    assert "--agent-image" in doc
+    assert "--scoring-image" in doc
+    assert "--agent-archive" in doc
+    assert "--scoring-archive" in doc
+    assert "CODEPROBE_CONTAINER_CONFIG" in doc
+    assert "Docker or Podman" in doc
+    assert "private registry" in doc.casefold()
+    assert "proxy" in doc.casefold()
+    assert "private CA" in doc
+    assert "digest" in doc.casefold()
+    assert "fail" in doc.casefold()
+
+
+def test_operator_quickstarts_use_bootstrap_instead_of_local_builds() -> None:
+    readme = README_PATH.read_text(encoding="utf-8")
+    enterprise = ENTERPRISE_DEPLOYMENT_PATH.read_text(encoding="utf-8")
+    runtime_guidance = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            REPO_ROOT / "src" / "codeprobe" / "core" / "containment.py",
+            REPO_ROOT / "src" / "codeprobe" / "core" / "scoring" / "sandbox.py",
+            REPO_ROOT / "src" / "codeprobe" / "sandbox" / "Dockerfile.agent",
+            REPO_ROOT / "src" / "codeprobe" / "sandbox" / "Dockerfile.scoring",
+        )
+    )
+
+    assert "codeprobe bootstrap" in readme
+    assert "codeprobe bootstrap" in enterprise
+    assert "docker build -f src/codeprobe/sandbox/Dockerfile.agent" not in readme
+    assert "docker build -f src/codeprobe/sandbox/Dockerfile.scoring" not in readme
+    assert "docker build -f src/codeprobe/sandbox/Dockerfile.agent" not in enterprise
+    assert "docker build -f src/codeprobe/sandbox/Dockerfile.scoring" not in enterprise
+    assert "docker build -f src/codeprobe/sandbox/Dockerfile" not in runtime_guidance

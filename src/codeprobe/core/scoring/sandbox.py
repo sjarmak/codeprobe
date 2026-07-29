@@ -206,27 +206,21 @@ def _missing_image_refusal(
     plan = active_plan()
     if plan is None or plan.mode == "host-consented":
         return None
-    build_tag = container_runner.DEFAULT_SCORING_IMAGE
     if scoring_image is None:
         return (
             "Container engine found but scoring image is not configured; "
             f"{image_error or 'set an exact image reference'}. Set "
             f"{container_runner.SCORING_IMAGE_ENV} or both "
             f"{container_runner.IMAGE_REGISTRY_ENV} and "
-            f"{container_runner.IMAGE_NAMESPACE_ENV}. For local remediation, "
-            "build from the repo root with: docker build -f "
-            "src/codeprobe/sandbox/Dockerfile.scoring "
-            f"-t {build_tag} ."
+            f"{container_runner.IMAGE_NAMESPACE_ENV}, then run: "
+            "codeprobe bootstrap"
         )
     return (
         "Container engine found but scoring image "
         f"{scoring_image!r} is not available locally; refusing "
         "to run mined test/verifier scripts on the host without "
-        "--uncontained consent. Pull a trusted published digest, or build "
-        "the image from the repo root with: "
-        "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
-        f"-t {build_tag} . Override the reference with "
-        f"{container_runner.SCORING_IMAGE_ENV} when using a private mirror."
+        "--uncontained consent. Pull and verify the configured trusted "
+        "images with: codeprobe bootstrap"
     )
 
 

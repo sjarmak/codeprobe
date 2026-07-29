@@ -1,9 +1,7 @@
 # Agent image for containerized codeprobe runs (codeprobe-f7rl.5).
 #
-# Build from the repository root:
-#
-#   docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:<version> .
-#
+# Release automation builds this image. Installed users prepare its published
+# digest with `codeprobe bootstrap`; they do not need this Dockerfile.
 # Runs the agent CLI itself (Claude Code) when a container engine is
 # available, so hosts with docker get containment by default instead of a
 # --uncontained consent prompt. Unlike the scoring image, agent containers

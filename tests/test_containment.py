@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 from importlib.metadata import version as package_version
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -18,6 +19,12 @@ import pytest
 from codeprobe.cli.errors import PrescriptiveError
 from codeprobe.core import containment
 from codeprobe.sandbox import runner as container_runner
+from codeprobe.sandbox.image_config import (
+    CONTAINER_CONFIG_ENV,
+    PreparedImage,
+    PreparedImages,
+    write_prepared_images,
+)
 
 LOCAL_AGENT_IMAGE = f"codeprobe-agent:{package_version('codeprobe')}"
 AGENT_IMAGE = (
@@ -35,6 +42,7 @@ def _fresh_plan_state(monkeypatch: pytest.MonkeyPatch) -> None:
         container_runner.IMAGE_REGISTRY_ENV,
         container_runner.IMAGE_NAMESPACE_ENV,
         container_runner.IMAGE_VERSION_ENV,
+        "CODEPROBE_CONTAINER_CONFIG",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -156,10 +164,11 @@ class TestContainerMode:
         assert err.code == "UNCONTAINED_REFUSED"
         assert "agent image is not configured" in err.message
         assert "CODEPROBE_AGENT_IMAGE" in err.message
-        assert f"-t {LOCAL_AGENT_IMAGE} ." in err.message
+        assert "codeprobe bootstrap" in err.message
+        assert "Dockerfile" not in err.message
         assert not image_available.called
 
-    def test_engine_with_missing_agent_image_refuses_with_build_command(
+    def test_engine_with_missing_agent_image_refuses_with_bootstrap_command(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(container_runner.AGENT_IMAGE_ENV, AGENT_IMAGE)
@@ -178,10 +187,8 @@ class TestContainerMode:
         err = exc_info.value
         assert err.code == "UNCONTAINED_REFUSED"
         assert AGENT_IMAGE in err.message
-        assert (
-            "docker build -f src/codeprobe/sandbox/Dockerfile.agent "
-            f"-t {LOCAL_AGENT_IMAGE} ." in err.message
-        )
+        assert "codeprobe bootstrap" in err.message
+        assert "Dockerfile" not in err.message
 
     def test_invalid_agent_image_config_refuses_prescriptively(
         self, monkeypatch: pytest.MonkeyPatch
@@ -203,7 +210,8 @@ class TestContainerMode:
         assert err.code == "UNCONTAINED_REFUSED"
         assert "CODEPROBE_IMAGE_VERSION" in err.message
         assert "CODEPROBE_AGENT_IMAGE" in err.message
-        assert f"-t {LOCAL_AGENT_IMAGE} ." in err.message
+        assert "codeprobe bootstrap" in err.message
+        assert "Dockerfile" not in err.message
         assert not image_available.called
 
     def test_uncontained_flag_wins_over_container_detection(
@@ -223,6 +231,38 @@ class TestContainerMode:
 
         assert plan.mode == "host-consented"
         assert plan.engine is None
+
+    def test_stale_prepared_engine_refusal_preserves_rebootstrap_remediation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        digest = "sha256:" + "a" * 64
+        local_id = "sha256:" + "b" * 64
+        image = PreparedImage(
+            "registry.example/team/codeprobe-agent:0.13.0",
+            f"registry.example/team/codeprobe-agent:0.13.0@{digest}",
+            digest,
+            local_id,
+        )
+        config_path = write_prepared_images(
+            PreparedImages("podman", image, image),
+            tmp_path / "container-images.json",
+        )
+        monkeypatch.setenv(CONTAINER_CONFIG_ENV, str(config_path))
+        monkeypatch.setattr(container_runner, "detect_engine", lambda: None)
+        monkeypatch.setattr(
+            container_runner.shutil,
+            "which",
+            lambda name: "/usr/bin/docker" if name == "docker" else None,
+        )
+
+        with pytest.raises(PrescriptiveError) as exc_info:
+            containment.resolve_containment(uncontained=False)
+
+        assert (
+            "Prepared container engine 'podman' is not on PATH"
+            in exc_info.value.message
+        )
+        assert "re-run codeprobe bootstrap" in exc_info.value.message.lower()
 
 
 class TestActivePlan:

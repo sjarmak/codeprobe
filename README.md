@@ -107,41 +107,34 @@ credential, and network access. Run inside a container (auto-detected), set
 pass `--uncontained` to accept host execution. codeprobe never sets
 `CODEPROBE_SANDBOX` on its own.
 
-Mined test/verifier scripts are third-party code. When docker or podman is on
-PATH and the scoring image is built, codeprobe executes every mined `test.sh`
-and verifier inside a `--network=none` container automatically; each trial's
-`scoring_details.sandbox_execution` records whether the verifier ran in
-`container` or `host` mode. Build the scoring image once from the repository
-root:
+Mined test/verifier scripts are third-party code. Prepare the released agent
+and scoring images once with digest-pinned references; this works from an
+installed wheel and does not require a source checkout or Dockerfiles:
 
 ```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:<version> .
+codeprobe bootstrap \
+  --agent-image 'registry.example.test/platform/codeprobe-agent@sha256:<agent-digest>' \
+  --scoring-image 'registry.example.test/platform/codeprobe-scoring@sha256:<scoring-digest>'
 ```
 
-With an engine present but the image missing, scoring refuses host execution
-unless the run was started with `--uncontained`, and the error message repeats
-the build command above. Runtime image references default to the installed
-`codeprobe` version and can be pointed at a private registry or digest; see
-[docs/oci_images.md](docs/oci_images.md).
+The command supports Docker and Podman, verifies both expected registry
+digests, and records immutable local image IDs. With an engine present but an
+image missing, scoring refuses host execution unless the run was started with
+`--uncontained`; the error directs the operator back to `codeprobe bootstrap`.
+Private registries, proxies, private CAs, and offline OCI archives are covered
+in [docs/oci_images.md](docs/oci_images.md).
 
 The agent process is containerized the same way. With an engine on PATH and
-the agent image built, `codeprobe run` proceeds on a bare host with no
+the agent image prepared, `codeprobe run` proceeds on a bare host with no
 `--uncontained` flag, and stderr discloses container mode. Each agent runs
 inside a `--network=bridge` container (the agent needs the model API) whose
 writable mounts are exactly the per-task worktree slot and, when parallel
 session isolation is active, that slot's session config dir. The primary
 checkout and the user's global config dir are never mounted; credentials
 reach the container through the environment whitelist (`ANTHROPIC_API_KEY`,
-`CLAUDE_CODE_OAUTH_TOKEN`, and similar). Build the agent image once from the
-repository root:
-
-```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:<version> .
-```
-
-With an engine present but the agent image missing, `codeprobe run` still
-refuses (`UNCONTAINED_REFUSED`) and the error message repeats this build
-command.
+`CLAUDE_CODE_OAUTH_TOKEN`, and similar). With an engine present but the agent
+image missing, `codeprobe run` still refuses (`UNCONTAINED_REFUSED`) and
+directs the operator back to the same bootstrap command.
 
 To compare models, prompts, or tools rather than run a single agent, start with
 `codeprobe init`, a guided "what do you want to learn?" wizard that builds the

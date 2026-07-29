@@ -306,8 +306,9 @@ class TestMissingImageRefusal:
         assert run.returncode == -1
         assert run.error is not None
         assert "scoring image is not configured" in run.error
+        assert "codeprobe bootstrap" in run.error
+        assert "Dockerfile" not in run.error
         assert "CODEPROBE_SCORING_IMAGE" in run.error
-        assert f"-t {LOCAL_SCORING_IMAGE} ." in run.error
         # Nothing executed — the disclosure must not claim host execution.
         assert run.execution_mode == "none"
         assert run.stderr == run.error
@@ -333,7 +334,8 @@ class TestMissingImageRefusal:
         assert run.error is not None
         assert "CODEPROBE_IMAGE_VERSION" in run.error
         assert "CODEPROBE_SCORING_IMAGE" in run.error
-        assert f"-t {LOCAL_SCORING_IMAGE} ." in run.error
+        assert "codeprobe bootstrap" in run.error
+        assert "Dockerfile" not in run.error
 
 
 class TestNothingExecutedDisclosure:

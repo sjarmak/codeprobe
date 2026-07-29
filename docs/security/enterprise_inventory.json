@@ -28,6 +28,7 @@
     "docs/EVIDENCE_BUNDLE.md",
     "docs/adapters.md",
     "src/codeprobe/adapters/_base.py",
+    "src/codeprobe/cli/bootstrap_cmd.py",
     "src/codeprobe/cli/check_infra.py",
     "src/codeprobe/cli/purge_cmd.py",
     "src/codeprobe/cli/run_cmd.py",
@@ -36,6 +37,8 @@
     "src/codeprobe/net/credential_ttl.py",
     "src/codeprobe/net/offline.py",
     "src/codeprobe/sandbox/agent_container.py",
+    "src/codeprobe/sandbox/image_bootstrap.py",
+    "src/codeprobe/sandbox/image_config.py",
     "src/codeprobe/sandbox/runner.py",
     "src/codeprobe/sandbox/Dockerfile.agent",
     "src/codeprobe/sandbox/Dockerfile.scoring",
@@ -58,12 +61,15 @@
   ],
   "commands": [
     {
-      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.13.0 .",
-      "image_constant": "DEFAULT_AGENT_IMAGE"
-    },
-    {
-      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.13.0 .",
-      "image_constant": "DEFAULT_SCORING_IMAGE"
+      "command": "codeprobe bootstrap",
+      "help": ["bootstrap"],
+      "required_help_tokens": [
+        "--agent-image",
+        "--scoring-image",
+        "--agent-archive",
+        "--scoring-archive",
+        "--engine"
+      ]
     },
     {
       "command": "codeprobe run . --offline --offline-expected-run-duration 1h",
@@ -209,6 +215,10 @@
     {
       "name": "CODEPROBE_OFFLINE",
       "checks": ["offline_helper", "run_sets_offline"]
+    },
+    {
+      "name": "CODEPROBE_CONTAINER_CONFIG",
+      "checks": ["container_config"]
     },
     {
       "name": "CODEPROBE_SANDBOX",
