@@ -167,39 +167,30 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
 
     status = _credentials_file_status(_effective_claude_config_dir())
     if status == "valid":
+        passed = True
+        detail = "file credentials present"
+        result_fix = fix
         if _claude_container_auth_required():
             container_ok, container_detail = _containerized_claude_auth_status()
             if container_ok:
-                result = CheckResult(
-                    name="claude auth",
-                    passed=True,
-                    detail="container file credentials present",
-                    fix=fix,
-                )
+                detail = "container file credentials present"
             else:
-                result = CheckResult(
-                    name="claude auth",
-                    passed=False,
-                    detail=(
-                        "host file credentials present, but "
-                        f"{container_detail}"
-                    ),
-                    fix=(
-                        "Host Claude credentials exist, but the "
-                        "containerized session used by `codeprobe run` "
-                        "cannot read them. Run `claude login` to refresh "
-                        "file credentials, then retry `codeprobe doctor "
-                        "--agent claude`; if this persists, remove stale "
-                        "/tmp/codeprobe-claude session dirs."
-                    ),
+                passed = False
+                detail = f"host file credentials present, but {container_detail}"
+                result_fix = (
+                    "Host Claude credentials exist, but the "
+                    "containerized session used by `codeprobe run` "
+                    "cannot read them. Run `claude login` to refresh "
+                    "file credentials, then retry `codeprobe doctor "
+                    "--agent claude`; if this persists, remove stale "
+                    "/tmp/codeprobe-claude session dirs."
                 )
-        else:
-            result = CheckResult(
-                name="claude auth",
-                passed=True,
-                detail="file credentials present",
-                fix=fix,
-            )
+        result = CheckResult(
+            name="claude auth",
+            passed=passed,
+            detail=detail,
+            fix=result_fix,
+        )
     else:
         detail = (
             "file credentials expired"
