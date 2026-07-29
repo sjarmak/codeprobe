@@ -156,8 +156,14 @@ The documented credential and routing variables are:
 | `CLAUDE_CODE_OAUTH_TOKEN` | Agent OAuth token | Forwarded by key name |
 | `CLAUDE_CONFIG_DIR` | Per-slot agent config directory | Forwarded only when that directory is mounted |
 | `OPENAI_API_KEY` | Agent or LLM backend API key | Forwarded by key name |
-| `COPILOT_API_KEY` | Agent API key | Forwarded by key name |
+| `COPILOT_GITHUB_TOKEN` | Copilot GitHub token | Forwarded by key name |
+| `GH_TOKEN` | GitHub CLI token usable by Copilot | Forwarded by key name |
 | `GITHUB_TOKEN` | Git provider token for agent tooling | Forwarded by key name |
+| `COPILOT_OFFLINE` | Copilot offline-provider toggle | Forwarded by key name |
+| `COPILOT_PROVIDER_BASE_URL` | Copilot offline-provider endpoint | Forwarded by key name |
+| `COPILOT_PROVIDER_API_KEY` | Copilot offline-provider credential | Forwarded by key name |
+| `COPILOT_PROVIDER_TYPE` | Copilot offline-provider type | Forwarded by key name |
+| `COPILOT_MODEL` | Copilot model override | Forwarded by key name |
 | `ANTHROPIC_BASE_URL` | Enterprise LLM gateway URL | Forwarded by key name |
 | `ANTHROPIC_AUTH_TOKEN` | Enterprise LLM gateway auth token | Forwarded by key name |
 | `CODEPROBE_SANDBOX` | User-set containment signal | Read by sandbox detection |
@@ -280,8 +286,8 @@ traces, task-level results, raw diagnostics, and free-form identifying text:
 
 ```bash
 codeprobe snapshot evidence preview request.json --no-json
-codeprobe snapshot evidence export request.json --out approved-evidence --approve sha256:DIGEST --no-json
-codeprobe snapshot evidence validate approved-evidence --expect sha256:DIGEST --no-json
+codeprobe snapshot evidence export request.json --out evidence --approve sha256:DIGEST --no-json
+codeprobe snapshot evidence validate evidence --expect sha256:DIGEST --no-json
 ```
 
 Observability and spreadsheet exporters are local transforms. The operator is

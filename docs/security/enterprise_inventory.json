@@ -117,12 +117,12 @@
       "required_help_tokens": ["--no-json"]
     },
     {
-      "command": "codeprobe snapshot evidence export request.json --out approved-evidence --approve sha256:DIGEST --no-json",
+      "command": "codeprobe snapshot evidence export request.json --out evidence --approve sha256:DIGEST --no-json",
       "help": ["snapshot", "evidence", "export"],
       "required_help_tokens": ["--out", "--approve", "--no-json"]
     },
     {
-      "command": "codeprobe snapshot evidence validate approved-evidence --expect sha256:DIGEST --no-json",
+      "command": "codeprobe snapshot evidence validate evidence --expect sha256:DIGEST --no-json",
       "help": ["snapshot", "evidence", "validate"],
       "required_help_tokens": ["--expect", "--no-json"]
     }
@@ -145,11 +145,35 @@
       "checks": ["adapter_whitelist", "container_passthrough"]
     },
     {
-      "name": "COPILOT_API_KEY",
+      "name": "COPILOT_GITHUB_TOKEN",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "GH_TOKEN",
       "checks": ["adapter_whitelist", "container_passthrough"]
     },
     {
       "name": "GITHUB_TOKEN",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "COPILOT_OFFLINE",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "COPILOT_PROVIDER_BASE_URL",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "COPILOT_PROVIDER_API_KEY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "COPILOT_PROVIDER_TYPE",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "COPILOT_MODEL",
       "checks": ["adapter_whitelist", "container_passthrough"]
     },
     {
