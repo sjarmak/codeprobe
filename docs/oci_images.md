@@ -21,6 +21,14 @@ available. Treat the published image version tags and the
 immutable release-pair authority; a rerun verifies and reuses an existing
 trusted pair instead of overwriting it.
 
+Failed run-unique candidate tags are quarantined, not deleted automatically.
+OCI registry deletion is digest-addressed and has no provider-neutral atomic
+"delete this tag only if it still identifies this digest" operation. Deleting
+after a tag scan could therefore remove a manifest that another tag began
+sharing concurrently. The workflow uploads `oci-candidate-quarantine-*`
+evidence and fails closed; operators apply their registry retention policy to
+those untrusted run-unique tags after confirming they are not shared.
+
 ## Runtime Reference Resolution
 
 Runtime image resolution is configuration-required. CodeProbe does not embed a

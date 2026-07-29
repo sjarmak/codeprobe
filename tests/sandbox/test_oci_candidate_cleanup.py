@@ -45,8 +45,7 @@ class CleanupRunner:
 
 
 class CleanupFailureRunner:
-    def __init__(self, *, fail_delete: bool = False, fail_second_resolve: bool = False) -> None:
-        self.fail_delete = fail_delete
+    def __init__(self, *, fail_second_resolve: bool = False) -> None:
         self.fail_second_resolve = fail_second_resolve
         self.resolve_count = 0
         self.calls: list[tuple[list[str], float]] = []
@@ -60,8 +59,6 @@ class CleanupFailureRunner:
             return BUILD_DIGEST + "\n"
         if command[:3] == ["oras", "repo", "tags"]:
             return CANDIDATE_TAG + "\n"
-        if command[:3] == ["oras", "manifest", "delete"] and self.fail_delete:
-            raise CandidateCommandError("oras", 2, "permission denied token=secret")
         return ""
 
 
@@ -85,26 +82,20 @@ def _metadata(build_digest: str = BUILD_DIGEST) -> CleanupMetadata:
     )
 
 
-def test_cleanup_candidate_deletes_expected_digest(tmp_path: Path) -> None:
-    runner = CleanupRunner([BUILD_DIGEST, BUILD_DIGEST, None])
+def test_cleanup_candidate_quarantines_without_non_atomic_delete(tmp_path: Path) -> None:
+    runner = CleanupRunner([BUILD_DIGEST, BUILD_DIGEST])
 
-    assert cleanup_candidate(_metadata(), tmp_path, runner) is False
+    assert cleanup_candidate(_metadata(), tmp_path, runner) is True
 
     commands = [call[0] for call in runner.calls]
     assert commands == [
         ["oras", "resolve", CANDIDATE_REF],
         ["oras", "repo", "tags", "ghcr.io/sjarmak/codeprobe/codeprobe-agent"],
         ["oras", "resolve", CANDIDATE_REF],
-        [
-            "oras",
-            "manifest",
-            "delete",
-            "--force",
-            "ghcr.io/sjarmak/codeprobe/codeprobe-agent@" + BUILD_DIGEST,
-        ],
-        ["oras", "resolve", CANDIDATE_REF],
     ]
-    assert not (tmp_path / "candidate-quarantine.json").exists()
+    assert not any(command[:3] == ["oras", "manifest", "delete"] for command in commands)
+    quarantine = json.loads((tmp_path / "candidate-quarantine.json").read_text())
+    assert quarantine["reason"] == "candidate-deletion-not-atomic"
 
 
 def test_cleanup_candidate_quarantines_initial_resolve_error(tmp_path: Path) -> None:
@@ -115,17 +106,6 @@ def test_cleanup_candidate_quarantines_initial_resolve_error(tmp_path: Path) -> 
 
     quarantine = json.loads((tmp_path / "candidate-quarantine.json").read_text())
     assert quarantine["reason"] == "candidate-resolve-failed"
-    assert "secret" not in json.dumps(quarantine)
-
-
-def test_cleanup_candidate_quarantines_delete_error(tmp_path: Path) -> None:
-    runner = CleanupFailureRunner(fail_delete=True)
-
-    assert cleanup_candidate(_metadata(), tmp_path, runner) is True
-
-    quarantine = json.loads((tmp_path / "candidate-quarantine.json").read_text())
-    assert quarantine["reason"] == "candidate-delete-failed"
-    assert quarantine["observed_digest"] == BUILD_DIGEST
     assert "secret" not in json.dumps(quarantine)
 
 
@@ -180,25 +160,21 @@ def test_cleanup_candidate_quarantines_shared_digest_tag(tmp_path: Path) -> None
     assert quarantine["shared_ref"] == "ghcr.io/sjarmak/codeprobe/codeprobe-agent:1.2.3"
 
 
-def test_cleanup_candidate_deletes_when_only_candidate_tag_shares_digest(
+def test_cleanup_candidate_quarantines_when_other_tags_do_not_share_digest(
     tmp_path: Path,
 ) -> None:
     runner = CleanupRunner(
-        [BUILD_DIGEST, OTHER_DIGEST, BUILD_DIGEST, None],
+        [BUILD_DIGEST, OTHER_DIGEST, BUILD_DIGEST],
         tags=[CANDIDATE_TAG, "older"],
     )
 
-    assert cleanup_candidate(_metadata(), tmp_path, runner) is False
+    assert cleanup_candidate(_metadata(), tmp_path, runner) is True
 
     commands = [call[0] for call in runner.calls]
     assert ["oras", "resolve", "ghcr.io/sjarmak/codeprobe/codeprobe-agent:older"] in commands
-    assert [
-        "oras",
-        "manifest",
-        "delete",
-        "--force",
-        "ghcr.io/sjarmak/codeprobe/codeprobe-agent@" + BUILD_DIGEST,
-    ] in commands
+    assert not any(command[:3] == ["oras", "manifest", "delete"] for command in commands)
+    quarantine = json.loads((tmp_path / "candidate-quarantine.json").read_text())
+    assert quarantine["reason"] == "candidate-deletion-not-atomic"
 
 
 def test_cleanup_candidate_quarantines_tag_list_failure(tmp_path: Path) -> None:
@@ -267,6 +243,43 @@ def test_cleanup_candidate_does_not_treat_auth_error_with_absence_text_as_absent
 
 
 @pytest.mark.parametrize(
+    "stderr",
+    [
+        "network unreachable: manifest unknown",
+        "x509 certificate signed by unknown authority: manifest unknown",
+        "HTTP 401: manifest unknown",
+        "HTTP 403: manifest unknown",
+        "HTTP 429: manifest unknown",
+        "service unavailable: manifest unknown",
+    ],
+)
+def test_cleanup_candidate_rejects_prefixed_false_absence(
+    tmp_path: Path, stderr: str
+) -> None:
+    def fail_resolve(command: list[str], timeout: float) -> str:
+        raise CandidateCommandError("oras", 2, stderr)
+
+    assert cleanup_candidate(_metadata(), tmp_path, fail_resolve) is True
+    quarantine = json.loads((tmp_path / "candidate-quarantine.json").read_text())
+    assert quarantine["reason"] == "candidate-resolve-failed"
+
+
+def test_cleanup_candidate_accepts_exact_oras_not_found(tmp_path: Path) -> None:
+    def fail_resolve(command: list[str], timeout: float) -> str:
+        raise CandidateCommandError(
+            "oras",
+            1,
+            (
+                "Error response from registry: failed to resolve digest: "
+                f"{CANDIDATE_REF}: not found"
+            ),
+        )
+
+    assert cleanup_candidate(_metadata(), tmp_path, fail_resolve) is False
+    assert not (tmp_path / "candidate-quarantine.json").exists()
+
+
+@pytest.mark.parametrize(
     "updates",
     [
         {"image": "other-image"},
@@ -298,22 +311,13 @@ def test_cleanup_candidate_rejects_malformed_metadata_before_registry_calls(
     assert calls == []
 
 
-def test_cleanup_candidate_quarantines_unproven_delete(tmp_path: Path) -> None:
-    runner = CleanupRunner([BUILD_DIGEST, BUILD_DIGEST, BUILD_DIGEST])
+def test_cleanup_candidate_quarantines_when_build_digest_is_missing(tmp_path: Path) -> None:
+    runner = CleanupRunner([BUILD_DIGEST, BUILD_DIGEST])
 
-    assert cleanup_candidate(_metadata(), tmp_path, runner) is True
+    assert cleanup_candidate(_metadata(build_digest=""), tmp_path, runner) is True
 
     quarantine = json.loads((tmp_path / "candidate-quarantine.json").read_text())
-    assert quarantine["reason"] == "candidate-delete-not-proven"
-    assert quarantine["deletion_proven"] is False
-
-
-def test_cleanup_candidate_allows_missing_build_digest(tmp_path: Path) -> None:
-    runner = CleanupRunner([BUILD_DIGEST, BUILD_DIGEST, None])
-
-    assert cleanup_candidate(_metadata(build_digest=""), tmp_path, runner) is False
-
-    assert not (tmp_path / "candidate-quarantine.json").exists()
+    assert quarantine["reason"] == "candidate-deletion-not-atomic"
 
 
 def test_cleanup_command_has_bounded_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

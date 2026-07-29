@@ -417,7 +417,7 @@ jobs:
           path: oci-identities/${{ matrix.image }}.json
           if-no-files-found: error
 
-      - name: Delete failed candidate tag
+      - name: Quarantine failed candidate tag
         if: (failure() || cancelled()) && steps.image.outputs.candidate_ref != ''
         env:
           IMAGE_NAME: ${{ matrix.image }}
@@ -501,7 +501,7 @@ jobs:
           username: ${{ steps.registry-auth.outputs.username }}
           password: ${{ steps.registry-auth.outputs.password }}
 
-      - name: Delete unpromoted run candidates
+      - name: Quarantine unpromoted run candidates
         env:
           VERSION: ${{ needs.authorize-release.outputs.version }}
           SOURCE_SHA: ${{ needs.authorize-release.outputs.release_sha }}

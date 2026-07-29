@@ -283,6 +283,32 @@ def test_verify_buildkit_attestations_rejects_non_rfc3339_spdx_created(
         _verify(fixture)
 
 
+def test_verify_buildkit_attestations_rejects_impossible_rfc3339_spdx_created(
+    attestation_fixture: dict[str, Any],
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    _statement(fixture)["predicate"]["creationInfo"][
+        "created"
+    ] = "2026-99-99T25:61:61Z"
+
+    with pytest.raises(AttestationVerificationError, match="creationInfo.created"):
+        _verify(fixture)
+
+
+@pytest.mark.parametrize(
+    "namespace",
+    ["not a URI", "https://example.test/spdx namespace", "https://example.test/%ZZ"],
+)
+def test_verify_buildkit_attestations_rejects_invalid_document_namespace(
+    attestation_fixture: dict[str, Any], namespace: str
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    _statement(fixture)["predicate"]["documentNamespace"] = namespace
+
+    with pytest.raises(AttestationVerificationError, match="documentNamespace"):
+        _verify(fixture)
+
+
 def test_verify_buildkit_attestations_rejects_empty_spdx_package_inventory(
     attestation_fixture: dict[str, Any],
 ) -> None:
@@ -418,7 +444,15 @@ def test_verify_buildkit_attestations_rejects_empty_material_digest_value(
         _verify(fixture)
 
 
-@pytest.mark.parametrize("uri", ["not-a-uri", "git+https://github.com/source/repo\n"])
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "not-a-uri",
+        "git+https://github.com/source/repo\n",
+        "https://example.test/path with spaces",
+        "https://example.test/%ZZ",
+    ],
+)
 def test_verify_buildkit_attestations_rejects_malformed_material_uri(
     attestation_fixture: dict[str, Any], uri: str
 ) -> None:

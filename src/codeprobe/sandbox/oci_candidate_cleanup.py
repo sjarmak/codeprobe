@@ -14,30 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from codeprobe.sandbox.oci_errors import is_exact_registry_absence
 from codeprobe.sandbox.oci_references import validate_image_reference
 
 COMMAND_TIMEOUT_SECONDS: Final[float] = 120.0
 EXPECTED_IMAGES: Final[tuple[str, ...]] = ("codeprobe-agent", "codeprobe-scoring")
 _DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[a-f0-9]{64}\Z")
 _SHA_RE: Final[re.Pattern[str]] = re.compile(r"[a-f0-9]{40}\Z")
-_ABSENT_SUFFIX_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:^|:\s)(?:manifest unknown|name unknown)(?::[^;\r\n]*)?\s*\Z", re.I
-)
-_NON_ABSENT_MARKERS: Final[tuple[str, ...]] = (
-    "unauthorized",
-    "denied",
-    "forbidden",
-    "authentication",
-    "credential",
-    "permission",
-    "rate limit",
-    "too many requests",
-    "timeout",
-    "connection",
-    "tls",
-)
-
-
 class CandidateCleanupError(RuntimeError):
     """Raised when a candidate tag cannot be safely cleaned up."""
 
@@ -72,7 +55,7 @@ def cleanup_candidate(
     output_dir: Path,
     runner: CommandRunner | None = None,
 ) -> bool:
-    """Delete a failed run-unique candidate tag or write quarantine evidence."""
+    """Prove absence or write durable quarantine evidence for a failed candidate."""
 
     runner = runner or _run_text_command
     _validate_metadata(metadata)
@@ -108,15 +91,12 @@ def _cleanup_observed_candidate(
             {"current_digest": current},
         )
         return True
-    if not _safe_delete(metadata, output_dir, observed, runner):
-        return True
-    after_delete = _safe_resolve(metadata, output_dir, runner)
-    if after_delete is None:
-        print(f"candidate cleanup: deleted failed candidate {metadata.candidate_ref}")
-        return False
-    if after_delete == "":
-        return True
-    _write_quarantine(output_dir, "candidate-delete-not-proven", metadata, after_delete)
+    _write_quarantine(
+        output_dir,
+        "candidate-deletion-not-atomic",
+        metadata,
+        observed,
+    )
     return True
 
 
@@ -128,17 +108,6 @@ def _safe_resolve(
     except CandidateCleanupError:
         _write_quarantine(output_dir, "candidate-resolve-failed", metadata, "")
         return ""
-
-
-def _safe_delete(
-    metadata: CleanupMetadata, output_dir: Path, observed: str, runner: CommandRunner
-) -> bool:
-    try:
-        _delete_candidate(metadata.candidate_ref, observed, runner)
-    except CandidateCleanupError:
-        _write_quarantine(output_dir, "candidate-delete-failed", metadata, observed)
-        return False
-    return True
 
 
 def _shared_digest_quarantined(
@@ -240,45 +209,16 @@ def _resolve_required(ref_name: str, runner: CommandRunner) -> str:
     return digest
 
 
-def _delete_candidate(
-    candidate_ref: str, expected_digest: str, runner: CommandRunner
-) -> None:
-    repository, _ = _repository_and_tag(candidate_ref)
-    try:
-        runner(
-            [
-                "oras",
-                "manifest",
-                "delete",
-                "--force",
-                f"{repository}@{expected_digest}",
-            ],
-            COMMAND_TIMEOUT_SECONDS,
-        )
-    except CandidateCommandError as exc:
-        if _is_absent_error(exc.stderr):
-            return
-        raise
-
-
 def _resolve_optional(candidate_ref: str, runner: CommandRunner) -> str | None:
     try:
         digest = runner(["oras", "resolve", candidate_ref], COMMAND_TIMEOUT_SECONDS).strip()
     except CandidateCommandError as exc:
-        if _is_absent_error(exc.stderr):
+        if is_exact_registry_absence(exc.stderr, candidate_ref):
             return None
         raise
     if not _DIGEST_RE.fullmatch(digest):
         raise CandidateCleanupError("candidate resolve returned invalid digest")
     return digest
-
-
-def _is_absent_error(stderr: str) -> bool:
-    normalized = stderr.strip()
-    lowered = normalized.lower()
-    if any(marker in lowered for marker in _NON_ABSENT_MARKERS):
-        return False
-    return _ABSENT_SUFFIX_RE.search(normalized) is not None
 
 
 def _write_quarantine(
@@ -385,7 +325,9 @@ def _metadata_from_args(args: argparse.Namespace) -> CleanupMetadata:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Delete failed OCI candidate tags.")
+    parser = argparse.ArgumentParser(
+        description="Quarantine failed OCI candidate tags."
+    )
     parser.add_argument("--candidate-ref", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--version", required=True)
@@ -404,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     if quarantined:
-        print("FATAL: candidate cleanup could not prove safe deletion", file=sys.stderr)
+        print("FATAL: candidate state was quarantined", file=sys.stderr)
         return 1
     return 0
 

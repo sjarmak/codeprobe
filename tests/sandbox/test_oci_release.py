@@ -88,10 +88,18 @@ class RecordingRunner:
                 return "sha256:" + "8" * 64
             return PAIR_DIGEST
         if "codeprobe-agent" in ref:
+            self._require_version_tag_available(ref)
             return AGENT_DIGEST
         if "codeprobe-scoring" in ref:
+            self._require_version_tag_available(ref)
             return SCORING_DIGEST
         return PAIR_DIGEST
+
+    def _require_version_tag_available(self, ref: str) -> None:
+        if not ref.endswith(":1.2.3"):
+            return
+        if not self.version_tags_exist and ref not in self.created_version_tags:
+            raise OciCommandError("oras", 1, "manifest unknown")
 
 
 def _identity(image: str, digest: str) -> ImageIdentity:
@@ -190,7 +198,44 @@ def test_check_reuse_outputs_false_when_pair_is_absent(tmp_path: Path) -> None:
     assert reused is False
     commands = [call[0] for call in runner.calls]
     assert commands[0][:2] == ["oras", "resolve"]
-    assert sum(command[:4] == ["docker", "buildx", "imagetools", "inspect"] for command in commands) == 2
+    version_resolves = [
+        command
+        for command in commands
+        if command[:2] == ["oras", "resolve"]
+        and command[-1].endswith(":1.2.3")
+        and "release-pair" not in command[-1]
+    ]
+    assert len(version_resolves) == 2
+
+
+def test_check_reuse_accepts_exact_oras_not_found_contract(tmp_path: Path) -> None:
+    def runner(command: list[str], timeout: float) -> str:
+        reference = command[-1]
+        raise OciCommandError(
+            "oras",
+            1,
+            (
+                "Error response from registry: failed to resolve digest: "
+                f"{reference}: not found"
+            ),
+        )
+
+    assert (
+        check_reuse(
+            registry="ghcr.io",
+            namespace="sjarmak/codeprobe",
+            version="1.2.3",
+            repository="sjarmak/codeprobe",
+            ref="refs/tags/v1.2.3",
+            source_sha=SHA,
+            cert_identity=CERT_IDENTITY,
+            output_dir=tmp_path,
+            trivy_image="trivy@sha256:abc",
+            trivy_severity="CRITICAL,HIGH",
+            runner=runner,
+        )
+        is False
+    )
 
 
 def test_check_reuse_fails_closed_when_pair_absent_but_version_tag_exists(
@@ -358,6 +403,39 @@ def test_check_reuse_fails_when_pair_tag_moves_during_verification(
         )
 
 
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        "network unreachable: manifest unknown",
+        "x509 certificate signed by unknown authority: manifest unknown",
+        "HTTP 401: manifest unknown",
+        "HTTP 403: manifest unknown",
+        "HTTP 429: manifest unknown",
+        "service unavailable: manifest unknown",
+    ],
+)
+def test_check_reuse_rejects_prefixed_false_absence(
+    tmp_path: Path, stderr: str
+) -> None:
+    def runner(command: list[str], timeout: float) -> str:
+        raise OciCommandError("oras", 2, stderr)
+
+    with pytest.raises(OciCommandError):
+        check_reuse(
+            registry="ghcr.io",
+            namespace="sjarmak/codeprobe",
+            version="1.2.3",
+            repository="sjarmak/codeprobe",
+            ref="refs/tags/v1.2.3",
+            source_sha=SHA,
+            cert_identity=CERT_IDENTITY,
+            output_dir=tmp_path,
+            trivy_image="trivy@sha256:abc",
+            trivy_severity="CRITICAL,HIGH",
+            runner=runner,
+        )
+
+
 def test_check_reuse_fails_when_version_tag_moves_during_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -421,21 +499,22 @@ def test_publish_pair_verifies_tags_before_signing(tmp_path: Path) -> None:
     commands = [call[0] for call in runner.calls]
     first_sign = next(index for index, command in enumerate(commands) if command[:2] == ["cosign", "sign-blob"])
     first_push = next(index for index, command in enumerate(commands) if command[:2] == ["oras", "push"])
-    resolve_index = next(index for index, command in enumerate(commands) if command[:2] == ["oras", "resolve"])
     inspect_indices = [
         index
         for index, command in enumerate(commands)
         if command[:4] == ["docker", "buildx", "imagetools", "inspect"]
     ]
-    fetch_indices = [
+    pair_resolve_indices = [
         index
         for index, command in enumerate(commands)
-        if command[:3] == ["oras", "manifest", "fetch"]
+        if command[:2] == ["oras", "resolve"]
+        and "codeprobe-release-pair" in command[-1]
     ]
     assert inspect_indices
     assert max(inspect_indices) < first_sign
-    assert fetch_indices[0] < first_sign
-    assert first_sign < fetch_indices[1] < first_push < resolve_index
+    assert pair_resolve_indices[0] < first_sign
+    assert first_sign < pair_resolve_indices[1] < first_push
+    assert first_push < pair_resolve_indices[2]
     ref = json.loads((tmp_path / "pair" / "release-pair-ref.json").read_text())
     assert ref["digest"] == PAIR_DIGEST
     assert ref["digest_ref"] == (

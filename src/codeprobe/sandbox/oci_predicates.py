@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from typing import Any, Final, TypeGuard
 from urllib.parse import urlsplit
 
@@ -17,6 +18,8 @@ _RFC3339_RE: Final[re.Pattern[str]] = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\Z"
 )
 _SPDX_ID_RE: Final[re.Pattern[str]] = re.compile(r"SPDXRef-[A-Za-z0-9.-]+\Z")
+_URI_SCHEME_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*\Z")
+_INVALID_PERCENT_ESCAPE_RE: Final[re.Pattern[str]] = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _SPDX_RELATIONSHIP_TYPES: Final[frozenset[str]] = frozenset(
     {
         "AMENDS",
@@ -105,11 +108,15 @@ def _verify_spdx_document_fields(
             raise AttestationVerificationError(
                 f"{layer_digest} SPDX predicate has invalid {key}"
             )
-    for key in ("name", "documentNamespace"):
-        if not isinstance(predicate.get(key), str) or not predicate[key]:
-            raise AttestationVerificationError(
-                f"{layer_digest} SPDX predicate missing {key}"
-            )
+    if not isinstance(predicate.get("name"), str) or not predicate["name"]:
+        raise AttestationVerificationError(
+            f"{layer_digest} SPDX predicate missing name"
+        )
+    namespace = predicate.get("documentNamespace")
+    if not _is_valid_absolute_uri(namespace):
+        raise AttestationVerificationError(
+            f"{layer_digest} SPDX predicate has invalid documentNamespace"
+        )
 
 
 def _verify_spdx_creation_info(
@@ -122,7 +129,7 @@ def _verify_spdx_creation_info(
         )
     creators = creation_info.get("creators")
     created = creation_info.get("created")
-    if not isinstance(created, str) or _RFC3339_RE.fullmatch(created) is None:
+    if not _is_valid_rfc3339(created):
         raise AttestationVerificationError(
             f"{layer_digest} SPDX predicate has invalid creationInfo.created"
         )
@@ -299,15 +306,40 @@ def _is_valid_digest(value: object, expected_length: int | None) -> bool:
 
 
 def _is_valid_material_uri(value: object) -> TypeGuard[str]:
+    return _is_valid_absolute_uri(value)
+
+
+def _is_valid_rfc3339(value: object) -> TypeGuard[str]:
+    if not isinstance(value, str) or _RFC3339_RE.fullmatch(value) is None:
+        return False
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
+def _is_valid_absolute_uri(value: object) -> TypeGuard[str]:
     if not isinstance(value, str) or not value:
         return False
-    if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value):
+    if any(ord(character) <= 32 or ord(character) >= 127 for character in value):
+        return False
+    if _INVALID_PERCENT_ESCAPE_RE.search(value) is not None:
         return False
     try:
         parsed = urlsplit(value)
+        hostname = parsed.hostname
+        _ = parsed.port
     except ValueError:
         return False
-    return bool(parsed.scheme and (parsed.netloc or parsed.path))
+    if _URI_SCHEME_RE.fullmatch(parsed.scheme) is None:
+        return False
+    if parsed.netloc and hostname is None:
+        return False
+    if parsed.scheme in {"http", "https", "git+http", "git+https"}:
+        return bool(parsed.netloc and hostname)
+    return bool(parsed.netloc or parsed.path)
 
 
 def _string_at(

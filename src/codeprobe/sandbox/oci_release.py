@@ -19,6 +19,7 @@ from codeprobe.sandbox.oci_attestations import (
     _oras_blob_fetch,
     verify_buildkit_attestations,
 )
+from codeprobe.sandbox.oci_errors import is_exact_registry_absence
 from codeprobe.sandbox.oci_release_contract import (
     EXPECTED_IMAGES,
     REQUIRED_PLATFORMS,
@@ -42,22 +43,6 @@ SIGSTORE_BUNDLE_TYPE: Final[str] = "application/vnd.dev.sigstore.bundle.v0.3+jso
 COMMAND_TIMEOUT_SECONDS: Final[float] = 120.0
 TRIVY_TIMEOUT_SECONDS: Final[float] = 600.0
 _DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[a-f0-9]{64}\Z")
-_ABSENT_SUFFIX_RE: Final[re.Pattern[str]] = re.compile(
-    r"(?:^|:\s)(?:manifest unknown|name unknown)(?::[^;\r\n]*)?\s*\Z", re.I
-)
-_NON_ABSENT_MARKERS: Final[tuple[str, ...]] = (
-    "unauthorized",
-    "denied",
-    "forbidden",
-    "authentication",
-    "credential",
-    "permission",
-    "rate limit",
-    "too many requests",
-    "timeout",
-    "connection",
-    "tls",
-)
 
 
 class OciCommandError(OciReleaseError):
@@ -137,7 +122,7 @@ def promote_tags(
     )
     _verify_candidate_digests(identities, runner)
     existing = {
-        item.tag_ref: _inspect_digest_optional(item.tag_ref, runner)
+        item.tag_ref: _resolve_optional(item.tag_ref, runner)
         for item in identities
     }
     if any(digest is not None for digest in existing.values()):
@@ -200,12 +185,15 @@ def publish_pair(
     bundle_path = output_dir / "release-pair.bundle"
     _write_json(pair_path, build_pair(repository, ref, source_sha, identities))
     ref_name = pair_ref(registry, namespace, version)
-    if _pair_exists(ref_name, runner):
-        _verify_existing_pair(ref_name, output_dir, pair_path, cert_identity, runner)
-    else:
-        _sign_and_push_pair(
-            ref_name, pair_path, bundle_path, promotion_state_path, cert_identity, runner
-        )
+    _ensure_pair_authority(
+        ref_name,
+        pair_path,
+        bundle_path,
+        promotion_state_path,
+        output_dir,
+        cert_identity,
+        runner,
+    )
     digest = _resolve_ref(ref_name, runner)
     _verify_pushed_pair_by_digest(
         ref_name, digest, output_dir, pair_path, cert_identity, runner
@@ -220,6 +208,31 @@ def publish_pair(
         },
     )
     return ref_name
+
+
+def _ensure_pair_authority(
+    ref_name: str,
+    pair_path: Path,
+    bundle_path: Path,
+    promotion_state_path: Path,
+    output_dir: Path,
+    cert_identity: str,
+    runner: CommandRunner,
+) -> None:
+    existing_digest = _resolve_optional(ref_name, runner)
+    if existing_digest is not None:
+        _verify_existing_pair(
+            ref_name,
+            existing_digest,
+            output_dir,
+            pair_path,
+            cert_identity,
+            runner,
+        )
+    else:
+        _sign_and_push_pair(
+            ref_name, pair_path, bundle_path, promotion_state_path, cert_identity, runner
+        )
 
 
 def write_promotion_quarantine(
@@ -342,16 +355,6 @@ def _scan_image_platforms(
         )
 
 
-def _pair_exists(ref_name: str, runner: CommandRunner) -> bool:
-    try:
-        runner(["oras", "manifest", "fetch", ref_name], COMMAND_TIMEOUT_SECONDS)
-    except OciCommandError as exc:
-        if _is_absent_error(exc.stderr):
-            return False
-        raise
-    return True
-
-
 def _require_version_tags_absent(
     registry: str, namespace: str, version: str, runner: CommandRunner
 ) -> None:
@@ -361,7 +364,7 @@ def _require_version_tags_absent(
             f"{image_repo(registry, namespace, image)}:{version}"
             for image in EXPECTED_IMAGES
         )
-        if _inspect_digest_optional(ref_name, runner) is not None
+        if _resolve_optional(ref_name, runner) is not None
     ]
     if existing:
         raise OciReleaseError(
@@ -396,12 +399,12 @@ def _verify_pair_bundle(pair_dir: Path, cert_identity: str, runner: CommandRunne
 
 def _verify_existing_pair(
     ref_name: str,
+    digest: str,
     output_dir: Path,
     pair_path: Path,
     cert_identity: str,
     runner: CommandRunner,
 ) -> None:
-    digest = _resolve_ref(ref_name, runner)
     existing_dir = output_dir / "release-pair-existing"
     _pull_pair(_tag_ref_to_digest_ref(ref_name, digest), existing_dir, runner)
     _compare_pair_file(existing_dir / "release-pair.json", pair_path)
@@ -460,7 +463,7 @@ def _sign_and_push_pair(
         ],
         COMMAND_TIMEOUT_SECONDS,
     )
-    if _pair_exists(ref_name, runner):
+    if _resolve_optional(ref_name, runner) is not None:
         raise OciReleaseError("release pair ref appeared before push")
     runner(
         [
@@ -515,15 +518,6 @@ def _inspect_digest(ref_name: str, runner: CommandRunner) -> str:
     return match.group(1)
 
 
-def _inspect_digest_optional(ref_name: str, runner: CommandRunner) -> str | None:
-    try:
-        return _inspect_digest(ref_name, runner)
-    except OciCommandError as exc:
-        if _is_absent_error(exc.stderr):
-            return None
-        raise
-
-
 def _resolve_ref(ref_name: str, runner: CommandRunner) -> str:
     resolved = runner(["oras", "resolve", ref_name], COMMAND_TIMEOUT_SECONDS).strip()
     if not _DIGEST_RE.fullmatch(resolved):
@@ -535,17 +529,9 @@ def _resolve_optional(ref_name: str, runner: CommandRunner) -> str | None:
     try:
         return _resolve_ref(ref_name, runner)
     except OciCommandError as exc:
-        if _is_absent_error(exc.stderr):
+        if is_exact_registry_absence(exc.stderr, ref_name):
             return None
         raise
-
-
-def _is_absent_error(stderr: str) -> bool:
-    normalized = stderr.strip()
-    lowered = normalized.lower()
-    if any(marker in lowered for marker in _NON_ABSENT_MARKERS):
-        return False
-    return _ABSENT_SUFFIX_RE.search(normalized) is not None
 
 
 def _require_tag_still_at_digest(
@@ -623,7 +609,7 @@ def _promotion_observed_state(
     observed: dict[str, object] = {}
     for item in identities:
         try:
-            observed[item.tag_ref] = _inspect_digest_optional(item.tag_ref, runner)
+            observed[item.tag_ref] = _resolve_optional(item.tag_ref, runner)
         except (OciReleaseError, AttestationVerificationError):
             observed[item.tag_ref] = {"state": "unknown", "error": "inspect-failed"}
     return observed

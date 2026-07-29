@@ -636,9 +636,9 @@ def _assert_candidate_gates_present() -> None:
         assert _step_index(steps, gate) < len(steps)
 
 
-def test_oci_image_workflow_deletes_failed_candidates_after_post_push_gates() -> None:
+def test_oci_image_workflow_quarantines_failed_candidates_after_post_push_gates() -> None:
     steps = _candidate_image_steps()
-    cleanup_index = _step_index(steps, "Delete failed candidate tag")
+    cleanup_index = _step_index(steps, "Quarantine failed candidate tag")
     quarantine_upload_index = _step_index(
         steps, "Upload candidate cleanup quarantine evidence"
     )
@@ -718,7 +718,9 @@ def test_oci_image_workflow_aggregates_candidate_cleanup_on_matrix_failure() -> 
 
     steps = _cleanup_steps()
     cleanup_step = next(
-        step for step in steps if step.get("name") == "Delete unpromoted run candidates"
+        step
+        for step in steps
+        if step.get("name") == "Quarantine unpromoted run candidates"
     )
     upload = next(
         step
