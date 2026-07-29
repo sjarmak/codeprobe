@@ -69,14 +69,10 @@ def test_documented_repository_paths_resolve() -> None:
 def test_documented_container_images_match_code_constants() -> None:
     inventory = _inventory()
     corpus = _doc_corpus(inventory)
-    constants = {
-        "DEFAULT_AGENT_IMAGE": sandbox_runner.DEFAULT_AGENT_IMAGE,
-        "DEFAULT_SCORING_IMAGE": sandbox_runner.DEFAULT_SCORING_IMAGE,
-    }
 
     for image in inventory["images"]:
         assert image["name"] in corpus
-        assert image["name"] == constants[image["constant"]]
+        assert image["name"] == getattr(sandbox_runner, image["constant"])
         assert (REPO_ROOT / image["dockerfile"]).is_file()
 
 

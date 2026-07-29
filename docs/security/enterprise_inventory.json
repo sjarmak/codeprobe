@@ -58,77 +58,64 @@
   ],
   "commands": [
     {
-      "id": "build_agent_image",
       "command": "docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .",
       "image_constant": "DEFAULT_AGENT_IMAGE"
     },
     {
-      "id": "build_scoring_image",
       "command": "docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .",
       "image_constant": "DEFAULT_SCORING_IMAGE"
     },
     {
-      "id": "run_offline",
       "command": "codeprobe run . --offline --offline-expected-run-duration 1h",
       "help": ["run"],
       "required_help_tokens": ["--offline", "--offline-expected-run-duration"]
     },
     {
-      "id": "check_offline",
       "command": "codeprobe check-infra offline --json",
       "help": ["check-infra", "offline"],
       "required_help_tokens": ["--expected-run-duration", "--backend", "--json"]
     },
     {
-      "id": "purge_dry_run",
       "command": "codeprobe purge .",
       "help": ["purge"],
       "required_help_tokens": ["--older-than", "--all", "--yes"]
     },
     {
-      "id": "purge_delete",
       "command": "codeprobe purge . --yes",
       "help": ["purge"],
       "required_help_tokens": ["--yes"]
     },
     {
-      "id": "purge_retention_window",
       "command": "codeprobe purge . --older-than 30 --yes",
       "help": ["purge"],
       "required_help_tokens": ["--older-than", "--yes"]
     },
     {
-      "id": "purge_all",
       "command": "codeprobe purge . --all --yes",
       "help": ["purge"],
       "required_help_tokens": ["--all", "--yes"]
     },
     {
-      "id": "snapshot_hashes_only",
       "command": "codeprobe snapshot create EXPERIMENT_DIR --out SNAPSHOT_DIR --redact hashes-only",
       "help": ["snapshot", "create"],
       "required_help_tokens": ["--out", "--redact", "--allow-source-in-export"]
     },
     {
-      "id": "snapshot_verify",
       "command": "codeprobe snapshot verify SNAPSHOT_DIR",
       "help": ["snapshot", "verify"],
       "required_help_tokens": ["--signing-key"]
     },
     {
-      "id": "evidence_preview",
       "command": "codeprobe snapshot evidence preview request.json --no-json",
       "help": ["snapshot", "evidence", "preview"],
       "required_help_tokens": ["--no-json"]
     },
     {
-      "id": "evidence_export",
       "command": "codeprobe snapshot evidence export request.json --out approved-evidence --approve sha256:DIGEST --no-json",
       "help": ["snapshot", "evidence", "export"],
       "required_help_tokens": ["--out", "--approve", "--no-json"]
     },
     {
-      "id": "evidence_validate",
       "command": "codeprobe snapshot evidence validate approved-evidence --expect sha256:DIGEST --no-json",
       "help": ["snapshot", "evidence", "validate"],
       "required_help_tokens": ["--expect", "--no-json"]
