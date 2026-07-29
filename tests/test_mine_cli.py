@@ -464,6 +464,7 @@ class TestOrgScaleNextSteps:
         suite = output_root / "suite.toml"
         assert (
             f"codeprobe run {shlex.quote(str(repo))} "
+            f"--config {shlex.quote(str(out_dir))} "
             f"--suite {shlex.quote(str(suite))} --agent claude"
         ) in buf.getvalue()
         assert f"codeprobe run {shlex.quote(str(out_dir))}" not in buf.getvalue()
