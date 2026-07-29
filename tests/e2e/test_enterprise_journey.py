@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import math
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +23,8 @@ from scripts.e2e.enterprise_artifacts import (
     parse_envelope,
     validate_image_labels,
 )
+from scripts.e2e.enterprise_install import installed_version
+from scripts.e2e.enterprise_journey import _validate_args
 from scripts.e2e.enterprise_runtime import base_environment
 
 
@@ -198,3 +204,57 @@ def test_runtime_exposes_release_credential_only_under_selected_agent_name(
 
     assert environment["ANTHROPIC_API_KEY"] == "release-secret-value"
     assert "CODEPROBE_RELEASE_AGENT_CREDENTIAL" not in environment
+
+
+def test_wheel_setup_subprocess_does_not_inherit_release_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEPROBE_RELEASE_AGENT_CREDENTIAL", "release-secret-value")
+    captured_environment: dict[str, str] = {}
+
+    def fake_run(
+        argv: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        captured_environment.update(kwargs["env"])  # type: ignore[arg-type]
+        payload = json.dumps(
+            {"version": "0.13.0", "path": str(tmp_path / "codeprobe" / "__init__.py")}
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    assert installed_version(tmp_path / "python")[0] == "0.13.0"
+    assert "CODEPROBE_RELEASE_AGENT_CREDENTIAL" not in captured_environment
+
+
+def _journey_args(max_cost_usd: float = 1.25) -> argparse.Namespace:
+    return argparse.Namespace(
+        agent="claude",
+        credential_env="ANTHROPIC_API_KEY",
+        max_cost_usd=max_cost_usd,
+        candidate_commit="a" * 40,
+        agent_image="agent@sha256:" + "a" * 64,
+        scoring_image="scoring@sha256:" + "b" * 64,
+    )
+
+
+@pytest.mark.parametrize("max_cost_usd", [math.nan, math.inf, -math.inf])
+def test_journey_rejects_non_finite_budget_before_provider_execution(
+    max_cost_usd: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEPROBE_RELEASE_AGENT_CREDENTIAL", "release-secret-value")
+
+    with pytest.raises(EnterpriseHarnessError, match="budget"):
+        _validate_args(_journey_args(max_cost_usd))
+
+
+def test_journey_consumes_generic_release_credential_before_subprocesses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEPROBE_RELEASE_AGENT_CREDENTIAL", "release-secret-value")
+
+    assert _validate_args(_journey_args()) == "release-secret-value"
+    assert "CODEPROBE_RELEASE_AGENT_CREDENTIAL" not in os.environ

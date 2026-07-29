@@ -47,7 +47,13 @@ def main(argv: list[str] | None = None) -> int:
             expected_scoring_image=args.expected_scoring_image,
             max_cost_usd=args.max_cost_usd,
         )
-    except (OSError, EnterpriseJourneyEvidenceError) as exc:
+    except OSError:
+        print(
+            "enterprise release evidence rejected: candidate artifact cannot be read",
+            file=sys.stderr,
+        )
+        return 1
+    except EnterpriseJourneyEvidenceError as exc:
         print(f"enterprise release evidence rejected: {exc}", file=sys.stderr)
         return 1
     print(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import stat
 import subprocess
@@ -167,11 +168,17 @@ sys.addaudithook(reject_source_reads)
 
 
 def _checked(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name != "CODEPROBE_RELEASE_AGENT_CREDENTIAL"
+    }
     try:
         return subprocess.run(
             argv,
             check=True,
             capture_output=True,
+            env=environment,
             text=True,
             timeout=600,
         )

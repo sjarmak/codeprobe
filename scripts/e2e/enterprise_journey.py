@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -84,7 +85,11 @@ def _validate_args(args: argparse.Namespace) -> str:
         raise EnterpriseHarnessError("a real release agent is required")
     if args.agent != "claude" or args.credential_env not in _CLAUDE_CREDENTIAL_ENVS:
         raise EnterpriseHarnessError("release agent credential mapping is unsupported")
-    if args.max_cost_usd <= 0 or not _COMMIT.fullmatch(args.candidate_commit):
+    if (
+        not math.isfinite(args.max_cost_usd)
+        or args.max_cost_usd <= 0
+        or not _COMMIT.fullmatch(args.candidate_commit)
+    ):
         raise EnterpriseHarnessError("candidate identity or budget is invalid")
     for image in (args.agent_image, args.scoring_image):
         if not _DIGEST_REFERENCE.fullmatch(image):
@@ -92,6 +97,7 @@ def _validate_args(args: argparse.Namespace) -> str:
     credential = os.environ.get("CODEPROBE_RELEASE_AGENT_CREDENTIAL", "")
     if len(credential) < 8:
         raise EnterpriseHarnessError("release agent credential is unavailable")
+    del os.environ["CODEPROBE_RELEASE_AGENT_CREDENTIAL"]
     return credential
 
 

@@ -243,3 +243,33 @@ def test_release_gate_cli_binds_the_exact_wheel_and_images(tmp_path: Path) -> No
         )
         == 1
     )
+
+
+def test_release_gate_does_not_reflect_untrusted_filesystem_errors(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sentinel = "untrusted-secret-SENTINEL"
+    evidence_path = _write(tmp_path, _evidence())
+
+    result = release_gate_main(
+        [
+            "--evidence",
+            str(evidence_path),
+            "--wheel",
+            str(tmp_path / sentinel),
+            "--expected-version",
+            VERSION,
+            "--expected-commit",
+            COMMIT,
+            "--expected-agent-image",
+            AGENT_IMAGE,
+            "--expected-scoring-image",
+            SCORING_IMAGE,
+            "--max-cost-usd",
+            str(MAX_COST_USD),
+        ]
+    )
+
+    assert result == 1
+    assert sentinel not in capsys.readouterr().err
