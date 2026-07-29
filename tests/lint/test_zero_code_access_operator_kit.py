@@ -39,6 +39,7 @@ REQUIRED_FILES = (
     TEMPLATES / "evidence-request.template.json",
 )
 LOCAL_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+BRANDED_PROVIDER = re.compile(r"\bSourcegraph\b", re.IGNORECASE)
 QA_VALID_EXAMPLES = (
     "comprehension/count-classes",
     "comprehension/count-functions",
@@ -152,10 +153,10 @@ def _materialize_qa_valid_tasks(tasks_dir: Path) -> None:
     _write_promoted_confidence(destination)
 
 
-def _materialize_stub_profile(experiment_dir: Path) -> None:
+def _materialize_dry_run_profile(experiment_dir: Path) -> None:
     profile = _json(TEMPLATES / "experiment.template.json")
     for config in profile["configs"]:
-        config["agent"] = "e2e-stub"
+        config["agent"] = "claude"
         config["model"] = None
     (experiment_dir / "experiment.json").write_text(
         json.dumps(profile),
@@ -197,8 +198,14 @@ def _assert_validated_sixty_run_plan(runner: CliRunner) -> None:
 def test_operator_kit_has_every_required_file_and_resolvable_link() -> None:
     assert all(path.is_file() for path in REQUIRED_FILES)
 
-    for document in KIT_ROOT.rglob("*.md"):
-        for target in LOCAL_LINK.findall(document.read_text(encoding="utf-8")):
+    for document in KIT_ROOT.rglob("*"):
+        if not document.is_file():
+            continue
+        content = document.read_text(encoding="utf-8")
+        assert BRANDED_PROVIDER.search(content) is None
+        if document.suffix != ".md":
+            continue
+        for target in LOCAL_LINK.findall(content):
             target_path = target.split("#", 1)[0]
             if not target_path or "://" in target_path or target_path.startswith("mailto:"):
                 continue
@@ -211,7 +218,7 @@ def test_kit_contract_preserves_pilot_thresholds_and_boundary() -> None:
     contract = _json(KIT_ROOT / "kit-contract.json")
 
     assert contract["schema_version"] == "codeprobe.zero-code-access.operator-kit.v1"
-    assert contract["participant_time_budget_minutes"] == {
+    assert contract["data_owner_time_budget_minutes"] == {
         "asynchronous_intake_maximum": 10,
         "structured_session_maximum": 45,
     }
@@ -219,8 +226,8 @@ def test_kit_contract_preserves_pilot_thresholds_and_boundary() -> None:
     assert contract["minimum_paired_distinct_tasks"] == 10
     assert contract["minimum_repeats_per_task_and_configuration"] == 3
     assert contract["same_task_set_required"] is True
-    assert contract["external_execution_owner"] == "participant_technical_owner"
-    assert contract["sourcegraph_repository_access"] == "prohibited"
+    assert contract["external_execution_owner"] == "data_owner_technical_owner"
+    assert contract["provider_repository_access"] == "prohibited"
     assert contract["allowed_conclusions"] == [
         "advance_a",
         "advance_b",
@@ -306,7 +313,7 @@ def test_intervention_log_examples_match_runtime_disqualification_policy() -> No
         )
 
 
-def test_participant_runbook_names_only_resolvable_cli_surfaces() -> None:
+def test_data_owner_runbook_names_only_resolvable_cli_surfaces() -> None:
     runbook = (KIT_ROOT / "participant-runbook.md").read_text(encoding="utf-8")
     required = {
         ("doctor",),
@@ -349,7 +356,7 @@ def test_standard_profile_dry_runs_sixty_trials_from_clean_repository(
         ["experiment", "init", ".", "--non-interactive", "--no-json"],
     )
     assert initialized.exit_code == 0, initialized.output
-    _materialize_stub_profile(experiment_dir)
+    _materialize_dry_run_profile(experiment_dir)
     _materialize_qa_valid_tasks(experiment_dir / "tasks")
     external_venv = tmp_path / "participant-tools" / "codeprobe-venv"
     external_venv.mkdir(parents=True)

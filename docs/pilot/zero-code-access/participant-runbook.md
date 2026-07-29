@@ -1,6 +1,6 @@
-# Participant Runbook
+# Data-Owner Runbook
 
-The participant technical owner performs every step in the participant
+The data-owner technical owner performs every step in the data-owner
 environment. Do not screen-share source, repository paths, prompts, patches,
 traces, task-level results, raw results, logs, or diagnostics. SE and FE may
 receive only coded progress and sanitized, non-identifying observations.
@@ -24,8 +24,8 @@ to any material intended for export.
 ## 2. Install, configure, and preflight
 
 Use an approved Python 3.11+ environment and install the reviewed CodeProbe
-release through the participant's normal package process. Set
-`CODEPROBE_VENV` to a participant-approved path outside the target repository:
+release through the data owner's normal package process. Set
+`CODEPROBE_VENV` to a data-owner-approved path outside the target repository:
 
 ```bash
 python3 -m venv "$CODEPROBE_VENV"
@@ -59,7 +59,7 @@ supports that capability, set the same positive cap on A and B. Otherwise leave
 both values `null`; CodeProbe refuses unsupported knobs rather than silently
 dropping them.
 
-Run the evaluation in a participant-approved container or sandbox. Do not use
+Run the evaluation in a data-owner-approved container or sandbox. Do not use
 `--uncontained` for the pilot. Confirm agent credentials and the cost ceiling
 locally; never send their values to SE or FE.
 
@@ -89,7 +89,7 @@ codeprobe run . --config .codeprobe --repeats 3 --show-prompt
 ```
 
 The resolved prompt is prohibited data. Inspect it locally and do not paste,
-stream, or summarize it to Sourcegraph personnel. If validation removes or
+stream, or summarize it to provider personnel. If validation removes or
 quarantines tasks, record attrition. Stop with `insufficient_evidence` if fewer
 than ten distinct paired tasks remain.
 
@@ -168,12 +168,12 @@ The output directory must not already exist. Share only:
 ## Recovery and refusal
 
 - **Install or platform failure:** stop, retain details locally, and send only a
-  sanitized coded status. An optional participant-security/platform follow-up
+  sanitized coded status. An optional data-owner security/platform follow-up
   may occur without environment access.
 - **Task or verifier defect:** record attrition. If the paired floor is lost,
   conclude `insufficient_evidence`; do not replace tasks after results.
-- **CodeProbe defect:** stop the external run. Core Engineering may fix and
-  verify it internally; the participant then starts a new external run.
+- **CodeProbe defect:** stop the external run. Provider Engineering may fix and
+  verify it internally; the data owner then starts a new external run.
 - **Disqualifying support:** stop and record the exact coded event. The run
   cannot advance either configuration.
 - **Changed request after preview:** discard the old digest, preview again, and

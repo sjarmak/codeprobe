@@ -7,57 +7,57 @@
   },
   "permitted_examples": [
     {
-      "actor_role": "participant_technical_owner",
+      "actor_role": "data_owner_technical_owner",
       "kind": "published_runbook"
     },
     {
-      "actor_role": "solutions_engineering",
+      "actor_role": "provider_support",
       "kind": "asynchronous_coordination"
     },
     {
-      "actor_role": "field_engineering",
+      "actor_role": "provider_support",
       "kind": "live_collaboration"
     },
     {
-      "actor_role": "participant_security",
+      "actor_role": "data_owner_security",
       "kind": "security_followup"
     },
     {
-      "actor_role": "solutions_engineering",
+      "actor_role": "provider_support",
       "kind": "sanitized_diagnostics"
     }
   ],
   "disqualifying_examples": [
     {
-      "actor_role": "core_engineering",
+      "actor_role": "provider_engineering",
       "kind": "generic_guidance"
     },
     {
-      "actor_role": "solutions_engineering",
+      "actor_role": "provider_support",
       "kind": "direct_environment_access"
     },
     {
-      "actor_role": "other_sourcegraph_personnel",
+      "actor_role": "other_provider_personnel",
       "kind": "direct_environment_access"
     },
     {
-      "actor_role": "field_engineering",
+      "actor_role": "provider_support",
       "kind": "bespoke_code_change"
     },
     {
-      "actor_role": "solutions_engineering",
+      "actor_role": "provider_support",
       "kind": "manual_evidence_repair"
     },
     {
-      "actor_role": "field_engineering",
+      "actor_role": "provider_support",
       "kind": "prohibited_data_sharing"
     },
     {
-      "actor_role": "solutions_engineering",
+      "actor_role": "provider_support",
       "kind": "raw_data_received"
     },
     {
-      "actor_role": "solutions_engineering",
+      "actor_role": "provider_support",
       "kind": "raw_result_reinterpretation"
     }
   ],

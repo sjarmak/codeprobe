@@ -23,7 +23,7 @@ logs, or diagnostics.
 
 ## Boundary consent
 
-- [ ] No Sourcegraph person will access the repository, source, or participant
+- [ ] No provider person will access the repository, source, or data-owner
   environment.
 - [ ] I will not share repository identifiers, paths, source, prompts, patches,
   traces, task-level results, raw results, logs, diagnostics, or credentials.

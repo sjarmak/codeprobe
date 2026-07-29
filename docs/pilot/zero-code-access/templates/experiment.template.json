@@ -1,6 +1,6 @@
 {
   "name": "zero-code-access-pilot",
-  "description": "Participant-operated two-configuration zero-code-access comparison",
+  "description": "Data-owner-operated two-configuration zero-code-access comparison",
   "tasks_dir": "tasks",
   "configs": [
     {

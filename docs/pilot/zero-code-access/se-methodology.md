@@ -1,8 +1,8 @@
 # Solutions Engineering Methodology
 
-SE owns the method, not the participant environment. For an external proof, SE
+SE owns the method, not the data-owner environment. For an external proof, SE
 never operates commands, requests screen access, receives prohibited data, or
-interprets raw results. The participant technical owner controls the sample,
+interprets raw results. The data-owner technical owner controls the sample,
 execution, local analysis, evidence request, and approval.
 
 ## Before execution
@@ -21,7 +21,7 @@ execution, local analysis, evidence request, and approval.
    codes.
 
 Do not approve a sample's semantic representativeness. That judgment belongs to
-the participant technical owner and is recorded as an attestation.
+the data-owner technical owner and is recorded as an attestation.
 
 ## During execution
 
@@ -31,7 +31,7 @@ and an optional security follow-up. Work only from participant-reported coded
 status. Do not ask for repository identifiers, paths, source, prompts, patches,
 traces, task-level results, raw results, logs, or diagnostics.
 
-Stop the external proof if Core Engineering participates or if any Sourcegraph
+Stop the external proof if Provider Engineering participates or if any provider
 person directly accesses the environment, provides bespoke code, repairs
 evidence, receives prohibited data, or reinterprets raw results.
 

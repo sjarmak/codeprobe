@@ -1,8 +1,8 @@
 # Field Engineering Coordination Guide
 
 FE owns asynchronous scheduling, the external session, and the intervention
-record. The engagement stays lightweight and never grants Sourcegraph access to
-the participant environment.
+record. The engagement stays lightweight and never grants provider personnel
+access to the data-owner environment.
 
 ## Asynchronous intake
 
@@ -36,7 +36,7 @@ request the raw terminal, files, logs, diagnostics, or result rows.
 
 Record every interaction in
 [`intervention-log.json`](templates/intervention-log.json). A session may
-continue only while all Sourcegraph events remain structurally permitted.
+continue only while all provider events remain structurally permitted.
 
 ## Optional follow-up
 

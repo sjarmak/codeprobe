@@ -3,8 +3,8 @@
   "run": {
     "codeprobe_version": "__CODEPROBE_VERSION__",
     "environment": {
-      "execution_location": "participant_environment",
-      "repository_access": "participant_only",
+      "execution_location": "data_owner_environment",
+      "repository_access": "data_owner_only",
       "network_posture": "__NETWORK_POSTURE__"
     },
     "configurations": [
@@ -153,7 +153,7 @@
     "events": [
       {
         "sequence": 1,
-        "actor_role": "solutions_engineering",
+        "actor_role": "provider_support",
         "kind": "published_runbook"
       }
     ]
