@@ -1,0 +1,301 @@
+{
+  "schema_version": 1,
+  "documents": [
+    "SECURITY.md",
+    "README.md",
+    "docs/security/enterprise_deployment.md"
+  ],
+  "provider_neutral_documents": [
+    "SECURITY.md",
+    "docs/security/enterprise_deployment.md"
+  ],
+  "provider_neutral_forbidden_terms": [
+    "sourcegraph",
+    "field_engineering",
+    "solutions_engineering",
+    "cp-zca-pilot",
+    "codeprobe-2z76",
+    "participant_",
+    "other_sourcegraph_personnel"
+  ],
+  "repository_paths": [
+    "SECURITY.md",
+    "README.md",
+    "pyproject.toml",
+    "docs/security/enterprise_deployment.md",
+    "docs/security/enterprise_inventory.json",
+    "docs/SNAPSHOT_REDACTION.md",
+    "docs/EVIDENCE_BUNDLE.md",
+    "docs/adapters.md",
+    "src/codeprobe/adapters/_base.py",
+    "src/codeprobe/cli/check_infra.py",
+    "src/codeprobe/cli/purge_cmd.py",
+    "src/codeprobe/cli/run_cmd.py",
+    "src/codeprobe/core/containment.py",
+    "src/codeprobe/core/scoring/sandbox.py",
+    "src/codeprobe/net/credential_ttl.py",
+    "src/codeprobe/net/offline.py",
+    "src/codeprobe/sandbox/agent_container.py",
+    "src/codeprobe/sandbox/runner.py",
+    "src/codeprobe/sandbox/Dockerfile.agent",
+    "src/codeprobe/sandbox/Dockerfile.scoring",
+    "src/codeprobe/snapshot/redact.py",
+    "src/codeprobe/trace/content_policy.py",
+    "src/codeprobe/trace/store.py",
+    "tests/lint/test_enterprise_security_docs.py"
+  ],
+  "images": [
+    {
+      "name": "codeprobe-agent:0.12",
+      "constant": "DEFAULT_AGENT_IMAGE",
+      "dockerfile": "src/codeprobe/sandbox/Dockerfile.agent"
+    },
+    {
+      "name": "codeprobe-scoring:0.12",
+      "constant": "DEFAULT_SCORING_IMAGE",
+      "dockerfile": "src/codeprobe/sandbox/Dockerfile.scoring"
+    }
+  ],
+  "commands": [
+    {
+      "id": "build_agent_image",
+      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .",
+      "image_constant": "DEFAULT_AGENT_IMAGE"
+    },
+    {
+      "id": "build_scoring_image",
+      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .",
+      "image_constant": "DEFAULT_SCORING_IMAGE"
+    },
+    {
+      "id": "run_offline",
+      "command": "codeprobe run . --offline --offline-expected-run-duration 1h",
+      "help": ["run"],
+      "required_help_tokens": ["--offline", "--offline-expected-run-duration"]
+    },
+    {
+      "id": "check_offline",
+      "command": "codeprobe check-infra offline --json",
+      "help": ["check-infra", "offline"],
+      "required_help_tokens": ["--expected-run-duration", "--backend", "--json"]
+    },
+    {
+      "id": "purge_dry_run",
+      "command": "codeprobe purge .",
+      "help": ["purge"],
+      "required_help_tokens": ["--older-than", "--all", "--yes"]
+    },
+    {
+      "id": "purge_delete",
+      "command": "codeprobe purge . --yes",
+      "help": ["purge"],
+      "required_help_tokens": ["--yes"]
+    },
+    {
+      "id": "purge_retention_window",
+      "command": "codeprobe purge . --older-than 30 --yes",
+      "help": ["purge"],
+      "required_help_tokens": ["--older-than", "--yes"]
+    },
+    {
+      "id": "purge_all",
+      "command": "codeprobe purge . --all --yes",
+      "help": ["purge"],
+      "required_help_tokens": ["--all", "--yes"]
+    },
+    {
+      "id": "snapshot_hashes_only",
+      "command": "codeprobe snapshot create EXPERIMENT_DIR --out SNAPSHOT_DIR --redact hashes-only",
+      "help": ["snapshot", "create"],
+      "required_help_tokens": ["--out", "--redact", "--allow-source-in-export"]
+    },
+    {
+      "id": "snapshot_verify",
+      "command": "codeprobe snapshot verify SNAPSHOT_DIR",
+      "help": ["snapshot", "verify"],
+      "required_help_tokens": ["--signing-key"]
+    },
+    {
+      "id": "evidence_preview",
+      "command": "codeprobe snapshot evidence preview request.json --no-json",
+      "help": ["snapshot", "evidence", "preview"],
+      "required_help_tokens": ["--no-json"]
+    },
+    {
+      "id": "evidence_export",
+      "command": "codeprobe snapshot evidence export request.json --out approved-evidence --approve sha256:DIGEST --no-json",
+      "help": ["snapshot", "evidence", "export"],
+      "required_help_tokens": ["--out", "--approve", "--no-json"]
+    },
+    {
+      "id": "evidence_validate",
+      "command": "codeprobe snapshot evidence validate approved-evidence --expect sha256:DIGEST --no-json",
+      "help": ["snapshot", "evidence", "validate"],
+      "required_help_tokens": ["--expect", "--no-json"]
+    }
+  ],
+  "environment_variables": [
+    {
+      "name": "ANTHROPIC_API_KEY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "CLAUDE_CODE_OAUTH_TOKEN",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "CLAUDE_CONFIG_DIR",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "OPENAI_API_KEY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "COPILOT_API_KEY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "GITHUB_TOKEN",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "ANTHROPIC_BASE_URL",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "ANTHROPIC_AUTH_TOKEN",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "HTTP_PROXY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "HTTPS_PROXY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "NO_PROXY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "ALL_PROXY",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "http_proxy",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "https_proxy",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "no_proxy",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "all_proxy",
+      "checks": ["adapter_whitelist", "container_passthrough"]
+    },
+    {
+      "name": "SSL_CERT_FILE",
+      "checks": ["adapter_whitelist", "container_excluded"]
+    },
+    {
+      "name": "SSL_CERT_DIR",
+      "checks": ["adapter_whitelist", "container_excluded"]
+    },
+    {
+      "name": "REQUESTS_CA_BUNDLE",
+      "checks": ["adapter_whitelist", "container_excluded"]
+    },
+    {
+      "name": "CURL_CA_BUNDLE",
+      "checks": ["adapter_whitelist", "container_excluded"]
+    },
+    {
+      "name": "NODE_EXTRA_CA_CERTS",
+      "checks": ["adapter_whitelist", "container_excluded"]
+    },
+    {
+      "name": "CODEPROBE_OFFLINE",
+      "checks": ["offline_helper", "run_sets_offline"]
+    },
+    {
+      "name": "CODEPROBE_SANDBOX",
+      "checks": ["adapter_whitelist", "sandbox_helper"]
+    },
+    {
+      "name": "CODEPROBE_SIGNING_KEY",
+      "checks": ["snapshot_signing_key"]
+    },
+    {
+      "name": "AWS_SESSION_EXPIRATION",
+      "checks": ["credential_ttl"]
+    },
+    {
+      "name": "AWS_CREDENTIAL_EXPIRATION",
+      "checks": ["credential_ttl"]
+    },
+    {
+      "name": "GOOGLE_APPLICATION_CREDENTIALS_TOKEN_EXPIRY",
+      "checks": ["credential_ttl"]
+    },
+    {
+      "name": "AZURE_TOKEN_EXPIRES_ON",
+      "checks": ["credential_ttl"]
+    }
+  ],
+  "security_claims": [
+    {
+      "id": "local_artifacts_cleartext",
+      "required_phrases": [
+        "cleartext",
+        "operator-managed encrypted storage",
+        "CodeProbe does not encrypt local run artifacts at rest"
+      ],
+      "checks": ["purge_cleartext_disclosure"]
+    },
+    {
+      "id": "purge_scope",
+      "required_phrases": [
+        ".codeprobe/",
+        "codeprobe-mcp-*.json",
+        "never touches your source tree"
+      ],
+      "checks": ["purge_tempfile_pattern"]
+    },
+    {
+      "id": "agent_container_network",
+      "required_phrases": ["--network=bridge"],
+      "checks": ["agent_container_network_bridge"]
+    },
+    {
+      "id": "scoring_container_network",
+      "required_phrases": ["--network=none"],
+      "checks": ["scoring_container_network_none"]
+    },
+    {
+      "id": "snapshot_default",
+      "required_phrases": ["hashes-only"],
+      "checks": ["snapshot_default_hashes_only"]
+    },
+    {
+      "id": "trace_redaction",
+      "required_phrases": ["[REDACTED-ENV]", "[REDACTED-AUTH]"],
+      "checks": ["trace_redaction_records_env_and_auth"]
+    },
+    {
+      "id": "offline_guard",
+      "required_phrases": ["CODEPROBE_OFFLINE=1", "no socket-level interception"],
+      "checks": ["offline_guard_is_env_gated"]
+    },
+    {
+      "id": "host_consent",
+      "required_phrases": ["--uncontained"],
+      "checks": ["host_fallback_requires_uncontained"]
+    }
+  ]
+}

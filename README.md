@@ -415,6 +415,15 @@ CI runs the same chain on Python 3.11, 3.12, and 3.13. See
 **Release.** Pushing a `v*` tag runs the test matrix, then builds and uploads to
 PyPI (`.github/workflows/publish.yml`).
 
+## Security and enterprise deployment
+
+Security reporting and supported-version policy live in
+[SECURITY.md](SECURITY.md). Enterprise reviewers should start with
+[docs/security/enterprise_deployment.md](docs/security/enterprise_deployment.md)
+for the threat model, egress and mount matrices, credential flow, offline
+behavior, local telemetry, retention, deletion, export, backup, and incident
+response responsibilities.
+
 ## Data at rest & retention
 
 Run artifacts are stored in cleartext on disk:
