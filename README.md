@@ -94,8 +94,10 @@ codeprobe interpret .         # rank configs, print a report
 ```
 
 Use `codeprobe doctor --repo . --agent copilot` when GitHub Copilot CLI is the
-selected agent. Omitting `--agent` auto-selects the first usable supported path. Add
-`--private-ca /path/to/ca.pem` when your enterprise proxy requires a custom CA.
+selected agent. Copilot CLI auth can come from `COPILOT_GITHUB_TOKEN`,
+`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`. Omitting `--agent` auto-selects
+the first usable supported path. Add `--private-ca /path/to/ca.pem` when your
+enterprise proxy requires a custom CA.
 
 `codeprobe run` refuses to start on a checkout with uncommitted changes (error
 code `DIRTY_CHECKOUT`): every trial executes in an isolated worktree created
@@ -155,7 +157,7 @@ Prerequisites: Python 3.11+, git, and one coding agent.
 | -------------- | ------------------------------------------------ | ------------------------------- |
 | Claude Code    | [claude.ai/download](https://claude.ai/download) | `ANTHROPIC_API_KEY`             |
 | Codex          | ships with `codeprobe` (uses the OpenAI API)     | `OPENAI_API_KEY`                |
-| GitHub Copilot | `npm install -g @github/copilot-cli` (>= 1.0.4)  | `gh auth login`                 |
+| GitHub Copilot | `npm install -g @github/copilot-cli` (>= 1.0.4)  | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login` |
 
 The Anthropic and OpenAI SDKs are core dependencies, so both are installed with
 the base package. Mining enrichment and LLM scoring auto-detect a backend in

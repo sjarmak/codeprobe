@@ -28,6 +28,10 @@ Before asking a skill to mine or run, check the selected agent path from that re
 codeprobe doctor --repo . --agent claude
 ```
 
+Use `codeprobe doctor --repo . --agent copilot` when GitHub Copilot CLI is the
+selected path. Copilot CLI auth can come from `COPILOT_GITHUB_TOKEN`,
+`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`.
+
 ## The five skills
 
 Every skill is an autonomous agent contract (`user-invocable: false` in its frontmatter), so there is no slash command to type. Describe what you want in plain language, the agent selects the matching skill from your request, and the skill shells out to the corresponding `codeprobe` CLI command.

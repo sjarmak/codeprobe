@@ -323,6 +323,58 @@ class TestRunContainerization:
         assert mounts == [f"{tmp_path}:{tmp_path}:rw"]
         assert "CLAUDE_CONFIG_DIR" not in argv
 
+    def test_container_plan_mounts_private_ca_paths(
+        self,
+        capture_run: list[list[str]],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        configured_agent_image: str,
+    ) -> None:
+        ca_file = tmp_path / "corp-ca.pem"
+        ca_file.write_text("certificate", encoding="utf-8")
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        same_name_ca = other_dir / "corp-ca.pem"
+        same_name_ca.write_text("other certificate", encoding="utf-8")
+        ca_dir = tmp_path / "ca-dir"
+        ca_dir.mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("SSL_CERT_FILE", str(ca_file))
+        monkeypatch.setenv("REQUESTS_CA_BUNDLE", str(ca_file))
+        monkeypatch.setenv("CURL_CA_BUNDLE", str(same_name_ca))
+        monkeypatch.setenv("SSL_CERT_DIR", str(ca_dir))
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine=ENGINE)
+        )
+
+        _FakeAdapter().run("hello", AgentConfig(cwd=str(tmp_path)))
+
+        (argv,) = capture_run
+        mounts = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-v"]
+        env_args = [argv[i + 1] for i, tok in enumerate(argv) if tok == "-e"]
+        assert f"{tmp_path}:{tmp_path}:rw" in mounts
+        assert (
+            f"{ca_file.resolve()}:/etc/codeprobe/ca/00-corp-ca.pem:ro"
+            in mounts
+        )
+        assert (
+            f"{same_name_ca.resolve()}:/etc/codeprobe/ca/01-corp-ca.pem:ro"
+            in mounts
+        )
+        assert f"{ca_dir.resolve()}:/etc/codeprobe/ca/02-ca-dir:ro" in mounts
+        assert (
+            mounts.count(
+                f"{ca_file.resolve()}:/etc/codeprobe/ca/00-corp-ca.pem:ro"
+            )
+            == 1
+        )
+        assert "SSL_CERT_FILE=/etc/codeprobe/ca/00-corp-ca.pem" in env_args
+        assert "REQUESTS_CA_BUNDLE=/etc/codeprobe/ca/00-corp-ca.pem" in env_args
+        assert "CURL_CA_BUNDLE=/etc/codeprobe/ca/01-corp-ca.pem" in env_args
+        assert "SSL_CERT_DIR=/etc/codeprobe/ca/02-ca-dir" in env_args
+        assert "ANTHROPIC_API_KEY" in env_args
+        assert not any(str(tmp_path) in arg for arg in env_args)
+
     @pytest.mark.parametrize(
         "plan",
         [

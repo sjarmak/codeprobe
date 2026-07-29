@@ -55,7 +55,13 @@ _ADAPTER_ENV_WHITELIST: frozenset[str] = frozenset(
         "CLAUDE_CONFIG_DIR",
         "GITHUB_TOKEN",
         "OPENAI_API_KEY",
-        "COPILOT_API_KEY",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN",
+        "COPILOT_OFFLINE",
+        "COPILOT_PROVIDER_BASE_URL",
+        "COPILOT_PROVIDER_API_KEY",
+        "COPILOT_PROVIDER_TYPE",
+        "COPILOT_MODEL",
         # Python toolchain
         "VIRTUAL_ENV",
         "PYTHONPATH",
@@ -136,6 +142,16 @@ _CONTAINER_ENV_EXCLUDED: frozenset[str] = frozenset(
 _CONTAINER_ENV_KEYS: frozenset[str] = _ADAPTER_ENV_WHITELIST - _CONTAINER_ENV_EXCLUDED
 
 
+_PRIVATE_CA_FILE_ENV_KEYS: tuple[str, ...] = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+)
+_PRIVATE_CA_DIR_ENV_KEYS: tuple[str, ...] = ("SSL_CERT_DIR",)
+_CONTAINER_CA_ROOT = Path("/etc/codeprobe/ca")
+
+
 def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a filtered environment for agent subprocesses.
 
@@ -145,6 +161,58 @@ def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     if extra:
         env.update(extra)
     return env
+
+
+def _private_ca_path(raw: str, *, directory: bool) -> Path | None:
+    try:
+        path = Path(raw)
+        if directory:
+            if path.is_dir() and os.access(path, os.R_OK | os.X_OK):
+                return path.resolve()
+            return None
+        if path.is_file() and os.access(path, os.R_OK):
+            return path.resolve()
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _container_ca_path(index: int, host_path: Path) -> Path:
+    raw_name = host_path.name or "ca"
+    safe_name = "".join(
+        char if char.isalnum() or char in {".", "-", "_"} else "_"
+        for char in raw_name
+    )
+    return _CONTAINER_CA_ROOT / f"{index:02d}-{safe_name or 'ca'}"
+
+
+def _container_private_ca(
+    env: dict[str, str],
+) -> tuple[list[tuple[Path, Path]], dict[str, str]]:
+    mounts: list[tuple[Path, Path]] = []
+    env_values: dict[str, str] = {}
+    host_to_container: dict[Path, Path] = {}
+
+    def add_mapping(key: str, value: str, *, directory: bool) -> None:
+        host_path = _private_ca_path(value, directory=directory)
+        if host_path is None:
+            return
+        container_path = host_to_container.get(host_path)
+        if container_path is None:
+            container_path = _container_ca_path(len(host_to_container), host_path)
+            host_to_container[host_path] = container_path
+            mounts.append((host_path, container_path))
+        env_values[key] = str(container_path)
+
+    for key in _PRIVATE_CA_FILE_ENV_KEYS:
+        value = env.get(key, "").strip()
+        if value:
+            add_mapping(key, value, directory=False)
+    for key in _PRIVATE_CA_DIR_ENV_KEYS:
+        value = env.get(key, "").strip()
+        if value:
+            add_mapping(key, value, directory=True)
+    return mounts, env_values
 
 
 def _decode_timeout_output(raw: str | bytes | None) -> str:
@@ -293,13 +361,16 @@ class BaseAdapter:
             container_env_keys = set(_CONTAINER_ENV_KEYS)
             if raw_config_dir is None:
                 container_env_keys.discard("CLAUDE_CONFIG_DIR")
+            private_ca_mounts, private_ca_env_values = _container_private_ca(run_env)
             cmd = containerize_argv(
                 cmd,
                 engine=container_engine,
                 workspace=Path(config.cwd) if config.cwd else Path.cwd(),
                 config_dir=Path(raw_config_dir) if raw_config_dir else None,
                 mcp_tmpfile=mcp_tmpfile,
+                readonly_mounts=private_ca_mounts,
                 env_keys=sorted(container_env_keys),
+                env_values=private_ca_env_values,
                 image=agent_image_reference(),
                 name=container_name,
                 env=run_env,

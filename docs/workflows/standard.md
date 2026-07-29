@@ -16,8 +16,10 @@ codeprobe doctor --repo . --agent claude
 ```
 
 Use `codeprobe doctor --repo . --agent copilot` when GitHub Copilot CLI is the
-selected path. Without `--agent`, doctor auto-selects the first usable path. Add
-`--private-ca /path/to/ca.pem` when your enterprise proxy requires a custom CA.
+selected path. Copilot CLI auth can come from `COPILOT_GITHUB_TOKEN`,
+`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`. Without `--agent`, doctor
+auto-selects the first usable path. Add `--private-ca /path/to/ca.pem` when your
+enterprise proxy requires a custom CA.
 
 ## Step 1: Assess the repo
 

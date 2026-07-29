@@ -57,14 +57,20 @@ def env_has_value(key: str) -> bool:
 def _proxy_url_is_valid(raw: str) -> bool:
     if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
         return False
-    parsed = urlparse(raw)
+    try:
+        parsed = urlparse(raw)
+        port = parsed.port
+    except ValueError:
+        return False
     if parsed.scheme.lower() not in _SUPPORTED_PROXY_SCHEMES:
         return False
     if parsed.hostname is None:
         return False
-    try:
-        parsed.port
-    except ValueError:
+    if any(ch.isspace() for ch in parsed.hostname):
+        return False
+    if port is not None and not 1 <= port <= 65535:
+        return False
+    if parsed.path or parsed.params or parsed.query or parsed.fragment:
         return False
     return True
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from codeprobe.cli import main
@@ -23,11 +25,11 @@ class _FakeProc:
         self.stderr = ""
 
 
-def _fake_cli(tmp_path: Path, name: str) -> str:
+def _fake_cli(tmp_path: Path, name: str, *, returncode: int = 0) -> str:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     path = bin_dir / name
-    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.write_text(f"#!/bin/sh\nexit {returncode}\n", encoding="utf-8")
     path.chmod(0o755)
     return str(path)
 
@@ -60,13 +62,24 @@ def _use_claude_agent_path(
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CONFIG_DIR",
         "OPENAI_API_KEY",
+        "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN",
         "GITHUB_TOKEN",
         "COPILOT_API_KEY",
+        "COPILOT_OFFLINE",
+        "COPILOT_PROVIDER_BASE_URL",
+        "COPILOT_PROVIDER_API_KEY",
+        "COPILOT_PROVIDER_TYPE",
+        "COPILOT_MODEL",
         *doctor_env.PROXY_ENV_KEYS,
         *doctor_env.PRIVATE_CA_FILE_ENV_KEYS,
         *doctor_env.PRIVATE_CA_DIR_ENV_KEYS,
     ):
         monkeypatch.delenv(key, raising=False)
+
+
+def _last_json_payload(output: str) -> dict[str, object]:
+    return json.loads(output.strip().splitlines()[-1])
 
 
 class TestDoctorChecks:
@@ -201,6 +214,95 @@ class TestDoctorChecks:
         assert cli.warn_only is False
         assert _any_failed(results) is True
 
+    def test_selected_cli_path_must_pass_active_probe(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+        from codeprobe.core import sandbox as codeprobe_sandbox
+
+        false_cli = _fake_cli(tmp_path, "claude", returncode=1)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: str(false_cli) if name == "claude" else None,
+        )
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: True)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        results = run_checks(agent="claude")
+        by_name = {r.name: r for r in results}
+        compact = _build_compact_envelope(results)
+
+        assert by_name["claude CLI"].passed is False
+        assert by_name["claude CLI"].warn_only is False
+        assert _any_failed(results) is True
+        assert compact["ok"] is False
+        assert compact["data"]["llm_available"] is False
+
+    def test_copilot_auth_uses_supported_env_names(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        from codeprobe.core import sandbox as codeprobe_sandbox
+
+        _use_tool_paths(monkeypatch, tmp_path, ("copilot",))
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("COPILOT_API_KEY", "obsolete-secret")
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+
+        by_name = {r.name: r for r in run_checks(agent="copilot")}
+
+        assert by_name["copilot auth"].passed is False
+        assert "COPILOT_API_KEY" not in by_name["copilot auth"].detail
+        assert "COPILOT_API_KEY" not in by_name["copilot auth"].fix
+
+        monkeypatch.delenv("COPILOT_API_KEY", raising=False)
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "github_pat_test")
+
+        by_name = {r.name: r for r in run_checks(agent="copilot")}
+
+        assert by_name["copilot auth"].passed is True
+        assert by_name["copilot auth"].detail == "COPILOT_GITHUB_TOKEN set"
+
+    @pytest.mark.parametrize(
+        "key,good_value",
+        [
+            ("COPILOT_GITHUB_TOKEN", "gho_test"),
+            ("GH_TOKEN", "github_pat_test"),
+            ("GITHUB_TOKEN", "ghu_test"),
+        ],
+    )
+    def test_copilot_auth_validates_supported_token_prefixes(
+        self,
+        monkeypatch: object,
+        tmp_path: Path,
+        key: str,
+        good_value: str,
+    ) -> None:
+        from codeprobe.core import sandbox as codeprobe_sandbox
+
+        _use_tool_paths(monkeypatch, tmp_path, ("copilot",))
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: True)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for env_key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.delenv("COPILOT_API_KEY", raising=False)
+
+        monkeypatch.setenv(key, good_value)
+        by_name = {r.name: r for r in run_checks(agent="copilot")}
+
+        assert by_name["copilot auth"].passed is True
+        assert by_name["copilot auth"].detail == f"{key} set"
+
+        for bad_value in ("ghp_test", "plain-token", " github_pat_test "):
+            monkeypatch.setenv(key, bad_value)
+            by_name = {r.name: r for r in run_checks(agent="copilot")}
+            assert by_name["copilot auth"].passed is False
+            assert by_name["copilot auth"].detail == f"unsupported token in {key}"
+            assert "copilot login" not in by_name["copilot auth"].fix
+
 
 class TestDoctorCLI:
     """Integration tests for the CLI command."""
@@ -230,8 +332,7 @@ class TestDoctorCLI:
             lambda *a, **k: _FakeProc(0),
         )
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
-        monkeypatch.setenv("COPILOT_API_KEY", "copilot-test")
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "github_pat_test")
         monkeypatch.setenv("HOME", str(tmp_path))
 
         runner = CliRunner()
@@ -240,7 +341,7 @@ class TestDoctorCLI:
         assert result.exit_code == 0, result.output
         assert "PASS  claude CLI" in result.output
         assert "INFO  copilot CLI (found)" in result.output
-        assert "INFO  copilot auth (COPILOT_API_KEY set)" in result.output
+        assert "INFO  copilot auth (COPILOT_GITHUB_TOKEN set)" in result.output
         assert "PASS  copilot CLI" not in result.output
         assert "PASS  copilot auth" not in result.output
 
@@ -268,6 +369,47 @@ class TestDoctorCLI:
         assert "FAIL  claude auth" in result.output
         assert str(tmp_path) not in result.output
 
+    def test_unusable_selected_copilot_fails_compact_and_full_json(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+        from codeprobe.core import sandbox as codeprobe_sandbox
+        from codeprobe.sandbox import runner as container_runner
+
+        false_cli = _fake_cli(tmp_path, "copilot", returncode=1)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: str(false_cli) if name == "copilot" else None,
+        )
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: False)
+        monkeypatch.setattr(container_runner, "detect_engine", lambda: None)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("COPILOT_API_KEY", "obsolete-secret")
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+
+        runner = CliRunner()
+        compact = runner.invoke(
+            main, ["doctor", "--agent", "copilot", "--json", "--compact"]
+        )
+        full = runner.invoke(main, ["doctor", "--agent", "copilot", "--json"])
+
+        compact_payload = _last_json_payload(compact.output)
+        full_payload = _last_json_payload(full.output)
+        subsystem = {
+            row["name"]: row for row in full_payload["data"]["subsystem_status"]
+        }
+
+        assert compact.exit_code == 1, compact.output
+        assert compact_payload["ok"] is False
+        assert compact_payload["data"]["llm_available"] is False
+        assert full.exit_code == 2, full.output
+        assert full_payload["ok"] is False
+        assert subsystem["copilot CLI"]["passed"] is False
+        assert subsystem["copilot auth"]["passed"] is False
+        assert subsystem["container images"]["passed"] is False
+
     def test_whitespace_auth_values_do_not_pass(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
@@ -282,6 +424,8 @@ class TestDoctorCLI:
             "ANTHROPIC_API_KEY",
             "CLAUDE_CODE_OAUTH_TOKEN",
             "COPILOT_API_KEY",
+            "COPILOT_GITHUB_TOKEN",
+            "GH_TOKEN",
             "OPENAI_API_KEY",
             "GITHUB_TOKEN",
         ):
@@ -467,6 +611,43 @@ class TestDoctorCLI:
         assert "FAIL  proxy variables (invalid: HTTPS_PROXY)" in result.output
         assert proxy not in result.output
 
+    def test_invalid_proxy_authority_forms_fail_without_leaking_value(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        _use_claude_agent_path(monkeypatch, tmp_path)
+        runner = CliRunner()
+
+        for proxy in (
+            "http://[::1",
+            "https://bad host.example:8443",
+            "https://proxy.example:0",
+            "https://proxy.example:8443/path",
+            "https://proxy.example:8443?token=secret",
+            "https://proxy.example:8443#secret",
+        ):
+            monkeypatch.setenv("HTTPS_PROXY", proxy)
+            result = runner.invoke(main, ["doctor", "--agent", "claude", "--no-json"])
+            assert result.exit_code == 2, result.output
+            assert "FAIL  proxy variables (invalid: HTTPS_PROXY)" in result.output
+            assert proxy not in result.output
+            monkeypatch.delenv("HTTPS_PROXY", raising=False)
+
+    def test_no_container_engine_blocks_selected_agent(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        from codeprobe.core import sandbox as codeprobe_sandbox
+        from codeprobe.sandbox import runner as container_runner
+
+        _use_claude_agent_path(monkeypatch, tmp_path)
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: False)
+        monkeypatch.setattr(container_runner, "detect_engine", lambda: None)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--agent", "claude", "--no-json"])
+
+        assert result.exit_code == 2, result.output
+        assert "FAIL  container images (no container engine configured)" in result.output
+
     def test_container_images_fail_when_configured_engine_lacks_images(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
@@ -559,6 +740,28 @@ class TestDoctorCLI:
 
         assert result.exit_code == 0, result.output
         assert calls == [("anthropic",)]
+
+    def test_copilot_offline_requires_byok_offline_env(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        from codeprobe.core import sandbox as codeprobe_sandbox
+
+        _use_tool_paths(monkeypatch, tmp_path, ("copilot",))
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: True)
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "github_pat_test")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        for key in ("COPILOT_OFFLINE", "COPILOT_PROVIDER_BASE_URL", "COPILOT_MODEL"):
+            monkeypatch.delenv(key, raising=False)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["doctor", "--agent", "copilot", "--offline", "--no-json"],
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "FAIL  offline credential TTL" in result.output
+        assert "COPILOT_OFFLINE=true" in result.output
 
     def test_doctor_all_pass(self, monkeypatch: object, tmp_path: Path) -> None:
         _use_tool_paths(monkeypatch, tmp_path, ("claude", "copilot", "gh"))
@@ -658,7 +861,7 @@ class TestApiKeyWarnDemotion:
         _use_tool_paths(monkeypatch, tmp_path, ("claude", "copilot", "gh"))
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+        monkeypatch.setenv("GITHUB_TOKEN", "github_pat_test")
         monkeypatch.setenv("HOME", str(tmp_path))
         runner = CliRunner()
         result = runner.invoke(main, ["doctor", "--no-json"])
@@ -671,7 +874,7 @@ class TestGithubAccessCheck:
     warn_only — missing GitHub auth never flips doctor to exit 2 because
     local mining paths are first-class (codeprobe-f7rl.17)."""
 
-    def test_no_auth_warns_but_never_fails(
+    def test_no_auth_warns_while_selected_agent_still_fails(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
         _use_tool_paths(monkeypatch, tmp_path, ("claude", "copilot"))
@@ -684,7 +887,9 @@ class TestGithubAccessCheck:
         assert gh.warn_only is True
         assert gh.detail == "no GitHub auth"
         assert "gh auth login" in gh.fix
-        assert _any_failed(results) is False
+        selected = next(r for r in results if r.name == "selected agent")
+        assert selected.passed is False
+        assert _any_failed(results) is True
 
     def test_gh_auth_passes_without_token(
         self, monkeypatch: object, tmp_path: Path
@@ -733,6 +938,28 @@ class TestGithubAccessCheck:
         gh = next(r for r in results if r.name == "GitHub auth")
         assert gh.passed is False
         assert gh.warn_only is True
+
+    def test_gh_auth_probe_oserror_is_safe_diagnostic(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        _use_tool_paths(monkeypatch, tmp_path, ("claude", "copilot", "gh"))
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeProc:
+            if cmd[:2] == ["gh", "auth"]:
+                raise OSError("exec format error")
+            return _FakeProc(0)
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+        results = run_checks()
+        gh = next(r for r in results if r.name == "GitHub auth")
+
+        assert gh.passed is False
+        assert gh.warn_only is True
+        assert gh.detail == "no GitHub auth"
 
     def test_compact_envelope_gh_auth_ok(
         self, monkeypatch: object, tmp_path: Path

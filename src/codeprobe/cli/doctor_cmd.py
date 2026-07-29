@@ -38,6 +38,20 @@ class CheckResult:
 
 _DOCTOR_AGENT_ORDER: tuple[str, ...] = ("claude", "copilot", "codex")
 _AUTO_AGENT_ORDER: tuple[str, ...] = ("claude", "copilot")
+_CLI_PROBE_ARGS: dict[str, tuple[str, ...]] = {
+    "claude": ("--version",),
+    "copilot": ("version",),
+}
+_COPILOT_AUTH_ENV_KEYS: tuple[str, ...] = (
+    "COPILOT_GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+)
+_COPILOT_TOKEN_PREFIXES: tuple[str, ...] = ("gho_", "github_pat_", "ghu_")
+_COPILOT_OFFLINE_ENV_KEYS: tuple[str, ...] = (
+    "COPILOT_PROVIDER_BASE_URL",
+    "COPILOT_MODEL",
+)
 _env_has_value = doctor_env.env_has_value
 
 
@@ -55,16 +69,30 @@ def _check_tool(name: str, fix: str, *, required: bool = True) -> CheckResult:
     resolved = shutil.which(name)
     found = resolved is not None
     usable = False
+    detail = "not found"
     if resolved is not None:
         try:
             path = Path(resolved)
-            usable = path.is_file() and os.access(path, os.X_OK)
-        except (OSError, ValueError):
+            executable = path.is_file() and os.access(path, os.X_OK)
+            if executable:
+                probe_args = _CLI_PROBE_ARGS.get(name, ("--version",))
+                probe = subprocess.run(
+                    [resolved, *probe_args],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                usable = probe.returncode == 0
+                detail = "found" if usable else "probe failed"
+            else:
+                detail = "not executable"
+        except (OSError, subprocess.SubprocessError, ValueError):
             usable = False
+            detail = "probe failed"
     result = CheckResult(
         name=f"{name} CLI",
         passed=usable,
-        detail="found" if usable else ("not executable" if found else "not found"),
+        detail=detail if found else "not found",
         fix=fix,
     )
     return result if required else _optional_result(result)
@@ -92,7 +120,7 @@ def _github_auth_status() -> tuple[bool, str]:
                 text=True,
                 timeout=5,
             )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.SubprocessError, ValueError):
             return False, "no GitHub auth"
         if result.returncode == 0:
             return True, "gh auth ok (no GITHUB_TOKEN)"
@@ -163,13 +191,35 @@ def _check_claude_auth(*, required: bool) -> CheckResult:
     return result if required else _optional_result(result)
 
 
+def _copilot_env_auth_status() -> tuple[bool, str] | None:
+    for key in _COPILOT_AUTH_ENV_KEYS:
+        raw_value = os.environ.get(key)
+        if raw_value is None:
+            continue
+        value = raw_value.strip()
+        if (
+            not value
+            or value != raw_value
+            or any(char.isspace() for char in value)
+            or not value.startswith(_COPILOT_TOKEN_PREFIXES)
+        ):
+            return False, f"unsupported token in {key}"
+        return True, f"{key} set"
+    return None
+
+
 def _check_copilot_auth(*, required: bool) -> CheckResult:
-    fix = "Set GITHUB_TOKEN, set COPILOT_API_KEY, or run `gh auth login`."
-    if _env_has_value("COPILOT_API_KEY"):
+    fix = (
+        "Set COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN with a "
+        "supported Copilot CLI token, or run `gh auth login`."
+    )
+    env_status = _copilot_env_auth_status()
+    if env_status is not None:
+        passed, detail = env_status
         result = CheckResult(
             name="copilot auth",
-            passed=True,
-            detail="COPILOT_API_KEY set",
+            passed=passed,
+            detail=detail,
             fix=fix,
         )
     else:
@@ -229,7 +279,8 @@ def _agent_path_results(agent: str, *, required: bool) -> tuple[CheckResult, ...
         return (
             _check_tool(
                 "copilot",
-                "Install GitHub Copilot CLI: https://github.com/github/gh-copilot",
+                "Install GitHub Copilot CLI: "
+                "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli",
                 required=required,
             ),
             _check_copilot_auth(required=required),
@@ -340,7 +391,7 @@ def _check_user_home_skills(*, required: bool = True) -> CheckResult:
     return result if required else _optional_result(result)
 
 
-def _check_container_images() -> CheckResult:
+def _check_container_images(*, required: bool) -> CheckResult:
     from codeprobe.core import sandbox as codeprobe_sandbox
     from codeprobe.sandbox import runner as container_runner
 
@@ -358,8 +409,8 @@ def _check_container_images() -> CheckResult:
             name="container images",
             passed=False,
             detail="no container engine configured",
-            fix="",
-            warn_only=True,
+            fix="Install Docker or Podman, or run from an already sandboxed environment.",
+            warn_only=not required,
         )
 
     missing_count = sum(
@@ -381,13 +432,8 @@ def _check_container_images() -> CheckResult:
         name="container images",
         passed=False,
         detail=f"{missing_count} required image(s) missing",
-        fix=(
-            "Build missing images from the repository root: "
-            "docker build -f src/codeprobe/sandbox/Dockerfile.agent "
-            "-t codeprobe-agent:0.12 . && "
-            "docker build -f src/codeprobe/sandbox/Dockerfile.scoring "
-            "-t codeprobe-scoring:0.12 ."
-        ),
+        fix="Pull, mirror, or build the configured OCI images; see docs/oci_images.md.",
+        warn_only=not required,
     )
 
 
@@ -430,6 +476,30 @@ def _check_private_ca_files(
     )
 
 
+def _check_copilot_offline_prerequisites() -> CheckResult:
+    missing: list[str] = []
+    if doctor_env.env_value("COPILOT_OFFLINE").lower() != "true":
+        missing.append("COPILOT_OFFLINE=true")
+    missing.extend(key for key in _COPILOT_OFFLINE_ENV_KEYS if not _env_has_value(key))
+    if missing:
+        return CheckResult(
+            name="offline credential TTL",
+            passed=False,
+            detail="copilot BYOK offline prerequisites missing",
+            fix=(
+                "Set "
+                + ", ".join(missing)
+                + " before running Copilot CLI with --offline."
+            ),
+        )
+    return CheckResult(
+        name="offline credential TTL",
+        passed=True,
+        detail="copilot BYOK offline configured",
+        fix="",
+    )
+
+
 def _check_offline_ttl(
     *, offline: bool, expected_run_duration: str, selected_agent: str | None
 ) -> CheckResult:
@@ -440,6 +510,8 @@ def _check_offline_ttl(
             detail="not requested",
             fix="",
         )
+    if selected_agent == "copilot":
+        return _check_copilot_offline_prerequisites()
     backend_filter = doctor_env.offline_backends_for_agent(selected_agent)
     if selected_agent is not None and not backend_filter:
         return CheckResult(
@@ -506,7 +578,7 @@ def run_checks(
         _check_github_access(),
         _check_git_repo(repo),
         _check_python_version(),
-        _check_container_images(),
+        _check_container_images(required=selected_agent is not None),
         _check_proxy_variables(),
         _check_private_ca_files(private_ca),
         _check_offline_ttl(
