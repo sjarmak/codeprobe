@@ -33,7 +33,6 @@ _SOURCEGRAPH_DIFF_SEARCH = "mcp__sourcegraph__diff_search"
 _SOURCEGRAPH_COMPARE_REVISIONS = "mcp__sourcegraph__compare_revisions"
 _SOURCEGRAPH_DEEPSEARCH = "mcp__sourcegraph__deepsearch"
 _SOURCEGRAPH_DEEPSEARCH_READ = "mcp__sourcegraph__deepsearch_read"
-_MCP_MODES = frozenset({"strict", "pragmatic", "loose"})
 
 # Preambles whose templates render ``repo:^{{sg_repo}}$`` and therefore
 # silently degrade to a malformed ``repo:^$`` filter when ``sg_repo`` is
@@ -146,20 +145,12 @@ class DefaultPreambleResolver:
         raw_path = Path(name).expanduser()
         candidate = raw_path if raw_path.is_absolute() else self._custom_base_dir / raw_path
         resolved = candidate.resolve()
-        if not any(_is_relative_to(resolved, root) for root in self._custom_roots):
+        if not any(resolved.is_relative_to(root) for root in self._custom_roots):
             raise ValueError(
                 f"Custom preamble path {name!r} resolves outside trusted "
                 f"preamble roots: {[str(root) for root in self._custom_roots]}"
             )
         return resolved
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def normalize_preamble_references(
@@ -383,8 +374,7 @@ def task_preamble_context(
 
 
 def _source_access_policy(mcp_mode: str) -> str:
-    mode = mcp_mode if mcp_mode in _MCP_MODES else "strict"
-    if mode == "pragmatic":
+    if mcp_mode == "pragmatic":
         return (
             "Pragmatic MCP mode is active. `Read` is available for files that "
             "exist in the workspace. Use Sourcegraph MCP tools for search, "
@@ -392,7 +382,7 @@ def _source_access_policy(mcp_mode: str) -> str:
             "inspection. Built-in local search and shell tools are not part "
             "of this arm."
         )
-    if mode == "loose":
+    if mcp_mode == "loose":
         return (
             "Loose MCP mode is active. Local `Read`, `Grep`, `Glob`, and "
             "`Bash` may be available; use them only as explicit secondary "
