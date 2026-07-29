@@ -46,23 +46,23 @@
   ],
   "images": [
     {
-      "name": "codeprobe-agent:0.12",
+      "name": "codeprobe-agent:0.13.0",
       "constant": "DEFAULT_AGENT_IMAGE",
       "dockerfile": "src/codeprobe/sandbox/Dockerfile.agent"
     },
     {
-      "name": "codeprobe-scoring:0.12",
+      "name": "codeprobe-scoring:0.13.0",
       "constant": "DEFAULT_SCORING_IMAGE",
       "dockerfile": "src/codeprobe/sandbox/Dockerfile.scoring"
     }
   ],
   "commands": [
     {
-      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .",
+      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.13.0 .",
       "image_constant": "DEFAULT_AGENT_IMAGE"
     },
     {
-      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .",
+      "command": "docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.13.0 .",
       "image_constant": "DEFAULT_SCORING_IMAGE"
     },
     {

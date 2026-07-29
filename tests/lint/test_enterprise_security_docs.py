@@ -147,7 +147,7 @@ def _agent_container_uses_bridge_network() -> bool:
         config_dir=Path("/tmp/codeprobe-claude/slot-0"),
         mcp_tmpfile="/tmp/codeprobe-mcp-abcd.json",
         env_keys=["ANTHROPIC_API_KEY"],
-        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
+        image=f"registry.example/codeprobe/{sandbox_runner.DEFAULT_AGENT_IMAGE}",
         name="codeprobe-agent-test",
         env={"ANTHROPIC_API_KEY": "sk-test"},
     )
@@ -160,7 +160,7 @@ def _scoring_container_defaults_to_no_network() -> bool:
         ["bash", "tests/test.sh"],
         {"/tmp/codeprobe-score-abc": "/tmp/codeprobe-score-abc"},
         allow_writes=True,
-        image=sandbox_runner.DEFAULT_SCORING_IMAGE,
+        image=f"registry.example/codeprobe/{sandbox_runner.DEFAULT_SCORING_IMAGE}",
         workdir="/tmp/codeprobe-score-abc/task",
         env={"AGENT_OUTPUT": "/tmp/codeprobe-score-abc/agent_output.txt"},
     )

@@ -108,13 +108,13 @@ Out of scope:
 Build the agent image:
 
 ```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.12 .
+docker build -f src/codeprobe/sandbox/Dockerfile.agent -t codeprobe-agent:0.13.0 .
 ```
 
 Build the scoring image:
 
 ```bash
-docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.12 .
+docker build -f src/codeprobe/sandbox/Dockerfile.scoring -t codeprobe-scoring:0.13.0 .
 ```
 
 Mount matrix:
