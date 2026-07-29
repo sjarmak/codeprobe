@@ -173,6 +173,33 @@ def test_resolver_rejects_custom_preamble_path_outside_boundary(tmp_path: Path):
         resolver.resolve(["../outside.md"])
 
 
+def test_resolver_rejects_custom_preamble_symlink_swap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A file swapped to an outside symlink after validation is never read."""
+    project_dir = tmp_path / "repo"
+    task_dir = project_dir / "tasks" / "task-001"
+    task_dir.mkdir(parents=True)
+    custom_path = project_dir / "operator-preamble.md"
+    custom_path.write_text("trusted", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside secret", encoding="utf-8")
+    original_is_file = Path.is_file
+
+    def swap_after_stat(path: Path) -> bool:
+        is_file = original_is_file(path)
+        if path == custom_path:
+            path.unlink()
+            path.symlink_to(outside)
+        return is_file
+
+    monkeypatch.setattr(Path, "is_file", swap_after_stat)
+    resolver = DefaultPreambleResolver(task_dir=task_dir, project_dir=project_dir)
+
+    with pytest.raises(ValueError, match="changed during secure open"):
+        resolver.resolve([str(custom_path)])
+
+
 def test_resolver_empty_names_returns_empty(tmp_path: Path):
     """Resolver returns empty list when no names are requested."""
     task_dir = tmp_path / "task-001"

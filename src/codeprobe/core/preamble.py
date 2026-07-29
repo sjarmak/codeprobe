@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -107,7 +109,7 @@ class DefaultPreambleResolver:
                 raise FileNotFoundError(f"Custom preamble path not found: {path}")
             return PreambleBlock(
                 name=str(path),
-                template=path.read_text(encoding="utf-8").strip(),
+                template=self._read_trusted_file(path, self._custom_roots),
             )
 
         if "/" in name or "\\" in name or ".." in name:
@@ -121,7 +123,9 @@ class DefaultPreambleResolver:
             if path.is_file():
                 return PreambleBlock(
                     name=name,
-                    template=path.read_text(encoding="utf-8").strip(),
+                    template=self._read_trusted_file(
+                        path, (search_dir.resolve(),)
+                    ),
                 )
         # Fall back to built-in preambles shipped with codeprobe
         try:
@@ -151,6 +155,53 @@ class DefaultPreambleResolver:
                 f"preamble roots: {[str(root) for root in self._custom_roots]}"
             )
         return resolved
+
+    def _read_trusted_file(self, path: Path, roots: tuple[Path, ...]) -> str:
+        root = next((item for item in roots if path.is_relative_to(item)), None)
+        if root is None:
+            raise ValueError(f"Preamble path escaped trusted roots: {path}")
+        try:
+            return _read_file_beneath_root(root, path).strip()
+        except OSError as exc:
+            raise ValueError(
+                f"Preamble path changed during secure open: {path}"
+            ) from exc
+
+
+def _read_file_beneath_root(root: Path, path: Path) -> str:
+    """Read a regular file without following swapped path components."""
+    relative = path.relative_to(root)
+    if not relative.parts:
+        raise ValueError(f"Preamble path is not a file: {path}")
+
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    directory = getattr(os, "O_DIRECTORY", 0)
+    directory_fd = os.open(root, os.O_RDONLY | directory | no_follow | close_on_exec)
+    file_fd = -1
+    try:
+        for component in relative.parts[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | directory | no_follow | close_on_exec,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        file_fd = os.open(
+            relative.parts[-1],
+            os.O_RDONLY | no_follow | close_on_exec,
+            dir_fd=directory_fd,
+        )
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            raise ValueError(f"Preamble path is not a regular file: {path}")
+        with os.fdopen(file_fd, encoding="utf-8") as stream:
+            file_fd = -1
+            return stream.read()
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(directory_fd)
 
 
 def normalize_preamble_references(
