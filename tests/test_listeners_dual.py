@@ -26,6 +26,8 @@ def _make_task_scored(
     automated_score: float = 0.7,
     scoring_details: dict | None = None,
     verdict: str | None = None,
+    status: str = "completed",
+    error_category: str | None = None,
 ) -> TaskScored:
     return TaskScored(
         task_id=task_id,
@@ -43,6 +45,8 @@ def _make_task_scored(
         timestamp=time.time(),
         scoring_details=scoring_details,
         verdict=verdict,
+        status=status,
+        error_category=error_category,
     )
 
 
@@ -189,6 +193,32 @@ def _render_display_to_str(listener: RichLiveListener) -> str:
 
 
 class TestRichLiveListenerDual:
+    @pytest.mark.parametrize("error_category", ["quota", "timeout", "system"])
+    @pytest.mark.parametrize("status", ["completed", "error"])
+    def test_infrastructure_errors_use_infra_status_and_denominator(
+        self,
+        error_category: str,
+        status: str,
+    ) -> None:
+        listener, _ = _make_rich_listener()
+        _start_run(listener, total=1)
+        try:
+            listener.on_event(
+                _make_task_scored(
+                    task_id="broken",
+                    automated_score=0.0,
+                    status=status,
+                    error_category=error_category,
+                )
+            )
+            rendered = _render_display_to_str(listener)
+        finally:
+            if listener._live is not None:  # type: ignore[attr-defined]
+                listener._live.stop()  # type: ignore[attr-defined]
+
+        assert "INFRA" in rendered
+        assert "0 scored, 1 infra" in rendered
+
     def test_verifier_error_uses_infra_status_and_denominator(self) -> None:
         listener, _ = _make_rich_listener()
         _start_run(listener, total=1)

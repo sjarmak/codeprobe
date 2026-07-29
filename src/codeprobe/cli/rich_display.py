@@ -31,7 +31,6 @@ from codeprobe.core.events import (
     TaskStarted,
     effective_run_counts,
     effective_task_outcome,
-    effective_task_verdict,
 )
 
 if TYPE_CHECKING:
@@ -131,14 +130,11 @@ class RichLiveListener:
         self._refresh()
 
     def _handle_task_scored(self, event: TaskScored) -> None:
-        verdict = effective_task_verdict(event)
         outcome = effective_task_outcome(event)
         is_infra = outcome in {"auth_failure", "infra_failure"}
         status = format_task_status(
             event.automated_score,
-            verdict,
-            status=event.status,
-            error_category=event.error_category,
+            outcome,
         )
         cost_str = f"${event.cost_usd:.2f}" if event.cost_usd is not None else "n/a"
         duration_str = f"{event.duration_seconds:.1f}s"

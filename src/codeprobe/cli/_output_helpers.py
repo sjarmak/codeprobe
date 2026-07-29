@@ -46,17 +46,14 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 def format_task_status(
     score: float,
-    verdict: str | None = None,
-    *,
-    status: str = "completed",
-    error_category: str | None = None,
+    outcome: str,
 ) -> str:
     """Format a task result consistently across CLI output surfaces."""
-    if error_category == "auth_failure":
+    if outcome == "auth_failure":
         return "AUTH_ERROR"
-    if verdict == "verifier_error":
+    if outcome == "infra_failure":
         return "INFRA"
-    if status == "error":
+    if outcome == "error":
         return "ERROR"
     if score >= 1.0:
         return "PASS"
@@ -129,6 +126,7 @@ def resolve_mode(
             env=os.environ,
         )
     except ValueError as exc:
+        # lint-exempt: mutually exclusive output flags are Click usage errors.
         raise click.UsageError(str(exc)) from exc
 
     # Propagate the resolved mode upward so error handlers can find it

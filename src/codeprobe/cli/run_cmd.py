@@ -261,11 +261,17 @@ def build_run_envelope_summary(
 
 def _on_task_complete(result: CompletedTask) -> None:
     """Print task result to stdout (legacy callback, kept for backward compat)."""
+    if result.error_category == "auth_failure":
+        outcome = "auth_failure"
+    elif is_infra_failure(result):
+        outcome = "infra_failure"
+    elif result.status == "error":
+        outcome = "error"
+    else:
+        outcome = "scored"
     status = format_task_status(
         result.automated_score,
-        result.verdict,
-        status=result.status,
-        error_category=result.error_category,
+        outcome,
     )
     click.echo(f"  {result.task_id}: {status} ({result.duration_seconds:.1f}s)")
 
@@ -280,12 +286,10 @@ class PlainTextListener:
 
     def on_event(self, event: RunEvent) -> None:
         if isinstance(event, TaskScored):
-            verdict = effective_task_verdict(event)
+            outcome = effective_task_outcome(event)
             status = format_task_status(
                 event.automated_score,
-                verdict,
-                status=event.status,
-                error_category=event.error_category,
+                outcome,
             )
             dual_suffix = format_dual_suffix(event.scoring_details)
             click.echo(f"  {event.task_id}: {status} ({event.duration_seconds:.1f}s){dual_suffix}")
