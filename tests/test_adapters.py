@@ -15,6 +15,7 @@ from codeprobe.adapters._base import (
     _ADAPTER_ENV_WHITELIST,
     BaseAdapter,
     _adapter_safe_env,
+    _terminate_agent_process_tree,
 )
 from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.copilot import CopilotAdapter
@@ -533,6 +534,47 @@ time.sleep(30)
                 if _process_running(pid):
                     os.kill(pid, signal.SIGKILL)
             bystander.wait(timeout=5)
+
+    def test_non_posix_timeout_uses_process_kill_for_hard_stop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class StubbornProcess:
+            pid = 12345
+
+            def __init__(self) -> None:
+                self.signals: list[signal.Signals] = []
+                self.kill_calls = 0
+                self.communicate_calls = 0
+
+            def poll(self) -> int | None:
+                return None
+
+            def send_signal(self, sig: signal.Signals) -> None:
+                self.signals.append(sig)
+
+            def kill(self) -> None:
+                self.kill_calls += 1
+
+            def communicate(
+                self, timeout: float | None = None
+            ) -> tuple[str | None, str | None]:
+                self.communicate_calls += 1
+                if self.communicate_calls == 1:
+                    raise subprocess.TimeoutExpired(cmd=["agent"], timeout=timeout)
+                return "partial", "diagnostic"
+
+        process = StubbornProcess()
+        monkeypatch.setattr(
+            "codeprobe.adapters._base._agent_process_groups_supported",
+            lambda: False,
+        )
+
+        stdout, stderr = _terminate_agent_process_tree(process)  # type: ignore[arg-type]
+
+        assert stdout == "partial"
+        assert stderr == "diagnostic"
+        assert process.signals == [signal.SIGTERM]
+        assert process.kill_calls == 1
 
     def test_file_not_found_raises_setup_error(self) -> None:
         adapter = _StubAdapter()

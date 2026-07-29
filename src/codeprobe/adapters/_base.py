@@ -155,6 +155,10 @@ _AGENT_TERMINATE_GRACE_SECONDS = 2.0
 _AGENT_KILL_GRACE_SECONDS = 2.0
 
 
+def _agent_process_groups_supported() -> bool:
+    return os.name == "posix"
+
+
 def _adapter_safe_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build a filtered environment for agent subprocesses.
 
@@ -302,7 +306,7 @@ def _signal_agent_process(process: subprocess.Popen[str], sig: signal.Signals) -
     if process.poll() is not None:
         return
     try:
-        if os.name == "posix":
+        if _agent_process_groups_supported():
             os.killpg(process.pid, sig)
         else:
             process.send_signal(sig)
@@ -312,6 +316,20 @@ def _signal_agent_process(process: subprocess.Popen[str], sig: signal.Signals) -
         logger.warning("failed to signal timed-out agent process", exc_info=True)
 
 
+def _kill_agent_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if _agent_process_groups_supported():
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        logger.warning("failed to kill timed-out agent process", exc_info=True)
+
+
 def _terminate_agent_process_tree(
     process: subprocess.Popen[str],
 ) -> tuple[str | bytes | None, str | bytes | None]:
@@ -319,7 +337,7 @@ def _terminate_agent_process_tree(
     try:
         return process.communicate(timeout=_AGENT_TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
-        _signal_agent_process(process, signal.SIGKILL)
+        _kill_agent_process(process)
         try:
             return process.communicate(timeout=_AGENT_KILL_GRACE_SECONDS)
         except subprocess.TimeoutExpired as exc:
@@ -340,7 +358,7 @@ def _run_agent_process(
         text=True,
         cwd=cwd,
         env=env,
-        start_new_session=os.name == "posix",
+        start_new_session=_agent_process_groups_supported(),
     )
     try:
         stdout, stderr = process.communicate(timeout=timeout)

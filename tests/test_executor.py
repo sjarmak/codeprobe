@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -12,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from codeprobe.adapters.claude import ClaudeAdapter
 from codeprobe.adapters.protocol import AdapterQuotaError, AgentConfig, AgentOutput
 from codeprobe.core.executor import (
     DryRunEstimate,
@@ -56,6 +60,34 @@ def _make_task(
     test_sh.write_text(f"#!/bin/bash\nexit {exit_code}\n")
     test_sh.chmod(test_sh.stat().st_mode | stat.S_IEXEC)
     return task_dir
+
+
+def _process_running(pid: int) -> bool:
+    proc_stat = Path("/proc") / str(pid) / "stat"
+    try:
+        fields = proc_stat.read_text().split()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    if len(fields) >= 3 and fields[2] == "Z":
+        return False
+    return True
+
+
+def _wait_for_process_exit(pid: int, timeout_seconds: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _process_running(pid):
+            return True
+        time.sleep(0.05)
+    return not _process_running(pid)
 
 
 def test_base_prompt():
@@ -490,6 +522,99 @@ def test_execute_config_continues_after_timeout_infrastructure_error(tmp_path: P
     assert results[0].metadata["error"] == "Agent timed out after 1s"
     assert results[0].input_tokens == 11
     assert results[1].status == "completed"
+
+
+def test_execute_task_uses_task_time_limit_from_metadata(tmp_path: Path) -> None:
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    (task_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": "task-001",
+                "time_limit_sec": 7,
+                "verification": {"reward_type": "binary"},
+            }
+        )
+    )
+    adapter = FakeAdapter(stdout="output")
+
+    result = execute_task(
+        adapter,
+        task_dir,
+        Path("/repo"),
+        AgentConfig(timeout_seconds=3600),
+    ).completed
+
+    assert result.status == "completed"
+    assert adapter.run_calls[0][1].timeout_seconds == 7
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-only")
+def test_execute_task_metadata_time_limit_terminates_child_process_tree(
+    tmp_path: Path,
+) -> None:
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    (task_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": "task-001",
+                "time_limit_sec": 1,
+                "verification": {"reward_type": "binary"},
+            }
+        )
+    )
+    script = tmp_path / "fake_claude.py"
+    child_pid_file = tmp_path / "child.pid"
+    script.write_text(
+        """
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+child_pid_file = Path(sys.argv[1])
+child = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(30)"],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+child_pid_file.write_text(str(child.pid))
+print(json.dumps({
+    "result": "partial transcript",
+    "usage": {"input_tokens": 11, "output_tokens": 7},
+    "total_cost_usd": 0.0042,
+}), flush=True)
+print("diagnostic before timeout", file=sys.stderr, flush=True)
+time.sleep(30)
+"""
+    )
+
+    class ScriptClaudeAdapter(ClaudeAdapter):
+        def build_command(self, prompt: str, config: AgentConfig) -> list[str]:
+            return [sys.executable, str(script), str(child_pid_file)]
+
+    child_pid: int | None = None
+    try:
+        result = execute_task(
+            ScriptClaudeAdapter(),
+            task_dir,
+            tmp_path,
+            AgentConfig(timeout_seconds=3600),
+        )
+        child_pid = int(child_pid_file.read_text())
+
+        assert result.completed.status == "error"
+        assert result.completed.error_category == "timeout"
+        assert "Agent timed out after 1s" in result.completed.metadata["error"]
+        assert result.completed.input_tokens == 11
+        assert result.completed.output_tokens == 7
+        assert result.completed.cost_usd == pytest.approx(0.0042)
+        assert result.agent_stdout == "partial transcript"
+        assert result.agent_stderr == "diagnostic before timeout\n"
+        assert _wait_for_process_exit(child_pid)
+    finally:
+        if child_pid is not None and _process_running(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
 
 
 class _RaisingScorer:

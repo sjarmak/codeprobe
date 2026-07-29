@@ -478,6 +478,20 @@ def _score_in_sandbox(
     )
 
 
+def _resolve_task_timeout_seconds(
+    task_meta: dict,
+    config_timeout_seconds: int,
+) -> int:
+    raw_limit = task_meta.get("time_limit_sec")
+    if (
+        isinstance(raw_limit, int)
+        and not isinstance(raw_limit, bool)
+        and raw_limit > 0
+    ):
+        return min(config_timeout_seconds, raw_limit)
+    return config_timeout_seconds
+
+
 def execute_task(
     adapter: AgentAdapter,
     task_dir: Path,
@@ -562,6 +576,15 @@ def execute_task(
     if _turn_cap.max_turns != agent_config.max_turns:
         agent_config = dataclasses.replace(
             agent_config, max_turns=_turn_cap.max_turns
+        )
+
+    _task_timeout_seconds = _resolve_task_timeout_seconds(
+        _task_meta,
+        agent_config.timeout_seconds,
+    )
+    if _task_timeout_seconds != agent_config.timeout_seconds:
+        agent_config = dataclasses.replace(
+            agent_config, timeout_seconds=_task_timeout_seconds
         )
 
     # NOTE: task_dir is intentionally never mutated here. Stale agent
