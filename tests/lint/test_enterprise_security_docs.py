@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -403,6 +404,8 @@ def _credential_ttl_mentions(name: str) -> bool:
 
 _ENV_CHECKS: dict[str, Callable[[str], bool]] = {
     "adapter_whitelist": lambda name: name in adapter_base._ADAPTER_ENV_WHITELIST,
+    "container_ca_mount": lambda name: name
+    in adapter_base._PRIVATE_CA_FILE_ENV_KEYS + adapter_base._PRIVATE_CA_DIR_ENV_KEYS,
     "container_passthrough": lambda name: name in adapter_base._CONTAINER_ENV_KEYS,
     "container_excluded": lambda name: name in adapter_base._CONTAINER_ENV_EXCLUDED,
     "credential_ttl": _credential_ttl_mentions,
@@ -536,6 +539,35 @@ def _agent_container_mounts_expected_paths() -> bool:
     } and {"HOME=/tmp", "TMPDIR=/tmp", "ANTHROPIC_API_KEY"} <= env_args
 
 
+def _agent_container_mounts_private_ca_paths() -> bool:
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(raw_root)
+        ca_file = root / "corp.pem"
+        ca_file.write_text("certificate", encoding="utf-8")
+        ca_dir = root / "certs"
+        ca_dir.mkdir()
+        mounts, env_values = adapter_base._container_private_ca(
+            {
+                "SSL_CERT_FILE": str(ca_file),
+                "REQUESTS_CA_BUNDLE": str(ca_file),
+                "SSL_CERT_DIR": str(ca_dir),
+            }
+        )
+        file_target = Path("/etc/codeprobe/ca/00-corp.pem")
+        dir_target = Path("/etc/codeprobe/ca/01-certs")
+        invalid = adapter_base._container_private_ca(
+            {"SSL_CERT_FILE": str(root / "missing.pem")}
+        )
+        return mounts == [
+            (ca_file.resolve(), file_target),
+            (ca_dir.resolve(), dir_target),
+        ] and env_values == {
+            "SSL_CERT_FILE": str(file_target),
+            "REQUESTS_CA_BUNDLE": str(file_target),
+            "SSL_CERT_DIR": str(dir_target),
+        } and invalid == ([], {})
+
+
 def _agent_container_uses_valueless_secret_args() -> bool:
     argv = _agent_container_argv_with_mounted_inputs()
     return "ANTHROPIC_API_KEY" in argv and "sk-test" not in argv
@@ -600,6 +632,7 @@ def _evidence_bundle_uses_fixed_allowlist() -> bool:
 _SECURITY_CLAIMS: dict[str, Callable[[], bool]] = {
     "agent_container_network_bridge": _agent_container_uses_bridge_network,
     "agent_container_mounts_expected_paths": _agent_container_mounts_expected_paths,
+    "agent_container_mounts_private_ca_paths": _agent_container_mounts_private_ca_paths,
     "agent_container_valueless_secret_args": _agent_container_uses_valueless_secret_args,
     "claude_session_live_symlinks": _claude_session_mirrors_live_config_with_symlinks,
     "agent_container_runtime_hardening": _agent_container_has_runtime_hardening,

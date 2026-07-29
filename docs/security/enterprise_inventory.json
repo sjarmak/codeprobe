@@ -360,10 +360,7 @@
     },
     {
       "name": "CURL_CA_BUNDLE",
-      "checks": [
-        "adapter_whitelist",
-        "container_excluded"
-      ]
+      "checks": ["adapter_whitelist", "container_excluded", "container_ca_mount"]
     },
     {
       "name": "DBUS_SESSION_BUS_ADDRESS",
@@ -444,10 +441,7 @@
     },
     {
       "name": "NODE_EXTRA_CA_CERTS",
-      "checks": [
-        "adapter_whitelist",
-        "container_excluded"
-      ]
+      "checks": ["adapter_whitelist", "container_excluded", "container_ca_mount"]
     },
     {
       "name": "NODE_PATH",
@@ -493,10 +487,7 @@
     },
     {
       "name": "REQUESTS_CA_BUNDLE",
-      "checks": [
-        "adapter_whitelist",
-        "container_excluded"
-      ]
+      "checks": ["adapter_whitelist", "container_excluded", "container_ca_mount"]
     },
     {
       "name": "RUSTUP_HOME",
@@ -507,17 +498,11 @@
     },
     {
       "name": "SSL_CERT_DIR",
-      "checks": [
-        "adapter_whitelist",
-        "container_excluded"
-      ]
+      "checks": ["adapter_whitelist", "container_excluded", "container_ca_mount"]
     },
     {
       "name": "SSL_CERT_FILE",
-      "checks": [
-        "adapter_whitelist",
-        "container_excluded"
-      ]
+      "checks": ["adapter_whitelist", "container_excluded", "container_ca_mount"]
     },
     {
       "name": "TERM",
@@ -690,6 +675,17 @@
       ],
       "checks": [
         "agent_container_valueless_secret_args"
+      ]
+    },
+    {
+      "id": "private_ca_container_mount",
+      "required_phrases": [
+        "validated private CA files and directories",
+        "read-only under `/etc/codeprobe/ca`",
+        "rewrites the container environment values"
+      ],
+      "checks": [
+        "agent_container_mounts_private_ca_paths"
       ]
     },
     {

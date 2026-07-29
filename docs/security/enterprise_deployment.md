@@ -148,6 +148,7 @@ Mount matrix:
 | Agent container | `--network=bridge` | per-task slot worktree | identical path | `rw` |
 | Agent container | `--network=bridge` | per-slot `CLAUDE_CONFIG_DIR`, when present | identical path | `rw` |
 | Agent container | `--network=bridge` | generated MCP config temp file | identical path | `ro` |
+| Agent container | `--network=bridge` | validated private CA files and directories | collision-safe path under `/etc/codeprobe/ca` | `ro` |
 | Scoring container | `--network=none` | scoring temp directory | identical path | `rw` |
 
 The primary checkout and the user's global agent config directory are not
@@ -194,7 +195,7 @@ The host subprocess adapter environment whitelist is:
 | `COPILOT_PROVIDER_API_KEY` | Copilot offline-provider credential | Passthrough |
 | `COPILOT_PROVIDER_BASE_URL` | Copilot offline-provider endpoint | Passthrough |
 | `COPILOT_PROVIDER_TYPE` | Copilot offline-provider type | Passthrough |
-| `CURL_CA_BUNDLE` | Private CA bundle path | Excluded because host paths are not mounted |
+| `CURL_CA_BUNDLE` | Private CA bundle path | Excluded from valueless passthrough; mounted `ro` and rewritten |
 | `DBUS_SESSION_BUS_ADDRESS` | Desktop session bus path | Excluded because host paths are not mounted |
 | `GH_TOKEN` | GitHub CLI token usable by Copilot | Passthrough |
 | `GITHUB_TOKEN` | Git provider token for agent tooling | Passthrough |
@@ -206,17 +207,17 @@ The host subprocess adapter environment whitelist is:
 | `LANG` | Locale | Passthrough |
 | `LC_ALL` | Locale | Passthrough |
 | `LOGNAME` | User identity metadata | Passthrough |
-| `NODE_EXTRA_CA_CERTS` | Private CA bundle path | Excluded because host paths are not mounted |
+| `NODE_EXTRA_CA_CERTS` | Private CA bundle path | Excluded from valueless passthrough; mounted `ro` and rewritten |
 | `NODE_PATH` | Node toolchain path | Excluded because host paths are not mounted |
 | `NO_PROXY` | Proxy bypass list | Passthrough |
 | `NPM_CONFIG_PREFIX` | npm toolchain path | Excluded because host paths are not mounted |
 | `OPENAI_API_KEY` | Agent or LLM backend API key | Passthrough |
 | `PATH` | Host executable search path | Excluded because the image owns its toolchain |
 | `PYTHONPATH` | Python import path | Excluded because host paths are not mounted |
-| `REQUESTS_CA_BUNDLE` | Private CA bundle path | Excluded because host paths are not mounted |
+| `REQUESTS_CA_BUNDLE` | Private CA bundle path | Excluded from valueless passthrough; mounted `ro` and rewritten |
 | `RUSTUP_HOME` | Rust toolchain path | Excluded because host paths are not mounted |
-| `SSL_CERT_DIR` | Private CA directory path | Excluded because host paths are not mounted |
-| `SSL_CERT_FILE` | Private CA file path | Excluded because host paths are not mounted |
+| `SSL_CERT_DIR` | Private CA directory path | Excluded from valueless passthrough; mounted `ro` and rewritten |
+| `SSL_CERT_FILE` | Private CA file path | Excluded from valueless passthrough; mounted `ro` and rewritten |
 | `TERM` | Terminal metadata | Passthrough |
 | `TMPDIR` | Host temp path | Excluded because host paths are not mounted |
 | `USER` | User identity metadata | Passthrough |
@@ -282,14 +283,17 @@ Host subprocess execution passes these proxy variables when present:
 
 The same proxy URL variables are forwarded into the agent container. Private CA
 host-path variables are whitelisted for host subprocess execution but excluded
-from container passthrough because the referenced host files are not mounted:
-`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, and
-`NODE_EXTRA_CA_CERTS`.
+from valueless container passthrough: `SSL_CERT_FILE`, `SSL_CERT_DIR`,
+`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, and `NODE_EXTRA_CA_CERTS`.
 
-For containerized enterprise runs that require a private CA, build a custom
-agent image from `src/codeprobe/sandbox/Dockerfile.agent` with the CA installed
-inside the image, or add a reviewed wrapper that mounts the CA path explicitly.
-Do not assume a host CA path will work inside the container.
+During agent-container preparation, CodeProbe validates private CA files and
+directories, resolves and deduplicates their host paths, mounts them read-only
+under `/etc/codeprobe/ca`, and rewrites the container environment values to the
+collision-safe container paths. Invalid or unreadable paths are not mounted;
+`codeprobe doctor` reports the selected agent's invalid CA configuration before
+the run. These runtime mounts do not configure the container engine itself:
+registry pulls and bootstrap still use the operator-controlled engine trust
+store.
 
 ## Offline Guarantees
 
