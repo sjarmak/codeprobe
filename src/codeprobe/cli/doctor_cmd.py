@@ -81,6 +81,29 @@ def _check_python_version() -> CheckResult:
     )
 
 
+def _check_install_provenance() -> CheckResult:
+    """Flag a codeprobe that is bound to a foreign source tree (codeprobe-v3wn).
+
+    Catches the shared-``.venv`` failure where an editable install run from a
+    git worktree repoints the project-root CLI's ``.pth``/console-script at
+    that worktree, so ``codeprobe`` silently executes stale code.
+    """
+    import codeprobe
+    from codeprobe import provenance
+
+    report = provenance.analyze(
+        package_file=codeprobe.__file__,
+        prefix=sys.prefix,
+        argv0=sys.argv[0] if sys.argv else "",
+    )
+    return CheckResult(
+        name="install provenance",
+        passed=report.ok,
+        detail=report.detail,
+        fix=report.fix,
+    )
+
+
 def _check_user_home_skills(*, required: bool = True) -> CheckResult:
     """Flag stale user-home codeprobe skills that need migration (codeprobe-coa)."""
     from codeprobe.cli.skills_cmd import stale_user_home_skills
@@ -313,6 +336,7 @@ def run_checks(
         _check_github_access(),
         _check_git_repo(repo),
         _check_python_version(),
+        _check_install_provenance(),
         _check_container_images(required=selected_agent is not None),
         _check_proxy_variables(),
         _check_private_ca_files(private_ca),

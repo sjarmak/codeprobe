@@ -119,6 +119,20 @@ uv run python3 scripts/lint_zfc.py src/codeprobe/ \
 uv run pytest tests/lint/test_scorer_honesty*.py -q
 ```
 
+Give every git worktree its own `.venv`. Running `pip install -e` /
+`uv pip install -e` from inside a worktree against a *shared* checkout's
+`.venv` rewrites that venv's editable `.pth` and its `bin/codeprobe` shebang to
+point at the worktree, so the other checkout's CLI silently imports stale
+worktree code (codeprobe-v3wn). `codeprobe doctor` reports this as an
+`install provenance` failure, and every CLI invocation warns on stderr when it
+happens. Repair without deleting any worktree by reinstalling from the venv's
+own checkout:
+
+```bash
+/path/to/checkout/.venv/bin/python -m pip install -e /path/to/checkout \
+  --force-reinstall --no-deps
+```
+
 For documentation-only guidance changes, verify every backticked repository
 path resolves and run the focused policy checks whose commands changed. Do not
 claim the full suite passed unless it was run.

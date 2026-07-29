@@ -2,11 +2,12 @@
 
 import json as _json
 import logging
+import os
 import sys
 
 import click
 
-from codeprobe import __version__
+from codeprobe import __version__, provenance
 from codeprobe.cli._error_handler import CodeprobeGroup
 from codeprobe.cli._output_helpers import (
     add_json_flags,
@@ -126,6 +127,35 @@ def _configure_logging(verbose: int, quiet: bool, log_format: str = "text") -> N
     logger.addHandler(handler)
 
 
+_provenance_warned = False
+
+
+def _warn_on_foreign_provenance() -> None:
+    """Warn once on stderr when codeprobe is bound to a foreign source tree.
+
+    Makes the shared-``.venv`` stale-worktree binding non-silent (codeprobe-
+    v3wn). Emits through the codeprobe logger (stderr, honours ``--quiet``) so
+    it never corrupts stdout JSON envelopes, and only fires on a genuine
+    cross-venv/foreign-module mismatch. Set ``CODEPROBE_SKIP_PROVENANCE_CHECK``
+    to suppress.
+    """
+    global _provenance_warned
+    if _provenance_warned or os.environ.get(provenance.SKIP_ENV):
+        return
+    _provenance_warned = True
+    import codeprobe
+
+    report = provenance.analyze(
+        package_file=codeprobe.__file__,
+        prefix=sys.prefix,
+        argv0=sys.argv[0] if sys.argv else "",
+    )
+    if not report.ok:
+        logging.getLogger("codeprobe").warning(
+            "install provenance: %s. Repair: %s", report.detail, report.fix
+        )
+
+
 @click.group(cls=CodeprobeGroup)
 @click.option(
     "-v",
@@ -154,6 +184,7 @@ def main(verbose: int, quiet: bool, log_format: str) -> None:
     and interpret the results to find which setup works best for YOUR code.
     """
     _configure_logging(verbose=verbose, quiet=quiet, log_format=log_format)
+    _warn_on_foreign_provenance()
     ctx = click.get_current_context()
     ctx.ensure_object(dict)
     ctx.obj["log_format"] = log_format
