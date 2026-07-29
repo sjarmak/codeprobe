@@ -430,7 +430,7 @@ class TestDoctorCLI:
         assert "Run 'codeprobe bootstrap'." in result.output
         assert "Dockerfile" not in result.output
 
-    def test_container_images_require_installed_wheel_bootstrap_when_unprepared(
+    def test_container_images_report_missing_image_configuration_details(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:
         import codeprobe.cli.doctor_cmd as mod
@@ -445,7 +445,9 @@ class TestDoctorCLI:
         )
 
         def unprepared_image_reference() -> str:
-            raise ValueError("not prepared")
+            raise ValueError(
+                "Missing required image setting(s): CODEPROBE_IMAGE_NAMESPACE"
+            )
 
         monkeypatch.setattr(
             container_runner,
@@ -460,7 +462,51 @@ class TestDoctorCLI:
         )
 
         assert result.exit_code == 2, result.output
-        assert "FAIL  container images (containment images not prepared)" in result.output
+        assert (
+            "FAIL  container images (image configuration invalid: "
+            "Missing required image setting(s): CODEPROBE_IMAGE_NAMESPACE)"
+            in result.output
+        )
+        assert "CODEPROBE_AGENT_IMAGE" in result.output
+        assert "CODEPROBE_SCORING_IMAGE" in result.output
+        assert "Run 'codeprobe bootstrap'." in result.output
+        assert "Dockerfile" not in result.output
+
+    def test_container_images_report_malformed_image_configuration_details(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+        from codeprobe.core import sandbox as codeprobe_sandbox
+        from codeprobe.sandbox import runner as container_runner
+
+        _use_tool_paths(monkeypatch, tmp_path, ("claude", "docker"))
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: False)
+        monkeypatch.setattr(
+            container_runner, "detect_engine", lambda: "/usr/bin/docker"
+        )
+
+        def malformed_image_reference() -> str:
+            raise ValueError("CODEPROBE_IMAGE_REGISTRY has an invalid registry host")
+
+        monkeypatch.setattr(
+            container_runner,
+            "agent_image_reference",
+            malformed_image_reference,
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        result = CliRunner().invoke(
+            main, ["doctor", "--agent", "claude", "--no-json"]
+        )
+
+        assert result.exit_code == 2, result.output
+        assert (
+            "FAIL  container images (image configuration invalid: "
+            "CODEPROBE_IMAGE_REGISTRY has an invalid registry host)"
+            in result.output
+        )
         assert "Run 'codeprobe bootstrap'." in result.output
         assert "Dockerfile" not in result.output
 

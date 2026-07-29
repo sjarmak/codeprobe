@@ -167,6 +167,15 @@ def _is_qualified_registry_host(host: str) -> bool:
     return is_qualified_registry_host(host)
 
 
+def image_configuration_remediation() -> str:
+    return (
+        f"Set {AGENT_IMAGE_ENV} and {SCORING_IMAGE_ENV} to exact "
+        "digest-pinned OCI references, or set "
+        f"{IMAGE_REGISTRY_ENV} and {IMAGE_NAMESPACE_ENV} for composed "
+        "release references. Run 'codeprobe bootstrap'."
+    )
+
+
 def _validate_image_reference(name: str, reference: str) -> str:
     return validate_image_reference(name, reference)
 
@@ -176,16 +185,28 @@ def _composed_image_reference(image_name: str) -> str:
     _validate_tag(IMAGE_VERSION_ENV, version)
     registry_raw = _optional_env(IMAGE_REGISTRY_ENV)
     namespace_raw = _optional_env(IMAGE_NAMESPACE_ENV)
-    if registry_raw is None or namespace_raw is None:
-        raise ValueError(
-            f"Set both {IMAGE_REGISTRY_ENV} and {IMAGE_NAMESPACE_ENV}, or set "
-            "an exact per-image override."
-        )
+    missing_settings = _missing_composed_image_settings(registry_raw, namespace_raw)
+    if missing_settings:
+        missing = ", ".join(missing_settings)
+        raise ValueError(f"Missing required image setting(s): {missing}")
+    assert registry_raw is not None
+    assert namespace_raw is not None
     registry = registry_raw
     namespace = namespace_raw
     return _compose_validated_image_reference(
         image_name=image_name, version=version, registry=registry, namespace=namespace
     )
+
+
+def _missing_composed_image_settings(
+    registry: str | None, namespace: str | None
+) -> tuple[str, ...]:
+    missing: list[str] = []
+    if registry is None:
+        missing.append(IMAGE_REGISTRY_ENV)
+    if namespace is None:
+        missing.append(IMAGE_NAMESPACE_ENV)
+    return tuple(missing)
 
 
 def _compose_validated_image_reference(

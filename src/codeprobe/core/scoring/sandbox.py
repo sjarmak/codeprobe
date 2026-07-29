@@ -209,11 +209,8 @@ def _missing_image_refusal(
     if scoring_image is None:
         return (
             "Container engine found but scoring image is not configured; "
-            f"{image_error or 'set an exact image reference'}. Set "
-            f"{container_runner.SCORING_IMAGE_ENV} or both "
-            f"{container_runner.IMAGE_REGISTRY_ENV} and "
-            f"{container_runner.IMAGE_NAMESPACE_ENV}, then run: "
-            "codeprobe bootstrap"
+            f"{image_error or 'set an exact image reference'}. "
+            f"{container_runner.image_configuration_remediation()}"
         )
     return (
         "Container engine found but scoring image "

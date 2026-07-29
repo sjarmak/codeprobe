@@ -56,15 +56,34 @@ def _write_prepared_config(path: Path, *, engine: str = "docker") -> None:
     )
 
 
-def test_runtime_image_refs_require_registry_and_namespace(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("configured", "missing"),
+    [
+        ({}, "CODEPROBE_IMAGE_REGISTRY, CODEPROBE_IMAGE_NAMESPACE"),
+        (
+            {"CODEPROBE_IMAGE_REGISTRY": "registry.example.test"},
+            "CODEPROBE_IMAGE_NAMESPACE",
+        ),
+        (
+            {"CODEPROBE_IMAGE_NAMESPACE": "platform/codeprobe"},
+            "CODEPROBE_IMAGE_REGISTRY",
+        ),
+    ],
+)
+def test_runtime_image_refs_report_exact_missing_registry_settings(
+    monkeypatch: pytest.MonkeyPatch, configured: dict[str, str], missing: str
 ) -> None:
     _clear_image_env(monkeypatch)
+    for key, value in configured.items():
+        monkeypatch.setenv(key, value)
 
-    with pytest.raises(ValueError, match="Set both CODEPROBE_IMAGE_REGISTRY"):
+    expected = f"Missing required image setting(s): {missing}"
+    with pytest.raises(ValueError) as agent_exc:
         sandbox_runner.agent_image_reference()
-    with pytest.raises(ValueError, match="Set both CODEPROBE_IMAGE_REGISTRY"):
+    assert expected in str(agent_exc.value)
+    with pytest.raises(ValueError) as scoring_exc:
         sandbox_runner.scoring_image_reference()
+    assert expected in str(scoring_exc.value)
 
 
 def test_prepared_config_resolves_immutable_local_image_ids(

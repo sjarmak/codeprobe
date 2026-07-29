@@ -153,13 +153,14 @@ def _check_container_images(*, required: bool) -> CheckResult:
             warn_only=not required,
         )
 
-    missing_count = _missing_container_image_count(engine)
-    if missing_count is None:
+    try:
+        missing_count = _missing_container_image_count(engine)
+    except ValueError as exc:
         return CheckResult(
             name="container images",
             passed=False,
-            detail="containment images not prepared",
-            fix=_CONTAINER_BOOTSTRAP_FIX,
+            detail=f"image configuration invalid: {exc}",
+            fix=container_runner.image_configuration_remediation(),
             warn_only=not required,
         )
     if missing_count == 0:
@@ -178,16 +179,13 @@ def _check_container_images(*, required: bool) -> CheckResult:
     )
 
 
-def _missing_container_image_count(engine: str) -> int | None:
+def _missing_container_image_count(engine: str) -> int:
     from codeprobe.sandbox import runner as container_runner
 
-    try:
-        required_images = (
-            container_runner.agent_image_reference(),
-            container_runner.scoring_image_reference(),
-        )
-    except ValueError:
-        return None
+    required_images = (
+        container_runner.agent_image_reference(),
+        container_runner.scoring_image_reference(),
+    )
     return sum(
         1
         for image in required_images

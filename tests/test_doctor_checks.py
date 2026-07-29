@@ -479,7 +479,12 @@ class TestGithubAccessCheck:
         _use_tool_paths(monkeypatch, tmp_path, ("claude", "copilot"))
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
         results = run_checks()
         gh = next(r for r in results if r.name == "GitHub auth")
         assert gh.passed is False

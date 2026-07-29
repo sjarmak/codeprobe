@@ -22,6 +22,13 @@ _AGENT_LOCAL_ID = "sha256:" + "c" * 64
 _SCORING_LOCAL_ID = "sha256:" + "d" * 64
 _AGENT_REF = "private.example/team/codeprobe-agent:0.13.0"
 _SCORING_REF = "private.example/team/codeprobe-scoring:0.13.0"
+_IMAGE_ENV_KEYS = (
+    "CODEPROBE_AGENT_IMAGE",
+    "CODEPROBE_SCORING_IMAGE",
+    "CODEPROBE_IMAGE_REGISTRY",
+    "CODEPROBE_IMAGE_NAMESPACE",
+    "CODEPROBE_IMAGE_VERSION",
+)
 
 
 def _result(path: Path) -> BootstrapResult:
@@ -133,6 +140,39 @@ def test_bootstrap_resolves_existing_source_configuration(tmp_path: Path, monkey
     assert result.exit_code == 0, result.output
     assert captured["agent_reference"] == _AGENT_REF
     assert captured["scoring_reference"] == _SCORING_REF
+
+
+def test_bare_bootstrap_reports_exact_missing_registry_setting_before_prepare(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepare_called = False
+    for key in _IMAGE_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CODEPROBE_IMAGE_REGISTRY", "registry.example.test")
+
+    def fake_prepare(**_kwargs: object) -> BootstrapResult:
+        nonlocal prepare_called
+        prepare_called = True
+        raise AssertionError("bootstrap work must not start")
+
+    monkeypatch.setattr(bootstrap_module, "prepare_images", fake_prepare)
+
+    result = CliRunner().invoke(
+        bootstrap,
+        [
+            "--engine",
+            "docker",
+            "--no-json",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert isinstance(result.exception, DiagnosticError)
+    assert not prepare_called
+    assert (
+        "Missing required image setting(s): CODEPROBE_IMAGE_NAMESPACE"
+        in result.exception.message
+    )
 
 
 def test_bootstrap_json_mode_emits_one_success_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

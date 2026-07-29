@@ -129,10 +129,7 @@ def _agent_bootstrap_hint(
         return (
             " A container engine was found but the agent image is not "
             f"configured; {image_error or 'set an exact image reference'}. "
-            f"Set {container_runner.AGENT_IMAGE_ENV} or both "
-            f"{container_runner.IMAGE_REGISTRY_ENV} and "
-            f"{container_runner.IMAGE_NAMESPACE_ENV}, then run: "
-            "codeprobe bootstrap"
+            f"{container_runner.image_configuration_remediation()}"
         )
     return (
         " A container engine was found but the agent image "

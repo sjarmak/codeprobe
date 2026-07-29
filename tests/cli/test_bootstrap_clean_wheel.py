@@ -50,6 +50,62 @@ def test_installed_wheel_bootstraps_without_checkout_or_dockerfiles(
     assert "Dockerfile" not in engine_calls
 
 
+@pytest.mark.integration
+def test_installed_wheel_bare_bootstrap_reports_image_config_errors_before_engine_work(
+    tmp_path: Path,
+) -> None:
+    venv_dir = _install_wheel(_build_wheel(tmp_path), tmp_path / "venv")
+    run_dir = tmp_path / "outside-checkout"
+    run_dir.mkdir()
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    _write_fake_engine(fake_bin / "docker")
+    cases = (
+        (
+            {"CODEPROBE_IMAGE_REGISTRY": "registry.example.test"},
+            "Missing required image setting(s): CODEPROBE_IMAGE_NAMESPACE",
+        ),
+        (
+            {
+                "CODEPROBE_IMAGE_REGISTRY": "REGISTRY.example.test",
+                "CODEPROBE_IMAGE_NAMESPACE": "platform/codeprobe",
+            },
+            "CODEPROBE_IMAGE_REGISTRY has an invalid registry host",
+        ),
+    )
+
+    for index, (image_env, expected) in enumerate(cases):
+        engine_log = tmp_path / f"engine-{index}.log"
+        env = _engine_environment(fake_bin, engine_log)
+        env["CODEPROBE_CONTAINER_CONFIG"] = str(
+            run_dir / f"container-images-{index}.json"
+        )
+        env.update(image_env)
+
+        result = subprocess.run(
+            [
+                str(venv_dir / "bin" / "codeprobe"),
+                "bootstrap",
+                "--engine",
+                "docker",
+                "--no-json",
+            ],
+            cwd=run_dir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode != 0
+        assert expected in output
+        assert (
+            not engine_log.exists()
+            or engine_log.read_text(encoding="utf-8") == ""
+        )
+
+
 def _install_wheel(wheel: Path, venv_dir: Path) -> Path:
     subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
     venv_python = venv_dir / "bin" / "python"

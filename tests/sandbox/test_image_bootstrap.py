@@ -233,6 +233,22 @@ def test_tag_reference_without_expected_digest_fails_before_pull(
     assert runner.calls == []
 
 
+def test_malformed_source_reference_fails_before_pull(tmp_path: Path) -> None:
+    runner = RecordingRunner({})
+
+    with pytest.raises(ImageBootstrapError, match="agent image.*fully qualified"):
+        prepare_images(
+            engine="docker",
+            agent_reference="acme/codeprobe-agent:0.13.0",
+            scoring_reference=f"{_SCORING_REF}@{_SCORING_DIGEST}",
+            config_path=tmp_path / "config.json",
+            runner=runner,
+            which=lambda _name: "/usr/bin/docker",
+        )
+
+    assert runner.calls == []
+
+
 def test_digest_flag_must_match_digest_pinned_reference(tmp_path: Path) -> None:
     runner = RecordingRunner({})
 
