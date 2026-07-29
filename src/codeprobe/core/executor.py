@@ -1396,10 +1396,7 @@ def execute_config(
     # rather than wasting wall-clock on guaranteed-failing trials
     # (codeprobe-9xrl).
     quota_exhausted = False
-    quota_message: str | None = None
     auth_failed = False
-    auth_message: str | None = None
-    auth_remediation: str | None = None
     # Set when a pooled worktree could not be reset after a trial. The slot is
     # quarantined by the isolation layer, so the run halts rather than scoring
     # later trials against a shrinking pool of possibly dirty slots
@@ -1408,8 +1405,7 @@ def execute_config(
 
     def _handle_result(task_result: TaskResult) -> None:
         nonlocal budget_warning_emitted
-        nonlocal quota_exhausted, quota_message
-        nonlocal auth_failed, auth_message, auth_remediation
+        nonlocal quota_exhausted, auth_failed
         result = task_result.completed
         results.append(result)
 
@@ -1418,26 +1414,24 @@ def execute_config(
         # but their messages are preserved on the individual results.
         if result.error_category == "quota" and not quota_exhausted:
             quota_exhausted = True
-            quota_message = (
-                result.metadata.get("error") if result.metadata else None
-            )
+            message = result.metadata.get("error") if result.metadata else None
             _budget_msg(
                 f"OAuth quota exhausted — halting run after current "
                 f"in-flight tasks complete. Remaining trials will be "
-                f"cancelled. Message: {quota_message or '(no detail)'}"
+                f"cancelled. Message: {message or '(no detail)'}"
             )
 
         if result.error_category == "auth_failure" and not auth_failed:
             auth_failed = True
-            auth_message = result.metadata.get("error") if result.metadata else None
-            auth_remediation = (
+            message = result.metadata.get("error") if result.metadata else None
+            remediation = (
                 result.metadata.get("remediation") if result.metadata else None
             )
             _budget_msg(
                 "Authentication failed — halting run after current in-flight "
                 "tasks complete. Remaining trials will be cancelled. "
-                f"Message: {auth_message or '(no detail)'}"
-                + (f" Remediation: {auth_remediation}" if auth_remediation else "")
+                f"Message: {message or '(no detail)'}"
+                + (f" Remediation: {remediation}" if remediation else "")
             )
 
         if runs_dir is not None:
