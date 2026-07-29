@@ -48,7 +48,7 @@ from codeprobe.sandbox.oci_references import (
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_IMAGE: Final[str] = "codeprobe-sandbox:sg-only"
+DEFAULT_IMAGE: Final[str] = "docker.io/library/codeprobe-sandbox:sg-only"
 DEFAULT_TIMEOUT_SECONDS: Final[float] = 60.0
 _PACKAGE_NAME: Final[str] = "codeprobe"
 _DEFAULT_AGENT_IMAGE_NAME: Final[str] = "codeprobe-agent"
@@ -294,6 +294,7 @@ def image_available(engine: str, image: str) -> bool:
     Any failure — nonzero exit, missing binary, timeout — reads as "image
     not available"; callers fall through to their no-container branch.
     """
+    validate_image_reference("sandbox image", image)
     try:
         completed = subprocess.run(  # noqa: S603 — argv list, no shell=True
             [engine, "image", "inspect", image],
@@ -328,6 +329,7 @@ def _build_run_command(
     ``--name`` so a client-side timeout can ``<engine> rm -f`` the
     container instead of orphaning it.
     """
+    validate_image_reference("sandbox image", image)
     argv = _run_base_args(engine, network)
     if container_name is not None:
         argv += ["--name", container_name]
@@ -562,8 +564,7 @@ def _sandbox_result(
     exit_code = completed.returncode
     if _should_raise_write_denied(exit_code, allow_writes, stderr):
         raise SandboxWriteDeniedError(
-            f"sandbox blocked write to read-only mount (exit {exit_code}): "
-            f"{stderr.strip()}"
+            f"sandbox blocked write to read-only mount (exit {exit_code})"
         )
 
     return SandboxResult(

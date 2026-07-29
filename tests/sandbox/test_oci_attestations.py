@@ -331,6 +331,45 @@ def test_verify_buildkit_attestations_rejects_empty_spdx_package_version_when_pr
         _verify(fixture)
 
 
+def test_verify_buildkit_attestations_rejects_duplicate_spdx_ids(
+    attestation_fixture: dict[str, Any],
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    predicate = _statement(fixture)["predicate"]
+    predicate["files"][0]["SPDXID"] = predicate["packages"][0]["SPDXID"]
+
+    with pytest.raises(AttestationVerificationError, match="duplicate SPDXID"):
+        _verify(fixture)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("spdxElementId", "SPDXRef-Missing-source"),
+        ("relatedSpdxElement", "SPDXRef-Missing-target"),
+    ],
+)
+def test_verify_buildkit_attestations_rejects_unknown_relationship_elements(
+    attestation_fixture: dict[str, Any], field: str, value: str
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    _statement(fixture)["predicate"]["relationships"][0][field] = value
+
+    with pytest.raises(AttestationVerificationError, match="unknown SPDX element"):
+        _verify(fixture)
+
+
+def test_verify_buildkit_attestations_rejects_unknown_relationship_type(
+    attestation_fixture: dict[str, Any],
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    relationship = _statement(fixture)["predicate"]["relationships"][0]
+    relationship["relationshipType"] = "LOOKS_LIKE"
+
+    with pytest.raises(AttestationVerificationError, match="relationshipType"):
+        _verify(fixture)
+
+
 def test_verify_buildkit_attestations_rejects_spdx_without_creation_info(
     attestation_fixture: dict[str, Any],
 ) -> None:
@@ -376,6 +415,41 @@ def test_verify_buildkit_attestations_rejects_empty_material_digest_value(
     material["digest"]["sha1"] = ""
 
     with pytest.raises(AttestationVerificationError, match="digest value"):
+        _verify(fixture)
+
+
+@pytest.mark.parametrize("uri", ["not-a-uri", "git+https://github.com/source/repo\n"])
+def test_verify_buildkit_attestations_rejects_malformed_material_uri(
+    attestation_fixture: dict[str, Any], uri: str
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    material = _statement(fixture, AMD64_SLSA_REF)["predicate"]["buildDefinition"][
+        "resolvedDependencies"
+    ][0]
+    material["uri"] = uri
+
+    with pytest.raises(AttestationVerificationError, match="invalid uri"):
+        _verify(fixture)
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [
+        {"md5": "0" * 32},
+        {"sha1": "0" * 39},
+        {"sha256": "z" * 64},
+    ],
+)
+def test_verify_buildkit_attestations_rejects_invalid_material_digest_format(
+    attestation_fixture: dict[str, Any], digest: dict[str, str]
+) -> None:
+    fixture = copy.deepcopy(attestation_fixture)
+    material = _statement(fixture, AMD64_SLSA_REF)["predicate"]["buildDefinition"][
+        "resolvedDependencies"
+    ][0]
+    material["digest"] = digest
+
+    with pytest.raises(AttestationVerificationError, match="digest"):
         _verify(fixture)
 
 
@@ -466,6 +540,43 @@ def test_verify_buildkit_attestations_rejects_extra_predicate_layer(
 def test_load_statement_rejects_malformed_gzip_payload() -> None:
     with pytest.raises(AttestationVerificationError, match="malformed gzip"):
         _load_statement(b"\x1f\x8bnot-a-valid-gzip", "sha256:" + "1" * 64)
+
+
+def test_load_statement_rejects_oversized_compressed_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "codeprobe.sandbox.oci_attestations._MAX_COMPRESSED_PAYLOAD_BYTES", 16
+    )
+
+    with pytest.raises(AttestationVerificationError, match="size limit"):
+        _load_statement(gzip.compress(b'{"value":"small"}'), "sha256:" + "1" * 64)
+
+
+def test_load_statement_rejects_gzip_expansion_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "codeprobe.sandbox.oci_attestations._MAX_COMPRESSED_PAYLOAD_BYTES", 1_024
+    )
+    monkeypatch.setattr(
+        "codeprobe.sandbox.oci_attestations._MAX_DECOMPRESSED_PAYLOAD_BYTES", 64
+    )
+    payload = gzip.compress(json.dumps({"value": "x" * 1_000}).encode())
+
+    with pytest.raises(AttestationVerificationError, match="size limit"):
+        _load_statement(payload, "sha256:" + "1" * 64)
+
+
+def test_load_statement_rejects_oversized_plain_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "codeprobe.sandbox.oci_attestations._MAX_DECOMPRESSED_PAYLOAD_BYTES", 16
+    )
+
+    with pytest.raises(AttestationVerificationError, match="size limit"):
+        _load_statement(b'{"value":"too large"}', "sha256:" + "1" * 64)
 
 
 def test_load_statement_rejects_malformed_utf8_payload() -> None:

@@ -119,7 +119,7 @@ def _required_env(env: Mapping[str, str], name: str) -> str:
 
 
 def _reject_control_chars(label: str, value: str) -> None:
-    if "\r" in value or "\n" in value:
+    if any(ord(character) < 32 or 127 <= ord(character) <= 159 for character in value):
         raise WorkflowInputError(f"{label} must not contain control characters")
 
 

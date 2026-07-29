@@ -20,8 +20,21 @@ COMMAND_TIMEOUT_SECONDS: Final[float] = 120.0
 EXPECTED_IMAGES: Final[tuple[str, ...]] = ("codeprobe-agent", "codeprobe-scoring")
 _DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[a-f0-9]{64}\Z")
 _SHA_RE: Final[re.Pattern[str]] = re.compile(r"[a-f0-9]{40}\Z")
-_ABSENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN)", re.I
+_ABSENT_SUFFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:^|:\s)(?:manifest unknown|name unknown)(?::[^;\r\n]*)?\s*\Z", re.I
+)
+_NON_ABSENT_MARKERS: Final[tuple[str, ...]] = (
+    "unauthorized",
+    "denied",
+    "forbidden",
+    "authentication",
+    "credential",
+    "permission",
+    "rate limit",
+    "too many requests",
+    "timeout",
+    "connection",
+    "tls",
 )
 
 
@@ -80,6 +93,21 @@ def _cleanup_observed_candidate(
         return True
     if _shared_digest_quarantined(metadata, output_dir, observed, runner):
         return True
+    current = _safe_resolve(metadata, output_dir, runner)
+    if current is None:
+        print(f"candidate cleanup: candidate already absent: {metadata.candidate_ref}")
+        return False
+    if current == "":
+        return True
+    if current != observed:
+        _write_quarantine(
+            output_dir,
+            "candidate-digest-changed",
+            metadata,
+            observed,
+            {"current_digest": current},
+        )
+        return True
     if not _safe_delete(metadata, output_dir, observed, runner):
         return True
     after_delete = _safe_resolve(metadata, output_dir, runner)
@@ -106,7 +134,7 @@ def _safe_delete(
     metadata: CleanupMetadata, output_dir: Path, observed: str, runner: CommandRunner
 ) -> bool:
     try:
-        _delete_candidate(metadata.candidate_ref, runner)
+        _delete_candidate(metadata.candidate_ref, observed, runner)
     except CandidateCleanupError:
         _write_quarantine(output_dir, "candidate-delete-failed", metadata, observed)
         return False
@@ -212,14 +240,23 @@ def _resolve_required(ref_name: str, runner: CommandRunner) -> str:
     return digest
 
 
-def _delete_candidate(candidate_ref: str, runner: CommandRunner) -> None:
+def _delete_candidate(
+    candidate_ref: str, expected_digest: str, runner: CommandRunner
+) -> None:
+    repository, _ = _repository_and_tag(candidate_ref)
     try:
         runner(
-            ["oras", "manifest", "delete", "--force", candidate_ref],
+            [
+                "oras",
+                "manifest",
+                "delete",
+                "--force",
+                f"{repository}@{expected_digest}",
+            ],
             COMMAND_TIMEOUT_SECONDS,
         )
     except CandidateCommandError as exc:
-        if _ABSENT_RE.search(exc.stderr):
+        if _is_absent_error(exc.stderr):
             return
         raise
 
@@ -228,12 +265,20 @@ def _resolve_optional(candidate_ref: str, runner: CommandRunner) -> str | None:
     try:
         digest = runner(["oras", "resolve", candidate_ref], COMMAND_TIMEOUT_SECONDS).strip()
     except CandidateCommandError as exc:
-        if _ABSENT_RE.search(exc.stderr):
+        if _is_absent_error(exc.stderr):
             return None
         raise
     if not _DIGEST_RE.fullmatch(digest):
         raise CandidateCleanupError("candidate resolve returned invalid digest")
     return digest
+
+
+def _is_absent_error(stderr: str) -> bool:
+    normalized = stderr.strip()
+    lowered = normalized.lower()
+    if any(marker in lowered for marker in _NON_ABSENT_MARKERS):
+        return False
+    return _ABSENT_SUFFIX_RE.search(normalized) is not None
 
 
 def _write_quarantine(

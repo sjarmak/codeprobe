@@ -122,6 +122,23 @@ class TestContainerizeArgv:
                 name="codeprobe-agent-abc",
             )
 
+    @pytest.mark.parametrize(
+        "image",
+        ["--privileged", "codeprobe-agent:1.2.3", "registry.example.test/agent:latest"],
+    )
+    def test_invalid_image_reference_rejected(self, image: str) -> None:
+        with pytest.raises(ValueError, match="image"):
+            containerize_argv(
+                ["/host/bin/claude"],
+                engine=ENGINE,
+                workspace=Path("/work"),
+                config_dir=None,
+                mcp_tmpfile=None,
+                env_keys=[],
+                image=image,
+                name="codeprobe-agent-abc",
+            )
+
 
 def _expected_full_container_argv() -> list[str]:
     expected = [

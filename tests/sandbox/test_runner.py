@@ -24,6 +24,7 @@ from codeprobe.sandbox.runner import (
     SandboxResult,
     SandboxWriteDeniedError,
     _build_run_command,
+    image_available,
     run_in_sandbox,
 )
 
@@ -35,7 +36,8 @@ DOCKERFILE = (
     / "sandbox"
     / "Dockerfile.sg_only"
 )
-TEST_IMAGE_TAG = "codeprobe-sandbox:sg-only-test"
+TEST_IMAGE_TAG = "docker.io/library/codeprobe-sandbox:sg-only-test"
+UNIT_IMAGE = "registry.example.test/codeprobe-sandbox:sg-only"
 
 # ---------------------------------------------------------------------------
 # Argv construction (pure, no subprocess)
@@ -48,7 +50,7 @@ def test_build_run_command_uses_ro_mode_by_default() -> None:
         ["echo", "hi"],
         {"/host/src": "/workspace"},
         allow_writes=False,
-        image="codeprobe-sandbox:sg-only",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
     )
@@ -75,7 +77,7 @@ def test_build_run_command_uses_rw_mode_when_allowed() -> None:
         ["echo", "hi"],
         {"/host/src": "/workspace"},
         allow_writes=True,
-        image="codeprobe-sandbox:sg-only",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
     )
@@ -90,7 +92,7 @@ def test_build_run_command_network_parameter() -> None:
         ["echo", "hi"],
         {},
         allow_writes=False,
-        image="codeprobe-sandbox:sg-only",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
         network="bridge",
@@ -122,7 +124,7 @@ def test_build_run_command_string_cmd_wrapped_in_sh_c() -> None:
         "echo hi | wc -l",
         {},
         allow_writes=False,
-        image="codeprobe-sandbox:sg-only",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
     )
@@ -135,7 +137,7 @@ def test_build_run_command_list_cmd_passes_through() -> None:
         ["ls", "-la", "/"],
         {},
         allow_writes=False,
-        image="img",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
     )
@@ -148,7 +150,7 @@ def test_build_run_command_includes_workdir_and_env() -> None:
         ["true"],
         {},
         allow_writes=False,
-        image="img",
+        image=UNIT_IMAGE,
         workdir="/workspace",
         env={"FOO": "bar"},
     )
@@ -185,7 +187,7 @@ def test_build_run_command_rejects_invalid_env_keys(bad_key: str) -> None:
             ["true"],
             {},
             allow_writes=False,
-            image="img",
+            image=UNIT_IMAGE,
             workdir=None,
             env={bad_key: "value"},
         )
@@ -198,7 +200,7 @@ def test_build_run_command_accepts_valid_env_keys() -> None:
         ["true"],
         {},
         allow_writes=False,
-        image="img",
+        image=UNIT_IMAGE,
         workdir=None,
         env={"FOO_BAR": "value", "BAZ123": "q"},
     )
@@ -212,7 +214,7 @@ def test_build_run_command_includes_container_name() -> None:
         ["true"],
         {},
         allow_writes=False,
-        image="img",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
         container_name="codeprobe-sb-test",
@@ -226,7 +228,7 @@ def test_build_run_command_omits_name_when_none() -> None:
         ["true"],
         {},
         allow_writes=False,
-        image="img",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
     )
@@ -239,12 +241,37 @@ def test_build_run_command_includes_multiple_mounts() -> None:
         ["true"],
         {"/host/a": "/mnt/a", "/host/b": "/mnt/b"},
         allow_writes=False,
-        image="img",
+        image=UNIT_IMAGE,
         workdir=None,
         env=None,
     )
     assert "/host/a:/mnt/a:ro" in argv
     assert "/host/b:/mnt/b:ro" in argv
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["--privileged", "image:1.2.3", "registry.example.test/image:latest"],
+)
+def test_build_run_command_rejects_untrusted_image_reference(image: str) -> None:
+    with pytest.raises(ValueError, match="image"):
+        _build_run_command(
+            "docker",
+            ["true"],
+            {},
+            allow_writes=False,
+            image=image,
+            workdir=None,
+            env=None,
+        )
+
+
+def test_image_available_rejects_untrusted_image_before_subprocess() -> None:
+    with patch("codeprobe.sandbox.runner.subprocess.run") as run_mock:
+        with pytest.raises(ValueError, match="image"):
+            image_available("docker", "--privileged")
+
+    run_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +321,34 @@ def test_run_in_sandbox_ro_write_failure_raises_write_denied() -> None:
                 {"/tmp/src": "/mnt"},
                 allow_writes=False,
             )
+
+
+def test_run_in_sandbox_write_denied_error_does_not_echo_stderr() -> None:
+    secret = "sk-write-probe-secret"
+    host_path = "/tmp/codeprobe-sensitive-worktree"
+    fake = _make_completed(
+        stdout="",
+        stderr=(
+            f"touch: cannot touch '{host_path}': Read-only file system; "
+            f"token={secret}\n"
+        ),
+        returncode=1,
+    )
+
+    with patch(
+        "codeprobe.sandbox.runner._detect_engine", return_value="/usr/bin/docker"
+    ), patch("codeprobe.sandbox.runner.subprocess.run", return_value=fake):
+        with pytest.raises(SandboxWriteDeniedError) as exc_info:
+            run_in_sandbox(
+                ["touch", host_path],
+                {"/tmp/src": "/mnt"},
+                allow_writes=False,
+            )
+
+    message = str(exc_info.value)
+    assert "sandbox blocked write to read-only mount" in message
+    assert secret not in message
+    assert host_path not in message
 
 
 def test_run_in_sandbox_ro_write_not_raised_when_allow_writes_true() -> None:

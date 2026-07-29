@@ -42,8 +42,21 @@ SIGSTORE_BUNDLE_TYPE: Final[str] = "application/vnd.dev.sigstore.bundle.v0.3+jso
 COMMAND_TIMEOUT_SECONDS: Final[float] = 120.0
 TRIVY_TIMEOUT_SECONDS: Final[float] = 600.0
 _DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[a-f0-9]{64}\Z")
-_ABSENT_RE: Final[re.Pattern[str]] = re.compile(
-    r"(manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN)", re.I
+_ABSENT_SUFFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:^|:\s)(?:manifest unknown|name unknown)(?::[^;\r\n]*)?\s*\Z", re.I
+)
+_NON_ABSENT_MARKERS: Final[tuple[str, ...]] = (
+    "unauthorized",
+    "denied",
+    "forbidden",
+    "authentication",
+    "credential",
+    "permission",
+    "rate limit",
+    "too many requests",
+    "timeout",
+    "connection",
+    "tls",
 )
 
 
@@ -98,6 +111,7 @@ def check_reuse(
         _verify_image_signature(identity, repository, ref, source_sha, cert_identity, runner)
         _scan_image_platforms(identity, trivy_image, trivy_severity, runner)
     _require_tag_still_at_digest(ref_name, pair_digest, runner)
+    _verify_tag_digests(identities, runner)
     _write_reuse_evidence(output_dir, ref_name, pair_digest, identities)
     return True
 
@@ -332,7 +346,7 @@ def _pair_exists(ref_name: str, runner: CommandRunner) -> bool:
     try:
         runner(["oras", "manifest", "fetch", ref_name], COMMAND_TIMEOUT_SECONDS)
     except OciCommandError as exc:
-        if _ABSENT_RE.search(exc.stderr):
+        if _is_absent_error(exc.stderr):
             return False
         raise
     return True
@@ -505,7 +519,7 @@ def _inspect_digest_optional(ref_name: str, runner: CommandRunner) -> str | None
     try:
         return _inspect_digest(ref_name, runner)
     except OciCommandError as exc:
-        if _ABSENT_RE.search(exc.stderr):
+        if _is_absent_error(exc.stderr):
             return None
         raise
 
@@ -521,9 +535,17 @@ def _resolve_optional(ref_name: str, runner: CommandRunner) -> str | None:
     try:
         return _resolve_ref(ref_name, runner)
     except OciCommandError as exc:
-        if _ABSENT_RE.search(exc.stderr):
+        if _is_absent_error(exc.stderr):
             return None
         raise
+
+
+def _is_absent_error(stderr: str) -> bool:
+    normalized = stderr.strip()
+    lowered = normalized.lower()
+    if any(marker in lowered for marker in _NON_ABSENT_MARKERS):
+        return False
+    return _ABSENT_SUFFIX_RE.search(normalized) is not None
 
 
 def _require_tag_still_at_digest(

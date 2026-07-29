@@ -37,12 +37,15 @@ class RecordingRunner:
         *,
         version_tags_exist: bool = False,
         moved_pair_tag: bool = False,
+        moved_version_tags: bool = False,
     ) -> None:
         self.calls: list[tuple[list[str], float]] = []
         self.pair = pair
         self.version_tags_exist = version_tags_exist
         self.moved_pair_tag = moved_pair_tag
+        self.moved_version_tags = moved_version_tags
         self.pair_resolves = 0
+        self.version_tag_inspects = 0
         self.created_version_tags: set[str] = set()
 
     def __call__(self, command: list[str], timeout: float) -> str:
@@ -64,6 +67,9 @@ class RecordingRunner:
         if command[:4] == ["docker", "buildx", "imagetools", "inspect"]:
             if not self.version_tags_exist and command[-1] not in self.created_version_tags:
                 raise OciCommandError("docker", 1, "manifest unknown")
+            self.version_tag_inspects += 1
+            if self.moved_version_tags and self.version_tag_inspects > 2:
+                return "Digest: sha256:" + "7" * 64 + "\n"
             return _inspect_output(command[-1])
         if command[:4] == ["docker", "buildx", "imagetools", "create"]:
             self.created_version_tags.add(command[command.index("--tag") + 1])
@@ -230,6 +236,32 @@ def test_check_reuse_does_not_treat_auth_endpoint_404_as_absent(
         )
 
 
+def test_check_reuse_does_not_treat_auth_error_with_absence_text_as_absent(
+    tmp_path: Path,
+) -> None:
+    def runner(command: list[str], timeout: float) -> str:
+        raise OciCommandError(
+            "oras", 2, "UNAUTHORIZED: token rejected; manifest unknown is not proof"
+        )
+
+    with pytest.raises(OciCommandError):
+        check_reuse(
+            registry="ghcr.io",
+            namespace="sjarmak/codeprobe",
+            version="1.2.3",
+            repository="sjarmak/codeprobe",
+            ref="refs/tags/v1.2.3",
+            source_sha=SHA,
+            cert_identity=CERT_IDENTITY,
+            output_dir=tmp_path,
+            trivy_image="trivy@sha256:abc",
+            trivy_severity="CRITICAL,HIGH",
+            runner=runner,
+        )
+
+    assert not (tmp_path / "reuse-evidence.json").exists()
+
+
 def test_check_reuse_verifies_existing_pair_and_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -311,6 +343,30 @@ def test_check_reuse_fails_when_pair_tag_moves_during_verification(
     monkeypatch.setattr(oci_release, "verify_buildkit_attestations", lambda **_: None)
 
     with pytest.raises(OciReleaseError, match="changed during verification"):
+        check_reuse(
+            registry="ghcr.io",
+            namespace="sjarmak/codeprobe",
+            version="1.2.3",
+            repository="sjarmak/codeprobe",
+            ref="refs/tags/v1.2.3",
+            source_sha=SHA,
+            cert_identity=CERT_IDENTITY,
+            output_dir=tmp_path,
+            trivy_image="trivy@sha256:abc",
+            trivy_severity="CRITICAL,HIGH",
+            runner=runner,
+        )
+
+
+def test_check_reuse_fails_when_version_tag_moves_during_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = RecordingRunner(
+        pair=_pair(), version_tags_exist=True, moved_version_tags=True
+    )
+    monkeypatch.setattr(oci_release, "verify_buildkit_attestations", lambda **_: None)
+
+    with pytest.raises(OciReleaseError, match="immutable tag drift"):
         check_reuse(
             registry="ghcr.io",
             namespace="sjarmak/codeprobe",

@@ -370,6 +370,9 @@ def _container_outcome(
     prepared: _PreparedSandbox, timeout: int
 ) -> tuple[tuple[int, str, str] | str | None, str | None]:
     engine = container_runner.detect_engine()
+    plan_refusal = _container_plan_refusal(engine)
+    if plan_refusal is not None:
+        return None, plan_refusal
     scoring_image, image_error = _configured_scoring_image()
     if engine is not None and scoring_image is not None:
         if container_runner.image_available(engine, scoring_image):
@@ -383,6 +386,21 @@ def _container_outcome(
             )
             return outcome, None
     return None, _missing_image_refusal(engine, scoring_image, image_error)
+
+
+def _container_plan_refusal(engine: str | None) -> str | None:
+    from codeprobe.core.containment import active_plan
+
+    plan = active_plan()
+    if plan is None or plan.mode != "container":
+        return None
+    if engine == plan.engine and engine is not None:
+        return None
+    return (
+        "The authorized container engine is no longer available; refusing "
+        "to run mined test/verifier scripts on the host without "
+        "--uncontained consent."
+    )
 
 
 def _host_exec(prepared: _PreparedSandbox, timeout: int) -> tuple[int, str, str]:

@@ -109,6 +109,29 @@ def test_credentials_reject_crlf_before_mask_or_output(
     assert not output_path.exists()
 
 
+@pytest.mark.parametrize(
+    ("username", "password"),
+    [
+        ("actor\tadmin", "secret"),
+        ("actor", "secret\x1b[2J"),
+        ("actor", "secret\x00suffix"),
+        ("actor\x85admin", "secret"),
+    ],
+)
+def test_credentials_reject_all_control_characters(
+    username: str, password: str
+) -> None:
+    with pytest.raises(WorkflowInputError, match="control characters") as exc_info:
+        resolve_credentials(
+            "registry.example",
+            "sjarmak/codeprobe",
+            {"REGISTRY_USERNAME": username, "REGISTRY_PASSWORD": password},
+        )
+
+    assert username not in str(exc_info.value)
+    assert password not in str(exc_info.value)
+
+
 def test_credentials_mask_password_before_output_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

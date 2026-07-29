@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import gzip
 import json
 import re
 import subprocess
 import sys
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final, TypeGuard, cast
@@ -15,29 +15,28 @@ from urllib.parse import quote, quote_plus
 
 from docker_image import reference as oci_reference  # type: ignore[import-untyped]
 
-IN_TOTO_STATEMENT_TYPE: Final[str] = "https://in-toto.io/Statement/v1"
-SPDX_PREDICATE_TYPE: Final[str] = "https://spdx.dev/Document"
-SLSA_PREDICATE_TYPE: Final[str] = "https://slsa.dev/provenance/v1"
-BUILDKIT_BUILD_TYPE: Final[str] = (
-    "https://github.com/moby/buildkit/blob/master/docs/attestations/"
-    "slsa-definitions.md"
+from codeprobe.sandbox.oci_predicates import (
+    SLSA_PREDICATE_TYPE,
+    SPDX_PREDICATE_TYPE,
+    verify_slsa_predicate,
+    verify_spdx_predicate,
 )
+from codeprobe.sandbox.oci_predicates import (
+    AttestationVerificationError as AttestationVerificationError,
+)
+
+IN_TOTO_STATEMENT_TYPE: Final[str] = "https://in-toto.io/Statement/v1"
 REQUIRED_PREDICATE_TYPES: Final[frozenset[str]] = frozenset(
     {SPDX_PREDICATE_TYPE, SLSA_PREDICATE_TYPE}
 )
 REQUIRED_PLATFORMS: Final[tuple[str, ...]] = ("linux/amd64", "linux/arm64")
 OCI_INSPECT_TIMEOUT_SECONDS: Final[float] = 120.0
 OCI_BLOB_FETCH_TIMEOUT_SECONDS: Final[float] = 120.0
+_MAX_COMPRESSED_PAYLOAD_BYTES: Final[int] = 16 * 1024 * 1024
+_MAX_DECOMPRESSED_PAYLOAD_BYTES: Final[int] = 64 * 1024 * 1024
 _DIGEST_RE: Final[re.Pattern[str]] = re.compile(r"sha256:[a-f0-9]{64}\Z")
-_RFC3339_RE: Final[re.Pattern[str]] = re.compile(
-    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\Z"
-)
 _DOCKER_IO_LIBRARY_PREFIX: Final[str] = "docker.io/library/"
 _DOCKER_IO_PREFIX: Final[str] = "docker.io/"
-
-
-class AttestationVerificationError(ValueError):
-    """Raised when image attestation payloads fail the release contract."""
 
 
 @dataclass(frozen=True)
@@ -312,12 +311,11 @@ def _verify_manifest_subject(
 
 def _load_statement(payload: bytes, layer_digest: str) -> dict[str, Any]:
     if payload.startswith(b"\x1f\x8b"):
-        try:
-            payload = gzip.decompress(payload)
-        except (OSError, EOFError) as exc:
-            raise AttestationVerificationError(
-                f"{layer_digest} has malformed gzip payload"
-            ) from exc
+        payload = _bounded_gzip_decompress(payload, layer_digest)
+    elif len(payload) > _MAX_DECOMPRESSED_PAYLOAD_BYTES:
+        raise AttestationVerificationError(
+            f"{layer_digest} attestation payload exceeds size limit"
+        )
     try:
         text = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -335,6 +333,35 @@ def _load_statement(payload: bytes, layer_digest: str) -> dict[str, Any]:
             f"{layer_digest} did not contain a JSON object"
         )
     return loaded
+
+
+def _bounded_gzip_decompress(payload: bytes, layer_digest: str) -> bytes:
+    if len(payload) > _MAX_COMPRESSED_PAYLOAD_BYTES:
+        raise AttestationVerificationError(
+            f"{layer_digest} attestation payload exceeds size limit"
+        )
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        decoded = decompressor.decompress(
+            payload, _MAX_DECOMPRESSED_PAYLOAD_BYTES + 1
+        )
+        if len(decoded) <= _MAX_DECOMPRESSED_PAYLOAD_BYTES:
+            decoded += decompressor.flush(
+                _MAX_DECOMPRESSED_PAYLOAD_BYTES - len(decoded) + 1
+            )
+    except zlib.error as exc:
+        raise AttestationVerificationError(
+            f"{layer_digest} has malformed gzip payload"
+        ) from exc
+    if len(decoded) > _MAX_DECOMPRESSED_PAYLOAD_BYTES:
+        raise AttestationVerificationError(
+            f"{layer_digest} attestation payload exceeds size limit"
+        )
+    if not decompressor.eof or decompressor.unused_data:
+        raise AttestationVerificationError(
+            f"{layer_digest} has malformed gzip payload"
+        )
+    return decoded
 
 
 def _verify_statement(
@@ -368,9 +395,9 @@ def _verify_statement(
     if not isinstance(predicate, dict):
         raise AttestationVerificationError(f"{layer_digest} is missing predicate")
     if descriptor_predicate == SPDX_PREDICATE_TYPE:
-        _verify_spdx_predicate(predicate, layer_digest)
+        verify_spdx_predicate(predicate, layer_digest)
     elif descriptor_predicate == SLSA_PREDICATE_TYPE:
-        _verify_slsa_predicate(predicate, layer_digest)
+        verify_slsa_predicate(predicate, layer_digest)
     else:
         raise AttestationVerificationError(
             f"{layer_digest} has unsupported predicate {descriptor_predicate}"
@@ -429,192 +456,12 @@ def _buildkit_subject_purl(candidate_ref: str, platform: str) -> str:
     )
 
 
-def _verify_spdx_predicate(predicate: dict[str, Any], layer_digest: str) -> None:
-    _verify_spdx_document_fields(predicate, layer_digest)
-    _verify_spdx_creation_info(predicate, layer_digest)
-    _verify_spdx_packages(predicate, layer_digest)
-    _verify_spdx_files(predicate, layer_digest)
-    _verify_spdx_relationships(predicate, layer_digest)
-
-
-def _verify_spdx_document_fields(
-    predicate: dict[str, Any], layer_digest: str
-) -> None:
-    expected = {
-        "spdxVersion": "SPDX-2.3",
-        "SPDXID": "SPDXRef-DOCUMENT",
-        "dataLicense": "CC0-1.0",
-    }
-    for key, value in expected.items():
-        if predicate.get(key) != value:
-            raise AttestationVerificationError(
-                f"{layer_digest} SPDX predicate has invalid {key}"
-            )
-    for key in ("name", "documentNamespace"):
-        if not isinstance(predicate.get(key), str) or not predicate[key]:
-            raise AttestationVerificationError(
-                f"{layer_digest} SPDX predicate missing {key}"
-            )
-
-
-def _verify_spdx_creation_info(
-    predicate: dict[str, Any], layer_digest: str
-) -> None:
-    creation_info = predicate.get("creationInfo")
-    if not isinstance(creation_info, dict):
-        raise AttestationVerificationError(
-            f"{layer_digest} SPDX predicate missing creationInfo"
-        )
-    creators = creation_info.get("creators")
-    created = creation_info.get("created")
-    if not isinstance(created, str) or _RFC3339_RE.fullmatch(created) is None:
-        raise AttestationVerificationError(
-            f"{layer_digest} SPDX predicate has invalid creationInfo.created"
-        )
-    if (
-        not isinstance(creators, list)
-        or not creators
-        or not all(isinstance(creator, str) and creator for creator in creators)
-    ):
-        raise AttestationVerificationError(
-            f"{layer_digest} SPDX predicate missing creators"
-        )
-
-
-def _verify_spdx_packages(predicate: dict[str, Any], layer_digest: str) -> None:
-    packages = predicate.get("packages")
-    if not isinstance(packages, list) or not packages:
-        raise AttestationVerificationError(
-            f"{layer_digest} SPDX predicate missing packages"
-        )
-    for package in packages:
-        if not isinstance(package, dict):
-            raise AttestationVerificationError(
-                f"{layer_digest} SPDX package is invalid"
-            )
-        for key in ("SPDXID", "name"):
-            if not isinstance(package.get(key), str) or not package[key]:
-                raise AttestationVerificationError(
-                    f"{layer_digest} SPDX package missing {key}"
-                )
-        version_info = package.get("versionInfo")
-        if version_info is not None and (
-            not isinstance(version_info, str) or not version_info
-        ):
-            raise AttestationVerificationError(
-                f"{layer_digest} SPDX package has invalid versionInfo"
-            )
-
-
-def _verify_spdx_files(predicate: dict[str, Any], layer_digest: str) -> None:
-    files = predicate.get("files")
-    if not isinstance(files, list) or not files:
-        raise AttestationVerificationError(
-            f"{layer_digest} SPDX predicate missing files"
-        )
-    for file_entry in files:
-        _require_spdx_object_fields(file_entry, ("SPDXID", "fileName"), layer_digest)
-
-
-def _verify_spdx_relationships(
-    predicate: dict[str, Any], layer_digest: str
-) -> None:
-    relationships = predicate.get("relationships")
-    if not isinstance(relationships, list) or not relationships:
-        raise AttestationVerificationError(
-            f"{layer_digest} SPDX predicate missing relationships"
-        )
-    for relationship in relationships:
-        _require_spdx_object_fields(
-            relationship,
-            ("spdxElementId", "relationshipType", "relatedSpdxElement"),
-            layer_digest,
-        )
-
-
-def _require_spdx_object_fields(
-    entry: object, keys: tuple[str, ...], layer_digest: str
-) -> None:
-    if not isinstance(entry, dict):
-        raise AttestationVerificationError(f"{layer_digest} SPDX object is invalid")
-    for key in keys:
-        if not isinstance(entry.get(key), str) or not entry[key]:
-            raise AttestationVerificationError(
-                f"{layer_digest} SPDX object missing {key}"
-            )
-
-
-def _verify_slsa_predicate(predicate: dict[str, Any], layer_digest: str) -> None:
-    build_type = _string_at(predicate, ("buildType",)) or _string_at(
-        predicate, ("buildDefinition", "buildType")
-    )
-    builder = _string_at(predicate, ("builder", "id"), allow_empty=True)
-    if builder is None:
-        builder = _string_at(predicate, ("runDetails", "builder", "id"), allow_empty=True)
-    materials = predicate.get("materials")
-    if materials is None:
-        build_definition = predicate.get("buildDefinition")
-        if isinstance(build_definition, dict):
-            materials = build_definition.get("resolvedDependencies")
-    if build_type != BUILDKIT_BUILD_TYPE:
-        raise AttestationVerificationError(
-            f"{layer_digest} provenance predicate has unexpected buildType"
-        )
-    if builder is None:
-        raise AttestationVerificationError(
-            f"{layer_digest} provenance predicate missing builder id"
-        )
-    if not isinstance(materials, list) or not materials:
-        raise AttestationVerificationError(
-            f"{layer_digest} provenance predicate missing materials"
-        )
-    for material in materials:
-        if not isinstance(material, dict):
-            raise AttestationVerificationError(
-                f"{layer_digest} provenance material is invalid"
-            )
-        uri = material.get("uri")
-        digest = material.get("digest")
-        if not isinstance(uri, str) or not uri:
-            raise AttestationVerificationError(
-                f"{layer_digest} provenance material missing uri"
-            )
-        if not isinstance(digest, dict) or not digest:
-            raise AttestationVerificationError(
-                f"{layer_digest} provenance material missing digest"
-            )
-        for algorithm, value in digest.items():
-            if not isinstance(algorithm, str) or not algorithm:
-                raise AttestationVerificationError(
-                    f"{layer_digest} provenance material has invalid digest algorithm"
-                )
-            if not isinstance(value, str) or not value:
-                raise AttestationVerificationError(
-                    f"{layer_digest} provenance material has invalid digest value"
-                )
-
-
 def _platform_key(platform: dict[str, object]) -> str:
     os_name = platform.get("os")
     architecture = platform.get("architecture")
     if not isinstance(os_name, str) or not isinstance(architecture, str):
         raise AttestationVerificationError("platform descriptor is missing os/architecture")
     return f"{os_name}/{architecture}"
-
-
-def _string_at(
-    source: dict[str, Any], path: tuple[str, ...], *, allow_empty: bool = False
-) -> str | None:
-    current: object = source
-    for key in path:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(key)
-    if not isinstance(current, str):
-        return None
-    if current or allow_empty:
-        return current
-    return None
 
 
 def _required_list(source: dict[str, Any], key: str, ref: str) -> list[Any]:

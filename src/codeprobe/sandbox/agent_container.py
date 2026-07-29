@@ -26,6 +26,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+from codeprobe.sandbox.oci_references import validate_image_reference
+
 _CONTAINER_TMPFS: Final[str] = "/tmp:rw,nosuid,nodev,size=128m,mode=1777"
 _CONTAINER_CPUS: Final[str] = "2"
 _CONTAINER_MEMORY: Final[str] = "4g"
@@ -46,6 +48,7 @@ def containerize_argv(
     """Return *cmd* wrapped in a ``<engine> run`` argv."""
     if not cmd:
         raise ValueError("cmd must be a non-empty argv list")
+    validate_image_reference("agent container image", image)
     present = os.environ if env is None else env
     argv = _base_run_args(engine)
     argv += ["--name", name]

@@ -265,6 +265,26 @@ class TestHostFallback:
 
 
 class TestMissingImageRefusal:
+    def test_container_plan_refuses_when_engine_disappears(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_dir = tmp_path / "task"
+        marker = tmp_path / "host-executed"
+        script = _make_test_sh(task_dir, f"#!/bin/bash\ntouch '{marker}'\n")
+        containment.set_active_plan(
+            containment.ContainmentPlan(mode="container", engine="/usr/bin/docker")
+        )
+        monkeypatch.setattr(container_runner, "detect_engine", lambda: None)
+
+        run = _run_in_sandbox(script, "output", task_dir)
+
+        assert run.returncode == -1
+        assert run.verifier_error is True
+        assert run.execution_mode == "none"
+        assert run.error is not None
+        assert "container engine is no longer available" in run.error
+        assert not marker.exists()
+
     def test_engine_without_image_refused_under_sandboxed_plan(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
