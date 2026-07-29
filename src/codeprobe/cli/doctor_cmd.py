@@ -226,8 +226,7 @@ def _copilot_env_auth_status() -> tuple[bool, str] | None:
             continue
         value = raw_value.strip()
         if (
-            not value
-            or value != raw_value
+            value != raw_value
             or not _copilot_token_supported(value)
         ):
             return False, f"unsupported token in {key}"
