@@ -292,6 +292,33 @@ def _next_free_label(label: str, existing: list[str]) -> str:
     return f"{label}-{n}"
 
 
+def _validate_agent_backend(agent: str) -> None:
+    try:
+        candidate_adapter: object | None = resolve_agent(agent)
+    except KeyError:
+        candidate_adapter = None
+    if candidate_adapter is not None and getattr(
+        candidate_adapter, "quarantined", False
+    ):
+        click.echo(f"Error: {quarantine_message(agent)}", err=True)
+        # lint-exempt: keep add-config's quarantined-backend exit contract.
+        raise SystemExit(1)
+
+    known_agents = available()
+    if agent not in known_agents:
+        raise PrescriptiveError(
+            code="UNKNOWN_BACKEND",
+            message=(
+                f"unknown agent backend {agent!r}. "
+                f"Available: {', '.join(known_agents)}"
+            ),
+            next_try_flag="--agent",
+            next_try_value="claude",
+            exit_code=1,
+            detail={"agent": agent, "available": known_agents},
+        )
+
+
 def experiment_add_config(
     path: str,
     label: str,
@@ -326,16 +353,7 @@ def experiment_add_config(
     # arm would only store a guaranteed-refusal config. Unknown agent
     # names pass through unchanged here — backend validation is a
     # separate concern (codeprobe-f7rl.25).
-    try:
-        candidate_adapter: object | None = resolve_agent(agent)
-    except KeyError:
-        candidate_adapter = None
-    if candidate_adapter is not None and getattr(
-        candidate_adapter, "quarantined", False
-    ):
-        click.echo(f"Error: {quarantine_message(agent)}", err=True)
-        # lint-exempt: f7rl.27 pins SystemExit(1), the add-config echo+exit style
-        raise SystemExit(1)
+    _validate_agent_backend(agent)
 
     exp_dir = _resolve_exp_dir(path)
 
@@ -357,23 +375,6 @@ def experiment_add_config(
             next_try_value=_next_free_label(label, existing_labels),
             exit_code=1,
             detail={"label": label, "existing_labels": existing_labels},
-        )
-
-    # Refuse unknown agent backends at authoring time — a typo here would
-    # otherwise persist to experiment.json (codeprobe-f7rl.25). available()
-    # merges builtins with entry-point-registered third-party adapters.
-    known_agents = available()
-    if agent not in known_agents:
-        raise PrescriptiveError(
-            code="UNKNOWN_BACKEND",
-            message=(
-                f"unknown agent backend {agent!r}. "
-                f"Available: {', '.join(known_agents)}"
-            ),
-            next_try_flag="--agent",
-            next_try_value="claude",
-            exit_code=1,
-            detail={"agent": agent, "available": known_agents},
         )
 
     # Parse MCP config — offer interactive discovery when omitted in a TTY
@@ -499,33 +500,6 @@ def _duplicate_config_label_error(
     )
 
 
-def _validate_updated_agent(agent: str) -> None:
-    try:
-        candidate_adapter: object | None = resolve_agent(agent)
-    except KeyError:
-        candidate_adapter = None
-    if candidate_adapter is not None and getattr(
-        candidate_adapter, "quarantined", False
-    ):
-        click.echo(f"Error: {quarantine_message(agent)}", err=True)
-        # lint-exempt: keep add-config's quarantined-backend exit contract.
-        raise SystemExit(1)
-
-    known_agents = available()
-    if agent not in known_agents:
-        raise PrescriptiveError(
-            code="UNKNOWN_BACKEND",
-            message=(
-                f"unknown agent backend {agent!r}. "
-                f"Available: {', '.join(known_agents)}"
-            ),
-            next_try_flag="--agent",
-            next_try_value="claude",
-            exit_code=1,
-            detail={"agent": agent, "available": known_agents},
-        )
-
-
 def _load_experiment_for_update(path: str) -> tuple[Path, Experiment]:
     exp_dir = _resolve_exp_dir(path)
     try:
@@ -578,7 +552,7 @@ def experiment_update_config(
             )
         changes["label"] = new_label
     if agent is not None:
-        _validate_updated_agent(agent)
+        _validate_agent_backend(agent)
         changes["agent"] = agent
     if model is not None:
         changes["model"] = model

@@ -1359,6 +1359,12 @@ def init_experiment(
     )
 
 
+def _parse_tool_csv(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    return [tool.strip() for tool in raw.split(",") if tool.strip()]
+
+
 # Use a hyphenated command name to match the reference CLI
 @experiment.command("add-config")
 @add_json_flags
@@ -1452,13 +1458,6 @@ def add_config(
     """Add a configuration to an existing experiment."""
     from codeprobe.cli.experiment_cmd import experiment_add_config
 
-    # Parse comma-separated tool lists. An empty string means "MCP-only":
-    # disable all built-in tools. None means "adapter default".
-    def _parse_tools(raw: str | None) -> list[str] | None:
-        if raw is None:
-            return None
-        return [t.strip() for t in raw.split(",") if t.strip()]
-
     experiment_add_config(
         path,
         label=label,
@@ -1468,8 +1467,8 @@ def add_config(
         mcp_config_str=mcp_config,
         instruction_variant=instruction_variant,
         preambles=preambles,
-        allowed_tools=_parse_tools(allowed_tools),
-        disallowed_tools=_parse_tools(disallowed_tools),
+        allowed_tools=_parse_tool_csv(allowed_tools),
+        disallowed_tools=_parse_tool_csv(disallowed_tools),
         mcp_mode=mcp_mode,
         hide_local_source=hide_local_source,
         json_flag=json_flag,
@@ -1549,11 +1548,6 @@ def update_config(
     """Update an existing experiment configuration."""
     from codeprobe.cli.experiment_cmd import experiment_update_config
 
-    def _parse_tools(raw: str | None) -> list[str] | None:
-        if raw is None:
-            return None
-        return [t.strip() for t in raw.split(",") if t.strip()]
-
     experiment_update_config(
         path,
         label=label,
@@ -1564,8 +1558,8 @@ def update_config(
         mcp_config_str=mcp_config,
         instruction_variant=instruction_variant,
         preambles=preambles,
-        allowed_tools=_parse_tools(allowed_tools),
-        disallowed_tools=_parse_tools(disallowed_tools),
+        allowed_tools=_parse_tool_csv(allowed_tools),
+        disallowed_tools=_parse_tool_csv(disallowed_tools),
         mcp_mode=mcp_mode,
         hide_local_source=hide_local_source,
         json_flag=json_flag,
