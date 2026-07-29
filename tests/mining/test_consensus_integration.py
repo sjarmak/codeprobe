@@ -73,7 +73,7 @@ def _stub_backends(
         if _has_no_evidence(symbol, "sourcegraph"):
             return BackendResult(
                 backend="sourcegraph",
-                evidence="no_evidence",
+                has_evidence=False,
                 error="zero-result lookup supplied no evidence",
             )
         return BackendResult(

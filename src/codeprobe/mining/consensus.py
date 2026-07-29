@@ -41,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 BackendName = Literal["sourcegraph", "ast", "grep"]
 ConsensusMode = Literal["intersection", "union"]
-BackendEvidence = Literal["evidence", "no_evidence"]
 BackendParticipation = Literal[
     "participating", "no_evidence", "unavailable"
 ]
@@ -65,8 +64,8 @@ class BackendResult:
     ``available`` is False when the backend could not run at all (missing
     auth, missing toolchain, repo not on disk). The caller skips it from
     the pairwise comparison rather than treating it as an empty set. An
-    available backend may also return ``evidence="no_evidence"`` when it
-    ran successfully but did not produce a contractually authoritative
+    available backend may also set ``has_evidence=False`` when it ran
+    successfully but did not produce a contractually authoritative
     absence proof. ``error`` carries a short reason for the divergence
     report.
     """
@@ -75,19 +74,19 @@ class BackendResult:
     files: frozenset[str] = frozenset()
     available: bool = True
     error: str | None = None
-    evidence: BackendEvidence = "evidence"
+    has_evidence: bool = True
 
     @property
     def participating(self) -> bool:
         """Whether this result should count in agreement calculations."""
-        return self.available and self.evidence == "evidence"
+        return self.available and self.has_evidence
 
     @property
     def participation(self) -> BackendParticipation:
         """Diagnostic state used by consensus reports."""
         if not self.available:
             return "unavailable"
-        if self.evidence == "no_evidence":
+        if not self.has_evidence:
             return "no_evidence"
         return "participating"
 
@@ -185,7 +184,7 @@ def _run_sourcegraph_backend(
     if not files:
         return BackendResult(
             backend="sourcegraph",
-            evidence="no_evidence",
+            has_evidence=False,
             error="find_references returned no files",
         )
     return BackendResult(backend="sourcegraph", files=files)
@@ -229,9 +228,9 @@ def _run_backend(
 class ConsensusDecision:
     """Outcome of running every requested backend for one task candidate.
 
-    ``shipped`` is True when at least two available backends agree above
+    ``shipped`` is True when at least two participating backends agree above
     ``threshold`` (pairwise F1). ``consensus_files`` is the intersection
-    (default) or union of the file sets returned by available backends —
+    (default) or union of the file sets returned by participating backends —
     callers use it as the task's ground truth when ``shipped``.
 
     ``divergence_report`` is a self-describing dict ready to be written to
@@ -393,12 +392,12 @@ def compute_consensus(
         Subset of :data:`DEFAULT_BACKENDS` to run. Order is preserved in
         the report; comparison itself is order-independent.
     threshold:
-        Minimum pairwise F1 required between *any* pair of available
+        Minimum pairwise F1 required between *any* pair of participating
         backends for the task to ship. Tasks below the threshold are
         marked ``shipped=False`` so the caller can quarantine them.
     mode:
         ``"intersection"`` (default) → consensus_files is the intersection
-        across available backends (high-precision); ``"union"`` → union
+        across participating backends (high-precision); ``"union"`` → union
         (high-recall).
     sg_repo:
         Sourcegraph repo identifier; required for the ``sourcegraph``
