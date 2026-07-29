@@ -5,8 +5,18 @@ Use this workflow when the target repo has merged PRs or MRs that codeprobe can 
 ## Prerequisites
 
 - Python 3.11+
-- At least one agent installed (Claude Code, GitHub Copilot, or Codex)
+- At least one supported agent installed and authenticated (Claude Code or
+  GitHub Copilot CLI)
 - The target repo has merge history (merged PRs/MRs)
+
+Run the selected-agent readiness check from the target repo before mining:
+
+```bash
+codeprobe doctor --agent claude
+```
+
+Use `--agent copilot` when GitHub Copilot CLI is the selected path. Without
+`--agent`, doctor auto-selects the first usable supported path.
 
 ## Step 1: Assess the repo
 

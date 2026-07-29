@@ -87,11 +87,14 @@ pip install codeprobe
 
 cd /path/to/your/repo         # a full clone; shallow clones cannot be mined
 
-codeprobe doctor              # check agents, API keys, git, Python
+codeprobe doctor --agent claude # check the selected agent path, auth, git, Python
 codeprobe mine .              # reconstruct tasks from repo history
 codeprobe run . --agent claude --max-cost-usd 5.00
 codeprobe interpret .         # rank configs, print a report
 ```
+
+Use `codeprobe doctor --agent copilot` when GitHub Copilot CLI is the selected
+agent. Omitting `--agent` auto-selects the first usable supported path.
 
 `codeprobe run` refuses to start on a checkout with uncommitted changes (error
 code `DIRTY_CHECKOUT`): every trial executes in an isolated worktree created
@@ -336,7 +339,7 @@ the diagrammed tour and [AGENTS.md](AGENTS.md) for the contributor contract.
 
 | Command                | Purpose                                              |
 | ---------------------- | ---------------------------------------------------- |
-| `codeprobe doctor`     | Check environment readiness (agents, keys, git)      |
+| `codeprobe doctor`     | Check selected-agent readiness (auth, git, Python)   |
 | `codeprobe assess`     | Score a codebase's suitability for benchmarking      |
 | `codeprobe init`       | Interactive wizard: choose what to compare           |
 | `codeprobe mine`       | Reconstruct eval tasks from merged PRs/commits       |
