@@ -88,6 +88,23 @@ The markers are **word-anchored** regexes. "the rate limiter tests failed" and
 "OpenAPI errors" are NOT infra — an unanchored substring match would have pulled
 those genuine terminal failures out of the reward population.
 
+## Quota casualties: halt, then retry after the window resets
+
+A quota / OAuth-limit stub (`error_category == "quota"` — e.g. the Claude CLI's
+`You've hit your session limit · resets 12pm (America/New_York)`, codeprobe-ymxn)
+is one species of infra casualty, but it carries a retry constraint the others
+don't. The adapter stamps `error_terminal=False`, so the `0.0` is never banked
+as a genuine terminal failure; on the first quota detection the executor
+**halts the whole run** — trials still in flight finish, the rest are cancelled
+rather than run into the same wall (`core/executor.py` `_handle_result`). This
+also keeps the quota-specific sub-count honest: the casualty raises both
+`infra_failure_count` and `quota_error_count`, never a generic agent failure.
+
+Re-running the excluded trials to `completed` is the resolution the gate
+demands, but re-running *immediately* just re-hits the limit — wait for the
+provider's reset window (the `resets <time>` in the stub) before re-running.
+Until then the run stays non-quotable.
+
 ## The three surfaces
 
 1. **Predicate** — `is_infra_failure(task)`, composed into

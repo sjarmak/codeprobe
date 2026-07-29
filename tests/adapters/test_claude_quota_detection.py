@@ -12,10 +12,11 @@ executor halts the run on first detection.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
-from codeprobe.adapters.claude import _detect_quota_error
+from codeprobe.adapters.claude import ClaudeAdapter, _detect_quota_error
 
 
 class TestQuotaDetection:
@@ -269,3 +270,108 @@ class TestExecutorRoutesQuotaCategory:
         adapter = _GenericErrorAdapter(stdout="ignored")
         result = execute_task(adapter, task_dir, tmp_path, AgentConfig())
         assert result.completed.error_category == "agent"
+
+
+# The exact literal the Claude CLI returned in
+# runs/r0-file-read-seed1/rich/seed1/expB — three trials received it and were
+# recorded status=error / error_category=agent / quota_error_count=0, so the
+# quota condition bypassed quota classification and campaign summaries and
+# retry/operator decisions were misleading (codeprobe-ymxn). The note is
+# always "· resets <time>"; the time carries no colon here ("12pm"), unlike
+# the earlier fixture's "1:10pm", so both punctuation shapes are pinned.
+_EXPB_SESSION_LIMIT_STUB = (
+    "You've hit your session limit · resets 12pm (America/New_York)"
+)
+
+
+class TestParseOutputClassifiesSessionLimitStub:
+    """End-to-end ``ClaudeAdapter.parse_output`` coverage for the session-limit
+    stub — the earlier tests exercise only the ``_detect_quota_error`` regex
+    helper, not the full parse pipeline that also decides ``error_terminal``.
+
+    ``error_terminal`` is the retry lever: a quota casualty is stamped
+    ``error_terminal=False`` so it is NEVER banked as a genuine 0.0 terminal
+    failure. The executor halts the run on the first quota detection
+    (``executor.py`` _handle_result), the trial is excluded from the reward
+    population as an infra casualty and surfaced via ``quota_error_count``
+    (``analysis/stats.is_quota_casualty``), and it is re-run after the quota
+    resets rather than counted against the arm — see
+    ``docs/conventions/validity-triage.md``. Banking it as terminal instead
+    would drag the arm's mean toward zero on an artifact that never measured
+    solution quality.
+    """
+
+    def test_exact_expB_stub_is_quota_and_nonterminal(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=_EXPB_SESSION_LIMIT_STUB + "\n",
+            stderr="",
+        )
+        out = ClaudeAdapter().parse_output(result, duration=1.28)
+
+        assert out.error_category == "quota"
+        # Not terminal → re-run after reset, never banked as a genuine 0.0.
+        assert out.error_terminal is False
+        # Transcript / diagnostics preserved: the verbatim provider wording is
+        # carried on both the surfaced error and the stdout transcript.
+        assert _EXPB_SESSION_LIMIT_STUB in (out.error or "")
+        assert _EXPB_SESSION_LIMIT_STUB in out.stdout
+
+    @pytest.mark.parametrize(
+        "reset_suffix",
+        [
+            "· resets 12pm (America/New_York)",  # no colon (the expB wording)
+            "· resets 1:10pm",  # colon + minutes
+            "· resets 9am",  # bare hour
+            "",  # no reset note at all
+        ],
+    )
+    def test_reset_suffix_variants_are_quota(self, reset_suffix: str) -> None:
+        """The classification is anchored on ``hit your session limit`` and is
+        invariant to the reset-note punctuation / time format that follows."""
+        stub = f"You've hit your session limit {reset_suffix}".strip()
+        result = subprocess.CompletedProcess(
+            args=["claude"], returncode=0, stdout=stub + "\n", stderr=""
+        )
+        out = ClaudeAdapter().parse_output(result, duration=1.0)
+        assert out.error_category == "quota"
+        assert out.error_terminal is False
+
+    def test_quota_wins_over_terminal_result_envelope(self) -> None:
+        """A quota stub alongside a terminal-looking ``result`` envelope stays
+        quota + non-terminal: the casualty must be re-run, not banked as a
+        genuine ``error_max_turns`` 0.0 (``claude.py`` "quota wins over
+        subtype")."""
+        result_ev = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_max_turns",
+                "is_error": True,
+                "result": "stopped",
+                "num_turns": 30,
+            }
+        )
+        result = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout=f"{_EXPB_SESSION_LIMIT_STUB}\n{result_ev}\n",
+            stderr="",
+        )
+        out = ClaudeAdapter().parse_output(result, duration=1.0)
+        assert out.error_category == "quota"
+        assert out.error_terminal is False
+        assert _EXPB_SESSION_LIMIT_STUB in (out.error or "")
+
+    def test_transport_rate_limit_in_stderr_is_quota(self) -> None:
+        """A transport-layer rate-limit surfaced on stderr (clean stdout) is
+        also classified quota, not a generic agent failure."""
+        result = subprocess.CompletedProcess(
+            args=["claude"],
+            returncode=0,
+            stdout="regular agent output\n",
+            stderr="transport: rate limit exceeded",
+        )
+        out = ClaudeAdapter().parse_output(result, duration=1.0)
+        assert out.error_category == "quota"
+        assert out.error_terminal is False
