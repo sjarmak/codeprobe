@@ -149,7 +149,7 @@ def _copilot_gh_auth_status() -> tuple[bool, str]:
         return False, "no Copilot gh auth"
     if result.returncode != 0:
         return False, "no Copilot gh auth"
-    token = result.stdout.strip()
+    token = result.stdout.removesuffix("\r\n").removesuffix("\n")
     if _copilot_token_supported(token):
         return True, "gh auth token ok"
     return False, "unsupported gh auth token"

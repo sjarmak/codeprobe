@@ -336,6 +336,69 @@ class TestDoctorChecks:
         assert token not in result.detail
         assert token not in result.fix
 
+    @pytest.mark.parametrize("line_ending", ("\n", "\r\n"))
+    def test_copilot_auth_accepts_exact_gh_token_line_ending(
+        self, monkeypatch: object, line_ending: str
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        token = "github_pat_test-secret"
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/usr/bin/gh" if name == "gh" else None,
+        )
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeProc:
+            return _FakeProc(0, stdout=f"{token}{line_ending}")
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+        result = mod._check_copilot_auth(required=True)
+
+        assert result.passed is True
+        assert result.detail == "gh auth token ok"
+        assert token not in result.detail
+        assert token not in result.fix
+
+    @pytest.mark.parametrize(
+        "stdout",
+        (
+            " github_pat_test-secret\n",
+            "github_pat_test-secret \n",
+            "github_pat_test-secret\n\n",
+            "github_pat_test-secret\r\nextra\n",
+        ),
+    )
+    def test_copilot_auth_rejects_non_exact_gh_token_stdout_without_leaking(
+        self, monkeypatch: object, stdout: str
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+
+        token = "github_pat_test-secret"
+        for key in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            mod.shutil,
+            "which",
+            lambda name: "/usr/bin/gh" if name == "gh" else None,
+        )
+
+        def _fake_run(cmd: list[str], **kwargs: object) -> _FakeProc:
+            return _FakeProc(0, stdout=stdout)
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+
+        result = mod._check_copilot_auth(required=True)
+
+        assert result.passed is False
+        assert result.detail == "unsupported gh auth token"
+        assert "copilot login" not in result.fix
+        assert token not in result.detail
+        assert token not in result.fix
+
     @pytest.mark.parametrize("token", ("ghp_test-secret", "plain-secret", " \t\n"))
     def test_copilot_auth_rejects_unsupported_gh_token_without_leaking(
         self, monkeypatch: object, token: str
