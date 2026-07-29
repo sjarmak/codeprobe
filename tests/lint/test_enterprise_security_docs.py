@@ -10,9 +10,11 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+import codeprobe.cli.purge_cmd as purge_cmd
 import codeprobe.cli.run_cmd as run_cmd
 import codeprobe.net.credential_ttl as credential_ttl
 from codeprobe.adapters import _base as adapter_base
+from codeprobe.adapters import claude as claude_adapter
 from codeprobe.cli import main
 from codeprobe.cli.purge_cmd import _DISCLOSURE, _MCP_TEMPFILE_PATTERN
 from codeprobe.core import sandbox as core_sandbox
@@ -21,6 +23,7 @@ from codeprobe.net.offline import guard_offline
 from codeprobe.sandbox import runner as sandbox_runner
 from codeprobe.sandbox.agent_container import containerize_argv
 from codeprobe.sandbox.image_config import CONTAINER_CONFIG_ENV
+from codeprobe.snapshot.evidence_validation import ARTIFACT_FILENAMES
 from codeprobe.snapshot.redact import PUBLISHABLE_DEFAULT, SIGNING_KEY_ENV
 from codeprobe.trace.content_policy import REDACTED_AUTH, REDACTED_ENV
 
@@ -150,7 +153,10 @@ def _documented_commands(text: str) -> set[str]:
             if " # " in line:
                 line = line.split(" # ", 1)[0].rstrip()
             if line.startswith(("codeprobe ", "docker build ")):
-                commands.add(line)
+                if line.endswith("\\"):
+                    commands.add(" ".join(line.removesuffix("\\").split()[:2]))
+                else:
+                    commands.add(line)
     return commands
 
 
@@ -327,6 +333,8 @@ def test_documented_image_references_are_inventoried() -> None:
     documented = _documented_image_refs(_drift_checked_corpus(inventory))
     inventoried = {image["name"] for image in inventory["images"]} | {
         image["base_image"] for image in inventory["images"]
+    } | {
+        image["base_image_name"] for image in inventory["images"]
     }
 
     assert documented <= inventoried, (
@@ -341,15 +349,10 @@ def test_documented_container_supply_chain_contract_matches_dockerfiles() -> Non
 
     for image in inventory["images"]:
         dockerfile = _dockerfile_text(image["dockerfile"])
-        assert "@" not in _dockerfile_from_image(dockerfile), (
-            f"{image['dockerfile']} base image is now digest-pinned; "
-            "update the enterprise supply-chain contract"
-        )
-        assert image["supply_chain_contract"]["base_image_pin"] == "mutable-tag"
-        assert image["supply_chain_contract"]["runtime_user"] == "image-default"
-        assert not _dockerfile_sets_user(dockerfile), (
-            f"{image['dockerfile']} now sets USER; update the enterprise hardening contract"
-        )
+        assert "@sha256:" in _dockerfile_from_image(dockerfile)
+        assert image["supply_chain_contract"]["base_image_pin"] == "sha256-digest"
+        assert image["supply_chain_contract"]["runtime_user"] == "non-root"
+        assert _dockerfile_sets_user(dockerfile)
         for phrase in image["supply_chain_contract"]["required_phrases"]:
             assert _normalized(phrase) in corpus, (
                 f"{image['name']} supply-chain contract missing {phrase!r}"
@@ -357,8 +360,10 @@ def test_documented_container_supply_chain_contract_matches_dockerfiles() -> Non
 
     agent = next(image for image in inventory["images"] if image["constant"] == "DEFAULT_AGENT_IMAGE")
     agent_dockerfile = _dockerfile_text(agent["dockerfile"])
-    assert "npm install -g @anthropic-ai/claude-code" in agent_dockerfile
-    assert "@anthropic-ai/claude-code@" not in agent_dockerfile
+    assert 'ARG CLAUDE_CODE_VERSION="' not in agent_dockerfile
+    assert "ARG CLAUDE_CODE_VERSION=" in agent_dockerfile
+    assert "ARG CLAUDE_CODE_INTEGRITY=" in agent_dockerfile
+    assert '"@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"' in agent_dockerfile
 
 
 def test_documented_commands_match_cli_and_paths() -> None:
@@ -485,7 +490,7 @@ def _agent_container_argv_without_optional_mounts() -> list[str]:
         config_dir=None,
         mcp_tmpfile=None,
         env_keys=[],
-        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
+        image=f"registry.example/codeprobe/{sandbox_runner.DEFAULT_AGENT_IMAGE}",
         name="codeprobe-agent-test",
     )
 
@@ -519,35 +524,91 @@ def _agent_container_mounts_expected_paths() -> bool:
         for index, token in enumerate(argv[:-1])
         if token == "-v"
     }
+    env_args = {
+        argv[index + 1]
+        for index, token in enumerate(argv[:-1])
+        if token == "-e"
+    }
+    return mounts == {
+        "/workspace:/workspace:rw",
+        "/tmp/codeprobe-claude/slot-0:/tmp/codeprobe-claude/slot-0:rw",
+        "/tmp/codeprobe-mcp-abcd.json:/tmp/codeprobe-mcp-abcd.json:ro",
+    } and {"HOME=/tmp", "TMPDIR=/tmp", "ANTHROPIC_API_KEY"} <= env_args
+
+
+def _agent_container_uses_valueless_secret_args() -> bool:
+    argv = _agent_container_argv_with_mounted_inputs()
+    return "ANTHROPIC_API_KEY" in argv and "sk-test" not in argv
+
+
+def _claude_session_mirrors_live_config_with_symlinks() -> bool:
+    source = inspect.getsource(claude_adapter._build_mirror_slot_env)
+    return "symlink_to" in source and "credentials file" in source
+
+
+def _agent_container_has_runtime_hardening() -> bool:
+    argv = _agent_container_argv_without_optional_mounts()
+    return {
+        "--pull=never",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--cpus=2",
+        "--memory=4g",
+        "--memory-swap=4g",
+        "--pids-limit=256",
+        "--read-only",
+    } <= set(argv) and "/tmp:rw,nosuid,nodev,size=128m,mode=1777" in argv
+
+
+def _scoring_container_has_runtime_hardening() -> bool:
+    argv = _scoring_container_argv()
+    return {
+        "--pull=never",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--cpus=2",
+        "--memory=4g",
+        "--memory-swap=4g",
+        "--pids-limit=256",
+        "--read-only",
+    } <= set(argv) and "/tmp:rw,nosuid,nodev,size=128m,mode=1777" in argv
+
+
+def _purge_targets_only_scoped_artifacts() -> bool:
+    callback = purge_cmd.purge.callback
+    if callback is None:
+        return False
+    source = inspect.getsource(callback)
     return (
-        mounts
-        == {
-            "/workspace:/workspace:rw",
-            "/tmp/codeprobe-claude/slot-0:/tmp/codeprobe-claude/slot-0:rw",
-            "/tmp/codeprobe-mcp-abcd.json:/tmp/codeprobe-mcp-abcd.json:ro",
-        }
-        and ["-e", "ANTHROPIC_API_KEY"] == argv[argv.index("-e") : argv.index("-e") + 2]
+        'root / ".codeprobe"' in source
+        and "_experiment_dirs(codeprobe_dir)" in source
+        and "_MCP_TEMPFILE_PATTERN" in source
+        and "_escaping_path(cand.path, boundary)" in source
     )
 
 
-def _agent_container_has_no_custom_seccomp() -> bool:
-    argv = _agent_container_argv_without_optional_mounts()
-    return "--security-opt" not in argv and "--cap-drop" not in argv
-
-
-def _scoring_container_has_no_custom_seccomp() -> bool:
-    argv = _scoring_container_argv()
-    return "--security-opt" not in argv and "--cap-drop" not in argv
+def _evidence_bundle_uses_fixed_allowlist() -> bool:
+    return ARTIFACT_FILENAMES == (
+        "run-manifest.json",
+        "sample-attestation.json",
+        "aggregate-results.json",
+        "findings.md",
+        "support-log.json",
+    )
 
 
 _SECURITY_CLAIMS: dict[str, Callable[[], bool]] = {
     "agent_container_network_bridge": _agent_container_uses_bridge_network,
     "agent_container_mounts_expected_paths": _agent_container_mounts_expected_paths,
-    "agent_container_no_custom_seccomp": _agent_container_has_no_custom_seccomp,
+    "agent_container_valueless_secret_args": _agent_container_uses_valueless_secret_args,
+    "claude_session_live_symlinks": _claude_session_mirrors_live_config_with_symlinks,
+    "agent_container_runtime_hardening": _agent_container_has_runtime_hardening,
     "scoring_container_network_none": _scoring_container_defaults_to_no_network,
-    "scoring_container_no_custom_seccomp": _scoring_container_has_no_custom_seccomp,
+    "scoring_container_runtime_hardening": _scoring_container_has_runtime_hardening,
     "purge_cleartext_disclosure": lambda: "cleartext" in _DISCLOSURE.lower(),
     "purge_tempfile_pattern": lambda: _MCP_TEMPFILE_PATTERN == "codeprobe-mcp-*.json",
+    "purge_scoped_artifacts": _purge_targets_only_scoped_artifacts,
+    "evidence_bundle_fixed_allowlist": _evidence_bundle_uses_fixed_allowlist,
     "snapshot_default_hashes_only": lambda: PUBLISHABLE_DEFAULT == "hashes-only",
     "trace_redaction_records_env_and_auth": lambda: REDACTED_ENV == "[REDACTED-ENV]"
     and REDACTED_AUTH == "[REDACTED-AUTH]",

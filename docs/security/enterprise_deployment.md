@@ -105,7 +105,23 @@ Out of scope:
 | `codeprobe snapshot create`, `snapshot verify`, `snapshot evidence`, `snapshot export` | None | These commands are local transforms. Uploading generated artifacts is outside CodeProbe. |
 | `codeprobe purge` | None | Deletes only scoped local artifacts. |
 
+CodeProbe does not restrict agent-container bridge egress by destination. Use
+host, container-engine, or network controls when an enterprise policy requires
+an endpoint allowlist.
+
 ## Container Images and Mounts
+
+The published image names are versioned CodeProbe labels. Their base images
+are pinned by SHA-256 digest:
+`node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3`
+for `codeprobe-agent:0.13.0` and
+`debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818`
+for `codeprobe-scoring:0.13.0`. Debian package installation uses a dated
+snapshot. The Claude Code version and npm integrity are pinned, and both
+images declare the non-root `codeprobe` user. The release workflow emits SBOM
+and provenance attestations, scans both images, and signs their immutable
+digests. Runtime consumers must use the verified digest identities rather
+than treating a version tag as an integrity boundary.
 
 Prepare the released agent and scoring images from an installed wheel. Replace
 the example digests with the verified release or private-registry digests:
@@ -139,11 +155,22 @@ mounted into the agent container. A host-global `CLAUDE_CONFIG_DIR` is not used
 as a fallback mount. The container receives a per-slot config dir only when
 session isolation produced one.
 
-The container posture is containment, not a hardened multi-tenant sandbox. The
-Dockerfiles do not set `USER`; containers run as the image default user. The
-container run commands do not add a custom seccomp profile or cap-drop flags.
-Operators running untrusted tasks should run CodeProbe on a dedicated
-workstation, VM, or CI runner and keep the container engine patched.
+Claude session isolation places symlinks to live host configuration entries
+inside that per-slot directory, including the OAuth credential file and
+read-mostly settings, skills, agents, hooks, plugins, commands, and rules.
+Mounting the per-slot directory therefore transitively exposes those selected
+host files to the agent container even though the host-global config directory
+is not mounted directly. Mutable session state is recreated inside the slot.
+
+The container posture is containment, not a hardened multi-tenant sandbox.
+Both images declare a non-root `codeprobe` user, and runtime commands also map
+to the invoking host UID and GID where supported. Agent and scoring containers
+use `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, a
+bounded writable `/tmp`, `--cpus=2`, `--memory=4g`, and `--pids-limit=256`.
+They retain the container engine's default seccomp profile rather than
+shipping a custom seccomp profile. Operators running untrusted tasks should
+still use a dedicated workstation, VM, or CI runner and keep the host kernel
+and container engine patched.
 
 ## Credentials and Environment
 
@@ -161,9 +188,15 @@ The host subprocess adapter environment whitelist is:
 | `CLAUDE_CODE_OAUTH_TOKEN` | Agent OAuth token | Passthrough |
 | `CLAUDE_CONFIG_DIR` | Per-slot agent config directory | Passthrough only when that directory is mounted |
 | `CODEPROBE_SANDBOX` | User-set containment signal | Passthrough |
-| `COPILOT_API_KEY` | Agent API key | Passthrough |
+| `COPILOT_GITHUB_TOKEN` | Copilot GitHub token | Passthrough |
+| `COPILOT_MODEL` | Copilot model override | Passthrough |
+| `COPILOT_OFFLINE` | Copilot offline-provider toggle | Passthrough |
+| `COPILOT_PROVIDER_API_KEY` | Copilot offline-provider credential | Passthrough |
+| `COPILOT_PROVIDER_BASE_URL` | Copilot offline-provider endpoint | Passthrough |
+| `COPILOT_PROVIDER_TYPE` | Copilot offline-provider type | Passthrough |
 | `CURL_CA_BUNDLE` | Private CA bundle path | Excluded because host paths are not mounted |
 | `DBUS_SESSION_BUS_ADDRESS` | Desktop session bus path | Excluded because host paths are not mounted |
+| `GH_TOKEN` | GitHub CLI token usable by Copilot | Passthrough |
 | `GITHUB_TOKEN` | Git provider token for agent tooling | Passthrough |
 | `GOPATH` | Go toolchain path | Excluded because host paths are not mounted |
 | `GOROOT` | Go toolchain path | Excluded because host paths are not mounted |
@@ -312,7 +345,7 @@ Deletion responsibilities:
 | Per-slot agent session directories | Operator temp/session cleanup | Includes per-slot `CLAUDE_CONFIG_DIR` contents when session isolation created them. |
 | Scoring temp directories | Operator temp cleanup | Purge does not delete scoring temp directories outside `.codeprobe/`. |
 | `SNAPSHOT_DIR` | Operator filesystem deletion | Snapshot output is outside `.codeprobe/` unless the operator places it there. |
-| `approved-evidence` | Operator filesystem deletion | Evidence bundle output is outside `.codeprobe/` unless the operator places it there. |
+| `evidence` | Operator filesystem deletion | Evidence bundle output is outside `.codeprobe/` unless the operator places it there. |
 | Export directories | Operator filesystem deletion | Includes observability and spreadsheet exports. |
 | CI logs, terminal transcripts, shell history, and backups | Operator platform controls | Purge cannot delete records retained by CI, backup, shell, or terminal systems. |
 

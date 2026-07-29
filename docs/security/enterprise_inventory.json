@@ -75,7 +75,7 @@
       "path": "SNAPSHOT_DIR"
     },
     {
-      "path": "approved-evidence"
+      "path": "evidence"
     }
   ],
   "deletion_responsibilities": [
@@ -107,7 +107,7 @@
       "artifact": "`SNAPSHOT_DIR`"
     },
     {
-      "artifact": "`approved-evidence`"
+      "artifact": "`evidence`"
     },
     {
       "artifact": "Export directories"
@@ -121,15 +121,19 @@
       "name": "codeprobe-agent:0.13.0",
       "constant": "DEFAULT_AGENT_IMAGE",
       "dockerfile": "src/codeprobe/sandbox/Dockerfile.agent",
-      "base_image": "node:22-bookworm-slim",
+      "base_image_name": "node:22-bookworm-slim",
+      "base_image": "node:22-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3",
       "supply_chain_contract": {
-        "base_image_pin": "mutable-tag",
-        "runtime_user": "image-default",
+        "base_image_pin": "sha256-digest",
+        "runtime_user": "non-root",
         "required_phrases": [
-          "stable CodeProbe labels, not reproducible supply-chain attestations",
-          "base images are mutable tags and are not digest-pinned",
-          "installs the unversioned npm package",
-          "containers run as the image default user"
+          "base images are pinned by SHA-256 digest",
+          "Debian package installation uses a dated snapshot",
+          "Claude Code version and npm integrity are pinned",
+          "images declare the non-root `codeprobe` user",
+          "release workflow emits SBOM and provenance attestations",
+          "scans both images",
+          "signs their immutable digests"
         ]
       }
     },
@@ -137,14 +141,18 @@
       "name": "codeprobe-scoring:0.13.0",
       "constant": "DEFAULT_SCORING_IMAGE",
       "dockerfile": "src/codeprobe/sandbox/Dockerfile.scoring",
-      "base_image": "debian:bookworm-slim",
+      "base_image_name": "debian:bookworm-slim",
+      "base_image": "debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818",
       "supply_chain_contract": {
-        "base_image_pin": "mutable-tag",
-        "runtime_user": "image-default",
+        "base_image_pin": "sha256-digest",
+        "runtime_user": "non-root",
         "required_phrases": [
-          "stable CodeProbe labels, not reproducible supply-chain attestations",
-          "base images are mutable tags and are not digest-pinned",
-          "containers run as the image default user"
+          "base images are pinned by SHA-256 digest",
+          "Debian package installation uses a dated snapshot",
+          "images declare the non-root `codeprobe` user",
+          "release workflow emits SBOM and provenance attestations",
+          "scans both images",
+          "signs their immutable digests"
         ]
       }
     }
@@ -258,13 +266,28 @@
     },
     {
       "command": "codeprobe snapshot evidence export request.json --out evidence --approve sha256:DIGEST --no-json",
-      "help": ["snapshot", "evidence", "export"],
-      "required_help_tokens": ["--out", "--approve", "--no-json"]
+      "help": [
+        "snapshot",
+        "evidence",
+        "export"
+      ],
+      "required_help_tokens": [
+        "--out",
+        "--approve",
+        "--no-json"
+      ]
     },
     {
       "command": "codeprobe snapshot evidence validate evidence --expect sha256:DIGEST --no-json",
-      "help": ["snapshot", "evidence", "validate"],
-      "required_help_tokens": ["--expect", "--no-json"]
+      "help": [
+        "snapshot",
+        "evidence",
+        "validate"
+      ],
+      "required_help_tokens": [
+        "--expect",
+        "--no-json"
+      ]
     }
   ],
   "environment_variables": [
@@ -329,7 +352,42 @@
       ]
     },
     {
-      "name": "COPILOT_API_KEY",
+      "name": "COPILOT_GITHUB_TOKEN",
+      "checks": [
+        "adapter_whitelist",
+        "container_passthrough"
+      ]
+    },
+    {
+      "name": "COPILOT_MODEL",
+      "checks": [
+        "adapter_whitelist",
+        "container_passthrough"
+      ]
+    },
+    {
+      "name": "COPILOT_OFFLINE",
+      "checks": [
+        "adapter_whitelist",
+        "container_passthrough"
+      ]
+    },
+    {
+      "name": "COPILOT_PROVIDER_API_KEY",
+      "checks": [
+        "adapter_whitelist",
+        "container_passthrough"
+      ]
+    },
+    {
+      "name": "COPILOT_PROVIDER_BASE_URL",
+      "checks": [
+        "adapter_whitelist",
+        "container_passthrough"
+      ]
+    },
+    {
+      "name": "COPILOT_PROVIDER_TYPE",
       "checks": [
         "adapter_whitelist",
         "container_passthrough"
@@ -347,6 +405,13 @@
       "checks": [
         "adapter_whitelist",
         "container_excluded"
+      ]
+    },
+    {
+      "name": "GH_TOKEN",
+      "checks": [
+        "adapter_whitelist",
+        "container_passthrough"
       ]
     },
     {
@@ -622,16 +687,20 @@
         ".codeprobe/",
         "codeprobe-mcp-*.json",
         "never touches your source tree",
-        "does not delete snapshots, evidence bundles, export directories, task worktrees, per-slot agent session directories, scoring temp directories, CI logs, terminal transcripts, shell history, or backups"
+        "does not delete snapshots, evidence bundles, export directories, task worktrees",
+        "per-slot agent session directories, scoring temp directories",
+        "CI logs, terminal transcripts, shell history, or backups"
       ],
       "checks": [
-        "purge_tempfile_pattern"
+        "purge_tempfile_pattern",
+        "purge_scoped_artifacts"
       ]
     },
     {
       "id": "agent_container_network",
       "required_phrases": [
-        "--network=bridge"
+        "--network=bridge",
+        "does not restrict agent-container bridge egress by destination"
       ],
       "checks": [
         "agent_container_network_bridge"
@@ -649,6 +718,27 @@
       ]
     },
     {
+      "id": "credential_container_flow",
+      "required_phrases": [
+        "valueless `-e` arguments",
+        "secret values do not appear in the container argv"
+      ],
+      "checks": [
+        "agent_container_valueless_secret_args"
+      ]
+    },
+    {
+      "id": "claude_session_mirror",
+      "required_phrases": [
+        "symlinks to live host configuration entries",
+        "OAuth credential file",
+        "transitively exposes those selected host files"
+      ],
+      "checks": [
+        "claude_session_live_symlinks"
+      ]
+    },
+    {
       "id": "scoring_container_network",
       "required_phrases": [
         "--network=none"
@@ -661,12 +751,18 @@
       "id": "container_hardening_limits",
       "required_phrases": [
         "containment, not a hardened multi-tenant sandbox",
-        "custom seccomp profile",
-        "image default user"
+        "default seccomp profile",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges",
+        "--read-only",
+        "--cpus=2",
+        "--memory=4g",
+        "--pids-limit=256",
+        "non-root `codeprobe` user"
       ],
       "checks": [
-        "agent_container_no_custom_seccomp",
-        "scoring_container_no_custom_seccomp"
+        "agent_container_runtime_hardening",
+        "scoring_container_runtime_hardening"
       ]
     },
     {
@@ -676,6 +772,17 @@
       ],
       "checks": [
         "snapshot_default_hashes_only"
+      ]
+    },
+    {
+      "id": "evidence_bundle_allowlist",
+      "required_phrases": [
+        "fixed five-file bundle",
+        "excludes file names, file sizes, prompts, patches, traces",
+        "task-level results, raw diagnostics, and free-form identifying text"
+      ],
+      "checks": [
+        "evidence_bundle_fixed_allowlist"
       ]
     },
     {
