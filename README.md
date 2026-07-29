@@ -217,9 +217,9 @@ usually get collapsed into a single number:
   an artifact answer and flags disagreement.
 - **Model and harness configuration.** Each config pins agent, model, preamble,
   and MCP surface; results are compared per config, not per model.
-- **Retrieval and tooling.** MCP servers (for example Sourcegraph) attach per
-  config, with source-isolation modes to force tool use and bias detectors that
-  catch tautological tool wins.
+- **Retrieval and tooling.** Code-search MCP servers attach per config, with
+  source-isolation modes to force tool use and bias detectors that catch
+  tautological tool wins.
 - **Token, cost, and latency.** Adapters extract input/output/cache tokens,
   cost, and duration where the backend exposes them, tagged with a `cost_source`
   so estimated values are never reported as measured.
@@ -325,9 +325,9 @@ the diagrammed tour and [AGENTS.md](AGENTS.md) for the contributor contract.
 
 - **Choose among agents or models.** A/B configs on the same tasks and rank by
   pass rate and cost.
-- **Test retrieval or context systems.** Attach an MCP server (for example
-  Sourcegraph) to one config, keep a baseline on another, and measure the delta
-  with the isolation modes and bias detectors that keep the comparison honest.
+- **Test retrieval or context systems.** Attach a code-search MCP server to one
+  config, keep a baseline on another, and measure the delta with the isolation
+  modes and bias detectors that keep the comparison honest.
 - **Measure a harness change.** Vary preamble, timeout, turn limits, or tool
   surface and see whether the change moves quality or cost.
 - **Build a repository-specific regression suite.** Mine once, rerun across
@@ -429,7 +429,7 @@ response responsibilities.
 
 Run artifacts are stored in cleartext on disk:
 
-- Agent transcripts land under `.codeprobe/<experiment>/runs/<config_label>/<task_id>/agent_output.txt` (and `agent_error.txt`) with **secret-token redaction only**. API keys and auth tokens are scrubbed; source code is not.
+- Agent transcripts land under `.codeprobe/<experiment>/runs/<config>/<task>/agent_output.txt` (and `.codeprobe/<experiment>/runs/<config>/<task>/agent_error.txt`) with **secret-token redaction only**. API keys and auth tokens are scrubbed; source code is not.
 - `.codeprobe/<experiment>/runs/trace.db` stores tool inputs and outputs with env-value and auth-pattern redaction only.
 - Any proprietary source the agent prints (file contents it read, diffs it wrote) lands on disk verbatim.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,7 +26,80 @@ from codeprobe.trace.content_policy import REDACTED_AUTH, REDACTED_ENV
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INVENTORY_PATH = REPO_ROOT / "docs" / "security" / "enterprise_inventory.json"
-_SENSITIVE_ENV_MARKERS = ("KEY", "TOKEN", "AUTH")
+_SENSITIVE_ENV_MARKERS = (
+    "KEY",
+    "TOKEN",
+    "AUTH",
+    "PASSWORD",
+    "SECRET",
+    "CREDENTIAL",
+    "PROXY",
+    "BASE_URL",
+    "CONFIG_DIR",
+    "SSL_CERT",
+    "CA_BUNDLE",
+)
+_LOWER_PROXY_ENV_VARS = {"http_proxy", "https_proxy", "no_proxy", "all_proxy"}
+_NON_ENV_SYMBOLS = {
+    "AUTH",
+    "DIGEST",
+    "DIRTY_CHECKOUT",
+    "EXPERIMENT_DIR",
+    "OFFLINE_NET_ATTEMPT",
+    "PURGE_REFUSED",
+    "SNAPSHOT_DIR",
+    "UNCONTAINED_REFUSED",
+}
+_PROVIDER_NEUTRAL_FORBIDDEN_TERMS = (
+    "sourcegraph",
+    "field_engineering",
+    "solutions_engineering",
+    "cp-zca-pilot",
+    "codeprobe-2z76",
+    "participant_",
+    "other_sourcegraph_personnel",
+)
+_ENV_TOKEN_PREFIXES = (
+    "ALL_",
+    "ANTHROPIC_",
+    "AWS_",
+    "AZURE_",
+    "CLAUDE_",
+    "CODEPROBE_",
+    "COPILOT_",
+    "CURL_",
+    "DBUS_",
+    "GITHUB_",
+    "GOOGLE_",
+    "HTTP_",
+    "HTTPS_",
+    "LC_",
+    "NODE_",
+    "NO_",
+    "NPM_",
+    "OPENAI_",
+    "REQUESTS_",
+    "SSL_",
+    "XDG_",
+)
+_BARE_ENV_NAMES = {
+    "CARGO_HOME",
+    "GOPATH",
+    "GOROOT",
+    "HOME",
+    "LANG",
+    "LOGNAME",
+    "PATH",
+    "PYTHONPATH",
+    "RUSTUP_HOME",
+    "TERM",
+    "TMPDIR",
+    "USER",
+    "VIRTUAL_ENV",
+}
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
+_SHELL_FENCE_RE = re.compile(r"```(?:bash|sh|shell)\n(.*?)```", re.DOTALL)
+_IMAGE_REF_RE = re.compile(r"(?<![\w/.-])(?:[\w.-]+/)?[\w.-]+:[\w.-]+")
 
 
 def _inventory() -> dict:
@@ -38,6 +112,131 @@ def _doc_corpus(inventory: dict) -> str:
         (REPO_ROOT / relpath).read_text(encoding="utf-8")
         for relpath in documents
     )
+
+
+def _normalized(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def _readme_security_sections(readme: str) -> str:
+    start = readme.index("\n## Security and enterprise deployment")
+    end = readme.index("\n## License", start)
+    return readme[start:end]
+
+
+def _drift_checked_corpus(inventory: dict) -> str:
+    parts: list[str] = []
+    for relpath in inventory["drift_checked_documents"]:
+        text = (REPO_ROOT / relpath).read_text(encoding="utf-8")
+        if relpath == "README.md":
+            text = _readme_security_sections(text)
+        parts.append(text)
+    return "\n".join(parts)
+
+
+def _inline_code_spans(text: str) -> set[str]:
+    return {match.group(1).strip() for match in _INLINE_CODE_RE.finditer(text)}
+
+
+def _documented_commands(text: str) -> set[str]:
+    commands: set[str] = set()
+    for block in _SHELL_FENCE_RE.findall(text):
+        for raw_line in block.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("$ "):
+                line = line[2:]
+            if " # " in line:
+                line = line.split(" # ", 1)[0].rstrip()
+            if line.startswith(("codeprobe ", "docker build ")):
+                commands.add(line)
+    return commands
+
+
+def _documented_repository_paths(text: str) -> set[str]:
+    prefixes = ("docs/", "scripts/", "src/", "tests/")
+    file_names = {"AGENTS.md", "README.md", "SECURITY.md", "pyproject.toml"}
+    return {
+        span
+        for span in _inline_code_spans(text)
+        if span.startswith(prefixes) or span in file_names
+    }
+
+
+def _documented_local_artifact_paths(text: str) -> set[str]:
+    names = {
+        span
+        for span in _inline_code_spans(text)
+        if span.startswith(".codeprobe/")
+        or span
+        in {
+            ".codeprobe/",
+            "SNAPSHOT_DIR",
+            "approved-evidence",
+            "codeprobe-mcp-*.json",
+            "trace.db",
+        }
+        or span.endswith(("/trace.db", "/agent_output.txt", "/agent_error.txt"))
+    }
+    return names
+
+
+def _deletion_table_artifacts(text: str) -> set[str]:
+    table = text.split("Deletion responsibilities:\n\n", 1)[1].split("\n\n", 1)[0]
+    rows = table.splitlines()[2:]
+    artifacts: set[str] = set()
+    for row in rows:
+        cells = [cell.strip() for cell in row.strip("|").split("|")]
+        if len(cells) >= 3:
+            artifacts.add(cells[0])
+    return artifacts
+
+
+def _is_documented_env_token(token: str) -> bool:
+    if token in _NON_ENV_SYMBOLS:
+        return False
+    if token in _LOWER_PROXY_ENV_VARS:
+        return True
+    if token.upper() != token:
+        return False
+    return (
+        token.startswith(_ENV_TOKEN_PREFIXES)
+        or token in _BARE_ENV_NAMES
+        or any(marker in token for marker in _SENSITIVE_ENV_MARKERS)
+    )
+
+
+def _documented_env_vars(text: str) -> set[str]:
+    names: set[str] = set()
+    for span in _inline_code_spans(text):
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", span):
+            if _is_documented_env_token(token):
+                names.add(token)
+    return names
+
+
+def _documented_image_refs(text: str) -> set[str]:
+    return {
+        match.group(0)
+        for match in _IMAGE_REF_RE.finditer(text)
+        if not match.group(0).startswith("sha256:")
+    }
+
+
+def _dockerfile_text(relpath: str) -> str:
+    return (REPO_ROOT / relpath).read_text(encoding="utf-8")
+
+
+def _dockerfile_from_image(dockerfile: str) -> str:
+    for line in dockerfile.splitlines():
+        if line.startswith("FROM "):
+            return line.split()[1]
+    raise AssertionError("Dockerfile has no FROM instruction")
+
+
+def _dockerfile_sets_user(dockerfile: str) -> bool:
+    return any(line.startswith("USER ") for line in dockerfile.splitlines())
 
 
 def _help_for(command: list[str]) -> str:
@@ -58,6 +257,13 @@ def test_security_entry_points_exist_and_are_linked_from_readme() -> None:
     assert "docs/security/enterprise_deployment.md" in readme
 
 
+def test_vulnerability_reporting_channel_is_actionable() -> None:
+    security = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
+
+    assert "https://github.com/sjarmak/codeprobe/security/advisories/new" in security
+    assert "do not include exploit details" in security.casefold()
+
+
 def test_documented_repository_paths_resolve() -> None:
     inventory = _inventory()
     corpus = _doc_corpus(inventory)
@@ -65,6 +271,43 @@ def test_documented_repository_paths_resolve() -> None:
     for relpath in inventory["repository_paths"]:
         assert relpath in corpus, f"{relpath} is not documented"
         assert (REPO_ROOT / relpath).exists(), f"{relpath} does not resolve"
+
+
+def test_documented_repository_path_references_are_inventoried() -> None:
+    inventory = _inventory()
+    documented = _documented_repository_paths(_drift_checked_corpus(inventory))
+    inventoried = set(inventory["repository_paths"])
+
+    assert documented <= inventoried, (
+        "Documented repository paths missing from enterprise inventory: "
+        + ", ".join(sorted(documented - inventoried))
+    )
+
+
+def test_documented_local_artifact_paths_are_inventoried() -> None:
+    inventory = _inventory()
+    drift_corpus = _drift_checked_corpus(inventory)
+    doc_corpus = _doc_corpus(inventory)
+    documented = _documented_local_artifact_paths(drift_corpus)
+    inventoried = {entry["path"] for entry in inventory["local_artifact_paths"]}
+
+    assert documented <= inventoried, (
+        "Documented local artifact paths missing from enterprise inventory: "
+        + ", ".join(sorted(documented - inventoried))
+    )
+    for entry in inventory["local_artifact_paths"]:
+        assert entry["path"] in doc_corpus, f"{entry['path']} is not documented"
+
+
+def test_deletion_responsibility_rows_are_inventoried() -> None:
+    inventory = _inventory()
+    guide = (REPO_ROOT / "docs/security/enterprise_deployment.md").read_text(
+        encoding="utf-8"
+    )
+    documented = _deletion_table_artifacts(guide)
+    inventoried = {entry["artifact"] for entry in inventory["deletion_responsibilities"]}
+
+    assert documented == inventoried
 
 
 def test_documented_container_images_match_code_constants() -> None:
@@ -75,6 +318,47 @@ def test_documented_container_images_match_code_constants() -> None:
         assert image["name"] in corpus
         assert image["name"] == getattr(sandbox_runner, image["constant"])
         assert (REPO_ROOT / image["dockerfile"]).is_file()
+        assert image["base_image"] in corpus
+        assert _dockerfile_from_image(_dockerfile_text(image["dockerfile"])) == image["base_image"]
+
+
+def test_documented_image_references_are_inventoried() -> None:
+    inventory = _inventory()
+    documented = _documented_image_refs(_drift_checked_corpus(inventory))
+    inventoried = {image["name"] for image in inventory["images"]} | {
+        image["base_image"] for image in inventory["images"]
+    }
+
+    assert documented <= inventoried, (
+        "Documented image references missing from enterprise inventory: "
+        + ", ".join(sorted(documented - inventoried))
+    )
+
+
+def test_documented_container_supply_chain_contract_matches_dockerfiles() -> None:
+    inventory = _inventory()
+    corpus = _normalized(_doc_corpus(inventory))
+
+    for image in inventory["images"]:
+        dockerfile = _dockerfile_text(image["dockerfile"])
+        assert "@" not in _dockerfile_from_image(dockerfile), (
+            f"{image['dockerfile']} base image is now digest-pinned; "
+            "update the enterprise supply-chain contract"
+        )
+        assert image["supply_chain_contract"]["base_image_pin"] == "mutable-tag"
+        assert image["supply_chain_contract"]["runtime_user"] == "image-default"
+        assert not _dockerfile_sets_user(dockerfile), (
+            f"{image['dockerfile']} now sets USER; update the enterprise hardening contract"
+        )
+        for phrase in image["supply_chain_contract"]["required_phrases"]:
+            assert _normalized(phrase) in corpus, (
+                f"{image['name']} supply-chain contract missing {phrase!r}"
+            )
+
+    agent = next(image for image in inventory["images"] if image["constant"] == "DEFAULT_AGENT_IMAGE")
+    agent_dockerfile = _dockerfile_text(agent["dockerfile"])
+    assert "npm install -g @anthropic-ai/claude-code" in agent_dockerfile
+    assert "@anthropic-ai/claude-code@" not in agent_dockerfile
 
 
 def test_documented_commands_match_cli_and_paths() -> None:
@@ -95,6 +379,17 @@ def test_documented_commands_match_cli_and_paths() -> None:
             help_text = _help_for(command["help"])
             for token in command.get("required_help_tokens", ()):
                 assert token in help_text, f"{token} missing from {' '.join(command['help'])} help"
+
+
+def test_documented_command_references_are_inventoried() -> None:
+    inventory = _inventory()
+    documented = _documented_commands(_drift_checked_corpus(inventory))
+    inventoried = {command["command"] for command in inventory["commands"]}
+
+    assert documented <= inventoried, (
+        "Documented commands missing from enterprise inventory: "
+        + ", ".join(sorted(documented - inventoried))
+    )
 
 
 def _credential_ttl_mentions(name: str) -> bool:
@@ -123,6 +418,33 @@ def test_documented_environment_variables_match_implementation() -> None:
         assert name in corpus, f"{name} is not documented"
         for check in env_var["checks"]:
             assert _ENV_CHECKS[check](name), f"{name} failed {check}"
+
+
+def test_adapter_environment_inventory_is_complete() -> None:
+    inventory = _inventory()
+    env_by_check = {
+        check: {
+            entry["name"]
+            for entry in inventory["environment_variables"]
+            if check in entry["checks"]
+        }
+        for check in ("adapter_whitelist", "container_passthrough", "container_excluded")
+    }
+
+    assert env_by_check["adapter_whitelist"] == adapter_base._ADAPTER_ENV_WHITELIST
+    assert env_by_check["container_passthrough"] == adapter_base._CONTAINER_ENV_KEYS
+    assert env_by_check["container_excluded"] == adapter_base._CONTAINER_ENV_EXCLUDED
+
+
+def test_documented_environment_references_are_inventoried() -> None:
+    inventory = _inventory()
+    documented = _documented_env_vars(_drift_checked_corpus(inventory))
+    inventoried = {entry["name"] for entry in inventory["environment_variables"]}
+
+    assert documented <= inventoried, (
+        "Documented environment variables missing from enterprise inventory: "
+        + ", ".join(sorted(documented - inventoried))
+    )
 
 
 def test_forwarded_sensitive_environment_variables_are_inventoried() -> None:
@@ -169,9 +491,67 @@ def _scoring_container_defaults_to_no_network() -> bool:
     return "--network=none" in argv
 
 
+def _agent_container_mounts_expected_paths() -> bool:
+    argv = containerize_argv(
+        ["claude", "-p", "prompt"],
+        engine="docker",
+        workspace=Path("/workspace"),
+        config_dir=Path("/tmp/codeprobe-claude/slot-0"),
+        mcp_tmpfile="/tmp/codeprobe-mcp-abcd.json",
+        env_keys=["ANTHROPIC_API_KEY"],
+        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
+        name="codeprobe-agent-test",
+        env={"ANTHROPIC_API_KEY": "sk-test"},
+    )
+    mounts = {
+        argv[index + 1]
+        for index, token in enumerate(argv[:-1])
+        if token == "-v"
+    }
+    return (
+        mounts
+        == {
+            "/workspace:/workspace:rw",
+            "/tmp/codeprobe-claude/slot-0:/tmp/codeprobe-claude/slot-0:rw",
+            "/tmp/codeprobe-mcp-abcd.json:/tmp/codeprobe-mcp-abcd.json:ro",
+        }
+        and ["-e", "ANTHROPIC_API_KEY"] == argv[argv.index("-e") : argv.index("-e") + 2]
+    )
+
+
+def _agent_container_has_no_custom_seccomp() -> bool:
+    argv = containerize_argv(
+        ["claude", "-p", "prompt"],
+        engine="docker",
+        workspace=Path("/workspace"),
+        config_dir=None,
+        mcp_tmpfile=None,
+        env_keys=[],
+        image=sandbox_runner.DEFAULT_AGENT_IMAGE,
+        name="codeprobe-agent-test",
+    )
+    return "--security-opt" not in argv and "--cap-drop" not in argv
+
+
+def _scoring_container_has_no_custom_seccomp() -> bool:
+    argv = sandbox_runner._build_run_command(
+        "docker",
+        ["bash", "tests/test.sh"],
+        {"/tmp/codeprobe-score-abc": "/tmp/codeprobe-score-abc"},
+        allow_writes=True,
+        image=sandbox_runner.DEFAULT_SCORING_IMAGE,
+        workdir="/tmp/codeprobe-score-abc/task",
+        env={"AGENT_OUTPUT": "/tmp/codeprobe-score-abc/agent_output.txt"},
+    )
+    return "--security-opt" not in argv and "--cap-drop" not in argv
+
+
 _SECURITY_CLAIMS: dict[str, Callable[[], bool]] = {
     "agent_container_network_bridge": _agent_container_uses_bridge_network,
+    "agent_container_mounts_expected_paths": _agent_container_mounts_expected_paths,
+    "agent_container_no_custom_seccomp": _agent_container_has_no_custom_seccomp,
     "scoring_container_network_none": _scoring_container_defaults_to_no_network,
+    "scoring_container_no_custom_seccomp": _scoring_container_has_no_custom_seccomp,
     "purge_cleartext_disclosure": lambda: "cleartext" in _DISCLOSURE.lower(),
     "purge_tempfile_pattern": lambda: _MCP_TEMPFILE_PATTERN == "codeprobe-mcp-*.json",
     "snapshot_default_hashes_only": lambda: PUBLISHABLE_DEFAULT == "hashes-only",
@@ -186,21 +566,20 @@ _SECURITY_CLAIMS: dict[str, Callable[[], bool]] = {
 
 def test_documented_security_claims_match_implementation() -> None:
     inventory = _inventory()
-    corpus = _doc_corpus(inventory).casefold()
+    corpus = _normalized(_doc_corpus(inventory))
 
     for claim in inventory["security_claims"]:
         for phrase in claim["required_phrases"]:
-            assert phrase.casefold() in corpus, f"{claim['id']} missing phrase {phrase!r}"
+            assert _normalized(phrase) in corpus, f"{claim['id']} missing phrase {phrase!r}"
         for check in claim["checks"]:
             assert _SECURITY_CLAIMS[check](), f"{claim['id']} failed {check}"
 
 
 def test_new_security_docs_are_provider_neutral() -> None:
     inventory = _inventory()
-    forbidden = inventory["provider_neutral_forbidden_terms"]
 
     for relpath in inventory["provider_neutral_documents"]:
         content = (REPO_ROOT / relpath).read_text(encoding="utf-8").casefold()
-        assert all(term.casefold() not in content for term in forbidden), (
+        assert all(term.casefold() not in content for term in _PROVIDER_NEUTRAL_FORBIDDEN_TERMS), (
             f"{relpath} contains provider-specific or engagement-specific language"
         )

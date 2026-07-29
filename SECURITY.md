@@ -12,11 +12,14 @@ latest release before reporting a vulnerability that may already be fixed.
 
 ## Reporting a Vulnerability
 
-Report suspected vulnerabilities through the repository's private
-security-reporting channel when one is available. If no private channel is
-available, open a public issue that asks maintainers to establish a private
-channel, but do not include exploit details, proprietary source, credentials,
-agent transcripts, trace output, or reproduction data that contains secrets.
+Report suspected vulnerabilities through the repository's private advisory
+channel:
+`https://github.com/sjarmak/codeprobe/security/advisories/new`.
+
+If that channel is unavailable in a fork or mirror, open a public issue that
+asks maintainers to establish a private channel. Do not include exploit details,
+proprietary source, credentials, agent transcripts, trace output, or
+reproduction data that contains secrets.
 
 Include:
 

@@ -140,15 +140,63 @@ as a fallback mount. The container receives a per-slot config dir only when
 session isolation produced one.
 
 The container posture is containment, not a hardened multi-tenant sandbox. The
-Dockerfiles do not add a non-root user or custom seccomp profile. Operators
-running untrusted tasks should run CodeProbe on a dedicated workstation, VM, or
-CI runner and keep the container engine patched.
+Dockerfiles do not set `USER`; containers run as the image default user. The
+container run commands do not add a custom seccomp profile or cap-drop flags.
+Operators running untrusted tasks should run CodeProbe on a dedicated
+workstation, VM, or CI runner and keep the container engine patched.
 
 ## Credentials and Environment
 
 Agent subprocesses receive a filtered environment from
 `src/codeprobe/adapters/_base.py`, not the full parent process environment.
-The documented credential and routing variables are:
+The host subprocess adapter environment whitelist is:
+
+| Variable | Host purpose | Agent container behavior |
+| --- | --- | --- |
+| `ALL_PROXY` | Proxy URL | Passthrough |
+| `ANTHROPIC_API_KEY` | Agent or LLM backend API key | Passthrough |
+| `ANTHROPIC_AUTH_TOKEN` | Enterprise LLM gateway auth token | Passthrough |
+| `ANTHROPIC_BASE_URL` | Enterprise LLM gateway URL | Passthrough |
+| `CARGO_HOME` | Rust toolchain path | Excluded because host paths are not mounted |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Agent OAuth token | Passthrough |
+| `CLAUDE_CONFIG_DIR` | Per-slot agent config directory | Passthrough only when that directory is mounted |
+| `CODEPROBE_SANDBOX` | User-set containment signal | Passthrough |
+| `COPILOT_API_KEY` | Agent API key | Passthrough |
+| `CURL_CA_BUNDLE` | Private CA bundle path | Excluded because host paths are not mounted |
+| `DBUS_SESSION_BUS_ADDRESS` | Desktop session bus path | Excluded because host paths are not mounted |
+| `GITHUB_TOKEN` | Git provider token for agent tooling | Passthrough |
+| `GOPATH` | Go toolchain path | Excluded because host paths are not mounted |
+| `GOROOT` | Go toolchain path | Excluded because host paths are not mounted |
+| `HOME` | Host home path | Excluded because host paths are not mounted |
+| `HTTPS_PROXY` | Proxy URL | Passthrough |
+| `HTTP_PROXY` | Proxy URL | Passthrough |
+| `LANG` | Locale | Passthrough |
+| `LC_ALL` | Locale | Passthrough |
+| `LOGNAME` | User identity metadata | Passthrough |
+| `NODE_EXTRA_CA_CERTS` | Private CA bundle path | Excluded because host paths are not mounted |
+| `NODE_PATH` | Node toolchain path | Excluded because host paths are not mounted |
+| `NO_PROXY` | Proxy bypass list | Passthrough |
+| `NPM_CONFIG_PREFIX` | npm toolchain path | Excluded because host paths are not mounted |
+| `OPENAI_API_KEY` | Agent or LLM backend API key | Passthrough |
+| `PATH` | Host executable search path | Excluded because the image owns its toolchain |
+| `PYTHONPATH` | Python import path | Excluded because host paths are not mounted |
+| `REQUESTS_CA_BUNDLE` | Private CA bundle path | Excluded because host paths are not mounted |
+| `RUSTUP_HOME` | Rust toolchain path | Excluded because host paths are not mounted |
+| `SSL_CERT_DIR` | Private CA directory path | Excluded because host paths are not mounted |
+| `SSL_CERT_FILE` | Private CA file path | Excluded because host paths are not mounted |
+| `TERM` | Terminal metadata | Passthrough |
+| `TMPDIR` | Host temp path | Excluded because host paths are not mounted |
+| `USER` | User identity metadata | Passthrough |
+| `VIRTUAL_ENV` | Python virtualenv path | Excluded because host paths are not mounted |
+| `XDG_CONFIG_HOME` | Desktop config path | Excluded because host paths are not mounted |
+| `XDG_DATA_HOME` | Desktop data path | Excluded because host paths are not mounted |
+| `XDG_RUNTIME_DIR` | Desktop runtime path | Excluded because host paths are not mounted |
+| `all_proxy` | Proxy URL | Passthrough |
+| `http_proxy` | Proxy URL | Passthrough |
+| `https_proxy` | Proxy URL | Passthrough |
+| `no_proxy` | Proxy bypass list | Passthrough |
+
+Additional process-level variables are:
 
 | Variable | Purpose | Container behavior |
 | --- | --- | --- |
@@ -170,21 +218,16 @@ The documented credential and routing variables are:
 | `CODEPROBE_CONTAINER_CONFIG` | Absolute prepared-image record path | Read by bootstrap and container runtime |
 | `CODEPROBE_OFFLINE` | Offline guard signal | Set by `codeprobe run --offline` after preflight |
 | `CODEPROBE_SIGNING_KEY` | Snapshot HMAC key | Read by snapshot signing |
+| `AWS_SESSION_EXPIRATION` | Bedrock session expiration | Read by offline preflight |
+| `AWS_CREDENTIAL_EXPIRATION` | Bedrock fallback credential expiration | Read by offline preflight |
+| `GOOGLE_APPLICATION_CREDENTIALS_TOKEN_EXPIRY` | Vertex token expiration | Read by offline preflight |
+| `AZURE_TOKEN_EXPIRES_ON` | Azure OpenAI token expiration | Read by offline preflight |
 
-Secrets passed into an agent container are emitted as valueless `-e KEY`
-arguments, so secret values do not appear in the container argv. MCP
-configuration values may expand environment variables into a temporary JSON
-file. That file can contain secrets in cleartext until cleanup succeeds;
-`codeprobe purge` also sweeps stale `codeprobe-mcp-*.json` files.
-
-Short-lived credential TTL checks are available for:
-
-| Variable | Backend preflight purpose |
-| --- | --- |
-| `AWS_SESSION_EXPIRATION` | Bedrock session expiration |
-| `AWS_CREDENTIAL_EXPIRATION` | Bedrock fallback credential expiration |
-| `GOOGLE_APPLICATION_CREDENTIALS_TOKEN_EXPIRY` | Vertex token expiration |
-| `AZURE_TOKEN_EXPIRES_ON` | Azure OpenAI token expiration |
+Secrets passed into an agent container are emitted as valueless `-e` arguments
+using only the variable name, so secret values do not appear in the container
+argv. MCP configuration values may expand environment variables into a
+temporary JSON file. That file can contain secrets in cleartext until cleanup
+succeeds; `codeprobe purge` also sweeps stale `codeprobe-mcp-*.json` files.
 
 Run the offline preflight directly:
 
@@ -242,12 +285,40 @@ Agent transcripts under `.codeprobe/<experiment>/runs/<config>/<task>/` receive
 secret-token and auth-pattern redaction only. Source code printed by the agent
 is not redacted.
 
+Application logs are stdout and stderr from the CLI process. JSON output,
+terminal transcripts, shell history, CI logs, and container engine logs are
+operator-managed and can contain paths, diagnostics, command lines, and
+fragments of verifier output. CodeProbe does not provide a central log store or
+log-retention policy.
+
 ## Local Artifacts, Retention, and Deletion
 
 Run artifacts are local, retained until the operator deletes them, and may
-contain proprietary source in cleartext. CodeProbe does not encrypt local run artifacts at rest.
-The v1 control is operator-managed encrypted storage for the workspace, CI
-runner, and artifact volume, plus `codeprobe purge` retention enforcement.
+contain proprietary source in cleartext. CodeProbe does not encrypt local run
+artifacts at rest. The v1 control is operator-managed encrypted storage for
+the workspace, CI runner, and artifact volume, plus `codeprobe purge`
+retention enforcement.
+
+Deletion responsibilities:
+
+| Artifact | Delete with | Notes |
+| --- | --- | --- |
+| `.codeprobe/` | Operator filesystem deletion or `codeprobe purge . --all --yes` | Whole experiment directory removal. |
+| `.codeprobe/<experiment>/runs/` | `codeprobe purge . --yes` | Removes transcripts, checkpoints, and trace storage for each experiment. |
+| `.codeprobe/<experiment>/runs/trace.db` | `codeprobe purge . --yes` | Contains redacted trace rows, but source snippets are possible when a tool output is not covered by a redaction rule. |
+| `.codeprobe/<experiment>/runs/<config>/<task>/` | `codeprobe purge . --yes` | Contains task transcripts such as `agent_output.txt` and `agent_error.txt`. |
+| `codeprobe-mcp-*.json` | `codeprobe purge . --yes` | Swept from the system temp directory when it is a regular file and not a symlink. |
+| Task worktrees | Operator temp/worktree cleanup | Created outside `.codeprobe/`; purge does not delete them. |
+| Per-slot agent session directories | Operator temp/session cleanup | Includes per-slot `CLAUDE_CONFIG_DIR` contents when session isolation created them. |
+| Scoring temp directories | Operator temp cleanup | Purge does not delete scoring temp directories outside `.codeprobe/`. |
+| `SNAPSHOT_DIR` | Operator filesystem deletion | Snapshot output is outside `.codeprobe/` unless the operator places it there. |
+| `approved-evidence` | Operator filesystem deletion | Evidence bundle output is outside `.codeprobe/` unless the operator places it there. |
+| Export directories | Operator filesystem deletion | Includes observability and spreadsheet exports. |
+| CI logs, terminal transcripts, shell history, and backups | Operator platform controls | Purge cannot delete records retained by CI, backup, shell, or terminal systems. |
+
+`codeprobe purge` does not delete snapshots, evidence bundles, export
+directories, task worktrees, per-slot agent session directories, scoring temp
+directories, CI logs, terminal transcripts, shell history, or backups.
 
 Use the purge command as the retention lever:
 
