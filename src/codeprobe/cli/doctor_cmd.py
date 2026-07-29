@@ -52,6 +52,7 @@ _COPILOT_OFFLINE_ENV_KEYS: tuple[str, ...] = (
     "COPILOT_PROVIDER_BASE_URL",
     "COPILOT_MODEL",
 )
+_CONTAINER_BOOTSTRAP_FIX = "Run 'codeprobe bootstrap'."
 _env_has_value = doctor_env.env_has_value
 
 
@@ -441,12 +442,23 @@ def _check_container_images(*, required: bool) -> CheckResult:
             warn_only=not required,
         )
 
+    try:
+        required_images = (
+            container_runner.agent_image_reference(),
+            container_runner.scoring_image_reference(),
+        )
+    except ValueError:
+        return CheckResult(
+            name="container images",
+            passed=False,
+            detail="containment images not prepared",
+            fix=_CONTAINER_BOOTSTRAP_FIX,
+            warn_only=not required,
+        )
+
     missing_count = sum(
         1
-        for image in (
-            container_runner.DEFAULT_AGENT_IMAGE,
-            container_runner.DEFAULT_SCORING_IMAGE,
-        )
+        for image in required_images
         if not container_runner.image_available(engine, image)
     )
     if missing_count == 0:
@@ -460,7 +472,7 @@ def _check_container_images(*, required: bool) -> CheckResult:
         name="container images",
         passed=False,
         detail=f"{missing_count} required image(s) missing",
-        fix="Pull, mirror, or build the configured OCI images; see docs/oci_images.md.",
+        fix=_CONTAINER_BOOTSTRAP_FIX,
         warn_only=not required,
     )
 

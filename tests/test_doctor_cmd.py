@@ -819,6 +819,16 @@ class TestDoctorCLI:
         monkeypatch.setattr(
             container_runner, "detect_engine", lambda: "/usr/bin/docker"
         )
+        monkeypatch.setattr(
+            container_runner,
+            "agent_image_reference",
+            lambda: "sha256:" + "a" * 64,
+        )
+        monkeypatch.setattr(
+            container_runner,
+            "scoring_image_reference",
+            lambda: "sha256:" + "b" * 64,
+        )
         monkeypatch.setattr(container_runner, "image_available", lambda *a: False)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -828,6 +838,42 @@ class TestDoctorCLI:
 
         assert result.exit_code == 2, result.output
         assert "FAIL  container images (2 required image(s) missing)" in result.output
+        assert "Run 'codeprobe bootstrap'." in result.output
+        assert "Dockerfile" not in result.output
+
+    def test_container_images_require_installed_wheel_bootstrap_when_unprepared(
+        self, monkeypatch: object, tmp_path: Path
+    ) -> None:
+        import codeprobe.cli.doctor_cmd as mod
+        from codeprobe.core import sandbox as codeprobe_sandbox
+        from codeprobe.sandbox import runner as container_runner
+
+        _use_tool_paths(monkeypatch, tmp_path, ("claude", "docker"))
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
+        monkeypatch.setattr(codeprobe_sandbox, "is_sandboxed", lambda: False)
+        monkeypatch.setattr(
+            container_runner, "detect_engine", lambda: "/usr/bin/docker"
+        )
+
+        def unprepared_image_reference() -> str:
+            raise ValueError("not prepared")
+
+        monkeypatch.setattr(
+            container_runner,
+            "agent_image_reference",
+            unprepared_image_reference,
+        )
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        result = CliRunner().invoke(
+            main, ["doctor", "--agent", "claude", "--no-json"]
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "FAIL  container images (containment images not prepared)" in result.output
+        assert "Run 'codeprobe bootstrap'." in result.output
+        assert "Dockerfile" not in result.output
 
     def test_offline_ttl_failure_is_blocking_when_requested(
         self, monkeypatch: object, tmp_path: Path
@@ -982,6 +1028,7 @@ class TestApiKeyWarnDemotion:
         # `git rev-parse` deterministic. Mirrors
         # TestDoctorCLI.test_doctor_all_pass.
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "github_pat_test")
         monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _FakeProc(0))
         by_name = {r.name: r for r in run_checks()}
         assert by_name["ANTHROPIC_API_KEY"].passed is False
