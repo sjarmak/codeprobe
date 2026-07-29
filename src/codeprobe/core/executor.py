@@ -97,6 +97,53 @@ def _drop_stale_answers(base: Path) -> None:
         (base / name).unlink(missing_ok=True)
 
 
+def _existing_root_answers(base: Path) -> frozenset[str]:
+    """Names of agent answer artifacts already present directly under *base*."""
+    return frozenset(name for name in _STALE_ANSWER_FILES if (base / name).exists())
+
+
+def _sweep_leaked_answers(
+    base: Path, preexisting: frozenset[str], *, task_id: str
+) -> None:
+    """Remove answer artifacts that a run leaked to *base*.
+
+    Only names absent from *preexisting* are removed, so a caller's own
+    pre-run answer file is never deleted. Non-goal: if the agent overwrites
+    a pre-existing name in place, that name is skipped and its new content
+    stays — this guard defends checkout cleanliness (git status), not the
+    byte-content of a file the caller already had.
+
+    An actual removal is logged at WARNING: it means the agent resolved
+    "the repository root" to the source checkout instead of its worktree,
+    an anomaly worth surfacing (a recurring leak on one task points at a
+    prompt/instruction problem). A normal run removes nothing and is
+    silent. Best-effort: a failed unlink is logged at DEBUG and does not
+    abort teardown.
+    """
+    for name in _STALE_ANSWER_FILES:
+        if name in preexisting:
+            continue
+        target = base / name
+        if not target.exists():
+            continue
+        try:
+            target.unlink()
+        except OSError:
+            logger.debug(
+                "[%s] leaked-answer sweep failed for %s",
+                task_id,
+                name,
+                exc_info=True,
+            )
+            continue
+        logger.warning(
+            "[%s] swept agent-leaked %s from source-checkout root %s",
+            task_id,
+            name,
+            base,
+        )
+
+
 @dataclass(frozen=True)
 class DryRunEstimate:
     """Resource estimate for a dry-run (no agents spawned)."""
@@ -508,6 +555,7 @@ def execute_task(
     hide_local_source_keep: tuple[str, ...] = (),
     config_max_turns_source: str = "",
     low_confidence_threshold: float = 0.5,
+    source_root_baseline: frozenset[str] | None = None,
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -653,6 +701,31 @@ def execute_task(
     # that pass no worktree keep their configured cwd.
     if _effective_wt is not None:
         agent_config = dataclasses.replace(agent_config, cwd=str(_effective_wt))
+
+    # Source-checkout leak guard (codeprobe-o8pw). When a worktree isolates
+    # the run, repo_path is never an agent workspace — yet in --uncontained
+    # mode the agent process can write anywhere, and a model may resolve
+    # "the repository root" to the real source checkout (the parent of its
+    # slot) and drop an answer.json there. That stray file never reaches
+    # scoring (which reads _effective_wt) but permanently dirties the pinned
+    # checkout, making later --allow-dirty runs misleading and risking
+    # cross-seed state. The finally below removes any answer artifact that
+    # was NOT present at the checkout root before the run, so a caller's own
+    # file is never touched. ``source_root_baseline`` carries that
+    # pre-existing set from the run level: parallel trials share one repo_path
+    # concurrently, so a per-trial snapshot would misread a sibling's leak as
+    # pre-existing and refuse to sweep. When absent (direct callers, no
+    # concurrency) a per-trial snapshot is taken instead.
+    _leak_guard_root: Path | None = None
+    if _effective_wt is not None and _effective_wt.resolve() != repo_path.resolve():
+        _leak_guard_root = repo_path
+    _preexisting_root_answers: frozenset[str]
+    if _leak_guard_root is None:
+        _preexisting_root_answers = frozenset()
+    elif source_root_baseline is not None:
+        _preexisting_root_answers = source_root_baseline
+    else:
+        _preexisting_root_answers = _existing_root_answers(_leak_guard_root)
 
     try:
         try:
@@ -948,6 +1021,14 @@ def execute_task(
             low_confidence_threshold=low_confidence_threshold,
         )
     finally:
+        # Sweep any answer artifact the agent leaked to the source-checkout
+        # root, on every exit path (success, agent error, timeout). Runs
+        # before worktree teardown so a stray file is gone even if release
+        # or cleanup later raises (codeprobe-o8pw).
+        if _leak_guard_root is not None:
+            _sweep_leaked_answers(
+                _leak_guard_root, _preexisting_root_answers, task_id=task_id
+            )
         if _owned_iso is not None:
             if _owned_wt is not None:
                 try:
@@ -1131,6 +1212,22 @@ def execute_config(
     """
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
+    # Snapshot answer artifacts already at the source-checkout root before any
+    # trial runs (codeprobe-o8pw). Parallel trials share one repo_path
+    # concurrently, so the per-trial leak guard needs a single run-level
+    # baseline: anything not in this set that appears at the root during the
+    # run is a leaked artifact and gets swept, while a caller's own pre-run
+    # file is preserved.
+    #
+    # Under config_parallel > 1 (run_cmd.py) several execute_config calls run
+    # concurrently against the same repo_path, each capturing its own baseline
+    # here. That is still correct: this snapshot is taken before any of THIS
+    # config's trials run, so a trial can never see its own future leak as
+    # pre-existing. A sibling config's leak may or may not be in this baseline,
+    # but either way that leak is swept by its own originating trial's finally,
+    # so no leaked file survives.
+    source_root_baseline = _existing_root_answers(repo_path)
+
     # Filter checkpointed results to only include tasks in the current
     # experiment.  Without this, stale entries from prior runs with different
     # task_ids leak into the results list and inflate/deflate scores.
@@ -1225,6 +1322,7 @@ def execute_config(
                 hide_local_source=experiment_config.hide_local_source,
                 config_max_turns_source=config_max_turns_source,
                 low_confidence_threshold=experiment_config.low_confidence_threshold,
+                source_root_baseline=source_root_baseline,
             )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:
