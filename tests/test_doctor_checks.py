@@ -604,4 +604,3 @@ class TestGithubAccessCheck:
         assert "FAIL  selected agent (no supported agent path usable)" in result.output
         assert "WARN  GitHub auth" in result.output
         assert "FAIL  GitHub auth" not in result.output
-

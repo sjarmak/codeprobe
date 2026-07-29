@@ -70,4 +70,3 @@ def _use_claude_agent_path(
 
 def _last_json_payload(output: str) -> dict[str, object]:
     return json.loads(output.strip().splitlines()[-1])
-

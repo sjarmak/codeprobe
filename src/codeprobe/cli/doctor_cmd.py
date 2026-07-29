@@ -130,12 +130,8 @@ def _check_container_images(*, required: bool) -> CheckResult:
             warn_only=not required,
         )
 
-    try:
-        required_images = (
-            container_runner.agent_image_reference(),
-            container_runner.scoring_image_reference(),
-        )
-    except ValueError:
+    missing_count = _missing_container_image_count(engine)
+    if missing_count is None:
         return CheckResult(
             name="container images",
             passed=False,
@@ -143,12 +139,6 @@ def _check_container_images(*, required: bool) -> CheckResult:
             fix=_CONTAINER_BOOTSTRAP_FIX,
             warn_only=not required,
         )
-
-    missing_count = sum(
-        1
-        for image in required_images
-        if not container_runner.image_available(engine, image)
-    )
     if missing_count == 0:
         return CheckResult(
             name="container images",
@@ -162,6 +152,23 @@ def _check_container_images(*, required: bool) -> CheckResult:
         detail=f"{missing_count} required image(s) missing",
         fix=_CONTAINER_BOOTSTRAP_FIX,
         warn_only=not required,
+    )
+
+
+def _missing_container_image_count(engine: str) -> int | None:
+    from codeprobe.sandbox import runner as container_runner
+
+    try:
+        required_images = (
+            container_runner.agent_image_reference(),
+            container_runner.scoring_image_reference(),
+        )
+    except ValueError:
+        return None
+    return sum(
+        1
+        for image in required_images
+        if not container_runner.image_available(engine, image)
     )
 
 
@@ -398,6 +405,85 @@ def _build_full_envelope(results: list[CheckResult]) -> dict[str, object]:
     return envelope
 
 
+def _checks_data(
+    results: list[CheckResult], *, any_failed: bool
+) -> dict[str, object]:
+    return {
+        "subsystem_status": [asdict(result) for result in results],
+        "any_failed": any_failed,
+    }
+
+
+def _emit_compact(results: list[CheckResult], *, any_failed: bool) -> None:
+    envelope = _build_compact_envelope(results)
+    payload = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+    if len(payload.encode("utf-8")) > compact_budget_bytes():
+        payload = json.dumps(
+            {
+                "record_type": "doctor",
+                "ok": not any_failed,
+                "command": "doctor",
+                "version": envelope["version"],
+                "schema_version": 1,
+                "exit_code": 1 if any_failed else 0,
+                "error": None,
+                "data": envelope["data"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    click.echo(payload)
+    if any_failed:
+        # lint-exempt: compact mode emits directly and SystemExit is its exit code.
+        raise SystemExit(1)
+
+
+def _emit_pretty(
+    results: list[CheckResult],
+    *,
+    any_failed: bool,
+    checks_data: dict[str, object],
+) -> None:
+    for result in results:
+        if result.passed and result.warn_only:
+            click.echo(f"  INFO  {result.name} ({result.detail})")
+        elif result.passed:
+            click.echo(f"  PASS  {result.name} ({result.detail})")
+        elif result.warn_only:
+            label = "WARN" if result.fix else "INFO"
+            click.echo(f"  {label}  {result.name} ({result.detail})")
+            if result.fix:
+                click.echo(f"        -> {result.fix}")
+        else:
+            click.echo(f"  FAIL  {result.name} ({result.detail})")
+            click.echo(f"        -> {result.fix}")
+    if any_failed:
+        _raise_doctor_failure(checks_data)
+
+
+def _raise_doctor_failure(checks_data: dict[str, object]) -> None:
+    raise DiagnosticError(
+        code="DOCTOR_CHECKS_FAILED",
+        message="One or more doctor checks failed.",
+        diagnose_cmd="codeprobe doctor",
+        terminal=True,
+        detail={"_envelope_data": checks_data},
+    )
+
+
+def _emit_structured(
+    checks_data: dict[str, object], *, any_failed: bool
+) -> None:
+    if any_failed:
+        _raise_doctor_failure(checks_data)
+    emit_envelope(
+        command="doctor",
+        ok=True,
+        exit_code=0,
+        data=checks_data,
+    )
+
+
 @click.command("doctor")
 @add_json_flags
 @click.option(
@@ -468,77 +554,15 @@ def doctor(
         offline_expected_run_duration=offline_expected_run_duration,
     )
     any_failed = _any_failed(results)
-
-    checks_data = {
-        "subsystem_status": [asdict(r) for r in results],
-        "any_failed": any_failed,
-    }
-
-    # --compact path: emit a bounded-size envelope for SKILL.md preflight use.
-    # Budget is enforced against the serialised payload; degrade gracefully by
-    # dropping verbose fields until we fit.
+    checks_data = _checks_data(results, any_failed=any_failed)
     if compact and mode.mode != "pretty":
-        envelope = _build_compact_envelope(results)
-        payload = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
-        budget = compact_budget_bytes()
-        if len(payload.encode("utf-8")) > budget:
-            minimal = {
-                "record_type": "doctor",
-                "ok": not any_failed,
-                "command": "doctor",
-                "version": envelope["version"],
-                "schema_version": 1,
-                "exit_code": 1 if any_failed else 0,
-                "error": None,
-                "data": envelope["data"],
-            }
-            payload = json.dumps(
-                minimal, sort_keys=True, separators=(",", ":")
-            )
-        click.echo(payload)
-        if any_failed:
-            # lint-exempt: compact path bypasses the top-level handler; SystemExit is just the exit code.
-            raise SystemExit(1)
+        _emit_compact(results, any_failed=any_failed)
         return
-
     if mode.mode == "pretty":
-        for r in results:
-            if r.passed and r.warn_only:
-                click.echo(f"  INFO  {r.name} ({r.detail})")
-            elif r.passed:
-                click.echo(f"  PASS  {r.name} ({r.detail})")
-            elif r.warn_only:
-                label = "WARN" if r.fix else "INFO"
-                click.echo(f"  {label}  {r.name} ({r.detail})")
-                if r.fix:
-                    click.echo(f"        -> {r.fix}")
-            else:
-                click.echo(f"  FAIL  {r.name} ({r.detail})")
-                click.echo(f"        -> {r.fix}")
-        if any_failed:
-            raise DiagnosticError(
-                code="DOCTOR_CHECKS_FAILED",
-                message="One or more doctor checks failed.",
-                diagnose_cmd="codeprobe doctor",
-                terminal=True,
-                detail={"_envelope_data": checks_data},
-            )
-        return
-
-    # Envelope / NDJSON mode — let the top-level handler emit the single
-    # envelope when checks fail; success still emits a terminal envelope
-    # here directly.
-    if any_failed:
-        raise DiagnosticError(
-            code="DOCTOR_CHECKS_FAILED",
-            message="One or more doctor checks failed.",
-            diagnose_cmd="codeprobe doctor",
-            terminal=True,
-            detail={"_envelope_data": checks_data},
+        _emit_pretty(
+            results,
+            any_failed=any_failed,
+            checks_data=checks_data,
         )
-    emit_envelope(
-        command="doctor",
-        ok=True,
-        exit_code=0,
-        data=checks_data,
-    )
+        return
+    _emit_structured(checks_data, any_failed=any_failed)
