@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,9 @@ from scripts.e2e.upgrade_compatibility import (
     PRIOR_RELEASE_SHA256,
     PRIOR_RELEASE_VERSION,
     UpgradeCompatibilityError,
+    _run,
+    _wheel_version,
+    main,
     runtime_environment,
     successful_envelope,
     validate_interpretation,
@@ -44,6 +48,85 @@ def test_validate_wheel_rejects_missing_or_substituted_artifact(tmp_path: Path) 
     missing.write_bytes(b"substituted")
     with pytest.raises(UpgradeCompatibilityError, match="digest"):
         validate_wheel(missing, expected_sha256=PRIOR_RELEASE_SHA256)
+
+
+def test_wheel_version_refuses_unsupported_compression_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    wheel = tmp_path / "codeprobe-0.13.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "codeprobe-0.13.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nVersion: 0.13.0\n",
+        )
+
+    def unsupported_read(*_args: object, **_kwargs: object) -> bytes:
+        raise NotImplementedError("unsupported compression")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", unsupported_read)
+
+    with pytest.raises(UpgradeCompatibilityError, match="metadata is invalid"):
+        _wheel_version(wheel)
+
+
+def test_wheel_version_refuses_oversized_metadata(tmp_path: Path) -> None:
+    wheel = tmp_path / "codeprobe-0.13.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "codeprobe-0.13.0.dist-info/METADATA",
+            b"x" * (1024 * 1024 + 1),
+        )
+
+    with pytest.raises(UpgradeCompatibilityError, match="metadata is invalid"):
+        _wheel_version(wheel)
+
+
+def test_command_failure_reports_safe_step_without_captured_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    completed = subprocess.CompletedProcess(
+        args=["codeprobe", "--version"],
+        returncode=9,
+        stdout="proprietary stdout",
+        stderr="credential-bearing stderr",
+    )
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: completed)
+
+    with pytest.raises(
+        UpgradeCompatibilityError,
+        match="candidate version check failed",
+    ) as raised:
+        _run(
+            ["codeprobe", "--version"],
+            cwd=tmp_path,
+            env={},
+            step="candidate version check",
+        )
+
+    assert "proprietary" not in str(raised.value)
+    assert "credential" not in str(raised.value)
+
+
+def test_main_reports_safe_failure_reason(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    status = main(
+        [
+            "--prior-wheel",
+            str(tmp_path / "missing-prior.whl"),
+            "--candidate-wheel",
+            str(tmp_path / "missing-candidate.whl"),
+        ]
+    )
+
+    assert status == 1
+    assert (
+        capsys.readouterr().err.strip()
+        == "upgrade compatibility gate failed: upgrade wheel cannot be read"
+    )
 
 
 def test_successful_envelope_accepts_prior_cli_human_output_before_json() -> None:

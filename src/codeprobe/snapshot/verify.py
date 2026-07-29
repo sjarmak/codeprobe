@@ -108,17 +108,7 @@ def verify_snapshot_extended(
     snapshot_dir: Path,
     signing_key: str | None = None,
 ) -> ExtendedVerificationResult:
-    """Verify a snapshot's attestation, symlink containment, and file hashes.
-
-    **Symlink containment** — every symlink anywhere in the snapshot must be
-    relative and must resolve to a path still inside the snapshot directory.
-    Absolute-path symlinks are always offenders because they break
-    relocation regardless of target; relative links that escape via
-    ``../`` traversal are offenders too. The ``traces/`` subtree
-    (per the CSB layout) contains relative symlinks pointing into
-    ``export/traces/`` inside the same snapshot, which keeps the whole
-    tree self-contained and relocatable.
-    """
+    """Verify attestation, containment, layout, and file hashes."""
     snapshot_dir = Path(snapshot_dir)
     try:
         inventory = inventory_tree(
@@ -129,21 +119,51 @@ def verify_snapshot_extended(
         return _inventory_failure(snapshot_dir)
 
     unsafe_legacy_reason = _unsafe_legacy_reason_from_inventory(inventory)
+    manifest, load_error = _load_manifest(inventory)
+    base = _verify_attestation(manifest, load_error, signing_key)
+    symlinks_ok, files_ok, symlink_offenders, file_offenders = (
+        _verify_extended_integrity(inventory, manifest)
+    )
+    offending = list(dict.fromkeys((*symlink_offenders, *file_offenders)))
+    return ExtendedVerificationResult(
+        ok=base.ok and symlinks_ok and files_ok,
+        reason=_verification_reason(
+            base,
+            symlinks_ok,
+            files_ok,
+            symlink_offenders,
+            file_offenders,
+        ),
+        base=base,
+        symlinks_contained=symlinks_ok,
+        file_hashes_match=files_ok,
+        offending_paths=offending,
+        unsafe_legacy_reason=unsafe_legacy_reason,
+    )
+
+
+def _load_manifest(
+    inventory: TreeInventory,
+) -> tuple[dict[str, object] | None, str | None]:
     manifest_entry = inventory.entries.get("SNAPSHOT.json")
-    manifest: dict[str, object] | None
-    load_error: str | None
     if (
         manifest_entry is None
         or manifest_entry.kind != "file"
         or manifest_entry.body is None
         or len(manifest_entry.body) > _MAX_MANIFEST_BYTES
     ):
-        manifest, load_error = None, (
-            f"missing or unsafe manifest: {snapshot_dir / 'SNAPSHOT.json'}"
+        return None, (
+            f"missing or unsafe manifest: {inventory.root / 'SNAPSHOT.json'}"
         )
-    else:
-        manifest, load_error = _parse_snapshot_json(manifest_entry.body)
-    base = (
+    return _parse_snapshot_json(manifest_entry.body)
+
+
+def _verify_attestation(
+    manifest: dict[str, object] | None,
+    load_error: str | None,
+    signing_key: str | None,
+) -> VerificationResult:
+    return (
         _verify_snapshot_data(manifest, signing_key=signing_key)
         if manifest is not None
         else VerificationResult(
@@ -154,10 +174,14 @@ def verify_snapshot_extended(
         )
     )
 
+
+def _verify_extended_integrity(
+    inventory: TreeInventory,
+    manifest: dict[str, object] | None,
+) -> tuple[bool, bool, list[str], list[str]]:
     mode = manifest.get("mode") if manifest is not None else None
     extended_required = _extended_layout_required(inventory, manifest)
     symlink_offenders = _verify_symlinks(inventory, mode)
-    symlinks_ok = not symlink_offenders
     files_ok, file_offenders = _verify_file_hashes(
         inventory,
         manifest,
@@ -168,11 +192,22 @@ def verify_snapshot_extended(
         manifest,
         required=extended_required,
     )
-    files_ok = files_ok and layout_ok
-    file_offenders.extend(layout_offenders)
-    offending = list(dict.fromkeys((*symlink_offenders, *file_offenders)))
+    combined_file_offenders = [*file_offenders, *layout_offenders]
+    return (
+        not symlink_offenders,
+        files_ok and layout_ok,
+        symlink_offenders,
+        combined_file_offenders,
+    )
 
-    ok = base.ok and symlinks_ok and files_ok
+
+def _verification_reason(
+    base: VerificationResult,
+    symlinks_ok: bool,
+    files_ok: bool,
+    symlink_offenders: list[str],
+    file_offenders: list[str],
+) -> str:
     reason_parts: list[str] = []
     if not base.ok:
         reason_parts.append(f"attestation: {base.reason}")
@@ -182,17 +217,7 @@ def verify_snapshot_extended(
         )
     if not files_ok:
         reason_parts.append(f"file hash mismatch: {len(file_offenders)} offender(s)")
-    reason = "ok" if ok else "; ".join(reason_parts) or "failed"
-
-    return ExtendedVerificationResult(
-        ok=ok,
-        reason=reason,
-        base=base,
-        symlinks_contained=symlinks_ok,
-        file_hashes_match=files_ok,
-        offending_paths=offending,
-        unsafe_legacy_reason=unsafe_legacy_reason,
-    )
+    return "; ".join(reason_parts) or "ok"
 
 
 def _inventory_failure(snapshot_dir: Path) -> ExtendedVerificationResult:

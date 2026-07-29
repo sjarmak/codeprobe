@@ -28,6 +28,7 @@ PRIOR_RELEASE_VERSION: Final[str] = "0.11.0"
 PRIOR_RELEASE_SHA256: Final[str] = (
     "a7797a1f4be4a6b4bd9ce73cb4ac868d8e26e2d4a23a3ecda040ee19105bfbf5"
 )
+_MAX_WHEEL_METADATA_BYTES: Final[int] = 1024 * 1024
 _INSTALL_ENV_NAMES: Final[frozenset[str]] = frozenset(
     {
         "CURL_CA_BUNDLE",
@@ -74,14 +75,24 @@ def _sha256(path: Path) -> str:
 def _wheel_version(path: Path) -> str:
     try:
         with zipfile.ZipFile(path) as archive:
-            metadata_names = [
-                name for name in archive.namelist()
-                if name.endswith(".dist-info/METADATA")
+            metadata_entries = [
+                info
+                for info in archive.infolist()
+                if info.filename.endswith(".dist-info/METADATA")
             ]
-            if len(metadata_names) != 1:
+            if (
+                len(metadata_entries) != 1
+                or metadata_entries[0].file_size > _MAX_WHEEL_METADATA_BYTES
+            ):
                 raise UpgradeCompatibilityError("candidate wheel metadata is invalid")
-            metadata = BytesParser().parsebytes(archive.read(metadata_names[0]))
-    except (OSError, KeyError, zipfile.BadZipFile) as exc:
+            metadata = BytesParser().parsebytes(archive.read(metadata_entries[0]))
+    except (
+        OSError,
+        KeyError,
+        NotImplementedError,
+        RuntimeError,
+        zipfile.BadZipFile,
+    ) as exc:
         raise UpgradeCompatibilityError("candidate wheel metadata is invalid") from exc
     version = metadata.get("Version")
     if not version:
@@ -115,6 +126,7 @@ def _run(
     *,
     cwd: Path,
     env: Mapping[str, str],
+    step: str,
     expected_returncode: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     try:
@@ -128,9 +140,9 @@ def _run(
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise UpgradeCompatibilityError("upgrade compatibility command failed") from exc
+        raise UpgradeCompatibilityError(f"{step} failed") from exc
     if result.returncode != expected_returncode:
-        raise UpgradeCompatibilityError("upgrade compatibility command failed")
+        raise UpgradeCompatibilityError(f"{step} failed")
     return result
 
 
@@ -190,6 +202,7 @@ def _prior_artifacts(
          "--name", "upgrade"],
         cwd=fixture,
         env=env,
+        step="prior experiment initialization",
     )
     successful_envelope(
         _run(
@@ -197,6 +210,7 @@ def _prior_artifacts(
              "quality", "--count", "1", "--no-llm", "--json"],
             cwd=fixture,
             env=env,
+            step="prior task mining",
         ),
         "prior mine",
     )
@@ -206,12 +220,14 @@ def _prior_artifacts(
          "--label", "baseline", "--agent", "claude"],
         cwd=fixture,
         env=env,
+        step="prior configuration registration",
     )
     _run(
         [str(python), str(REPO_ROOT / "scripts/e2e/prior_release_artifacts.py"),
          str(experiment)],
         cwd=fixture,
         env=env,
+        step="prior result creation",
     )
     successful_envelope(
         _run(
@@ -219,6 +235,7 @@ def _prior_artifacts(
              str(snapshot), "--redact", "hashes-only", "--json"],
             cwd=fixture,
             env=env,
+            step="prior snapshot creation",
         ),
         "prior snapshot create",
     )
@@ -235,6 +252,7 @@ def _candidate_reads(
             [str(codeprobe), "validate", str(fixture / ".codeprobe/tasks"), "--json"],
             cwd=fixture,
             env=env,
+            step="candidate task validation",
         ),
         "candidate task validation",
     )
@@ -243,6 +261,7 @@ def _candidate_reads(
             [str(codeprobe), "interpret", str(fixture), "--format", "json", "--json"],
             cwd=fixture,
             env=env,
+            step="candidate result interpretation",
         ),
         "candidate result interpretation",
     )
@@ -251,6 +270,7 @@ def _candidate_reads(
         [str(codeprobe), "snapshot", "verify", str(snapshot), "--json"],
         cwd=fixture,
         env=env,
+        step="candidate legacy snapshot refusal",
         expected_returncode=2,
     )
     if _error_envelope_code(refused) != "SNAPSHOT_UNSAFE_LEGACY_FORMAT":
@@ -272,11 +292,12 @@ def run_upgrade(prior_wheel: Path, candidate_wheel: Path, workdir: Path) -> None
     install_env = _install_environment(home)
     runtime_env = runtime_environment(home)
     _run([str(pip), "install", "--disable-pip-version-check", str(prior_wheel)],
-         cwd=workdir, env=install_env)
+         cwd=workdir, env=install_env, step="prior release installation")
     version = _run(
         [str(codeprobe), "--version"],
         cwd=workdir,
         env=runtime_env,
+        step="prior version check",
     ).stdout
     if version.strip() != f"codeprobe, version {PRIOR_RELEASE_VERSION}":
         raise UpgradeCompatibilityError("prior release version does not match")
@@ -288,11 +309,13 @@ def run_upgrade(prior_wheel: Path, candidate_wheel: Path, workdir: Path) -> None
          str(candidate_wheel)],
         cwd=workdir,
         env=install_env,
+        step="candidate installation",
     )
     upgraded = _run(
         [str(codeprobe), "--version"],
         cwd=workdir,
         env=runtime_env,
+        step="candidate version check",
     ).stdout
     if upgraded.strip() != f"codeprobe, version {candidate_version}":
         raise UpgradeCompatibilityError("candidate upgrade version does not match")
@@ -313,8 +336,13 @@ def main(argv: list[str] | None = None) -> int:
     workdir = Path(tempfile.mkdtemp(prefix="codeprobe-upgrade-"))
     try:
         run_upgrade(args.prior_wheel.resolve(), args.candidate_wheel.resolve(), workdir)
-    except (UpgradeCompatibilityError, OSError, ValueError, json.JSONDecodeError):
-        print("upgrade compatibility gate failed", file=sys.stderr)
+    except (
+        UpgradeCompatibilityError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        print(f"upgrade compatibility gate failed: {exc}", file=sys.stderr)
         return 1
     finally:
         if args.keep_workdir:
