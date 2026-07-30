@@ -901,9 +901,13 @@ checks.append(
     }
 )
 
-syntax_score = 1.0
-syntax_detail = f"syntax check skipped for language={language!r} (full credit)"
-if language in ("python", "py"):
+syntax_score = 0.0 if not changed_set else 1.0
+syntax_detail = (
+    "no candidate changes to validate"
+    if not changed_set
+    else f"syntax check skipped for language={language!r} (full credit)"
+)
+if changed_set and language in ("python", "py"):
     ok = total = missing = 0
     for f in source_files:
         if not f.endswith(".py"):
@@ -936,8 +940,12 @@ checks.append(
     }
 )
 
-scope_score = 1.0
-scope_detail = "no scope constraints (full credit)"
+scope_score = 0.0 if not changed_set else 1.0
+scope_detail = (
+    "no candidate changes to evaluate"
+    if not changed_set
+    else "no scope constraints (full credit)"
+)
 if scope_dirs and changed_set:
     out_of_scope = [
         f for f in changed_set
@@ -1027,13 +1035,12 @@ def _build_weighted_checklist_script(
 
     - ``correct_files`` (0.30): fraction of expected source files that the
       agent actually modified
-    - ``syntax_valid`` (0.25): expected source files parse without syntax
-      errors (language-aware; unknown languages receive full credit)
+    - ``syntax_valid`` (0.25): changed expected source files parse without
+      syntax errors (language-aware; no-op candidates receive no credit)
     - ``scope_respected`` (0.25): fraction of changed files that live
       inside the set of scope directories derived from the expected
       source files (proportional — an out-of-scope file only costs its
-      share, not the whole check; empty scope or no changes falls
-      through to full credit)
+      share, not the whole check; no-op candidates receive no credit)
     - ``test_passed`` (0.20): the mined verification command (``cmd``)
       exits zero
 

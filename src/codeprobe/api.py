@@ -28,14 +28,21 @@ from pathlib import Path
 
 from codeprobe.adapters.protocol import (
     ALLOWED_PERMISSION_MODES,
+    AgentAdapter,
     AgentConfig,
     quarantine_message,
 )
 from codeprobe.analysis.report import Report, generate_report
 from codeprobe.analysis.stats import task_passed
+from codeprobe.core.capability_preflight import check_arm_capabilities
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.containment import resolve_containment
 from codeprobe.core.executor import execute_config
-from codeprobe.core.experiment import load_experiment, save_config_results
+from codeprobe.core.experiment import (
+    load_experiment,
+    save_config_results,
+    validate_unique_config_labels,
+)
 from codeprobe.core.mcp_policy import resolve_tool_policy
 from codeprobe.core.registry import resolve
 from codeprobe.models.experiment import ConfigResults, ExperimentConfig
@@ -95,6 +102,8 @@ def run_experiment(
     experiment_dir: Path,
     configs: list[dict] | None = None,
     max_cost_usd: float | None = None,
+    *,
+    uncontained: bool = False,
 ) -> Report:
     """Run an experiment in-process and return a structured Report.
 
@@ -109,6 +118,9 @@ def run_experiment(
     max_cost_usd:
         Optional cost budget.  Execution halts when cumulative billable
         cost exceeds this amount.
+    uncontained:
+        Explicitly consent to running the autonomous agent and mined verifier
+        scripts directly on the host when no containment is available.
 
     Returns
     -------
@@ -123,6 +135,8 @@ def run_experiment(
     ValueError
         If no task directories are found or a config is invalid.
     """
+    containment_plan = resolve_containment(uncontained)
+
     experiment = load_experiment(experiment_dir)
 
     tasks_dir = experiment_dir / experiment.tasks_dir
@@ -142,27 +156,30 @@ def run_experiment(
     else:
         experiment_configs = [ExperimentConfig(label="default")]
 
-    # Refuse quarantined adapters (codeprobe-f7rl.27, currently codex)
-    # upfront — before ANY config executes — so a mixed experiment never
-    # produces a half-run comparison or spends on the other arms. A
-    # quarantined adapter's exit_code=0 outputs would enter the report
-    # as valid all-zero measurements.
+    validate_unique_config_labels(experiment_configs)
+
+    # Resolve and validate every arm before ANY config executes. A later
+    # quarantined or capability-incompatible arm must not leave an earlier
+    # arm's paid results looking like a valid comparison.
+    resolved_arms: list[tuple[ExperimentConfig, AgentAdapter, str]] = []
     for exp_config in experiment_configs:
-        if getattr(resolve(exp_config.agent), "quarantined", False):
+        adapter = resolve(exp_config.agent)
+        if getattr(adapter, "quarantined", False):
             raise ValueError(quarantine_message(exp_config.agent))
-
-    all_config_results: list[ConfigResults] = []
-
-    for exp_config in experiment_configs:
+        check_arm_capabilities(exp_config, adapter)
         perm = exp_config.permission_mode
+        if perm == "default":
+            perm = "dangerously_skip"
         if perm not in ALLOWED_PERMISSION_MODES:
             raise ValueError(
                 f"Invalid permission_mode {perm!r} in config "
                 f"{exp_config.label!r}. Allowed: {', '.join(sorted(ALLOWED_PERMISSION_MODES))}"
             )
+        resolved_arms.append((exp_config, adapter, perm))
 
-        adapter = resolve(exp_config.agent)
+    all_config_results: list[ConfigResults] = []
 
+    for exp_config, adapter, perm in resolved_arms:
         timeout = exp_config.extra.get("timeout_seconds", 3600)
         # max_turns: explicit field wins; fall back to extra dict for
         # configs authored before the field existed.
@@ -216,6 +233,7 @@ def run_experiment(
                 runs_dir=config_runs_dir,
                 max_cost_usd=max_cost_usd,
                 config_max_turns_source=config_max_turns_source,
+                containment_plan=containment_plan,
             )
         finally:
             checkpoint_store.close()

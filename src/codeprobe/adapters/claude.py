@@ -528,6 +528,27 @@ class ClaudeAdapter(BaseAdapter):
                 )
             cmd.extend(["--permission-mode", config.permission_mode])
 
+        # Refuse contradictory tool policies before materializing MCP config.
+        # The config expands environment references into a secret-bearing
+        # tempfile, and build-command failures happen before run() can clean it.
+        if config.allowed_tools and config.disallowed_tools:
+            conflict = sorted(
+                set(config.allowed_tools) & set(config.disallowed_tools)
+            )
+            if conflict:
+                raise ValueError(
+                    "allowed_tools and disallowed_tools both list "
+                    f"{', '.join(conflict)}; --disallowedTools wins silently, so "
+                    "the arm would not have the tools its config claims."
+                )
+        disallowed = list(config.disallowed_tools or [])
+        if config.mcp_config and _TOOL_SEARCH in disallowed:
+            raise ValueError(
+                f"disallowed_tools blocks {_TOOL_SEARCH}, which loads MCP tool "
+                "schemas; with an mcp_config set this leaves the agent unable "
+                "to call any MCP tool."
+            )
+
         # Pin the MCP tool surface unconditionally. Without a bare
         # --strict-mcp-config, an arm that declares no mcp_config silently
         # inherits the operator's ambient MCP servers (user-level
@@ -576,29 +597,6 @@ class ClaudeAdapter(BaseAdapter):
         # surface entirely — so a strict MCP arm silently measured an agent
         # with NO working tools rather than an agent using MCP. Re-add
         # ``ToolSearch`` whenever MCP servers are configured.
-        # A name in both lists is a contradiction the CLI resolves silently in
-        # favour of --disallowedTools, so the arm runs without a tool its own
-        # config and report claim it had. Refuse rather than mis-report.
-        if config.allowed_tools and config.disallowed_tools:
-            conflict = sorted(set(config.allowed_tools) & set(config.disallowed_tools))
-            if conflict:
-                raise ValueError(
-                    "allowed_tools and disallowed_tools both list "
-                    f"{', '.join(conflict)}; --disallowedTools wins silently, so "
-                    "the arm would not have the tools its config claims."
-                )
-
-        disallowed = list(config.disallowed_tools or [])
-        if mcp_path and _TOOL_SEARCH in disallowed:
-            # Blocking the schema loader disables every MCP tool, which turns
-            # an MCP arm into a no-tools arm that still reports plausible
-            # scores. Refuse instead of measuring nothing.
-            raise ValueError(
-                f"disallowed_tools blocks {_TOOL_SEARCH}, which loads MCP tool "
-                "schemas; with an mcp_config set this leaves the agent unable "
-                "to call any MCP tool."
-            )
-
         if config.allowed_tools is not None:
             builtin_tools = [
                 t for t in config.allowed_tools if not t.startswith("mcp__")

@@ -487,7 +487,7 @@ class TestComputeConsensus:
 
         sg_auth = ModuleType("codeprobe.mining.sg_auth")
         sg_auth.AuthError = AuthError
-        sg_auth.get_valid_token = lambda: "token"
+        sg_auth.get_valid_token = lambda _endpoint: "token"
         sg_auth.resolve_org_scale_endpoint = lambda: "https://demo.sourcegraph.com"
         sg_ground_truth = ModuleType("codeprobe.mining.sg_ground_truth")
         sg_ground_truth._call_find_references = lambda **kwargs: []
@@ -509,6 +509,37 @@ class TestComputeConsensus:
         assert result.participating is False
         assert result.participation == "no_evidence"
         assert result.error == "find_references returned no files"
+
+    def test_sourcegraph_auth_uses_requested_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class AuthError(Exception):
+            pass
+
+        token_calls: list[str] = []
+        sg_auth = ModuleType("codeprobe.mining.sg_auth")
+        sg_auth.AuthError = AuthError
+        sg_auth.get_valid_token = lambda endpoint: token_calls.append(endpoint)
+        sg_auth.resolve_org_scale_endpoint = lambda: "https://default.example"
+        sg_ground_truth = ModuleType("codeprobe.mining.sg_ground_truth")
+        sg_ground_truth._call_find_references = lambda **kwargs: ["pkg/use.go"]
+        monkeypatch.setitem(sys.modules, "codeprobe.mining.sg_auth", sg_auth)
+        monkeypatch.setitem(
+            sys.modules,
+            "codeprobe.mining.sg_ground_truth",
+            sg_ground_truth,
+        )
+
+        result = consensus._run_sourcegraph_backend(
+            "X",
+            self.repo_paths,
+            defining_file="pkg/foo.go",
+            sg_repo="github.com/x/y",
+            sg_url="https://self-hosted.example",
+        )
+
+        assert result.available is True
+        assert token_calls == ["https://self-hosted.example"]
 
     def test_decision_is_immutable(
         self, monkeypatch: pytest.MonkeyPatch

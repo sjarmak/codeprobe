@@ -60,6 +60,26 @@ def _write_oracle_task_dirs(
         _write_oracle_task(task, task_out, tests_out, repo_path, safe_id)
 
 
+def test_sourcegraph_auth_gate_uses_resolved_org_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codeprobe.mining import org_scale, sg_auth
+
+    monkeypatch.setenv(
+        "SOURCEGRAPH_ENDPOINT",
+        "https://self-hosted.example/.api/graphql",
+    )
+    token_calls: list[str] = []
+    monkeypatch.setattr(
+        sg_auth,
+        "get_valid_token",
+        lambda endpoint: token_calls.append(endpoint),
+    )
+
+    assert org_scale._get_sg_config("github.com/acme/repo") == (True,)
+    assert token_calls == ["https://self-hosted.example"]
+
+
 # ---------------------------------------------------------------------------
 # Path normalization tests
 # ---------------------------------------------------------------------------

@@ -306,6 +306,25 @@ def test_add_config_duplicate_label(runner: CliRunner, exp_dir: Path) -> None:
     assert "already exists" in result.output
 
 
+def test_load_experiment_rejects_duplicate_config_labels(tmp_path: Path) -> None:
+    exp_dir = tmp_path / "duplicate-configs"
+    exp_dir.mkdir()
+    (exp_dir / "experiment.json").write_text(
+        json.dumps(
+            {
+                "name": "duplicate-configs",
+                "configs": [
+                    {"label": "same", "agent": "claude"},
+                    {"label": "same", "agent": "codex"},
+                ],
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="Duplicate config label.*same"):
+        load_experiment(exp_dir)
+
+
 def test_add_config_rejects_unsafe_label(runner: CliRunner, exp_dir: Path) -> None:
     result = runner.invoke(
         main,

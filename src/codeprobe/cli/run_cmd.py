@@ -30,7 +30,6 @@ from codeprobe.cli._output_helpers import (
     resolve_mode,
     validate_out_path,
 )
-from codeprobe.cli.capability_preflight import check_arm_capabilities
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 from codeprobe.cli.json_display import JsonLineListener
 from codeprobe.config.defaults import (
@@ -38,11 +37,11 @@ from codeprobe.config.defaults import (
     resolve_timeout,
     use_v07_defaults,
 )
+from codeprobe.core.capability_preflight import check_arm_capabilities
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.containment import (
     DISCLOSURE,
     resolve_containment,
-    set_active_plan,
 )
 from codeprobe.core.events import (
     BudgetChecker,
@@ -611,7 +610,7 @@ def show_prompt_and_exit(
         compose_instruction,
     )
 
-    exp_dir = Path(config) if config else Path(path)
+    exp_dir = _resolve_experiment_dir(path, config)
 
     try:
         experiment = load_experiment(exp_dir)
@@ -729,6 +728,14 @@ def show_prompt_and_exit(
     click.echo(prompt)
 
 
+def _resolve_experiment_dir(path: str, config: str | None) -> Path:
+    """Normalize an explicit experiment.json file to its parent directory."""
+    candidate = Path(config) if config else Path(path)
+    if config and candidate.is_file() and candidate.name == "experiment.json":
+        return candidate.parent
+    return candidate
+
+
 def run_eval(
     path: str,
     agent: str = "claude",
@@ -825,7 +832,7 @@ def run_eval(
                 # default (600s). Users running MCP suites pass --timeout.
                 timeout, _ = resolve_timeout("quality")
 
-        exp_dir = Path(config) if config else Path(path)
+        exp_dir = _resolve_experiment_dir(path, config)
 
         # Deprecation warning for legacy .evalrc.yaml
         evalrc_path = Path(path) / ".evalrc.yaml"
@@ -1121,7 +1128,6 @@ def run_eval(
         # dispatch. --dry-run only estimates, so it returns above without
         # reaching this gate.
         containment_plan = resolve_containment(uncontained)
-        set_active_plan(containment_plan)
         if containment_plan.mode == "host-consented":
             click.echo(f"--uncontained accepted: {DISCLOSURE}", err=True)
         elif containment_plan.mode == "container":
@@ -1388,6 +1394,7 @@ def run_eval(
                     trace_recorder=trace_recorder,
                     config_max_turns_source=config_max_turns_source,
                     pristine_config=pristine_config,
+                    containment_plan=containment_plan,
                 )
             except KeyboardInterrupt:
                 interrupted = True

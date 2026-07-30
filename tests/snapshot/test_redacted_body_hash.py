@@ -127,3 +127,26 @@ def test_content_snapshot_without_redacted_hash_fails_closed(tmp_path: Path) -> 
 
     result = verify_snapshot_extended(out)
     assert result.file_hashes_match is False
+
+
+def test_contents_snapshot_never_publishes_ground_truth_body(
+    tmp_path: Path,
+) -> None:
+    """Answer keys stay verifier-side in every publishable snapshot layout."""
+    exp = _make_experiment_with_secret(tmp_path)
+    answer_key = exp / "tasks" / "task-0001" / "tests" / "ground_truth.json"
+    answer_key.parent.mkdir(parents=True)
+    answer_key.write_text('{"answer": "private-oracle"}\n')
+    (answer_key.parents[1] / "instruction.md").write_text("Find the answer.\n")
+    out = tmp_path / "snap"
+
+    create_snapshot(
+        exp,
+        out,
+        mode="contents",
+        scanner=MockScanner(hit_substrings=[CANARY_DEFAULT]),
+        allow_source_in_export=True,
+    )
+
+    assert not list(out.rglob("ground_truth.json"))
+    assert "private-oracle" not in (out / "SNAPSHOT.json").read_text()

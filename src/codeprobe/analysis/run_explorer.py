@@ -29,15 +29,16 @@ EXPLORER_FILE = "explorer.html"
 def safe_json_island(data: object) -> str:
     """Serialise ``data`` for embedding inside an inline ``<script>`` tag.
 
-    ``json.dumps`` does not escape ``/``, so a literal ``</script>`` anywhere
+    ``json.dumps`` does not escape ``<``, so a literal ``</script>`` anywhere
     in the payload closes the tag and the remainder is parsed as live markup.
     Trial payloads are copied wholesale from ``results.json`` and carry raw
-    agent stderr, so every string in here is attacker-influenced. Breaking
-    ``</`` keeps JSON parsers happy while denying the HTML parser a tag.
+    agent stderr, so every string in here is attacker-influenced. Escaping
+    every ``<`` keeps JSON parsers happy while denying the HTML parser a tag.
 
-    Mirrors ``snapshot.exporters.browse._safe_json_island``.
+    This is stricter than the snapshot browser helper because all less-than
+    signs are escaped, not only closing-tag prefixes.
     """
-    return json.dumps(data, sort_keys=True).replace("</", "<\\/")
+    return json.dumps(data, sort_keys=True).replace("<", "\\u003c")
 
 # Columns surfaced in the trial table, in display order. Each is
 # (per_trial key, header label). Kept as data so the table and the CSV-like

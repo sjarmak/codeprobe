@@ -27,6 +27,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import shutil
+import stat
 import tempfile
 import time
 from dataclasses import dataclass
@@ -62,6 +63,113 @@ class _Candidate:
     size_bytes: int
     newest_mtime: float
     is_dir: bool
+    codeprobe_relative: Path | None = None
+
+
+@dataclass
+class _PinnedDirectories:
+    """Open directory handles that make later deletion path-race resistant."""
+
+    root_fd: int
+    codeprobe_fd: int | None
+
+    @classmethod
+    def open(cls, root: Path) -> _PinnedDirectories:
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY
+            nofollow_flags = flags | os.O_NOFOLLOW
+        except AttributeError as exc:
+            raise DiagnosticError(
+                code="PURGE_REFUSED",
+                message=(
+                    "This platform cannot pin directories without following "
+                    "symlinks; refusing to purge."
+                ),
+                diagnose_cmd="python3 -c 'import os; print(hasattr(os, \"O_NOFOLLOW\"))'",
+                next_steps=[],
+            ) from exc
+        root_fd = os.open(root, flags)
+        try:
+            codeprobe_fd = os.open(
+                ".codeprobe",
+                nofollow_flags,
+                dir_fd=root_fd,
+            )
+        except FileNotFoundError:
+            codeprobe_fd = None
+        except BaseException:
+            os.close(root_fd)
+            raise
+        return cls(root_fd=root_fd, codeprobe_fd=codeprobe_fd)
+
+    def close(self) -> None:
+        if self.codeprobe_fd is not None:
+            os.close(self.codeprobe_fd)
+        os.close(self.root_fd)
+
+    def delete_tree(self, relative: Path) -> None:
+        """Delete a validated tree relative to a pinned directory handle."""
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise DiagnosticError(
+                code="PURGE_REFUSED",
+                message=(
+                    "This platform cannot perform symlink-safe recursive "
+                    "deletion; refusing to purge."
+                ),
+                diagnose_cmd="python3 -c 'import shutil; print(shutil.rmtree.avoids_symlink_attacks)'",
+                next_steps=[],
+            )
+        if self.codeprobe_fd is None:
+            raise DiagnosticError(
+                code="PURGE_REFUSED",
+                message="The pinned .codeprobe directory is no longer available.",
+                diagnose_cmd="ls -ld .codeprobe",
+                next_steps=[],
+            )
+        try:
+            if relative == Path("."):
+                self._clear_codeprobe_tree()
+                return
+            parts = relative.parts
+            if not parts or any(part in {"", ".", ".."} for part in parts):
+                raise OSError(f"unsafe relative purge target: {relative}")
+            parent_fd = os.dup(self.codeprobe_fd)
+            try:
+                for component in parts[:-1]:
+                    next_fd = os.open(
+                        component,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=parent_fd,
+                    )
+                    os.close(parent_fd)
+                    parent_fd = next_fd
+                shutil.rmtree(parts[-1], dir_fd=parent_fd)
+            finally:
+                os.close(parent_fd)
+        except OSError as exc:
+            raise DiagnosticError(
+                code="PURGE_REFUSED",
+                message=(
+                    f"Refusing to delete {relative}: a path component changed "
+                    "after validation or could not be opened safely."
+                ),
+                diagnose_cmd="ls -la .codeprobe",
+                next_steps=[],
+                detail={"target": str(relative)},
+            ) from exc
+
+    def _clear_codeprobe_tree(self) -> None:
+        assert self.codeprobe_fd is not None
+        for name in os.listdir(self.codeprobe_fd):
+            entry_stat = os.stat(
+                name,
+                dir_fd=self.codeprobe_fd,
+                follow_symlinks=False,
+            )
+            if stat.S_ISDIR(entry_stat.st_mode):
+                shutil.rmtree(name, dir_fd=self.codeprobe_fd)
+            else:
+                os.unlink(name, dir_fd=self.codeprobe_fd)
 
 
 def _experiment_dirs(codeprobe_dir: Path) -> list[Path]:
@@ -120,6 +228,48 @@ def _human_size(size_bytes: int) -> str:
     return f"{value:.1f} GB"
 
 
+def _collect_candidates(
+    codeprobe_dir: Path,
+    *,
+    cutoff: float | None,
+    purge_all: bool,
+) -> tuple[list[_Candidate], Path]:
+    candidates: list[_Candidate] = []
+    for exp_dir in _experiment_dirs(codeprobe_dir):
+        target = exp_dir if purge_all else exp_dir / "runs"
+        if not target.is_dir():
+            continue
+        size, newest = _tree_stats(target)
+        if cutoff is not None and newest >= cutoff:
+            continue
+        candidates.append(
+            _Candidate(
+                path=target,
+                size_bytes=size,
+                newest_mtime=newest,
+                is_dir=True,
+                codeprobe_relative=target.relative_to(codeprobe_dir),
+            )
+        )
+
+    tempdir = Path(tempfile.gettempdir())
+    for entry in sorted(tempdir.glob(_MCP_TEMPFILE_PATTERN)):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        st = entry.lstat()
+        if cutoff is not None and st.st_mtime >= cutoff:
+            continue
+        candidates.append(
+            _Candidate(
+                path=entry,
+                size_bytes=st.st_size,
+                newest_mtime=st.st_mtime,
+                is_dir=False,
+            )
+        )
+    return candidates, tempdir
+
+
 @click.command("purge", epilog=_EPILOG)
 @click.argument(
     "path",
@@ -138,7 +288,11 @@ def _human_size(size_bytes: int) -> str:
     "--all",
     "purge_all",
     is_flag=True,
-    help="Remove whole experiment directories (experiment.json, tasks/), not just runs/ artifacts.",
+    help=(
+        "Remove whole named experiment directories, not just runs/ artifacts. "
+        "For a root-level experiment, clear the pinned .codeprobe/ directory's "
+        "contents and retain the empty directory."
+    ),
 )
 @click.option(
     "--yes",
@@ -151,8 +305,10 @@ def purge(path: Path, older_than: int | None, purge_all: bool, yes: bool) -> Non
     Dry run by default: prints every candidate with its size and exits
     without deleting anything. Candidates are the runs/ trees (agent
     transcripts + trace.db) of each experiment under PATH/.codeprobe/ —
-    whole experiment directories with --all — plus stale
-    codeprobe-mcp-*.json files in the system temp directory.
+    whole named experiment directories with --all; a root-level experiment's
+    pinned .codeprobe/ contents are cleared while its empty directory is
+    retained. Candidates also include stale codeprobe-mcp-*.json files in the
+    system temp directory.
     """
     root = path.resolve()
     codeprobe_dir = root / ".codeprobe"
@@ -176,28 +332,42 @@ def purge(path: Path, older_than: int | None, purge_all: bool, yes: bool) -> Non
             detail={"target": os.path.realpath(codeprobe_dir)},
         )
     boundary = codeprobe_dir.resolve()
-    cutoff = time.time() - older_than * _SECONDS_PER_DAY if older_than is not None else None
-
-    candidates: list[_Candidate] = []
-    for exp_dir in _experiment_dirs(codeprobe_dir):
-        target = exp_dir if purge_all else exp_dir / "runs"
-        if not target.is_dir():
-            continue
-        size, newest = _tree_stats(target)
-        if cutoff is not None and newest >= cutoff:
-            continue
-        candidates.append(_Candidate(path=target, size_bytes=size, newest_mtime=newest, is_dir=True))
-
-    tempdir = Path(tempfile.gettempdir())
-    for entry in sorted(tempdir.glob(_MCP_TEMPFILE_PATTERN)):
-        if entry.is_symlink() or not entry.is_file():
-            continue
-        st = entry.lstat()
-        if cutoff is not None and st.st_mtime >= cutoff:
-            continue
-        candidates.append(
-            _Candidate(path=entry, size_bytes=st.st_size, newest_mtime=st.st_mtime, is_dir=False)
+    cutoff = (
+        time.time() - older_than * _SECONDS_PER_DAY
+        if older_than is not None
+        else None
+    )
+    pinned = _PinnedDirectories.open(root)
+    try:
+        _purge_pinned(
+            path=path,
+            codeprobe_dir=codeprobe_dir,
+            boundary=boundary,
+            cutoff=cutoff,
+            purge_all=purge_all,
+            yes=yes,
+            pinned=pinned,
         )
+    finally:
+        pinned.close()
+
+
+def _purge_pinned(
+    *,
+    path: Path,
+    codeprobe_dir: Path,
+    boundary: Path,
+    cutoff: float | None,
+    purge_all: bool,
+    yes: bool,
+    pinned: _PinnedDirectories,
+) -> None:
+    """Collect, validate, and delete while directory handles remain pinned."""
+    candidates, tempdir = _collect_candidates(
+        codeprobe_dir,
+        cutoff=cutoff,
+        purge_all=purge_all,
+    )
 
     if not candidates:
         click.echo("Nothing to purge.")
@@ -215,8 +385,28 @@ def purge(path: Path, older_than: int | None, purge_all: bool, yes: bool) -> Non
         )
         return
 
-    # Fail-closed guard: validate EVERY candidate before deleting anything,
-    # so one escaping symlink aborts the whole purge with nothing removed.
+    _validate_candidates(candidates, tempdir, boundary, path)
+
+    for cand in candidates:
+        if cand.is_dir:
+            assert cand.codeprobe_relative is not None
+            pinned.delete_tree(cand.codeprobe_relative)
+            if cand.codeprobe_relative == Path("."):
+                click.echo(f"Cleared contents of {cand.path}")
+                continue
+        else:
+            cand.path.unlink()
+        click.echo(f"Deleted {cand.path}")
+    click.echo(f"Purged {len(candidates)} item(s), {_human_size(total)} reclaimed.")
+
+
+def _validate_candidates(
+    candidates: list[_Candidate],
+    tempdir: Path,
+    boundary: Path,
+    path: Path,
+) -> None:
+    """Fail closed before deleting when any candidate escapes its boundary."""
     refused: list[tuple[Path, Path]] = []
     for cand in candidates:
         if cand.is_dir:
@@ -247,11 +437,3 @@ def purge(path: Path, older_than: int | None, purge_all: bool, yes: bool) -> Non
             ],
             detail={"refused": [str(candidate) for candidate, _ in refused]},
         )
-
-    for cand in candidates:
-        if cand.is_dir:
-            shutil.rmtree(cand.path)
-        else:
-            cand.path.unlink()
-        click.echo(f"Deleted {cand.path}")
-    click.echo(f"Purged {len(candidates)} item(s), {_human_size(total)} reclaimed.")

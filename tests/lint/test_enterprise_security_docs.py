@@ -635,12 +635,16 @@ def _purge_targets_only_scoped_artifacts() -> bool:
     callback = purge_cmd.purge.callback
     if callback is None:
         return False
-    source = inspect.getsource(callback)
+    source = inspect.getsource(purge_cmd)
     return (
         'root / ".codeprobe"' in source
         and "_experiment_dirs(codeprobe_dir)" in source
         and "_MCP_TEMPFILE_PATTERN" in source
         and "_escaping_path(cand.path, boundary)" in source
+        and "target.relative_to(codeprobe_dir)" in source
+        and "pinned.delete_tree(cand.codeprobe_relative)" in source
+        and "dir_fd=self.codeprobe_fd" in source
+        and "os.O_NOFOLLOW" in source
     )
 
 

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import stat
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from codeprobe.adapters.protocol import AdapterCapabilities
 from codeprobe.analysis.report import Report
+from codeprobe.cli.errors import PrescriptiveError
 from tests.conftest import FakeAdapter
 
 # run_experiment uses the experiment dir (not a git checkout) as repo_path;
@@ -77,6 +80,235 @@ class TestRunExperiment:
         assert report.experiment_name == "test-exp"
         assert len(report.summaries) == 1
         assert report.summaries[0].label == "default"
+
+    def test_bare_host_refuses_before_adapter_resolution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The library entry point must not bypass the CLI containment gate."""
+        from codeprobe import api as api_mod
+
+        monkeypatch.delenv("CODEPROBE_SANDBOX", raising=False)
+        monkeypatch.setattr("codeprobe.core.sandbox.is_sandboxed", lambda: False)
+        exp_dir = _make_experiment_dir(tmp_path)
+
+        with (
+            patch.object(api_mod, "resolve") as mock_resolve,
+            patch.object(api_mod, "execute_config") as mock_execute,
+            pytest.raises(PrescriptiveError) as exc_info,
+        ):
+            api_mod.run_experiment(exp_dir)
+
+        assert exc_info.value.code == "UNCONTAINED_REFUSED"
+        mock_resolve.assert_not_called()
+        mock_execute.assert_not_called()
+
+    def test_explicit_uncontained_consent_is_scoped_to_execution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Programmatic callers can explicitly accept disclosed host execution."""
+        from codeprobe import api as api_mod
+        from codeprobe.core import containment
+
+        monkeypatch.delenv("CODEPROBE_SANDBOX", raising=False)
+        monkeypatch.setattr("codeprobe.core.sandbox.is_sandboxed", lambda: False)
+        exp_dir = _make_experiment_dir(tmp_path, num_tasks=1)
+        adapter = FakeAdapter(stdout="PASS", exit_code=0)
+
+        observed: list[str | None] = []
+        original_run = adapter.run
+
+        def observe_run(*args: object, **kwargs: object):
+            plan = containment.active_plan()
+            observed.append(plan.mode if plan is not None else None)
+            return original_run(*args, **kwargs)
+
+        with (
+            patch.object(api_mod, "resolve", return_value=adapter),
+            patch.object(adapter, "run", side_effect=observe_run),
+        ):
+            api_mod.run_experiment(exp_dir, uncontained=True)
+
+        assert observed == ["host-consented"]
+        assert containment.active_plan() is None
+
+    def test_failed_setup_does_not_leak_host_consent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Consent is scoped to a runnable experiment, not future API calls."""
+        from codeprobe import api as api_mod
+        from codeprobe.core import containment
+
+        monkeypatch.delenv("CODEPROBE_SANDBOX", raising=False)
+        monkeypatch.setattr("codeprobe.core.sandbox.is_sandboxed", lambda: False)
+
+        with pytest.raises(FileNotFoundError):
+            api_mod.run_experiment(
+                tmp_path / "missing-experiment",
+                uncontained=True,
+            )
+
+        assert containment.active_plan() is None
+
+    def test_default_permission_mode_is_upgraded_for_autonomous_run(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Library and CLI runs must give the same config the same permissions."""
+        from codeprobe import api as api_mod
+
+        exp_dir = _make_experiment_dir(tmp_path, num_tasks=1)
+        adapter = FakeAdapter(stdout="PASS", exit_code=0)
+
+        with patch.object(api_mod, "resolve", return_value=adapter):
+            api_mod.run_experiment(exp_dir)
+
+        assert len(adapter.run_calls) == 1
+        assert adapter.run_calls[0][1].permission_mode == "dangerously_skip"
+
+    def test_unsupported_later_arm_refuses_before_any_dispatch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Capability validation covers every arm before the first can spend."""
+        from codeprobe import api as api_mod
+
+        class LimitedAdapter(FakeAdapter):
+            @property
+            def capabilities(self) -> AdapterCapabilities:
+                return AdapterCapabilities()
+
+        capable = FakeAdapter(stdout="PASS", exit_code=0)
+        limited = LimitedAdapter(stdout="PASS", exit_code=0)
+        exp_dir = _make_experiment_dir(
+            tmp_path,
+            configs=[
+                {"label": "baseline", "agent": "fake"},
+                {
+                    "label": "invalid-mcp-arm",
+                    "agent": "limited",
+                    "mcp_config": {
+                        "mcpServers": {
+                            "sg": {
+                                "type": "http",
+                                "url": "https://example.test/mcp",
+                            }
+                        }
+                    },
+                    "mcp_mode": "strict",
+                },
+            ],
+        )
+
+        def resolve_adapter(name: str) -> FakeAdapter:
+            return limited if name == "limited" else capable
+
+        with (
+            patch.object(api_mod, "resolve", side_effect=resolve_adapter),
+            patch.object(api_mod, "execute_config") as mock_execute,
+            pytest.raises(PrescriptiveError) as exc_info,
+        ):
+            api_mod.run_experiment(exp_dir)
+
+        assert exc_info.value.code == "ADAPTER_CAPABILITY"
+        mock_execute.assert_not_called()
+
+    def test_duplicate_config_labels_refuse_before_dispatch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Labels key result paths and must uniquely identify an arm."""
+        from codeprobe import api as api_mod
+
+        exp_dir = _make_experiment_dir(
+            tmp_path,
+            configs=[
+                {"label": "duplicate", "agent": "fake"},
+                {"label": "duplicate", "agent": "fake"},
+            ],
+        )
+
+        with (
+            patch.object(api_mod, "resolve", return_value=FakeAdapter()),
+            patch.object(api_mod, "execute_config") as mock_execute,
+            pytest.raises(ValueError, match="Duplicate config label"),
+        ):
+            api_mod.run_experiment(exp_dir)
+
+        mock_execute.assert_not_called()
+
+    def test_concurrent_runs_pass_their_own_containment_plan(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One API caller's host consent cannot authorize another caller."""
+        from codeprobe import api as api_mod
+        from codeprobe.core.containment import ContainmentPlan
+
+        monkeypatch.delenv("CODEPROBE_SANDBOX", raising=False)
+        container_exp = _make_experiment_dir(
+            tmp_path, name="container-exp", configs=[{"label": "container-arm"}]
+        )
+        host_exp = _make_experiment_dir(
+            tmp_path, name="host-exp", configs=[{"label": "host-arm"}]
+        )
+        barrier = threading.Barrier(2)
+        observed: dict[str, str] = {}
+        failures: list[BaseException] = []
+
+        def fake_resolve_containment(uncontained: bool) -> ContainmentPlan:
+            return ContainmentPlan(
+                mode="host-consented" if uncontained else "container",
+                engine=None if uncontained else "/usr/bin/docker",
+            )
+
+        def fake_execute_config(**kwargs: object) -> list:
+            barrier.wait()
+            config = kwargs["experiment_config"]
+            plan = kwargs["containment_plan"]
+            observed[config.label] = plan.mode  # type: ignore[union-attr]
+            return []
+
+        def run(path: Path, *, uncontained: bool) -> None:
+            try:
+                api_mod.run_experiment(path, uncontained=uncontained)
+            except BaseException as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        with (
+            patch.object(
+                api_mod,
+                "resolve_containment",
+                side_effect=fake_resolve_containment,
+            ),
+            patch.object(api_mod, "resolve", return_value=FakeAdapter()),
+            patch.object(api_mod, "execute_config", side_effect=fake_execute_config),
+        ):
+            threads = [
+                threading.Thread(
+                    target=run, args=(container_exp,), kwargs={"uncontained": False}
+                ),
+                threading.Thread(
+                    target=run, args=(host_exp,), kwargs={"uncontained": True}
+                ),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+        assert not failures
+        assert not any(thread.is_alive() for thread in threads)
+        assert observed == {
+            "container-arm": "container",
+            "host-arm": "host-consented",
+        }
 
     def test_report_matches_expected_scores(self, tmp_path: Path) -> None:
         """Verify pass rate reflects task outcomes."""

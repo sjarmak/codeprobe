@@ -454,10 +454,13 @@ Retention is operator-managed via `codeprobe purge`:
 codeprobe purge .                       # dry run: list cleartext artifacts with sizes
 codeprobe purge . --yes                 # delete runs/ artifacts (transcripts + trace.db)
 codeprobe purge . --older-than 30 --yes # retention window: only artifacts >30 days old
-codeprobe purge . --all --yes           # remove whole experiment dirs, not just runs/
+codeprobe purge . --all --yes           # remove named experiments; clear root experiment contents
 ```
 
 `purge` also sweeps stale `codeprobe-mcp-*.json` files from the system temp directory. It only ever deletes under `.codeprobe/` plus those temp files; it never touches your source tree and never runs git.
+For the legacy root-level experiment layout, `--all` clears the pinned
+`.codeprobe/` contents but retains the empty directory so a concurrent path
+replacement cannot redirect deletion.
 
 Snapshot redaction ([docs/SNAPSHOT_REDACTION.md](docs/SNAPSHOT_REDACTION.md)) applies **only to exports**. The local experiment tree is not redacted or encrypted at rest.
 

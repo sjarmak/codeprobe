@@ -63,6 +63,27 @@ def test_show_prompt_prints_instruction(tmp_path: Path) -> None:
     assert "You are working on the repository" in result.output
 
 
+def test_show_prompt_accepts_explicit_experiment_json_path(tmp_path: Path) -> None:
+    exp_dir = _setup_experiment(tmp_path)
+    unrelated_path = tmp_path / "unrelated"
+    unrelated_path.mkdir()
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(unrelated_path),
+            "--config",
+            str(exp_dir / "experiment.json"),
+            "--show-prompt",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Fix the bug in main.py" in result.output
+
+
 def test_show_prompt_with_preamble(tmp_path: Path) -> None:
     """--show-prompt resolves preamble templates into the output."""
     from unittest.mock import patch

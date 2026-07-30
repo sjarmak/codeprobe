@@ -164,6 +164,56 @@ def test_claude_mcp_tmpfile_stays_owner_only(
     )
 
 
+def test_claude_validates_tool_conflicts_before_materializing_mcp_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An invalid arm must not create a token-bearing file before refusing."""
+    monkeypatch.setattr(ClaudeAdapter, "find_binary", lambda self: "/fake/claude")
+    adapter = ClaudeAdapter()
+    materialized = False
+
+    def forbidden_materialization(_config: AgentConfig) -> None:
+        nonlocal materialized
+        materialized = True
+        return None
+
+    monkeypatch.setattr(adapter, "_write_mcp_config", forbidden_materialization)
+    config = AgentConfig(
+        mcp_config=_mcp_config_with_env_ref(),
+        allowed_tools=["Read"],
+        disallowed_tools=["Read"],
+    )
+
+    with pytest.raises(ValueError, match="both list Read"):
+        adapter.build_command("prompt", config)
+
+    assert materialized is False
+
+
+def test_claude_validates_blocked_toolsearch_before_materializing_mcp_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ClaudeAdapter, "find_binary", lambda self: "/fake/claude")
+    adapter = ClaudeAdapter()
+    materialized = False
+
+    def forbidden_materialization(_config: AgentConfig) -> None:
+        nonlocal materialized
+        materialized = True
+        return None
+
+    monkeypatch.setattr(adapter, "_write_mcp_config", forbidden_materialization)
+    config = AgentConfig(
+        mcp_config=_mcp_config_with_env_ref(),
+        disallowed_tools=["ToolSearch"],
+    )
+
+    with pytest.raises(ValueError, match="blocks ToolSearch"):
+        adapter.build_command("prompt", config)
+
+    assert materialized is False
+
+
 def test_copilot_mcp_tmpfile_deleted_on_timeout(
     monkeypatch: pytest.MonkeyPatch, fake_token_env: None
 ) -> None:

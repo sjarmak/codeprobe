@@ -16,7 +16,6 @@ thresholds.
 from __future__ import annotations
 
 import html
-import json
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -156,7 +155,7 @@ def render_comparison_html(run_id: str, trials: list[dict]) -> str:
         n_trials=len(trials),
         summary_cards=summary_cards,
         matrix_json=safe_json_island(matrix),
-        arms_json=json.dumps(matrix["arms"]),
+        arms_json=safe_json_island(matrix["arms"]),
     )
 
 

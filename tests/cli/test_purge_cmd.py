@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
+from codeprobe.cli import purge_cmd
 from codeprobe.cli.errors import DiagnosticError
 from codeprobe.cli.purge_cmd import purge
 
@@ -134,6 +135,25 @@ class TestPurgeDelete:
         assert not (repo / ".codeprobe" / "exp1").exists()
         assert (repo / "src" / "app.py").exists()
 
+    def test_root_level_all_clears_contents_and_reports_retained_directory(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        codeprobe_dir = repo / ".codeprobe"
+        runs = codeprobe_dir / "runs"
+        runs.mkdir(parents=True)
+        (codeprobe_dir / "experiment.json").write_text("{}")
+        (codeprobe_dir / "tasks").mkdir()
+        (runs / "trace.db").write_text("trace-bytes")
+
+        result = runner.invoke(purge, [str(repo), "--all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert codeprobe_dir.is_dir()
+        assert list(codeprobe_dir.iterdir()) == []
+        assert f"Cleared contents of {codeprobe_dir}" in result.output
+        assert f"Deleted {codeprobe_dir}" not in result.output
+
     def test_sweeps_stale_mcp_tempfiles(
         self, runner: CliRunner, tmp_path: Path, fake_tempdir: Path
     ) -> None:
@@ -151,6 +171,18 @@ class TestPurgeDelete:
 
 
 class TestPurgeGuard:
+    def test_refuses_when_platform_cannot_open_directories_without_following(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = _seed_repo(tmp_path)
+        monkeypatch.delattr(os, "O_NOFOLLOW")
+
+        with pytest.raises(DiagnosticError) as exc_info:
+            purge_cmd._PinnedDirectories.open(repo)
+
+        assert exc_info.value.code == "PURGE_REFUSED"
+        assert "cannot pin directories" in exc_info.value.message
+
     def test_refuses_outside_codeprobe_dir(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
@@ -172,6 +204,116 @@ class TestPurgeGuard:
         # Fail closed: the refused candidate tree survives untouched.
         assert (runs / "trace.db").exists()
         assert (runs / "base" / "t1" / "agent_output.txt").exists()
+
+    def test_root_swap_after_validation_cannot_delete_outside_tree(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Deletion stays pinned to the validated .codeprobe directory.
+
+        An attacker can rename the directory and replace its pathname after
+        the escape guard passes. Path-based rmtree then follows the replacement
+        root and deletes a matching tree outside the checkout.
+        """
+        repo = _seed_repo(tmp_path)
+        codeprobe_dir = repo / ".codeprobe"
+        saved_dir = repo / ".codeprobe-before-swap"
+        outside = tmp_path / "outside"
+        outside_runs = outside / "exp1" / "runs"
+        outside_runs.mkdir(parents=True)
+        precious = outside_runs / "precious.txt"
+        precious.write_text("customer data")
+        original_guard = purge_cmd._escaping_path
+        swapped = False
+
+        def swap_after_guard(target: Path, boundary: Path) -> Path | None:
+            nonlocal swapped
+            offender = original_guard(target, boundary)
+            if not swapped:
+                codeprobe_dir.rename(saved_dir)
+                codeprobe_dir.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return offender
+
+        monkeypatch.setattr(purge_cmd, "_escaping_path", swap_after_guard)
+
+        result = runner.invoke(purge, [str(repo), "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert precious.exists(), "purge followed the swapped root outside the checkout"
+
+    def test_experiment_dir_swap_cannot_redirect_nested_delete(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every intermediate component is opened without following links."""
+        repo = _seed_repo(tmp_path)
+        experiment_dir = repo / ".codeprobe" / "exp1"
+        saved_dir = repo / ".codeprobe" / "exp1-before-swap"
+        outside_exp = tmp_path / "outside" / "exp1"
+        outside_runs = outside_exp / "runs"
+        outside_runs.mkdir(parents=True)
+        precious = outside_runs / "precious.txt"
+        precious.write_text("customer data")
+        original_guard = purge_cmd._escaping_path
+        swapped = False
+
+        def swap_after_guard(target: Path, boundary: Path) -> Path | None:
+            nonlocal swapped
+            offender = original_guard(target, boundary)
+            if not swapped:
+                experiment_dir.rename(saved_dir)
+                experiment_dir.symlink_to(outside_exp, target_is_directory=True)
+                swapped = True
+            return offender
+
+        monkeypatch.setattr(purge_cmd, "_escaping_path", swap_after_guard)
+
+        result = runner.invoke(purge, [str(repo), "--yes"])
+
+        assert result.exit_code != 0
+        assert precious.exists(), "purge followed a swapped intermediate directory"
+
+    def test_root_level_all_clears_pinned_tree_not_replacement(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Root-level --all never removes a directory created after validation."""
+        repo = tmp_path / "repo"
+        codeprobe_dir = repo / ".codeprobe"
+        runs = codeprobe_dir / "runs"
+        runs.mkdir(parents=True)
+        (codeprobe_dir / "experiment.json").write_text("{}")
+        (codeprobe_dir / "tasks").mkdir()
+        (runs / "old.txt").write_text("validated artifact")
+        saved_dir = repo / ".codeprobe-before-swap"
+        replacement_file = codeprobe_dir / "precious.txt"
+        original_guard = purge_cmd._escaping_path
+        swapped = False
+
+        def swap_after_guard(target: Path, boundary: Path) -> Path | None:
+            nonlocal swapped
+            offender = original_guard(target, boundary)
+            if not swapped:
+                codeprobe_dir.rename(saved_dir)
+                codeprobe_dir.mkdir()
+                replacement_file.write_text("created after validation")
+                swapped = True
+            return offender
+
+        monkeypatch.setattr(purge_cmd, "_escaping_path", swap_after_guard)
+
+        result = runner.invoke(purge, [str(repo), "--all", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert replacement_file.exists()
+        assert not (saved_dir / "experiment.json").exists()
 
 
 class TestPurgeDisclosure:

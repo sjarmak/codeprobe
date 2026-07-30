@@ -159,7 +159,7 @@ def _run_sourcegraph_backend(
         sg_url = sg_url or resolve_org_scale_endpoint()
 
         try:
-            get_valid_token()
+            get_valid_token(sg_url)
         except AuthError as exc:
             return BackendResult(
                 backend="sourcegraph",

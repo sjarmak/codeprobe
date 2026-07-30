@@ -22,6 +22,7 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.core.containment import ContainmentPlan, active_plan
 from codeprobe.core.executor import (
     DryRunEstimate,
     TaskResult,
@@ -478,6 +479,37 @@ def test_execute_config_runs_all_tasks(tmp_path: Path):
     assert len(results) == 3
     assert all(isinstance(r, CompletedTask) for r in results)
     assert len(adapter.run_calls) == 3
+
+
+def test_execute_config_propagates_containment_plan_to_parallel_workers(
+    tmp_path: Path,
+) -> None:
+    """Every executor worker sees the plan explicitly authorized by its run."""
+    tasks = [_make_task(tmp_path / f"task-{i:03d}", passing=True) for i in range(2)]
+    seen: list[str | None] = []
+
+    class PlanObservingAdapter(FakeAdapter):
+        def run(
+            self,
+            prompt: str,
+            config: AgentConfig,
+            session_env: dict[str, str] | None = None,
+        ) -> AgentOutput:
+            plan = active_plan()
+            seen.append(plan.mode if plan is not None else None)
+            return super().run(prompt, config, session_env)
+
+    execute_config(
+        adapter=PlanObservingAdapter(stdout="output"),
+        task_dirs=tasks,
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="contained"),
+        agent_config=AgentConfig(),
+        parallel=2,
+        containment_plan=ContainmentPlan(mode="container", engine="docker"),
+    )
+
+    assert seen == ["container", "container"]
 
 
 def test_execute_config_continues_after_timeout_infrastructure_error(tmp_path: Path):

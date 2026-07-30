@@ -143,6 +143,18 @@ class TestParseMcpInitManifest:
             McpServerStatus(name="sourcegraph", status="pending"),
         )
 
+    def test_connected_server_without_tools_is_reported_failed(self) -> None:
+        """A connected status is not evidence of a usable tool surface."""
+        stream = _stream(
+            tools=["Read"],
+            mcp_servers=[{"name": "sourcegraph", "status": "connected"}],
+        )
+        m = parse_mcp_init_manifest(stream)
+
+        assert m.failed_servers == (
+            McpServerStatus(name="sourcegraph", status="connected"),
+        )
+
     def test_malformed_lines_are_skipped(self) -> None:
         stream = "not json\n" + _stream(tools=["Read", *_NAV_TOOLS])
         m = parse_mcp_init_manifest(stream)

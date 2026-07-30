@@ -163,8 +163,8 @@ def _containment_consent_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _reset_containment_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate the module-global containment plan between tests.
+def _reset_containment_plan() -> None:
+    """Isolate the context-local containment plan between tests.
 
     ``codeprobe run`` records its resolved plan via ``set_active_plan``
     (codeprobe-f7rl.3) and scoring consults it when deciding whether host
@@ -176,7 +176,7 @@ def _reset_containment_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from codeprobe.core import containment
 
-    monkeypatch.setattr(containment, "_active_plan", None)
+    containment.set_active_plan(None)
 
 
 @pytest.fixture(autouse=True)

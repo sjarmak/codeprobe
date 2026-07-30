@@ -159,13 +159,13 @@ class McpInitManifest:
         the real breakage in the noise.
 
         The load-bearing evidence is whether the server actually contributed
-        tools, so a non-``connected`` server is only reported failed when it
-        put nothing on the surface.
+        tools. A ``connected`` status with no contributed tools is still an
+        unusable surface and must be reported.
         """
         return tuple(
             s
             for s in self.mcp_servers
-            if s.status != "connected" and not self._contributed_tools(s.name)
+            if not self._contributed_tools(s.name)
         )
 
     def to_dict(self) -> dict:

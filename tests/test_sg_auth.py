@@ -305,6 +305,18 @@ class TestResolveOrgScaleEndpoint:
             == "https://sourcegraph.sourcegraph.com"
         )
 
+    def test_graphql_suffix_with_trailing_slash_is_normalized(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "SOURCEGRAPH_ENDPOINT",
+            "https://sourcegraph.sourcegraph.com/.api/graphql/",
+        )
+        assert (
+            sg_auth.resolve_org_scale_endpoint()
+            == "https://sourcegraph.sourcegraph.com"
+        )
+
 
 class TestUnimplementedFlows:
     def test_device_code_flow_not_implemented(self) -> None:

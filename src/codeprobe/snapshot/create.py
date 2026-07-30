@@ -93,6 +93,11 @@ _LAYOUT_SUBDIRS: tuple[str, ...] = ("summary", "traces", "export", "export/trace
 # Files that must exist under summary/ (empty-but-valid when experiment dir
 # provides no data for them).
 _SUMMARY_FILES: tuple[str, ...] = ("rewards.json", "aggregate.json", "timing.json", "costs.json")
+_ANSWER_KEY_NAME = "ground_truth.json"
+
+
+def _is_answer_key(path: str) -> bool:
+    return PurePosixPath(path).name == _ANSWER_KEY_NAME
 
 
 @dataclass(frozen=True)
@@ -143,7 +148,11 @@ def _captured_trial_files(
             trials.setdefault((parts[0], parts[1]), [])
     for source_file in prepared.source_files:
         parts = PurePosixPath(source_file.relative_path).parts
-        if len(parts) < 3 or parts[0] in skip_names:
+        if (
+            len(parts) < 3
+            or parts[0] in skip_names
+            or _is_answer_key(source_file.relative_path)
+        ):
             continue
         trial = (parts[0], parts[1])
         relative = PurePosixPath(*parts[2:]).as_posix()
@@ -224,12 +233,17 @@ def _build_layout_plan(
         _add_layout_directory(entries, subdirectory)
     if mode != "hashes-only":
         _add_layout_directory(entries, "files")
-    for relative_path, body in prepared.materialized_bodies:
+    publishable_bodies = [
+        (relative_path, body)
+        for relative_path, body in prepared.materialized_bodies
+        if not _is_answer_key(relative_path)
+    ]
+    for relative_path, body in publishable_bodies:
         _add_layout_file(entries, relative_path, body)
 
     redacted_files = {
         relative_path.removeprefix("files/"): body
-        for relative_path, body in prepared.materialized_bodies
+        for relative_path, body in publishable_bodies
     }
     empty_summary = json.dumps({"entries": []}, indent=2).encode()
     for name in _SUMMARY_FILES:

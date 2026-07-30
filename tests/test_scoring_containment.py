@@ -31,9 +31,9 @@ SCORING_IMAGE = (
 
 
 @pytest.fixture(autouse=True)
-def _reset_active_plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate the module-global containment plan between tests."""
-    monkeypatch.setattr(containment, "_active_plan", None)
+def _reset_active_plan() -> None:
+    """Isolate the context-local containment plan between tests."""
+    containment.set_active_plan(None)
 
 
 def _make_test_sh(task_dir: Path, body: str = "#!/bin/bash\nexit 0\n") -> Path:

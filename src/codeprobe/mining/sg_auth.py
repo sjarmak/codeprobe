@@ -46,9 +46,10 @@ def resolve_org_scale_endpoint() -> str:
     raw = os.environ.get("SOURCEGRAPH_ENDPOINT", "").strip()
     if not raw:
         return DEFAULT_ORG_SCALE_ENDPOINT
+    raw = raw.rstrip("/")
     if raw.endswith(_GRAPHQL_SUFFIX):
         raw = raw[: -len(_GRAPHQL_SUFFIX)]
-    return raw.rstrip("/")
+    return raw
 # Accept multiple env var names so users aren't forced into one spelling.
 # Canonical (SRC_ACCESS_TOKEN) wins; aliases are for convenience.
 _ACCEPTED_ENV_VARS: tuple[str, ...] = (

@@ -148,6 +148,16 @@ class TestRender:
         m = build_task_matrix(single)
         assert m["arms"] == ["only"]
 
+    def test_config_label_cannot_close_inline_script(self) -> None:
+        payload = "</script><script>globalThis.codeprobePwned=true</script>"
+        rendered = render_comparison_html(
+            "run-x",
+            [_trial(payload, "t1", 0), _trial("safe", "t1", 0)],
+        )
+
+        assert payload not in rendered
+        assert "\\u003c/script>" in rendered
+
 
 # ---------------------------------------------------------------------------
 # Loader dual-layout (A3)

@@ -21,6 +21,22 @@ from codeprobe.cli.errors import (
 )
 
 
+def test_cli_error_imports_reexport_shared_core_types() -> None:
+    from codeprobe.core.errors import (
+        CodeprobeError as CoreCodeprobeError,
+    )
+    from codeprobe.core.errors import (
+        DiagnosticError as CoreDiagnosticError,
+    )
+    from codeprobe.core.errors import (
+        PrescriptiveError as CorePrescriptiveError,
+    )
+
+    assert CodeprobeError is CoreCodeprobeError
+    assert DiagnosticError is CoreDiagnosticError
+    assert PrescriptiveError is CorePrescriptiveError
+
+
 class TestCodeprobeError:
     def test_inherits_from_exception_not_click(self) -> None:
         err = CodeprobeError(code="X", message="boom")

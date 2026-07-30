@@ -24,6 +24,11 @@ from codeprobe.adapters.protocol import AdapterAuthenticationError, AdapterQuota
 from codeprobe.analysis.stats import partition_reward_population
 from codeprobe.analysis.validity import is_infra_failure
 from codeprobe.core.checkpoint import CheckpointStore
+from codeprobe.core.containment import (
+    ContainmentPlan,
+    active_plan,
+    active_plan_scope,
+)
 from codeprobe.core.events import (
     BudgetChecker,
     EventDispatcher,
@@ -1256,6 +1261,7 @@ def execute_config(
     trace_recorder: TraceRecorder | None = None,
     config_max_turns_source: str = "",
     pristine_config: bool = False,
+    containment_plan: ContainmentPlan | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -1291,6 +1297,9 @@ def execute_config(
     arms are reproducible across operators. Both the sequential and
     parallel dispatch paths run the same isolate/cleanup lifecycle.
     """
+    resolved_containment_plan = (
+        containment_plan if containment_plan is not None else active_plan()
+    )
     checkpointed_ids, results = _restore_checkpointed(checkpoint_store)
 
     # Filter checkpointed results to only include tasks in the current
@@ -1373,24 +1382,25 @@ def execute_config(
             )
             wired_trace = True
         try:
-            task_result = execute_task(
-                adapter=adapter,
-                task_dir=task_dir,
-                repo_path=repo_path,
-                agent_config=agent_config,
-                instruction_variant=experiment_config.instruction_variant,
-                reward_type=experiment_config.reward_type,
-                preamble_names=experiment_config.preambles,
-                preamble_resolver=preamble_resolver,
-                preamble_mcp_mode=experiment_config.mcp_mode,
-                preamble_mcp_config=experiment_config.mcp_config,
-                worktree_path=worktree_path,
-                session_env=session_env,
-                hide_local_source=experiment_config.hide_local_source,
-                config_max_turns_source=config_max_turns_source,
-                low_confidence_threshold=experiment_config.low_confidence_threshold,
-                source_root_baseline=source_root_baseline,
-            )
+            with active_plan_scope(resolved_containment_plan):
+                task_result = execute_task(
+                    adapter=adapter,
+                    task_dir=task_dir,
+                    repo_path=repo_path,
+                    agent_config=agent_config,
+                    instruction_variant=experiment_config.instruction_variant,
+                    reward_type=experiment_config.reward_type,
+                    preamble_names=experiment_config.preambles,
+                    preamble_resolver=preamble_resolver,
+                    preamble_mcp_mode=experiment_config.mcp_mode,
+                    preamble_mcp_config=experiment_config.mcp_config,
+                    worktree_path=worktree_path,
+                    session_env=session_env,
+                    hide_local_source=experiment_config.hide_local_source,
+                    config_max_turns_source=config_max_turns_source,
+                    low_confidence_threshold=experiment_config.low_confidence_threshold,
+                    source_root_baseline=source_root_baseline,
+                )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:
                 from dataclasses import replace

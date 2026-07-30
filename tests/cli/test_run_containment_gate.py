@@ -25,6 +25,7 @@ import pytest
 
 from codeprobe.cli import run_cmd as run_cmd_mod
 from codeprobe.cli.errors import PrescriptiveError
+from codeprobe.core import containment
 from tests.conftest import FakeAdapter
 
 
@@ -145,6 +146,11 @@ class TestUncontainedConsent:
             )
 
         assert mock_execute.called
+        containment_plan = mock_execute.call_args.kwargs["containment_plan"]
+        assert containment_plan == containment.ContainmentPlan(
+            mode="host-consented"
+        )
+        assert containment.active_plan() is None
         stderr = capsys.readouterr().err
         assert "--uncontained" in stderr
         assert "--dangerously-skip-permissions" in stderr

@@ -10,6 +10,7 @@ container (engine on PATH plus the agent image built), or a hard
 from __future__ import annotations
 
 import dataclasses
+import threading
 from importlib.metadata import version as package_version
 from pathlib import Path
 from unittest.mock import Mock
@@ -35,8 +36,8 @@ AGENT_IMAGE = (
 
 @pytest.fixture(autouse=True)
 def _fresh_plan_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate the module-level active-plan slot per test."""
-    monkeypatch.setattr(containment, "_active_plan", None)
+    """Isolate the context-local active-plan slot per test."""
+    containment.set_active_plan(None)
     for name in (
         container_runner.AGENT_IMAGE_ENV,
         container_runner.IMAGE_REGISTRY_ENV,
@@ -280,3 +281,32 @@ class TestActivePlan:
         plan = containment.ContainmentPlan(mode="sandboxed")
         with pytest.raises(dataclasses.FrozenInstanceError):
             plan.mode = "host-consented"  # type: ignore[misc]
+
+    def test_plan_scope_is_isolated_between_threads(self) -> None:
+        barrier = threading.Barrier(2)
+        seen: dict[str, str | None] = {}
+
+        def observe(name: str, plan: containment.ContainmentPlan) -> None:
+            with containment.active_plan_scope(plan):
+                barrier.wait()
+                active = containment.active_plan()
+                seen[name] = active.mode if active is not None else None
+
+        threads = [
+            threading.Thread(
+                target=observe,
+                args=("container", containment.ContainmentPlan(mode="container", engine="docker")),
+            ),
+            threading.Thread(
+                target=observe,
+                args=("host", containment.ContainmentPlan(mode="host-consented")),
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert not any(thread.is_alive() for thread in threads)
+        assert seen == {"container": "container", "host": "host-consented"}
+        assert containment.active_plan() is None

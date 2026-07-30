@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from codeprobe.adapters.protocol import AgentConfig
+from codeprobe.adapters.protocol import AdapterCapabilities, AgentConfig
 from codeprobe.core.mcp_policy import (
     DEFAULT_MCP_MODE,
     MCPToolPolicy,
@@ -322,6 +322,12 @@ class TestApiAppliesPolicy:
 
         class _FakeAdapter:
             name = "claude"
+            capabilities = AdapterCapabilities(
+                mcp_config=True,
+                allowed_tools=True,
+                disallowed_tools=True,
+                permission_mode=True,
+            )
 
             def preflight(self, _config: AgentConfig) -> list[str]:
                 return []
@@ -357,6 +363,12 @@ class TestApiAppliesPolicy:
 
         class _FakeAdapter:
             name = "claude"
+            capabilities = AdapterCapabilities(
+                mcp_config=True,
+                allowed_tools=True,
+                disallowed_tools=True,
+                permission_mode=True,
+            )
 
             def preflight(self, _config: AgentConfig) -> list[str]:
                 return []

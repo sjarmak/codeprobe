@@ -604,10 +604,15 @@ def _get_sg_config(sg_repo: str, *, strict: bool = False) -> tuple[bool]:
     if not sg_repo:
         return (False,)
 
-    from codeprobe.mining.sg_auth import _ACCEPTED_ENV_VARS, AuthError, get_valid_token
+    from codeprobe.mining.sg_auth import (
+        _ACCEPTED_ENV_VARS,
+        AuthError,
+        get_valid_token,
+        resolve_org_scale_endpoint,
+    )
 
     try:
-        get_valid_token()
+        get_valid_token(resolve_org_scale_endpoint())
         return (True,)
     except AuthError as exc:
         accepted = ", ".join(_ACCEPTED_ENV_VARS)

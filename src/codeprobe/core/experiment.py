@@ -41,12 +41,28 @@ def _validate_path_component(value: str, field: str) -> None:
         )
 
 
+def validate_unique_config_labels(
+    configs: Sequence[ExperimentConfig],
+) -> None:
+    """Reject ambiguous arm identities before any result paths are keyed."""
+    labels = [config.label for config in configs]
+    duplicates = sorted(
+        label for label in set(labels) if labels.count(label) > 1
+    )
+    if duplicates:
+        raise ValueError(
+            "Duplicate config label(s): "
+            f"{', '.join(duplicates)}. Each arm label must be unique."
+        )
+
+
 def create_experiment_dir(base_dir: Path, experiment: Experiment) -> Path:
     """Create the experiment directory structure and write experiment.json.
 
     Returns the experiment directory path.
     """
     _validate_path_component(experiment.name, "experiment name")
+    validate_unique_config_labels(experiment.configs)
     for config in experiment.configs:
         _validate_path_component(config.label, "config label")
 
@@ -148,6 +164,7 @@ def record_task_ids(exp_dir: Path, task_ids: Sequence[str]) -> Experiment:
 
 def save_experiment(exp_dir: Path, experiment: Experiment) -> None:
     """Write experiment.json to the experiment directory."""
+    validate_unique_config_labels(experiment.configs)
     serialized_configs = []
     for c in experiment.configs:
         d = asdict(c)
@@ -338,6 +355,7 @@ def load_experiment(exp_dir: Path) -> Experiment:
     _validate_path_component(tasks_dir, "tasks_dir")
     for c in configs:
         _validate_path_component(c.label, "config label")
+    validate_unique_config_labels(configs)
 
     task_ids = tuple(data.get("task_ids", ()))
 

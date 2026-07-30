@@ -52,6 +52,19 @@ def _setup_experiment(tmp_path: Path) -> Path:
     return exp_dir
 
 
+def test_explicit_experiment_json_path_resolves_to_its_directory(
+    tmp_path: Path,
+) -> None:
+    from codeprobe.cli.run_cmd import _resolve_experiment_dir
+
+    exp_dir = _setup_experiment(tmp_path)
+
+    assert _resolve_experiment_dir(
+        str(tmp_path),
+        str(exp_dir / "experiment.json"),
+    ) == exp_dir
+
+
 # ---------------------------------------------------------------------------
 # Unit tests for config resolution logic (extracted from _run_config)
 # ---------------------------------------------------------------------------
@@ -223,7 +236,7 @@ class TestArmCapabilityPreflight:
         return ClaudeAdapter()
 
     def _check(self, cfg: ExperimentConfig, adapter, **kwargs) -> None:
-        from codeprobe.cli.capability_preflight import check_arm_capabilities
+        from codeprobe.core.capability_preflight import check_arm_capabilities
 
         check_arm_capabilities(cfg, adapter, **kwargs)
 

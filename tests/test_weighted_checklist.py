@@ -322,6 +322,41 @@ def _init_git_repo(repo: Path) -> None:
 
 
 class TestGeneratedScriptEndToEnd:
+    def test_noop_with_failing_verification_cannot_pass(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        source = repo / "src" / "auth.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("def login():\n    return True\n", encoding="utf-8")
+        _init_git_repo(repo)
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-q", "-m", "init"], check=True
+        )
+        script = _build_weighted_checklist_script(
+            cmd="bash -c false",
+            repo_path=repo,
+            language="python",
+            ground_truth=_sdlc_gt(source_files=["src/auth.py"]),
+            header="noop",
+        )
+        script_path = tmp_path / "tests" / "test.sh"
+        script_path.parent.mkdir(parents=True)
+        script_path.write_text(script, encoding="utf-8")
+        script_path.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        last_line = [
+            line for line in result.stdout.splitlines() if line.strip()
+        ][-1]
+        score = float(last_line.split("=", 1)[1])
+
+        assert score <= 0.2
+
     def test_full_credit_when_expected_file_modified(self, tmp_path: Path) -> None:
         """End-to-end: agent modifies the expected file → composite >= 0.8."""
         repo = tmp_path / "repo"

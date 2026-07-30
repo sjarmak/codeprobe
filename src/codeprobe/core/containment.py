@@ -24,6 +24,9 @@ enforcement, no model calls (ZFC-allowed).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Literal, NoReturn
 
@@ -51,7 +54,10 @@ class ContainmentPlan:
     engine: str | None = None
 
 
-_active_plan: ContainmentPlan | None = None
+_active_plan: ContextVar[ContainmentPlan | None] = ContextVar(
+    "codeprobe_active_containment_plan",
+    default=None,
+)
 
 
 def resolve_containment(uncontained: bool) -> ContainmentPlan:
@@ -100,7 +106,7 @@ def _raise_uncontained_refusal(
     image_error: str | None,
     engine_error: str | None,
 ) -> NoReturn:
-    from codeprobe.cli.errors import PrescriptiveError
+    from codeprobe.core.errors import PrescriptiveError
 
     bootstrap_hint = _agent_bootstrap_hint(
         engine, agent_image, image_error, engine_error
@@ -138,12 +144,23 @@ def _agent_bootstrap_hint(
     )
 
 
-def set_active_plan(plan: ContainmentPlan) -> None:
+def set_active_plan(plan: ContainmentPlan | None) -> None:
     """Record the resolved plan for downstream consumers (container beads)."""
-    global _active_plan  # noqa: PLW0603
-    _active_plan = plan
+    _active_plan.set(plan)
 
 
 def active_plan() -> ContainmentPlan | None:
     """Return the plan recorded by :func:`set_active_plan`, if any."""
-    return _active_plan
+    return _active_plan.get()
+
+
+@contextmanager
+def active_plan_scope(
+    plan: ContainmentPlan | None,
+) -> Iterator[None]:
+    """Publish *plan* only within the current execution context."""
+    token = _active_plan.set(plan)
+    try:
+        yield
+    finally:
+        _active_plan.reset(token)
