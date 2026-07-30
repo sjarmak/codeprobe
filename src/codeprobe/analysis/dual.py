@@ -17,6 +17,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from codeprobe.dual_policy import (
+    VALID_DUAL_SCORING_POLICIES,
+    compose_dual_score,
+    resolve_dual_policy,
+)
 from codeprobe.models.experiment import CompletedTask, DualScoringDetails
 
 
@@ -150,23 +155,25 @@ def dual_composite(task: CompletedTask, strategy: str = "min") -> float:
         return task.automated_score
 
     details = DualScoringDetails.from_dict(task.scoring_details)
+    if strategy not in VALID_DUAL_SCORING_POLICIES:
+        raise ValueError(
+            f"unknown dual_composite strategy: {strategy!r} "
+            "(expected 'min', 'mean', 'gate', or 'weighted')"
+        )
 
-    if strategy == "min":
-        return min(details.score_direct, details.score_artifact)
-    if strategy == "mean":
-        return (details.score_direct + details.score_artifact) / 2.0
-    if strategy == "gate":
-        direct_pass, artifact_pass = resolve_leg_pass(task)
-        return 1.0 if (direct_pass and artifact_pass) else 0.0
-    if strategy == "weighted":
-        sd = task.scoring_details or {}
-        w_direct = float(sd.get("weight_direct", 0.5))
-        w_artifact = float(sd.get("weight_artifact", 0.5))
-        return w_direct * details.score_direct + w_artifact * details.score_artifact
-
-    raise ValueError(
-        f"unknown dual_composite strategy: {strategy!r} "
-        "(expected 'min', 'mean', 'gate', or 'weighted')"
+    sd = task.scoring_details or {}
+    policy = resolve_dual_policy(
+        strategy,
+        sd.get("weight_direct"),
+        sd.get("weight_artifact"),
+    )
+    direct_pass, artifact_pass = resolve_leg_pass(task)
+    return compose_dual_score(
+        policy,
+        score_direct=details.score_direct,
+        score_artifact=details.score_artifact,
+        passed_direct=direct_pass,
+        passed_artifact=artifact_pass,
     )
 
 

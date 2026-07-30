@@ -16,6 +16,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from codeprobe.probe.dependency import (
+    check_module_dependency as check_module_dependency,
+)
+from codeprobe.probe.dependency import (
+    scan_module_dependencies as _scan_module_dependencies,
+)
+from codeprobe.probe.dependency import (
+    select_balanced_dependency_pairs as _select_balanced_dependency_pairs,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -353,53 +363,6 @@ def compute_caller_count(repo_root: Path, symbol_name: str) -> int:
     return result
 
 
-def check_module_dependency(repo_root: Path, module_a: str, module_b: str) -> bool:
-    """Check if module_a imports from module_b."""
-    path_a = _resolve_module_path(repo_root, module_a)
-    if path_a is None:
-        return False
-
-    try:
-        content = path_a.read_text(encoding="utf-8", errors="replace")
-    except (OSError, PermissionError):
-        return False
-
-    py_patterns = [
-        re.compile(r"^\s*(?:from|import)\s+" + re.escape(module_b), re.MULTILINE),
-        re.compile(
-            r"^\s*from\s+\.\s*" + re.escape(module_b.split(".")[-1]),
-            re.MULTILINE,
-        ),
-    ]
-    ts_patterns = [
-        re.compile(
-            r"""(?:import|require)\s*\(?\s*['"].*""" + re.escape(module_b) + r"""['"]"""
-        ),
-        re.compile(r"""from\s+['"].*""" + re.escape(module_b) + r"""['"]"""),
-    ]
-
-    for pat in py_patterns + ts_patterns:
-        if pat.search(content):
-            return True
-    return False
-
-
-def _resolve_module_path(repo_root: Path, module_name: str) -> Path | None:
-    """Try to resolve a module name to a file path."""
-    candidates = [
-        repo_root / module_name.replace(".", "/") / "__init__.py",
-        repo_root / (module_name.replace(".", "/") + ".py"),
-        repo_root / (module_name.replace(".", "/") + ".ts"),
-        repo_root / (module_name.replace(".", "/") + ".tsx"),
-        repo_root / (module_name + ".py"),
-        repo_root / (module_name + ".ts"),
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Template loading
 # ---------------------------------------------------------------------------
@@ -569,26 +532,23 @@ def _generate_module_dependency_probes(
     if len(modules) < 2:
         return []
 
+    dependency_evidence = _scan_module_dependencies(repo_root, modules)
+    selected_pairs = _select_balanced_dependency_pairs(
+        modules,
+        dependency_evidence.positive_pairs,
+        count,
+        negative_sources=dependency_evidence.complete_sources,
+    )
+
     probes: list[Probe] = []
-    pairs_tried: set[tuple[str, str]] = set()
-    attempts = 0
-    max_attempts = count * 5
-
-    while len(probes) < count and attempts < max_attempts:
-        attempts += 1
-        a, b = random.sample(modules, 2)
-        pair = (a, b)
-        if pair in pairs_tried:
-            continue
-        pairs_tried.add(pair)
-
-        depends = check_module_dependency(repo_root, a, b)
-        answer = "yes" if depends else "no"
+    for (module_a, module_b), answer in selected_pairs:
         probes.append(
             Probe(
                 template_name="module_dependency",
                 category=tpl["category"],
-                prompt=tpl["prompt"].replace("{module_a}", a).replace("{module_b}", b),
+                prompt=tpl["prompt"]
+                .replace("{module_a}", module_a)
+                .replace("{module_b}", module_b),
                 answer=answer,
                 answer_type=tpl["answer_type"],
                 difficulty=tpl["difficulty"],

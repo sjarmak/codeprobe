@@ -44,6 +44,10 @@ from codeprobe.core.scoring.result import (
     read_task_verification,
 )
 from codeprobe.core.scoring.sandbox import _run_in_sandbox, sanitize_secrets
+from codeprobe.dual_policy import (
+    compose_dual_score,
+    resolve_dual_policy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1787,7 +1791,8 @@ def _safe_leg_score(
 class DualScorer:
     """Composes a direct scorer (binary/continuous) with an artifact scorer.
 
-    Runs BOTH legs unconditionally — no early return on failure. Reads
+    Validates the scoring policy before running either verifier, then runs
+    BOTH legs unconditionally — no early return when one leg fails. Reads
     configuration from ``task_dir/metadata.json`` at score() time so the
     registry can instantiate this class with no arguments and the executor
     can invoke it through the standard Scorer Protocol signature
@@ -1817,27 +1822,6 @@ class DualScorer:
         # No config — everything is read from task_dir/metadata.json at score() time.
         pass
 
-    @staticmethod
-    def _parse_weight(raw: object, default: float) -> tuple[float, str | None]:
-        """Coerce a weight value to a finite float in ``[0.0, 1.0]``.
-
-        Returns ``(weight, error_message)``. Malformed or out-of-range
-        weights propagate as an error instead of silently falling back to
-        a default — the caller decides whether that's fatal for the
-        current scoring_policy.
-        """
-        if raw is None:
-            return default, None
-        try:
-            value = float(raw)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return default, f"invalid weight value: {raw!r}"
-        if not math.isfinite(value):
-            return default, f"non-finite weight: {raw!r}"
-        if value < 0.0 or value > 1.0:
-            return default, f"weight out of range [0,1]: {value}"
-        return value, None
-
     def score(
         self,
         agent_output: str,
@@ -1858,13 +1842,35 @@ class DualScorer:
                 scorer_family="dual_composite",
             )
         reward_type = verification.get("reward_type", "binary") or "binary"
-        scoring_policy = verification.get("scoring_policy", "") or ""
-        weight_direct, weight_direct_error = self._parse_weight(
-            verification.get("weight_direct"), 0.5
-        )
-        weight_artifact, weight_artifact_error = self._parse_weight(
-            verification.get("weight_artifact"), 0.5
-        )
+        raw_scoring_policy = verification.get("scoring_policy", "")
+        try:
+            scoring_policy = resolve_dual_policy(
+                raw_scoring_policy,
+                verification.get("weight_direct"),
+                verification.get("weight_artifact"),
+            )
+        except ValueError as exc:
+            error_details = {
+                "scoring_policy": raw_scoring_policy,
+                "error_policy": str(exc),
+            }
+            error_category = "policy"
+            if raw_scoring_policy == "weighted":
+                error_details["error_weights"] = str(exc)
+                error_category = "weights"
+            error = f"dual scoring configuration {error_category}: {exc}"
+            return ScoreResult(
+                score=0.0,
+                passed=False,
+                error=error,
+                details=error_details,
+                scorer_family="dual_composite",
+                verdict="verifier_error",
+                sub_scores={
+                    "composite": 0.0,
+                    "scoring_policy": raw_scoring_policy,
+                },
+            )
 
         direct_scorer: BinaryScorer | ContinuousScorer
         if reward_type == "continuous":
@@ -1886,7 +1892,7 @@ class DualScorer:
             "score_artifact": artifact_result.score,
             "passed_direct": direct_result.passed,
             "passed_artifact": artifact_result.passed,
-            "scoring_policy": scoring_policy,
+            "scoring_policy": scoring_policy.name,
         }
         if direct_result.error:
             details["error_direct"] = direct_result.error
@@ -1897,59 +1903,44 @@ class DualScorer:
         if artifact_result.diagnostics:
             details["diagnostics_artifact"] = artifact_result.diagnostics
 
-        weight_errors: list[str] = []
-        if scoring_policy == "weighted":
-            if weight_direct_error:
-                weight_errors.append(f"weight_direct: {weight_direct_error}")
-            if weight_artifact_error:
-                weight_errors.append(f"weight_artifact: {weight_artifact_error}")
-            if weight_errors:
-                details["error_weights"] = "; ".join(weight_errors)
-            else:
-                details["weight_direct"] = weight_direct
-                details["weight_artifact"] = weight_artifact
+        if scoring_policy.name == "weighted":
+            details["weight_direct"] = scoring_policy.weight_direct
+            details["weight_artifact"] = scoring_policy.weight_artifact
 
-        if scoring_policy == "min":
-            composite = min(direct_result.score, artifact_result.score)
-        elif scoring_policy == "mean":
-            composite = (direct_result.score + artifact_result.score) / 2.0
-        elif scoring_policy == "gate":
-            composite = (
-                1.0 if (direct_result.passed and artifact_result.passed) else 0.0
+        try:
+            composite = compose_dual_score(
+                scoring_policy,
+                score_direct=direct_result.score,
+                score_artifact=artifact_result.score,
+                passed_direct=direct_result.passed,
+                passed_artifact=artifact_result.passed,
             )
-        elif scoring_policy == "weighted":
-            if weight_errors:
-                # Invalid weights are a scoring error — fail closed rather
-                # than silently falling back to defaults and masking the bug.
-                composite = 0.0
-            else:
-                composite = (
-                    weight_direct * direct_result.score
-                    + weight_artifact * artifact_result.score
-                )
-        else:
-            composite = direct_result.score
-
-        composite = max(0.0, min(1.0, composite))
+        except ValueError as exc:
+            details["error_composite"] = str(exc)
+            composite = 0.0
         passed = composite >= PASS_THRESHOLD
 
         error_parts = [
             f"direct: {direct_result.error}" if direct_result.error else None,
             f"artifact: {artifact_result.error}" if artifact_result.error else None,
-            f"weights: {'; '.join(weight_errors)}" if weight_errors else None,
+            (
+                f"composite: {details['error_composite']}"
+                if "error_composite" in details
+                else None
+            ),
         ]
         combined_error = "; ".join(p for p in error_parts if p) or None
 
         # A leg that reported verifier_error never measured the agent, so its
         # 0.0 is a placeholder, not a result; blending it into the composite
-        # would bill the agent for harness breakage. Computed after the
-        # weight checks so an invalid weight is still reported — both are
-        # harness faults and the caller should see both.
+        # would bill the agent for harness breakage.
         verifier_error_leg: str | None = None
         if direct_result.verdict == "verifier_error":
             verifier_error_leg = "direct"
         elif artifact_result.verdict == "verifier_error":
             verifier_error_leg = "artifact"
+        elif "error_composite" in details:
+            verifier_error_leg = "composite"
         if verifier_error_leg is not None:
             details["verifier_error_leg"] = verifier_error_leg
             composite = 0.0
@@ -1966,7 +1957,7 @@ class DualScorer:
                 "composite": composite,
                 "score_direct": direct_result.score,
                 "score_artifact": artifact_result.score,
-                "scoring_policy": scoring_policy,
+                "scoring_policy": scoring_policy.name,
             },
         )
 

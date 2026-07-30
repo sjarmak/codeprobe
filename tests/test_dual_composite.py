@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from codeprobe.analysis.dual import dual_composite, has_dual_scoring
+from codeprobe.dual_policy import DualPolicy, compose_dual_score
 from codeprobe.models.experiment import CompletedTask
 
 
@@ -160,6 +161,56 @@ def test_weighted_strategy_defaults_to_equal_weights() -> None:
     assert dual_composite(task, strategy="weighted") == pytest.approx(
         0.5 * 0.8 + 0.5 * 0.6
     )
+
+
+@pytest.mark.parametrize(
+    ("weight_direct", "weight_artifact"),
+    [(1.0, 1.0), (0.3, 0.3), (0.0, 0.0)],
+)
+def test_weighted_strategy_rejects_non_unit_sum(
+    weight_direct: float,
+    weight_artifact: float,
+) -> None:
+    task = CompletedTask(
+        task_id="t",
+        automated_score=0.0,
+        scoring_details={
+            "score_direct": 0.0,
+            "score_artifact": 1.0,
+            "weight_direct": weight_direct,
+            "weight_artifact": weight_artifact,
+        },
+    )
+
+    with pytest.raises(ValueError, match="sum"):
+        dual_composite(task, strategy="weighted")
+
+
+def test_weighted_strategy_rejects_non_numeric_weight() -> None:
+    task = CompletedTask(
+        task_id="t",
+        automated_score=0.0,
+        scoring_details={
+            "score_direct": 1.0,
+            "score_artifact": 1.0,
+            "weight_direct": "not-a-number",
+            "weight_artifact": 0.5,
+        },
+    )
+
+    with pytest.raises(ValueError, match="weight_direct"):
+        dual_composite(task, strategy="weighted")
+
+
+def test_composition_rejects_unvalidated_policy_name() -> None:
+    with pytest.raises(ValueError, match="unsupported dual policy"):
+        compose_dual_score(
+            DualPolicy(name="bogus"),
+            score_direct=1.0,
+            score_artifact=1.0,
+            passed_direct=True,
+            passed_artifact=True,
+        )
 
 
 def test_unknown_strategy_raises() -> None:

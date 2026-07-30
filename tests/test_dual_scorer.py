@@ -29,7 +29,7 @@ def _write_metadata(
     task_dir: Path,
     *,
     reward_type: str = "binary",
-    scoring_policy: str = "",
+    scoring_policy: object = "",
     weight_direct: float = 0.5,
     weight_artifact: float = 0.5,
 ) -> None:
@@ -233,6 +233,102 @@ def test_policy_weighted_balanced(passing_task_dir: Path):
     result = DualScorer().score("", passing_task_dir)
     # Both 1.0: 0.4 + 0.6 = 1.0
     assert result.score == pytest.approx(1.0)
+
+
+def test_invalid_weight_sum_cannot_turn_failing_leg_into_pass(
+    failing_direct_passing_artifact: Path,
+) -> None:
+    _write_metadata(
+        failing_direct_passing_artifact,
+        scoring_policy="weighted",
+        weight_direct=1.0,
+        weight_artifact=1.0,
+    )
+
+    result = DualScorer().score("", failing_direct_passing_artifact)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.verdict == "verifier_error"
+    assert result.error is not None
+    assert "sum" in result.error
+
+
+@pytest.mark.parametrize(
+    ("weight_direct", "weight_artifact"),
+    [(0.3, 0.3), (0.0, 0.0)],
+)
+def test_weighted_policy_rejects_non_unit_sum(
+    passing_task_dir: Path,
+    weight_direct: float,
+    weight_artifact: float,
+) -> None:
+    _write_metadata(
+        passing_task_dir,
+        scoring_policy="weighted",
+        weight_direct=weight_direct,
+        weight_artifact=weight_artifact,
+    )
+
+    result = DualScorer().score("", passing_task_dir)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.verdict == "verifier_error"
+    assert result.error is not None
+    assert "sum" in result.error
+
+
+def test_unknown_scoring_policy_is_verifier_error(
+    passing_task_dir: Path,
+) -> None:
+    _write_metadata(passing_task_dir, scoring_policy="Weighted")
+
+    result = DualScorer().score("", passing_task_dir)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.verdict == "verifier_error"
+    assert result.error is not None
+    assert "scoring_policy" in result.error
+
+
+@pytest.mark.parametrize("scoring_policy", [0, False])
+def test_falsey_invalid_scoring_policy_is_verifier_error(
+    passing_task_dir: Path,
+    scoring_policy: object,
+) -> None:
+    _write_metadata(passing_task_dir, scoring_policy=scoring_policy)
+
+    result = DualScorer().score("", passing_task_dir)
+
+    assert result.score == 0.0
+    assert result.passed is False
+    assert result.verdict == "verifier_error"
+    assert result.error is not None
+    assert "scoring_policy" in result.error
+
+
+def test_invalid_policy_is_rejected_before_verifier_legs(
+    passing_task_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_metadata(
+        passing_task_dir,
+        scoring_policy="weighted",
+        weight_direct=1.0,
+        weight_artifact=1.0,
+    )
+
+    def _unexpected_score(*_args, **_kwargs):
+        pytest.fail("invalid policy must be rejected before verifier execution")
+
+    monkeypatch.setattr(BinaryScorer, "score", _unexpected_score)
+    monkeypatch.setattr(ArtifactScorer, "score", _unexpected_score)
+
+    result = DualScorer().score("", passing_task_dir)
+
+    assert result.verdict == "verifier_error"
 
 
 # ---------------------------------------------------------------------------

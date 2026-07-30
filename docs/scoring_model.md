@@ -110,6 +110,11 @@ dual_composite           → reward depends on scoring_policy:
                               "weighted"→ weight_d·direct + weight_a·artifact
 ```
 
+`weighted` requires finite weights in `[0.0, 1.0]` whose sum is `1.0`
+within `1e-6`. An invalid weight or unrecognized policy is verifier
+configuration failure: the task receives `0.0` with
+`verdict="verifier_error"` and neither verifier leg runs.
+
 All values live in `[0.0, 1.0]`. Reward computation is mechanical — no
 thresholds, no soft-clipping, no judgment. The family declares which
 formula to apply; the formula itself is pure arithmetic on the inputs.

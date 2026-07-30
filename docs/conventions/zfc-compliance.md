@@ -17,6 +17,7 @@ A heuristic in codeprobe doesn't just affect codeprobe — it shapes how users p
 | `analysis/trace_quality.py` | Mechanical projection of `CompletedTask` + `BiasWarning` records onto a per-trial quality view; sole threshold (`LOW_RECALL_THRESHOLD`) is a documented constant that surfaces an existing oracle metric, not a quality verdict (see `docs/trace_quality.md`) |
 | `adapters/` | Mechanical parsing, honest about data quality via `cost_source` |
 | `analysis/stats.py` | Arithmetic aggregation (deterministic math, not judgment) |
+| `probe/dependency.py` module-dependency probes | Parses language import syntax and performs exact dependency-edge matching, then mechanically stratifies known-positive and known-negative pairs. It does not infer semantic dependency or quality from prose |
 | `snapshot/evidence_*.py` | Closed-schema parsing, structural independence gates, deterministic arithmetic, content-bound approval, and atomic export. Representativeness and the bounded conclusion are explicit data-owner inputs; code does not infer meaning from prose |
 | `assess/heuristics.py:score_repo_with_model()` | Delegates scoring to Claude via fixed `RUBRIC_V1`; model judges quality, code does IO |
 | `mining/extractor.py:generate_instruction()` | Delegates instruction.md generation to LLM; regex fallback only for `--no-llm` offline mode |
