@@ -26,6 +26,7 @@ from codeprobe.analysis.run_explorer import (
     compute_validity_flags,
     load_run_trials,
     render_html,
+    safe_json_island,
 )
 
 DEFAULT_PORT = 8766
@@ -154,7 +155,7 @@ def render_comparison_html(run_id: str, trials: list[dict]) -> str:
         n_arms=len(arms),
         n_trials=len(trials),
         summary_cards=summary_cards,
-        matrix_json=json.dumps(matrix),
+        matrix_json=safe_json_island(matrix),
         arms_json=json.dumps(matrix["arms"]),
     )
 
@@ -285,18 +286,22 @@ function rows(){{
  const ft=document.getElementById("f-text").value.toLowerCase();
  return MATRIX.rows.filter(r=>(!fd||r.delta)&&(!ft||r.task_id.toLowerCase().includes(ft)));
 }}
+// Every value below originates in results.json (agent stderr, config
+// labels, error categories) and is assigned via innerHTML, so it must be
+// escaped even when no </script> breakout is present.
+function esc(s){{return String(s==null?"":s).split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;").split('"').join("&quot;");}}
 function cellHtml(c){{
  if(!c||c.repeats===0)return '<span class="muted">—</span>';
  const cls=c.errors>0?"cell-bad":"cell-ok";
- let s='<span class="'+cls+'">'+fmt(c.mean_reward)+'</span> <span class="muted">×'+c.repeats+'</span>';
- (c.flags||[]).forEach(f=>{{s+=' <span class="flag">'+f+'</span>';}});
+ let s='<span class="'+cls+'">'+esc(fmt(c.mean_reward))+'</span> <span class="muted">×'+esc(c.repeats)+'</span>';
+ (c.flags||[]).forEach(f=>{{s+=' <span class="flag">'+esc(f)+'</span>';}});
  return s;
 }}
 function detailTable(r){{
  let h='<div class="detail"><table><thead><tr><th>arm</th><th>rep</th><th>status</th><th>reward</th><th>error</th><th>maxTurns</th><th>tools</th><th>turns</th><th>cost</th><th>in/out tok</th></tr></thead><tbody>';
  ARMS.forEach(a=>{{(r.cells[a]&&r.cells[a].trials||[]).forEach(t=>{{
   const bad=(t.status==="error"||t.status==="failed");
-  h+='<tr><td>'+a+'</td><td>'+fmt(t.repeat_index)+'</td><td class="'+(bad?"cell-bad":"cell-ok")+'">'+fmt(t.status)+'</td><td>'+fmt(t.reward!=null?t.reward:t.score)+'</td><td>'+fmt(t.error_category)+'</td><td>'+fmt(t.hit_max_turns)+'</td><td>'+fmt(t.tool_call_count)+'</td><td>'+fmt(t.num_turns)+'</td><td>'+fmt(t.token_cost_usd)+'</td><td>'+fmt(t.input_tokens)+'/'+fmt(t.output_tokens)+'</td></tr>';
+  h+='<tr><td>'+esc(a)+'</td><td>'+esc(fmt(t.repeat_index))+'</td><td class="'+(bad?"cell-bad":"cell-ok")+'">'+esc(fmt(t.status))+'</td><td>'+esc(fmt(t.reward!=null?t.reward:t.score))+'</td><td>'+esc(fmt(t.error_category))+'</td><td>'+esc(fmt(t.hit_max_turns))+'</td><td>'+esc(fmt(t.tool_call_count))+'</td><td>'+esc(fmt(t.num_turns))+'</td><td>'+esc(fmt(t.token_cost_usd))+'</td><td>'+esc(fmt(t.input_tokens))+'/'+esc(fmt(t.output_tokens))+'</td></tr>';
  }});}});
  return h+'</tbody></table></div>';
 }}

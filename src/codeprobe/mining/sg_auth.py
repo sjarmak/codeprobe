@@ -30,6 +30,25 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ENDPOINT = "https://sourcegraph.com"
 ENV_VAR = "SRC_ACCESS_TOKEN"
+
+# Org-scale/consensus mining (find_references-based ground truth) defaults to
+# the public demo instance, which does not index arbitrary repos.
+# SOURCEGRAPH_ENDPOINT lets it target a self-hosted instance (e.g. S2)
+# instead. Accepts either a bare instance URL or a full GraphQL endpoint
+# (".../.api/graphql") — curator_backends.SourcegraphBackend uses the latter
+# form directly, so this normalizes it back to a bare instance URL.
+DEFAULT_ORG_SCALE_ENDPOINT = "https://demo.sourcegraph.com"
+_GRAPHQL_SUFFIX = "/.api/graphql"
+
+
+def resolve_org_scale_endpoint() -> str:
+    """Resolve the Sourcegraph instance URL for org-scale/consensus mining."""
+    raw = os.environ.get("SOURCEGRAPH_ENDPOINT", "").strip()
+    if not raw:
+        return DEFAULT_ORG_SCALE_ENDPOINT
+    if raw.endswith(_GRAPHQL_SUFFIX):
+        raw = raw[: -len(_GRAPHQL_SUFFIX)]
+    return raw.rstrip("/")
 # Accept multiple env var names so users aren't forced into one spelling.
 # Canonical (SRC_ACCESS_TOKEN) wins; aliases are for convenience.
 _ACCEPTED_ENV_VARS: tuple[str, ...] = (
@@ -328,6 +347,7 @@ __all__ = [
     "AuthError",
     "CachedToken",
     "DEFAULT_ENDPOINT",
+    "DEFAULT_ORG_SCALE_ENDPOINT",
     "ENV_VAR",
     "_ACCEPTED_ENV_VARS",
     "_resolve_env_token",
@@ -336,5 +356,6 @@ __all__ = [
     "get_valid_token",
     "load_cached_token",
     "refresh_token",
+    "resolve_org_scale_endpoint",
     "save_cached_token",
 ]

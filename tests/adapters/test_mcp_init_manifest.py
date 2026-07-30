@@ -113,6 +113,36 @@ class TestParseMcpInitManifest:
         # The nav tools are absent because the server never attached.
         assert m.mcp_tools == ()
 
+    def test_pending_server_with_tools_is_not_reported_failed(self) -> None:
+        """A ``pending`` HTTP server that contributed tools is healthy.
+
+        Claude Code 2.1.220 reports HTTP MCP servers as ``pending`` in the
+        init event even when they are attached and their tools return real
+        results. Flagging those as failed marks every healthy HTTP arm
+        invalid and buries genuine breakage.
+        """
+        stream = _stream(
+            tools=["Read", *_NAV_TOOLS],
+            mcp_servers=[{"name": "sourcegraph", "status": "pending"}],
+        )
+        m = parse_mcp_init_manifest(stream)
+        assert m.captured is True
+        assert set(m.mcp_tools) == set(_NAV_TOOLS)
+        assert m.failed_servers == ()
+        assert m.to_dict()["failed_servers"] == []
+
+    def test_pending_server_without_tools_is_reported_failed(self) -> None:
+        """No tools on the surface is the real breakage signal."""
+        stream = _stream(
+            tools=["Write"],
+            mcp_servers=[{"name": "sourcegraph", "status": "pending"}],
+        )
+        m = parse_mcp_init_manifest(stream)
+        assert m.mcp_tools == ()
+        assert m.failed_servers == (
+            McpServerStatus(name="sourcegraph", status="pending"),
+        )
+
     def test_malformed_lines_are_skipped(self) -> None:
         stream = "not json\n" + _stream(tools=["Read", *_NAV_TOOLS])
         m = parse_mcp_init_manifest(stream)

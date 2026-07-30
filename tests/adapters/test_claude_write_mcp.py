@@ -297,6 +297,72 @@ class TestBuildCommandAllowedToolsPartition:
         assert "--allowedTools" not in cmd
 
 
+class TestBuildCommandKeepsToolSearchForMcp:
+    """The r8 fix: ``--tools`` must not strip the deferred-schema loader.
+
+    Claude Code advertises MCP tools by name but defers their schemas — the
+    model calls ``ToolSearch`` to load one before it can invoke the tool.
+    A strict-mode whitelist of ``["mcp__sg", "Write"]`` partitions down to
+    ``--tools Write``, which removes ``ToolSearch`` and takes every
+    ``mcp__*`` tool with it. Verified against claude 2.1.220: with
+    ``--tools Write`` the init surface is exactly ``['Write']``; adding
+    ``ToolSearch`` restores all 16 sourcegraph MCP tools.
+    """
+
+    def _cmd(self, config: AgentConfig) -> list[str]:
+        adapter = ClaudeAdapter()
+        if adapter.find_binary() is None:
+            pytest.skip("claude binary not available")
+        return adapter.build_command("prompt", config)
+
+    def _mcp_cfg(self) -> dict:
+        return {
+            "mcpServers": {
+                "sg": {"type": "http", "url": "https://sg.example.test/mcp"}
+            }
+        }
+
+    def test_strict_surface_keeps_toolsearch(self) -> None:
+        """The exact strict-mode shape from mcp_policy.resolve_tool_policy."""
+        cmd = self._cmd(
+            AgentConfig(
+                mcp_config=self._mcp_cfg(),
+                allowed_tools=["mcp__sg", "Write"],
+                disallowed_tools=["Read", "Grep", "Glob", "Bash"],
+            )
+        )
+        tools = cmd[cmd.index("--tools") + 1].split(",")
+        assert tools == ["Write", "ToolSearch"]
+        allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
+        assert "ToolSearch" in allowed
+
+    def test_mcp_only_surface_still_gets_toolsearch(self) -> None:
+        """``allowed_tools=[]`` + MCP must not yield a zero-tool agent.
+
+        Without the loader this arm has literally no callable tool, so it
+        measures harness breakage rather than MCP usefulness.
+        """
+        cmd = self._cmd(
+            AgentConfig(mcp_config=self._mcp_cfg(), allowed_tools=[])
+        )
+        assert cmd[cmd.index("--tools") + 1] == "ToolSearch"
+        assert cmd[cmd.index("--allowedTools") + 1] == "ToolSearch"
+
+    def test_not_duplicated_when_already_listed(self) -> None:
+        cmd = self._cmd(
+            AgentConfig(
+                mcp_config=self._mcp_cfg(),
+                allowed_tools=["Write", "ToolSearch"],
+            )
+        )
+        assert cmd[cmd.index("--tools") + 1].split(",").count("ToolSearch") == 1
+
+    def test_not_injected_without_mcp_config(self) -> None:
+        """No MCP servers → no reason to widen the operator's whitelist."""
+        cmd = self._cmd(AgentConfig(allowed_tools=["Write"]))
+        assert cmd[cmd.index("--tools") + 1] == "Write"
+
+
 class TestStrictMcpConfigPinning:
     """--strict-mcp-config is unconditional (codeprobe-f7rl.24).
 
@@ -618,12 +684,21 @@ class TestEndToEndWriteAndMcp:
         assert str(server_path) in sg_server["args"]
 
         tools_idx = cmd.index("--tools")
-        assert cmd[tools_idx + 1] == "Write", (
-            "regression guard: --tools must keep Write; prior buggy "
+        tools_value = cmd[tools_idx + 1].split(",")
+        assert "Write" in tools_value, (
+            "regression guard (r7): --tools must keep Write; prior buggy "
             "behavior was --tools '' which silently stripped Write."
         )
+        assert "ToolSearch" in tools_value, (
+            "regression guard (r8): --tools must keep ToolSearch whenever an "
+            "MCP config is present — Claude Code defers MCP tool schemas and "
+            "drops every mcp__* tool from the surface without it."
+        )
         allowed_idx = cmd.index("--allowedTools")
-        assert cmd[allowed_idx + 1] == "Write,mcp__sg__keyword_search"
+        allowed_value = cmd[allowed_idx + 1].split(",")
+        assert "Write" in allowed_value
+        assert "mcp__sg__keyword_search" in allowed_value
+        assert "ToolSearch" in allowed_value
 
         # --- Output assertions ---
         assert output.error is None

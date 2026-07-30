@@ -272,6 +272,40 @@ class TestGetValidToken:
 # ---------------------------------------------------------------------------
 
 
+class TestResolveOrgScaleEndpoint:
+    def test_defaults_to_demo_instance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SOURCEGRAPH_ENDPOINT", raising=False)
+        assert (
+            sg_auth.resolve_org_scale_endpoint()
+            == sg_auth.DEFAULT_ORG_SCALE_ENDPOINT
+        )
+
+    def test_bare_instance_url_passes_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "SOURCEGRAPH_ENDPOINT", "https://sourcegraph.sourcegraph.com/"
+        )
+        assert (
+            sg_auth.resolve_org_scale_endpoint()
+            == "https://sourcegraph.sourcegraph.com"
+        )
+
+    def test_graphql_suffix_is_normalized_to_bare_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(
+            "SOURCEGRAPH_ENDPOINT",
+            "https://sourcegraph.sourcegraph.com/.api/graphql",
+        )
+        assert (
+            sg_auth.resolve_org_scale_endpoint()
+            == "https://sourcegraph.sourcegraph.com"
+        )
+
+
 class TestUnimplementedFlows:
     def test_device_code_flow_not_implemented(self) -> None:
         with pytest.raises(NotImplementedError):

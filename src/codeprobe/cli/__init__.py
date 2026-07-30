@@ -441,7 +441,7 @@ def init(
     is_flag=True,
     default=False,
     hidden=True,
-    help="Rank candidate symbols via Sourcegraph sg_find_references MCP calls "
+    help="Rank candidate symbols via Sourcegraph find_references MCP calls "
     "instead of the local grep-based Phase 2 scan. Cuts org-scale mining "
     "from hours to minutes on large repos. Only takes effect with "
     "--mcp-families; requires a Sourcegraph token.",

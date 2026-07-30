@@ -204,22 +204,42 @@ def _check_file_list(
     oracle_tiers_raw: dict[str, str] = gt_data.get("oracle_tiers", {}) or {}
     has_tiers = bool(oracle_tiers_raw)
 
-    def _canon(p: str) -> str:
-        return strip_repo_prefix(normalize_path(p), repo)
-
-    expected: frozenset[str] = frozenset(_canon(p) for p in expected_raw if p)
+    # The answer key is normalized but NEVER repo-stripped. ``strip_repo_prefix``
+    # cuts at the last ``/<repo>/`` anywhere in a path, so applying it to the key
+    # collapsed genuinely distinct files (``v1/api/h.go``, ``v2/api/h.go`` and
+    # ``internal/api/h.go`` all became ``h.go`` for repo "api", and
+    # ``expected_size`` then reported 1 as if that were the whole key) and let a
+    # wrong answer score 1.0 (``vendor/thirdparty/cli/parser.go`` matching
+    # ``internal/cli/parser.go`` for repo "cli").
+    expected: frozenset[str] = frozenset(
+        normalize_path(p) for p in expected_raw if p
+    )
     if not expected:
         return {"score": 0.0, "error": "Empty ground truth"}
 
-    # Re-key tier map to the canonical (normalized+stripped) paths so tier
-    # lookups survive the same transformation applied to expected/agent.
+    def _match_expected(p: str) -> str:
+        """Map a path onto the answer-key entry it matches, else leave it.
+
+        Repo-prefix stripping is a one-directional convenience — for agents
+        that answer ``<repo>/pkg/foo.go`` and for tier maps keyed the same
+        way. It is only accepted when the stripped form lands on an intact
+        key, so it can no longer manufacture a match or collapse the key.
+        """
+        if p in expected:
+            return p
+        stripped = strip_repo_prefix(p, repo)
+        return stripped if stripped in expected else p
+
+    # Tier keys may be written with the repo prefix while ``expected`` is
+    # not; resolve them onto the key so tier lookups still land.
     oracle_tiers: dict[str, str] = {
-        _canon(k): v for k, v in oracle_tiers_raw.items()
+        _match_expected(normalize_path(k)): v
+        for k, v in oracle_tiers_raw.items()
     }
 
     agent_paths = extract_answer(task_dir, oracle_type="file_list")
     agent_answer: frozenset[str] = frozenset(
-        strip_repo_prefix(p, repo) for p in (agent_paths or [])  # type: ignore[union-attr]
+        _match_expected(p) for p in (agent_paths or [])  # type: ignore[union-attr]
     )
     if not agent_answer:
         return {

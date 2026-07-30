@@ -488,6 +488,7 @@ class TestComputeConsensus:
         sg_auth = ModuleType("codeprobe.mining.sg_auth")
         sg_auth.AuthError = AuthError
         sg_auth.get_valid_token = lambda: "token"
+        sg_auth.resolve_org_scale_endpoint = lambda: "https://demo.sourcegraph.com"
         sg_ground_truth = ModuleType("codeprobe.mining.sg_ground_truth")
         sg_ground_truth._call_find_references = lambda **kwargs: []
         monkeypatch.setitem(sys.modules, "codeprobe.mining.sg_auth", sg_auth)

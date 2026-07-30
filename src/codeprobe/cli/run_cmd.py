@@ -838,7 +838,23 @@ def run_eval(
 
         try:
             experiment = load_experiment(exp_dir)
-        except (FileNotFoundError, ValueError):
+        except (FileNotFoundError, ValueError) as exc:
+            # An explicit --config that fails to load is terminal. Falling
+            # through to auto-discovery meant a typo'd path silently ran a
+            # DIFFERENT experiment to completion, exit 0, with no warning —
+            # in an A/B that is the wrong arm reported as the right one.
+            if config:
+                raise PrescriptiveError(
+                    code="EXPERIMENT_LOAD_FAILED",
+                    message=(
+                        f"--config {config!r} could not be loaded: {exc}. "
+                        "Refusing to fall back to auto-discovery, which would "
+                        "run a different experiment than the one requested."
+                    ),
+                    next_try_flag="--config",
+                    next_try_value="<path to an experiment dir or experiment.json>",
+                    detail={"config": str(config)},
+                ) from exc
             # Try discovering experiment inside .codeprobe/
             experiment = None
             codeprobe_dir = Path(path) / ".codeprobe"
@@ -1060,13 +1076,12 @@ def run_eval(
         _check_checkpoint_verifiers_present(task_dirs, path)
 
         configs_to_run = experiment.configs
-        if not configs_to_run:
+        auto_created_config = not configs_to_run
+        if auto_created_config:
             configs_to_run = [
                 ExperimentConfig(label="default", agent=agent, model=model),
             ]
-            # Persist the auto-created config so interpret can find it later
             experiment = replace(experiment, configs=configs_to_run)
-            save_experiment(exp_dir, experiment)
 
         if dry_run:
             estimate = dry_run_estimate(
@@ -1078,6 +1093,14 @@ def run_eval(
             )
             _print_dry_run(estimate)
             return
+
+        # Persist the auto-created config so interpret can find it later.
+        # This MUST come after the dry-run return: a dry run advertises that
+        # no agents are spawned, but persisting here pinned a "default" arm
+        # to whatever --agent/--model happened to be on that command line,
+        # and every later real run silently inherited it.
+        if auto_created_config:
+            save_experiment(exp_dir, experiment)
 
         # Anchor --out's destination into experiment.json (codeprobe-xcue):
         # exp_dir (experiment.json, tasks_dir) never moves, but results/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ from codeprobe.mining.org_scale_oracle import (
 from codeprobe.mining.org_scale_scanner import (
     FamilyScanResult,
     PatternHit,
+    discover_top_imports,
     scan_repo_for_family,
 )
 from codeprobe.mining.safe_output import SafeOutputDir
@@ -766,6 +768,42 @@ class TestEndToEnd:
         score_result = oracle_check(task_dir)
         assert score_result["f1"] == 0.0
 
+    def test_pattern_family_tasks_get_sg_repo_stamped(self, tmp_path: Path) -> None:
+        """Regression: pattern-family tasks must carry sg_repo when set.
+
+        ``_mine_mcp_families`` receives ``sg_repo`` directly, but
+        ``_mine_pattern_families``/``_mine_dep_trace`` don't accept it as a
+        parameter at all — without an explicit stamping step their tasks
+        ship with an empty ``sg_repo``, and the Sourcegraph preamble refuses
+        to render for them at eval time (``task_preamble_context`` raises
+        ``ValueError``).
+        """
+        repo = self._make_repo(tmp_path)
+
+        result = mine_org_scale_tasks(
+            [repo],
+            count=1,
+            families=(MIGRATION_INVENTORY,),
+            no_llm=True,
+            sg_repo="github.com/acme/widgets",
+        )
+        assert len(result.tasks) >= 1
+        assert all(
+            t.metadata.sg_repo == "github.com/acme/widgets" for t in result.tasks
+        )
+
+    def test_pattern_family_tasks_sg_repo_empty_by_default(
+        self, tmp_path: Path
+    ) -> None:
+        """No sg_repo passed → tasks keep the empty default (no-op stamp)."""
+        repo = self._make_repo(tmp_path)
+
+        result = mine_org_scale_tasks(
+            [repo], count=1, families=(MIGRATION_INVENTORY,), no_llm=True
+        )
+        assert len(result.tasks) >= 1
+        assert all(t.metadata.sg_repo == "" for t in result.tasks)
+
 
 # ---------------------------------------------------------------------------
 # Unified language detection (_lang.py)
@@ -829,6 +867,118 @@ class TestLangModule:
 # ---------------------------------------------------------------------------
 # Instruction discovery variant
 # ---------------------------------------------------------------------------
+
+
+class TestPatternOracleIsExhaustive:
+    """``max_hits`` bounds hit SAMPLES, never the answer key."""
+
+    def _repo(self, tmp_path: Path, n_matching: int) -> Path:
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        for i in range(n_matching):
+            # Several matching lines per file, so the hit count outruns the
+            # file count and trips the cap well before the files run out.
+            body = "\n".join(["# @Deprecated marker"] * 5)
+            (repo / "src" / f"f{i:04d}.py").write_text(f"{body}\n")
+        return repo
+
+    def test_matched_files_complete_when_hits_exceed_cap(
+        self, tmp_path: Path
+    ) -> None:
+        """Every matching file must land in the oracle, cap notwithstanding.
+
+        Previously ``_scan_files`` stopped scanning entirely once the hit
+        cap was reached, so the answer key held only the files reached
+        first. Measured on sourcegraph/sourcegraph: 41 files shipped as
+        the complete answer when 194 matched.
+        """
+        n = 60
+        repo = self._repo(tmp_path, n)
+        tracked = frozenset(
+            str(p.relative_to(repo)) for p in repo.rglob("*.py")
+        )
+        # max_hits well below the total number of hits (60 files x 5 lines).
+        family = replace(MIGRATION_INVENTORY, max_hits=10)
+
+        result = scan_repo_for_family(
+            [repo], family, tracked_files=tracked, commit_sha="deadbeef"
+        )
+
+        assert len(result.hits) <= 10, "hit samples should still be capped"
+        assert len(result.matched_files) == n, (
+            f"oracle must contain all {n} matching files, got "
+            f"{len(result.matched_files)} — a truncated answer key cannot "
+            "be scored fairly"
+        )
+
+    def test_timed_out_scan_does_not_become_a_task(
+        self, tmp_path: Path
+    ) -> None:
+        """An incomplete scan must not ship as an exhaustive answer key."""
+        repo = self._repo(tmp_path, 3)
+        scan = FamilyScanResult(
+            family=MIGRATION_INVENTORY,
+            hits=(PatternHit("src/f0000.py", 1, "@Deprecated", "@Deprecated"),),
+            repo_paths=(repo,),
+            commit_sha="deadbeef",
+            matched_files=frozenset({"src/f0000.py"}),
+            timed_out=True,
+        )
+        assert generate_org_scale_task(scan, no_llm=True) is None
+
+
+class TestDepTraceOracleIsExhaustive:
+    """Dep-trace answer keys must be complete, never silently truncated."""
+
+    def _repo_importing(self, tmp_path: Path, pkg: str, n_files: int) -> Path:
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True, exist_ok=True)
+        for i in range(n_files):
+            (repo / "src" / f"f{i:04d}.go").write_text(
+                f'package src\n\nimport (\n\t"{pkg}"\n\t"fmt"\n)\n'
+            )
+        return repo
+
+    def _tracked(self, repo: Path) -> frozenset[str]:
+        return frozenset(
+            str(p.relative_to(repo)) for p in repo.rglob("*.go")
+        )
+
+    def test_package_over_cap_is_skipped_not_truncated(
+        self, tmp_path: Path
+    ) -> None:
+        """A package with more importers than the cap must not ship at all.
+
+        Truncating to ``sorted(files)[:500]`` shipped an answer key that
+        claimed to be complete but held the alphabetically-first 500. On
+        sourcegraph/sourcegraph the top package had 5307 importers, so a
+        correct exhaustive answer scored F1 0.17 against the cut list.
+        """
+        from codeprobe.mining.org_scale_scanner import _MAX_DEP_GT
+
+        pkg = "github.com/o/oversized"
+        repo = self._repo_importing(tmp_path, pkg, _MAX_DEP_GT + 25)
+        result = discover_top_imports(
+            [repo], self._tracked(repo), "go", max_files=5000
+        )
+        assert pkg not in dict(result), (
+            "an over-cap package must be skipped; shipping a truncated "
+            "oracle makes a correct answer unscoreable"
+        )
+
+    def test_package_under_cap_ships_every_importer(
+        self, tmp_path: Path
+    ) -> None:
+        pkg = "github.com/o/sized"
+        n = 30
+        repo = self._repo_importing(tmp_path, pkg, n)
+        result = dict(
+            discover_top_imports(
+                [repo], self._tracked(repo), "go", max_files=5000
+            )
+        )
+        assert pkg in result
+        assert len(result[pkg]) == n, "oracle must list every importer"
 
 
 class TestStripLocationHints:
@@ -896,6 +1046,52 @@ class TestStripLocationHints:
         content = instruction.read_text()
         assert "`@Deprecated`" not in content
         assert "test-repo" in content
+
+    def test_dep_trace_keeps_its_literal_package_target(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: dep-trace questions must keep the package path.
+
+        ``cross-repo-dep-trace`` puts the required package in backticks —
+        the same syntax pattern families use for grep hints. Scrubbing it
+        turned "import the package `github.com/o/r`" into "import the
+        package the relevant patterns", and the agent correctly reported
+        that no such package existed, scoring 0.0 on an unanswerable task.
+        """
+        task = Task(
+            id="dep-001",
+            repo="test-repo",
+            metadata=TaskMetadata(
+                name="test-task",
+                category="cross-repo-dep-trace",
+                org_scale=True,
+                issue_title="Find files importing github.com/o/r in test-repo",
+                issue_body=(
+                    "In the test-repo repository, find all source files that "
+                    "import the package `github.com/o/r`. List the file "
+                    "paths, one per line."
+                ),
+            ),
+            verification=TaskVerification(
+                oracle_type="file_list",
+                oracle_answer=("src/a.go",),
+            ),
+        )
+        task_dir = tmp_path / "tasks" / task.id
+        task_dir.mkdir(parents=True)
+        tests_dir = task_dir / "tests"
+        tests_dir.mkdir()
+
+        _write_oracle_task_dirs(
+            task, task_dir, tests_dir, tmp_path / "repo", "dep-001"
+        )
+
+        content = (task_dir / "instruction.md").read_text()
+        assert "github.com/o/r" in content, (
+            "the package path IS the task; stripping it leaves the "
+            "question unanswerable"
+        )
+        assert "the relevant patterns" not in content
 
     def test_no_discovery_variant_when_unchanged(self, tmp_path: Path) -> None:
         """No instruction_discovery.md when stripping changes nothing."""

@@ -452,12 +452,18 @@ class BaseAdapter:
     ) -> AgentOutput:
         cmd = self.build_command(prompt, config)
         mcp_tmpfile = _mcp_tmpfile_from(cmd)
-        run_env = _adapter_safe_env(session_env)
-        cmd, container_engine, container_name = _containerized_command(
-            cmd, config, session_env, run_env, mcp_tmpfile
-        )
+        container_engine: str | None = None
+        container_name: str | None = None
         start = time.monotonic()
+        # _containerized_command must run INSIDE the try: it raises ValueError
+        # on an unresolvable image reference and FileNotFoundError from
+        # Path.cwd(), and the tempfile it would clean up holds an EXPANDED
+        # token. Leaving it outside stranded that secret on disk.
         try:
+            run_env = _adapter_safe_env(session_env)
+            cmd, container_engine, container_name = _containerized_command(
+                cmd, config, session_env, run_env, mcp_tmpfile
+            )
             result = _run_agent_process(
                 cmd,
                 timeout=config.timeout_seconds,

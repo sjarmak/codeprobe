@@ -25,6 +25,20 @@ from codeprobe.models.experiment import CompletedTask, completed_task_from_dict
 PER_TRIAL_FILE = "per_trial.json"
 EXPLORER_FILE = "explorer.html"
 
+
+def safe_json_island(data: object) -> str:
+    """Serialise ``data`` for embedding inside an inline ``<script>`` tag.
+
+    ``json.dumps`` does not escape ``/``, so a literal ``</script>`` anywhere
+    in the payload closes the tag and the remainder is parsed as live markup.
+    Trial payloads are copied wholesale from ``results.json`` and carry raw
+    agent stderr, so every string in here is attacker-influenced. Breaking
+    ``</`` keeps JSON parsers happy while denying the HTML parser a tag.
+
+    Mirrors ``snapshot.exporters.browse._safe_json_island``.
+    """
+    return json.dumps(data, sort_keys=True).replace("</", "<\\/")
+
 # Columns surfaced in the trial table, in display order. Each is
 # (per_trial key, header label). Kept as data so the table and the CSV-like
 # export stay in sync.
@@ -250,7 +264,7 @@ def render_html(run_id: str, trials: list[dict], summaries: list[ArmSummary]) ->
     """Render the self-contained explorer HTML (inline CSS/JS, no deps)."""
     # Enrich each trial with computed flags + JSON-encode for the JS layer.
     enriched = [{**t, "_flags": compute_validity_flags(t)} for t in trials]
-    data_json = json.dumps(enriched)
+    data_json = safe_json_island(enriched)
     cols_json = json.dumps([k for k, _ in TRIAL_COLUMNS])
     headers_json = json.dumps([h for _, h in TRIAL_COLUMNS])
     summary_rows = "".join(_render_summary_row(s) for s in summaries)
@@ -376,7 +390,8 @@ function render(){{
  r.forEach((t,idx)=>{{
   const tr=document.createElement("tr");if(isFlagged(t))tr.className="flagged";
   COLS.forEach(c=>{{const td=document.createElement("td");
-   if(c==="status"){{td.innerHTML='<span class="'+(t.status==="completed"?"ok":"bad")+'">'+fmt(t[c])+'</span>';}}
+   if(c==="status"){{const sp=document.createElement("span");
+    sp.className=(t.status==="completed"?"ok":"bad");sp.textContent=fmt(t[c]);td.appendChild(sp);}}
    else td.textContent=fmt(t[c]);tr.appendChild(td);}});
   const ftd=document.createElement("td");
   (t._flags||[]).forEach(f=>{{const s=document.createElement("span");s.className="flag";s.textContent=f;ftd.appendChild(s);}});

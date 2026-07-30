@@ -245,7 +245,21 @@ def _scan_files(
     *,
     deadline: float | None = None,
 ) -> tuple[list[PatternHit], set[str], bool]:
-    """Scan files for pattern matches. Returns (hits, matched_files, timed_out)."""
+    """Scan files for pattern matches. Returns (hits, matched_files, timed_out).
+
+    ``max_hits`` bounds the number of ``PatternHit`` samples collected (they
+    feed the LLM task-generation prompt and the scan summary). It must NOT
+    bound ``matched_files``, which becomes the task's answer key: scanning
+    used to stop entirely at the hit cap, so the oracle silently held
+    whichever files happened to be reached first. Measured on
+    sourcegraph/sourcegraph: the compliance-audit oracle claimed 41 files
+    when 194 actually matched, so an agent that answered exhaustively was
+    scored down on precision against an arbitrary prefix.
+
+    Invariant: ``matched_files`` is exhaustive over ``candidate_files``
+    unless ``timed_out`` is True. Callers must not build a file-list oracle
+    from a timed-out scan.
+    """
     hits: list[PatternHit] = []
     matched_files: set[str] = set()
     timed_out = False
@@ -268,19 +282,18 @@ def _scan_files(
                 continue
             for pattern_str, pattern_re in compiled_patterns:
                 if pattern_re.search(line):
-                    hits.append(
-                        PatternHit(
-                            file_path=file_path,
-                            line_number=line_num,
-                            matched_text=line.strip()[:200],
-                            pattern_used=pattern_str,
+                    # Hit samples are capped; the matched-file set is not.
+                    if len(hits) < max_hits:
+                        hits.append(
+                            PatternHit(
+                                file_path=file_path,
+                                line_number=line_num,
+                                matched_text=line.strip()[:200],
+                                pattern_used=pattern_str,
+                            )
                         )
-                    )
                     matched_files.add(file_path)
                     break
-
-        if len(hits) >= max_hits:
-            break
 
     return hits[:max_hits], matched_files, timed_out
 
@@ -648,12 +661,31 @@ def discover_top_imports(
             import_counts.pop(skip, None)
             import_files.pop(skip, None)
 
-    # Return packages with 10+ importers, capped at _MAX_DEP_GT
+    # Return packages with 10+ importers. A package imported by more than
+    # _MAX_DEP_GT files is SKIPPED, not truncated: the previous
+    # ``sorted(files)[:_MAX_DEP_GT]`` silently shipped the alphabetically
+    # first 500 as the complete answer key, so an agent that correctly
+    # listed all importers was scored on precision against an arbitrary
+    # cutoff. Observed on sourcegraph/sourcegraph, where the top package
+    # was the repo's own module path (5307 importers): a perfect answer
+    # scored F1 0.17 and the only way to score well was to guess where the
+    # alphabet had been cut. Such packages also make degenerate tasks
+    # ("find everything that imports this monorepo"), so dropping them
+    # costs nothing and keeps every shipped oracle exhaustive.
     candidates = []
     for pkg, _cnt in import_counts.most_common(50):
         files = import_files.get(pkg, set())
+        if len(files) > _MAX_DEP_GT:
+            logger.info(
+                "dep-trace: skipping %s (%d importers > %d cap) — a truncated "
+                "answer key cannot be scored fairly",
+                pkg,
+                len(files),
+                _MAX_DEP_GT,
+            )
+            continue
         if len(files) >= 10:
-            candidates.append((pkg, len(files), frozenset(sorted(files)[:_MAX_DEP_GT])))
+            candidates.append((pkg, len(files), frozenset(sorted(files))))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
     return [(pkg, files) for pkg, _n, files in candidates[:_MAX_DEP_TRACE_PACKAGES]]
@@ -924,7 +956,7 @@ def discover_reference_targets_via_sg(
     language: str,
     *,
     repo_sg_name: str,
-    sg_url: str = "https://demo.sourcegraph.com",
+    sg_url: str | None = None,
     sample_size: int = _SG_MODE_SAMPLE_SIZE,
     max_targets: int = _MAX_REFERENCE_TARGETS,
     max_workers: int = 8,
@@ -935,7 +967,7 @@ def discover_reference_targets_via_sg(
     Replaces the local grep-based Phase 2 (which scans every source file
     for every candidate symbol — O(N_files × N_symbols) and can run for
     hours on a repo like kubernetes) with a bounded number of Sourcegraph
-    ``sg_find_references`` MCP calls.
+    ``find_references`` MCP calls.
 
     Trade-off: we sample candidates rather than exhaustively scoring every
     symbol Phase 1 finds. The sample is deterministic (seeded) so reruns
@@ -948,7 +980,10 @@ def discover_reference_targets_via_sg(
     import random
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    from codeprobe.mining.sg_auth import resolve_org_scale_endpoint
     from codeprobe.mining.sg_ground_truth import _call_find_references
+
+    sg_url = sg_url or resolve_org_scale_endpoint()
 
     symbol_defs = _extract_symbol_definitions(
         repo_paths,

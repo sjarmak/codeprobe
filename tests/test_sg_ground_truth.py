@@ -189,7 +189,7 @@ class TestAPICall:
             assert url_called == "https://my-sg.example.com/.api/mcp/all"
 
     def test_tools_call_method_and_params(self) -> None:
-        """Verify we send tools/call with sg_find_references params."""
+        """Verify we send tools/call with find_references params."""
         repo = "github.com/sg-evals/repo"
 
         with patch("codeprobe.mining.sg_ground_truth.requests") as mock_req:
@@ -206,10 +206,13 @@ class TestAPICall:
             payload = call_args.kwargs.get("json", call_args[1].get("json", {}))
             assert payload["method"] == "tools/call"
             params = payload["params"]
-            assert params["name"] == "sg_find_references"
+            assert params["name"] == "find_references"
             assert params["arguments"]["repo"] == repo
             assert params["arguments"]["path"] == "src/models.py"
             assert params["arguments"]["symbol"] == "MyClass"
+            # Tool defaults to 10 results server-side; mining needs the full
+            # set to compare fairly against grep/ast ground truth.
+            assert params["arguments"]["limit"] == 500
 
 
 class TestRetryOn401:

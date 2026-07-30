@@ -23,13 +23,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The find_references tool defaults to 10 results server-side; ground-truth
+# mining needs the full reference set to compare fairly against grep/ast.
+_SG_FIND_REFERENCES_LIMIT = 500
+
 
 def enrich_ground_truth(
     symbol: str,
     defining_file: str,
     grep_files: frozenset[str],
     repo_sg_name: str,
-    sg_url: str = "https://demo.sourcegraph.com",
+    sg_url: str | None = None,
 ) -> tuple[frozenset[str], dict[str, str]]:
     """Call Sourcegraph find_references, return (all_files, tier_map).
 
@@ -52,6 +56,11 @@ def enrich_ground_truth(
         A tuple of ``(all_files, tier_map)`` where *all_files* is the union of
         grep and SG results, and *tier_map* maps each file to its tier.
     """
+    if sg_url is None:
+        from codeprobe.mining.sg_auth import resolve_org_scale_endpoint
+
+        sg_url = resolve_org_scale_endpoint()
+
     sg_files = _call_find_references(
         symbol=symbol,
         defining_file=defining_file,
@@ -82,7 +91,7 @@ def _call_find_references(
     repo_sg_name: str,
     sg_url: str,
 ) -> frozenset[str] | None:
-    """Call Sourcegraph ``sg_find_references`` via Streamable HTTP MCP transport.
+    """Call Sourcegraph ``find_references`` via Streamable HTTP MCP transport.
 
     Authentication is resolved via :func:`sg_auth.get_valid_token`.
     On a 401 response, the token is refreshed once and the request retried.
@@ -106,11 +115,14 @@ def _call_find_references(
         "id": 1,
         "method": "tools/call",
         "params": {
-            "name": "sg_find_references",
+            "name": "find_references",
             "arguments": {
                 "repo": repo_sg_name,
                 "path": defining_file,
                 "symbol": symbol,
+                # Tool default is 10, which truncates ground truth for
+                # widely-referenced symbols well below what grep/ast find.
+                "limit": _SG_FIND_REFERENCES_LIMIT,
             },
         },
     }
@@ -171,10 +183,12 @@ class SourcegraphSymbolResolver:
     def __init__(
         self,
         defining_file: str = "",
-        sg_url: str = "https://demo.sourcegraph.com",
+        sg_url: str | None = None,
     ) -> None:
+        from codeprobe.mining.sg_auth import resolve_org_scale_endpoint
+
         self._defining_file = defining_file
-        self._sg_url = sg_url
+        self._sg_url = sg_url or resolve_org_scale_endpoint()
 
     def find_references(self, symbol: str, repos: list[str]) -> list[FileRef]:
         """Return cross-repo references for *symbol* across *repos*.

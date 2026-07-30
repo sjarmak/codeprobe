@@ -514,6 +514,22 @@
       "remediation_pattern": "Inspect the listed paths (`ls -la <path>`), remove the escaping symlink manually, then re-run `codeprobe purge <path> --yes`."
     },
     {
+      "code": "EXPERIMENT_LOAD_FAILED",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.14.0",
+      "description": "An explicit --config path was given to `codeprobe run` but the experiment there could not be loaded (missing, unreadable, or malformed experiment.json). The run was refused rather than falling back to auto-discovery, which would have executed a different experiment than the one requested and reported it as successful.",
+      "remediation_pattern": "Check the --config path points at an experiment directory (or its experiment.json) and that the file parses: `cat <path>/experiment.json | python -m json.tool`. Omit --config to use auto-discovery under <PATH>/.codeprobe/ deliberately."
+    },
+    {
+      "code": "PURGE_SYMLINKED_ROOT",
+      "kind": "prescriptive",
+      "exit_code": 2,
+      "since": "0.14.0",
+      "description": "`codeprobe purge` found that <PATH>/.codeprobe is itself a symlink. The deletion boundary is derived from that directory, so following the link would move the boundary with it and every containment check would pass while the printed paths still showed the in-project location — deleting the link target without showing it. The purge aborted before deleting anything (fail closed). The link target is in `error.detail.target`.",
+      "remediation_pattern": "Run `codeprobe purge` against the link target directly (the path shown in error.detail.target), or replace the symlink with a real directory."
+    },
+    {
       "code": "INVALID_OUT_PATH",
       "kind": "prescriptive",
       "exit_code": 2,

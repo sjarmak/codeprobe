@@ -154,6 +154,7 @@ def _ir_reward_from_family(
     f1: float,
     beta: float = DEFAULT_FBETA_BETA,
     weighted_recall: float | None = None,
+    weighted_f1: float | None = None,
 ) -> float:
     """Derive an IR reward from precision/recall/f1 under ``family``.
 
@@ -170,11 +171,11 @@ def _ir_reward_from_family(
     that want a different bias supply the value resolved from per-task
     metadata via :func:`_read_fbeta_beta`.
 
-    ``weighted_recall`` is consumed only by ``oracle_weighted_recall``.
-    IR list scorers don't see tier weights and omit it; the tier-weighted
-    value surfaces via ContinuousScorer over the on-disk oracle's
-    ``metrics.json``. Recall→recall is an honest same-axis substitution
-    when the weighted value is absent.
+    ``weighted_recall`` and ``weighted_f1`` are consumed only by their
+    respective weighted families. IR list scorers don't see tier weights
+    and omit both; the tier-weighted values surface via ContinuousScorer
+    over the on-disk oracle's ``metrics.json``. Substituting the unweighted
+    value on the same axis is honest when the weighted one is absent.
     """
     if family == "oracle_overlap_recall":
         return recall
@@ -182,9 +183,16 @@ def _ir_reward_from_family(
         return weighted_recall if weighted_recall is not None else recall
     if family == "oracle_overlap_fbeta":
         return _fbeta(precision, recall, beta)
-    # F1 families: oracle_overlap_f1 (default), oracle_weighted_f1 (the
-    # on-disk weighted oracle stores weighted_f1 in the ``f1`` field —
-    # see mining/writer.py:_ORACLE_PY), and unrecognised families.
+    if family == "oracle_weighted_f1":
+        # The on-disk oracle emits the tier-weighted score under
+        # ``weighted_f1``; ``f1`` is the UNWEIGHTED value. Reading ``f1``
+        # here silently discarded tier weighting, so an agent that missed
+        # every ``required`` file and shipped only ``context`` files could
+        # score 0.667 and pass while the oracle's own reward.txt said 0.333
+        # and failed. Fall back to plain f1 only when the oracle predates
+        # the explicit key.
+        return weighted_f1 if weighted_f1 is not None else f1
+    # F1 families: oracle_overlap_f1 (default) and unrecognised families.
     return f1
 
 

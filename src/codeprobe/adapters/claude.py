@@ -173,6 +173,13 @@ _PERSONALIZATION_NAMES: frozenset[str] = frozenset(
 _SAFE_NAMESPACE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _CREDENTIAL_FILE_MODE = 0o600
 
+# The built-in that loads deferred tool schemas. Claude Code does not offer
+# MCP tools in the init surface: it advertises them by name and the model
+# must call ``ToolSearch`` to load a schema before the tool is invocable.
+# Restricting ``--tools`` to a list that omits it therefore removes every
+# MCP tool as collateral damage — see ``_builtin_tools_for``.
+_TOOL_SEARCH = "ToolSearch"
+
 
 def _normalize_model_for_cli(model: str) -> str:
     """Normalize a model identifier for the Claude CLI.
@@ -560,17 +567,51 @@ class ClaudeAdapter(BaseAdapter):
         # available while unlisted built-ins are still disabled. Pass the
         # full list to ``--allowedTools`` so both built-ins and MCP calls
         # are auto-approved.
+        #
+        # Second regression (r8): ``--tools`` also gates the MCP surface.
+        # Claude Code advertises MCP tools by name but defers their schemas;
+        # the model must call ``ToolSearch`` to load one before it can be
+        # invoked. A whitelist like ``["Write"]`` strips ``ToolSearch``, and
+        # with it every ``mcp__<server>__<tool>`` disappears from the init
+        # surface entirely — so a strict MCP arm silently measured an agent
+        # with NO working tools rather than an agent using MCP. Re-add
+        # ``ToolSearch`` whenever MCP servers are configured.
+        # A name in both lists is a contradiction the CLI resolves silently in
+        # favour of --disallowedTools, so the arm runs without a tool its own
+        # config and report claim it had. Refuse rather than mis-report.
+        if config.allowed_tools and config.disallowed_tools:
+            conflict = sorted(set(config.allowed_tools) & set(config.disallowed_tools))
+            if conflict:
+                raise ValueError(
+                    "allowed_tools and disallowed_tools both list "
+                    f"{', '.join(conflict)}; --disallowedTools wins silently, so "
+                    "the arm would not have the tools its config claims."
+                )
+
+        disallowed = list(config.disallowed_tools or [])
+        if mcp_path and _TOOL_SEARCH in disallowed:
+            # Blocking the schema loader disables every MCP tool, which turns
+            # an MCP arm into a no-tools arm that still reports plausible
+            # scores. Refuse instead of measuring nothing.
+            raise ValueError(
+                f"disallowed_tools blocks {_TOOL_SEARCH}, which loads MCP tool "
+                "schemas; with an mcp_config set this leaves the agent unable "
+                "to call any MCP tool."
+            )
+
         if config.allowed_tools is not None:
             builtin_tools = [
                 t for t in config.allowed_tools if not t.startswith("mcp__")
             ]
+            auto_approved = list(config.allowed_tools)
+            if mcp_path and _TOOL_SEARCH not in builtin_tools:
+                builtin_tools.append(_TOOL_SEARCH)
+                auto_approved.append(_TOOL_SEARCH)
             cmd.extend(["--tools", ",".join(builtin_tools)])
-            if config.allowed_tools:
-                cmd.extend(["--allowedTools", ",".join(config.allowed_tools)])
-        if config.disallowed_tools:
-            cmd.extend(
-                ["--disallowedTools", ",".join(config.disallowed_tools)]
-            )
+            if auto_approved:
+                cmd.extend(["--allowedTools", ",".join(auto_approved)])
+        if disallowed:
+            cmd.extend(["--disallowedTools", ",".join(disallowed)])
 
         return cmd
 

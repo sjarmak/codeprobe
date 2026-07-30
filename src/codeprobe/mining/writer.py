@@ -160,6 +160,15 @@ _MCP_CATEGORIES: frozenset[str] = frozenset(
     }
 )
 
+# Families whose question embeds a literal target the agent must be told —
+# a package path, not a regex hint. ``_strip_location_hints`` scrubs
+# backticked text so pattern families can't just be handed their grep
+# pattern, but for these the backticks hold the answer key's subject:
+# "import the package `github.com/o/r`" degrades to "import the package
+# the relevant patterns", which is unanswerable. Observed shipping a
+# 0.0-scoring task whose agent correctly reported the target didn't exist.
+_LITERAL_TARGET_CATEGORIES: frozenset[str] = frozenset({"cross-repo-dep-trace"})
+
 # ---------------------------------------------------------------------------
 # Self-contained oracle scorer (vendored into each task's tests/oracle.py)
 # No codeprobe install required — only stdlib imports.
@@ -215,11 +224,22 @@ def fail_verifier(task_dir, message):
     sys.exit(2)
 
 def normalize(p):
+    # Must stay byte-for-byte equivalent to
+    # mining/org_scale_oracle.normalize_path: loop until stable so combined
+    # prefixes like ``/workspace/./pkg/a.go`` fully reduce. A single pass
+    # left ``./pkg/a.go``, which scored 0.0 here and 1.0 in-repo.
     p = p.replace("\\\\", "/").strip()
-    for pfx in ("./", "/workspace/", "/tmp/", "/app/"):
-        while p.startswith(pfx):
-            p = p[len(pfx):]
-    return p.lstrip("/")
+    changed = True
+    while changed:
+        changed = False
+        for pfx in ("./", "/workspace/", "/tmp/", "/app/"):
+            if p.startswith(pfx):
+                p = p[len(pfx):]
+                changed = True
+        if p.startswith("/"):
+            p = p.lstrip("/")
+            changed = True
+    return p
 
 def strip_repo_prefix(p, repo):
     """Strip leading path up to and including ``/<repo>/`` when present.
@@ -251,7 +271,10 @@ def main():
         fail_verifier(task_dir, f"Invalid ground_truth.json: {exc}")
     if not isinstance(gt, dict):
         fail_verifier(task_dir, "Invalid ground_truth.json: expected an object")
-    oracle_type = gt.get("oracle_type")
+    # Absent oracle_type means the default file_list (models/task.py defaults
+    # it to ""), matching the in-repo scorer. Erroring here turned every task
+    # written with the default into a verifier_error on every trial.
+    oracle_type = gt.get("oracle_type") or "file_list"
     if oracle_type != "file_list":
         fail_verifier(task_dir, f"Unsupported generated oracle type: {oracle_type!r}")
 
@@ -264,17 +287,25 @@ def main():
     expected = gt.get("expected")
     if not isinstance(expected, list) or any(not isinstance(p, str) for p in expected):
         fail_verifier(task_dir, "Invalid ground_truth.json: expected must be a list of paths")
-    expected_set = frozenset(
-        strip_repo_prefix(normalize(p), repo)
-        for p in expected
-        if p
-    )
+    # Normalized but NEVER repo-stripped: stripping the key collapses
+    # genuinely distinct files (v1/api/h.go + v2/api/h.go -> h.go for repo
+    # "api") and lets a wrong answer match. Mirrors org_scale_oracle.
+    expected_set = frozenset(normalize(p) for p in expected if p)
     if not expected_set:
         fail_verifier(task_dir, "Invalid ground_truth.json: expected paths are empty")
 
-    # Tier map keyed by the same normalized+stripped form as expected_set.
+    def match_expected(p):
+        # One-directional: repo-stripping is accepted only when it lands on
+        # an intact key, so it cannot manufacture a match or collapse the key.
+        if p in expected_set:
+            return p
+        stripped = strip_repo_prefix(p, repo)
+        return stripped if stripped in expected_set else p
+
+    # Tier keys may carry the repo prefix while expected does not; resolve
+    # them onto the key so tier lookups still land.
     tier_map = {
-        strip_repo_prefix(normalize(k), repo): v
+        match_expected(normalize(k)): v
         for k, v in tiers_raw.items()
     }
 
@@ -298,10 +329,13 @@ def main():
         sys.exit(0)
 
     lines = answer_file.read_text().splitlines()
+    # Test the comment marker on the STRIPPED line (an indented "# note"
+    # was becoming a bogus answer path) and drop lines that normalize away
+    # to nothing — both mirror org_scale_oracle.extract_answer.
     agent_set = frozenset(
-        strip_repo_prefix(normalize(l), repo)
+        match_expected(normalize(l))
         for l in lines
-        if l.strip() and not l.startswith("#")
+        if l.strip() and not l.strip().startswith("#") and normalize(l)
     )
     if not agent_set:
         print("FAIL: empty answer")
@@ -322,7 +356,12 @@ def main():
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
 
     if has_tiers:
-        total_w = sum(TIER_WEIGHTS.get(t, 1.0) for t in tier_map.values()) or 1.0
+        # Both sums must range over the SAME population (expected_set) with
+        # the SAME unknown-tier default, or weighted_recall exceeds 1.0
+        # whenever tier_map covers only part of expected_set.
+        total_w = sum(
+            TIER_WEIGHTS.get(tier_map.get(p, "required"), 2.0) for p in expected_set
+        ) or 1.0
         matched_w = sum(
             TIER_WEIGHTS.get(tier_map.get(p, "required"), 2.0) for p in matched
         )
@@ -339,6 +378,10 @@ def main():
         "score": round(primary, 6),
         "metric": metric,
         "f1": round(f1, 6),
+        # Emitted explicitly: the host's oracle_weighted_f1 family reads this
+        # key. It used to infer the weighted value from "f1", which holds the
+        # UNWEIGHTED score, so tier weighting was silently dropped host-side.
+        "weighted_f1": round(weighted_f1, 6) if has_tiers else None,
         "precision": round(precision, 6),
         "recall": round(recall, 6),
         "matched": intersection,
@@ -815,8 +858,26 @@ scope_dirs = gt.get("scope_dirs", [])
 language = gt.get("language", "")
 weights = gt["weights"]
 
+def _unquote_git_path(line):
+    # git C-quotes paths needing it ("pkg/stats helpers.py"); a rename shows
+    # as "old -> new". Splitting on whitespace, as awk '{print $NF}' did,
+    # turned an in-scope "pkg/stats helpers.py" into 'helpers.py' and scored
+    # it out-of-scope.
+    line = line.strip()
+    if " -> " in line:
+        line = line.split(" -> ")[-1].strip()
+    if len(line) > 1 and line.startswith('"') and line.endswith('"'):
+        try:
+            import ast as _ast
+
+            return _ast.literal_eval(line)
+        except (ValueError, SyntaxError):
+            return line[1:-1]
+    return line
+
+
 changed_set = {
-    _normalize(line)
+    _normalize(_unquote_git_path(line))
     for line in os.environ.get("CP_CHANGED_FILES", "").splitlines()
     if line.strip()
 }
@@ -843,11 +904,17 @@ checks.append(
 syntax_score = 1.0
 syntax_detail = f"syntax check skipped for language={language!r} (full credit)"
 if language in ("python", "py"):
-    ok = total = 0
+    ok = total = missing = 0
     for f in source_files:
-        if not f.endswith(".py") or not Path(f).is_file():
+        if not f.endswith(".py"):
             continue
         total += 1
+        # An expected source file that does not exist is a failure, not a
+        # skip. Skipping it awarded full syntax credit to an agent that
+        # implemented nothing, which is 0.25 of the composite for free.
+        if not Path(f).is_file():
+            missing += 1
+            continue
         try:
             py_compile.compile(f, doraise=True)
             ok += 1
@@ -856,6 +923,8 @@ if language in ("python", "py"):
     if total > 0:
         syntax_score = ok / total
         syntax_detail = f"{ok}/{total} files parse"
+        if missing:
+            syntax_detail += f" ({missing} expected file(s) missing)"
     else:
         syntax_detail = "no python files to parse (full credit)"
 checks.append(
@@ -949,6 +1018,7 @@ def _build_weighted_checklist_script(
     language: str,
     ground_truth: dict,
     header: str,
+    base_commit: str = "",
 ) -> str:
     """Build a weighted-checklist test.sh that emits a float score in [0, 1].
 
@@ -1020,6 +1090,13 @@ def _build_weighted_checklist_script(
     )
 
     fallback = shlex.quote(str(repo_path))
+    # Candidate baselines, most-specific first. HEAD is the correct fallback
+    # for a standalone checkout: the executor pins the workspace to
+    # <ground_truth_commit>^, so HEAD already IS the base there.
+    base_ref = " ".join(
+        shlex.quote(c)
+        for c in ([f"{base_commit}^"] if base_commit else []) + ["HEAD"]
+    )
     # pipefail intentionally off so a failing verification command inside
     # a subshell doesn't abort before the composite score is computed.
     return f"""#!/usr/bin/env bash
@@ -1032,22 +1109,31 @@ cd "${{TASK_REPO_ROOT:-$_CODEPROBE_REPO_DEFAULT}}"
 
 git config --global --add safe.directory "$(pwd)" 2>/dev/null || true
 
-_CP_ORIGIN_REF=""
-for ref in origin/main origin/master origin/HEAD; do
-    if git rev-parse "$ref" >/dev/null 2>&1; then
-        _CP_ORIGIN_REF="$ref"
+# The baseline is the commit this task's workspace is pinned to, embedded at
+# GENERATION time. It must never be resolved from a remote ref at runtime:
+# the workspace is pinned to <ground_truth_commit>^, so `origin/main..HEAD`
+# returned the ground-truth diff itself and every "did the agent change X?"
+# check measured the answer key. A no-op agent scored 0.80 that way.
+_CP_BASE=""
+for _cand in {base_ref}; do
+    if [ -n "$_cand" ] && git rev-parse --verify --quiet "$_cand^{{commit}}" >/dev/null 2>&1; then
+        _CP_BASE="$_cand"
         break
     fi
 done
 
-# Collect changed files: committed-vs-origin is a separate query from the
-# porcelain which covers unstaged, staged, and untracked in one fork.
+# Working tree vs base covers committed, staged and unstaged in one query;
+# porcelain adds untracked. Newline-delimited (a shell variable cannot hold
+# NUL bytes); git C-quotes any path needing it, and the Python consumer
+# unquotes — so paths with spaces survive instead of being split on
+# whitespace, which is what awk '{{print $NF}}' used to do.
 CP_CHANGED_FILES="$(
     {{
-        if [ -n "$_CP_ORIGIN_REF" ]; then
-            git diff --name-only "$_CP_ORIGIN_REF..HEAD" 2>/dev/null || true
+        if [ -n "$_CP_BASE" ]; then
+            git diff --name-only "$_CP_BASE" 2>/dev/null || true
         fi
-        git status --porcelain 2>/dev/null | awk '{{print $NF}}' || true
+        git status --porcelain --untracked-files=all 2>/dev/null \
+            | cut -c4- || true
     }} | sort -u | grep -v '^$' || true
 )"
 
@@ -1662,6 +1748,7 @@ def write_task_dir(
                 language=language,
                 ground_truth=ground_truth,
                 header=f"Weighted-checklist verification for task {task.id}",
+                base_commit=task.metadata.ground_truth_commit or "",
             )
             # Composite is a float in [0, 1] → downstream uses ContinuousScorer.
             task = replace(
@@ -2007,15 +2094,18 @@ def _write_oracle_task(
 
     # MCP-advantaged families embed the symbol name and definition file
     # as essential task information — stripping them makes the task ambiguous.
+    # Literal-target families (dep-trace) embed the package path the same way.
     # Pattern-based families strip regex hints so the agent must discover them.
-    is_mcp_family = task.metadata.category in _MCP_CATEGORIES
+    keeps_literal_question = task.metadata.category in (
+        _MCP_CATEGORIES | _LITERAL_TARGET_CATEGORIES
+    )
 
     if is_structured:
         discovery_question = question
         discovery_title = task.metadata.issue_title or (
             f"Structured retrieval task — {task.metadata.category or repo_name}"
         )
-    elif is_mcp_family:
+    elif keeps_literal_question:
         discovery_question = question
         discovery_title = task.metadata.issue_title or (
             f"Find {task.metadata.category} patterns in {repo_name}"

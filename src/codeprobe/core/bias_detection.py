@@ -42,7 +42,7 @@ from codeprobe.models.experiment import Experiment, ExperimentConfig
 _SG_BACKEND_NAMES: tuple[str, ...] = ("sourcegraph", "sg")
 
 # Org-scale MCP family categories whose ground truth is produced by
-# Sourcegraph ``sg_find_references`` calls when ``--mcp-families`` is
+# Sourcegraph ``find_references`` calls when ``--mcp-families`` is
 # used during mining. See ``mining/org_scale.py``.
 _SG_GT_CATEGORIES: frozenset[str] = frozenset(
     {

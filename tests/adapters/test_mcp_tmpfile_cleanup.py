@@ -130,6 +130,40 @@ def test_claude_mcp_tmpfile_deleted_after_run(
     assert not os.path.exists(flag_value)
 
 
+def test_claude_mcp_tmpfile_stays_owner_only(
+    monkeypatch: pytest.MonkeyPatch, fake_token_env: None
+) -> None:
+    """The token-bearing tempfile must not be readable beyond its owner.
+
+    ``containerize_argv`` runs the agent as ``--user $(id -u):$(id -g)``, so
+    the container shares the writing process's UID and 0600 is readable
+    there. Nothing requires widening it, and this file holds an expanded
+    secret for the life of the run.
+    """
+    monkeypatch.setattr(ClaudeAdapter, "find_binary", lambda self: "/fake/claude")
+    adapter = ClaudeAdapter()
+    config = AgentConfig(mcp_config=_mcp_config_with_env_ref(), timeout_seconds=5)
+
+    captured: dict[str, Any] = {}
+
+    def _mode_capturing_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        mcp_path = _extract_mcp_path(cmd)
+        captured["mode"] = os.stat(mcp_path).st_mode & 0o777
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    with patch(
+        "codeprobe.adapters._base._run_agent_process",
+        side_effect=_mode_capturing_run,
+    ):
+        adapter.run("prompt", config)
+
+    assert not captured["mode"] & 0o077, (
+        f"MCP tempfile mode {oct(captured['mode'])} is group/other-readable; "
+        "it holds an expanded secret and the container runs as our own UID"
+    )
+
+
 def test_copilot_mcp_tmpfile_deleted_on_timeout(
     monkeypatch: pytest.MonkeyPatch, fake_token_env: None
 ) -> None:

@@ -134,7 +134,7 @@ def _run_sourcegraph_backend(
     *,
     defining_file: str,
     sg_repo: str,
-    sg_url: str = "https://demo.sourcegraph.com",
+    sg_url: str | None = None,
 ) -> BackendResult:
     """Sourcegraph ``find_references`` via the existing helper.
 
@@ -149,8 +149,14 @@ def _run_sourcegraph_backend(
             error="sg_repo not configured",
         )
     try:
-        from codeprobe.mining.sg_auth import AuthError, get_valid_token
+        from codeprobe.mining.sg_auth import (
+            AuthError,
+            get_valid_token,
+            resolve_org_scale_endpoint,
+        )
         from codeprobe.mining.sg_ground_truth import _call_find_references
+
+        sg_url = sg_url or resolve_org_scale_endpoint()
 
         try:
             get_valid_token()
@@ -373,7 +379,7 @@ def compute_consensus(
     threshold: float = DEFAULT_THRESHOLD,
     mode: ConsensusMode = DEFAULT_MODE,
     sg_repo: str = "",
-    sg_url: str = "https://demo.sourcegraph.com",
+    sg_url: str | None = None,
     max_workers: int = 3,
 ) -> ConsensusDecision:
     """Run *backends* for *symbol* and decide whether to ship.
@@ -417,6 +423,11 @@ def compute_consensus(
         raise ValueError("backends must be non-empty")
     if not symbol:
         raise ValueError("symbol must be non-empty")
+
+    if sg_url is None:
+        from codeprobe.mining.sg_auth import resolve_org_scale_endpoint
+
+        sg_url = resolve_org_scale_endpoint()
 
     backends_attempted = tuple(backends)
 

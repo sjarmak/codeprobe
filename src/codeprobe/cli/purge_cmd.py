@@ -34,7 +34,7 @@ from pathlib import Path
 
 import click
 
-from codeprobe.cli.errors import DiagnosticError
+from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 
 __all__ = ["purge"]
 
@@ -156,6 +156,25 @@ def purge(path: Path, older_than: int | None, purge_all: bool, yes: bool) -> Non
     """
     root = path.resolve()
     codeprobe_dir = root / ".codeprobe"
+    # Resolving the containment boundary AFTER following .codeprobe made the
+    # boundary move with the link, so a symlinked .codeprobe let every
+    # deletion pass the escape check and destroyed the link target while
+    # printing the innocuous in-project path. Symlinking .codeprobe onto a
+    # data volume is ordinary practice, so refuse rather than guess.
+    if codeprobe_dir.is_symlink():
+        raise PrescriptiveError(
+            code="PURGE_SYMLINKED_ROOT",
+            message=(
+                f"{codeprobe_dir} is a symlink to "
+                f"{os.path.realpath(codeprobe_dir)}. Refusing to purge through "
+                "it: the deletion boundary would follow the link and the "
+                "printed paths would not show what is actually removed. Purge "
+                "the link target directly instead."
+            ),
+            next_try_flag="",
+            next_try_value="",
+            detail={"target": os.path.realpath(codeprobe_dir)},
+        )
     boundary = codeprobe_dir.resolve()
     cutoff = time.time() - older_than * _SECONDS_PER_DAY if older_than is not None else None
 

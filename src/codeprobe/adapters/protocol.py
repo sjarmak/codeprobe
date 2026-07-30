@@ -140,10 +140,33 @@ class McpInitManifest:
         """The ``mcp__<server>__<tool>`` subset of the offered tools."""
         return tuple(t for t in self.offered_tools if t.startswith("mcp__"))
 
+    def _contributed_tools(self, server: str) -> bool:
+        """Whether *server* put at least one tool on the offered surface."""
+        prefix = f"mcp__{server}__"
+        return any(t.startswith(prefix) for t in self.offered_tools)
+
     @property
     def failed_servers(self) -> tuple[McpServerStatus, ...]:
-        """Configured servers the CLI could not attach (status != connected)."""
-        return tuple(s for s in self.mcp_servers if s.status != "connected")
+        """Configured servers that produced no usable tool surface.
+
+        ``status`` alone is not a reliable signal. Claude Code reports HTTP
+        MCP servers as ``"pending"`` in the init event even when they are
+        attached and their tools are callable — verified against claude
+        2.1.220, where a run whose ``mcp__sourcegraph__keyword_search`` call
+        returned real results still advertised ``status: "pending"``.
+        Treating that as failure reports a false negative on every healthy
+        HTTP server, which is worse than useless for arm validity: it hides
+        the real breakage in the noise.
+
+        The load-bearing evidence is whether the server actually contributed
+        tools, so a non-``connected`` server is only reported failed when it
+        put nothing on the surface.
+        """
+        return tuple(
+            s
+            for s in self.mcp_servers
+            if s.status != "connected" and not self._contributed_tools(s.name)
+        )
 
     def to_dict(self) -> dict:
         """Plain-dict form for per-trial artifacts and checkpoint storage."""

@@ -129,7 +129,11 @@ def preflight_symlink_containment(root: Path) -> None:
 def _captured_trial_files(
     prepared: _PreparedSnapshot,
 ) -> dict[tuple[str, str], list[str]]:
-    skip_names = {"SNAPSHOT.json", "files"} | {
+    # ``tasks`` holds ground_truth.json — the answer keys. Without it here
+    # each task dir was classified as a trial and its bodies were copied
+    # into export/traces/, i.e. the "sanitised publish-time" tree, so
+    # sharing a snapshot shipped the answers with it.
+    skip_names = {"SNAPSHOT.json", "files", "tasks"} | {
         sub.split("/", 1)[0] for sub in _LAYOUT_SUBDIRS
     }
     trials: dict[tuple[str, str], list[str]] = {}

@@ -226,6 +226,7 @@ class ContinuousScorer:
     # oracle change to silently widen the result schema.
     _METRICS_WHITELIST = (
         "f1",
+        "weighted_f1",
         "precision",
         "recall",
         "matched",
@@ -439,6 +440,7 @@ class ContinuousScorer:
         recall = _num("recall")
         f1 = _num("f1")
         weighted_recall = _num("weighted_recall")
+        weighted_f1 = _num("weighted_f1")
 
         ir_metrics: dict[str, float] = {}
         if precision is not None:
@@ -449,6 +451,8 @@ class ContinuousScorer:
             ir_metrics["f1"] = f1
         if weighted_recall is not None:
             ir_metrics["weighted_recall"] = weighted_recall
+        if weighted_f1 is not None:
+            ir_metrics["weighted_f1"] = weighted_f1
 
         # Compute F1 on the fly when the oracle emitted precision/recall
         # but didn't precompute it, so F1 families don't have to fall back.
@@ -470,9 +474,10 @@ class ContinuousScorer:
             # The F-beta formula needs precision and recall; a precomputed
             # f1 alone suffices only at β=1 (handled below).
             usable = precision is not None and recall is not None
+        elif family == "oracle_weighted_f1":
+            usable = weighted_f1 is not None or f1 is not None
         else:
-            # F1 families (oracle_overlap_f1, oracle_weighted_f1) and
-            # unrecognised families.
+            # oracle_overlap_f1 and unrecognised families.
             usable = f1 is not None
 
         if usable:
@@ -483,6 +488,7 @@ class ContinuousScorer:
                 f1=f1 if f1 is not None else 0.0,
                 beta=beta,
                 weighted_recall=weighted_recall,
+                weighted_f1=weighted_f1,
             )
         elif (
             family == "oracle_overlap_fbeta"
@@ -504,6 +510,8 @@ class ContinuousScorer:
             sub_scores["f1"] = f1
         if weighted_recall is not None:
             sub_scores["weighted_recall"] = weighted_recall
+        if weighted_f1 is not None:
+            sub_scores["weighted_f1"] = weighted_f1
         sub_scores["reward"] = reward
         if family == "oracle_overlap_fbeta":
             sub_scores["fbeta_beta"] = beta

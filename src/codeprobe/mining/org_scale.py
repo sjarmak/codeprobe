@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -204,24 +204,43 @@ Description: {family_description}
 Repository: {repo_name}
 Language: {language}
 Files matched: {file_count}
-Sample matches (first 10):
+
+## The answer key (read this before writing the question)
+This task is graded by file-set overlap (F1) against a FIXED answer key:
+the complete set of all {file_count} files in this repository where at least
+one of these regexes matches:
+{patterns}
+
+Sample matches (first 10 of many — these are ILLUSTRATIVE ONLY, not the
+scope of the question):
 {sample_hits}
 
 {multi_hop_context}
 
 ## Instructions
 Produce a JSON object with:
-- "question": A clear, specific question scoped to the scanner's literal \
-pattern. For single-hop: "Which files contain X?" For multi-hop: "Which files \
-call/use the deprecated symbols found in X?" The question must be answerable \
-by listing file paths.
+- "question": A question whose complete, correct answer is EXACTLY the
+  answer key described above — all {file_count} files, repository-wide.
 - "heading": A short title for the task (5-10 words).
 - "difficulty": One of "easy", "medium", "hard".
 - "is_multi_hop": true if this requires tracing relationships, false if \
 single-file grep suffices.
 
-IMPORTANT: Do NOT include the answer in the question. The question must be \
-solvable by the agent navigating the codebase.
+The question must be answerable by listing file paths, one per line.
+
+CRITICAL — the question and the answer key must describe the SAME set.
+The sample matches above show only a handful of the matching files; do not
+let them narrow your question. Therefore:
+- Ask repository-wide. Never scope to one file, one package, one directory,
+  or one subsystem that merely appears in the samples.
+- Never ask for a single file, nor for a symbol/method/struct/field NAME —
+  the answer is graded as a SET OF FILE PATHS, so any such question is
+  unanswerable and scores zero no matter how well the agent works.
+- Describe the property the regexes capture in plain language, generally
+  enough that every matching file qualifies.
+
+Do NOT include the answer, the file list, or the literal regexes in the
+question. The agent must find the files by navigating the codebase.
 
 Respond ONLY with the JSON object, no markdown fences.
 """
@@ -247,12 +266,19 @@ def _build_task_gen_prompt(
             f"matches themselves.\n"
             f"Sample caller files: {', '.join(list(multi_hop_files)[:5])}"
         )
+    # The regexes define the answer key. Without them the model can only
+    # infer scope from the 10 samples, which is how questions ended up
+    # narrower than the set they are graded against.
+    patterns = "\n".join(
+        f"  {p}" for p in scan_result.family.content_patterns
+    )
     return _TASK_GEN_PROMPT.format(
         family_name=scan_result.family.name,
         family_description=scan_result.family.description,
         repo_name=scan_result.repo_paths[0].name,
         language=language,
         file_count=len(scan_result.matched_files),
+        patterns=patterns,
         sample_hits=sample_hits,
         multi_hop_context=multi_hop_context,
     )
@@ -355,6 +381,20 @@ def generate_org_scale_task(
         oracle_tiers = ()
 
     if not ground_truth_files:
+        return None
+
+    # A timed-out scan stopped partway through the candidate files, so its
+    # matched-file set is a prefix of the real answer, not the answer.
+    # Shipping it would score an exhaustive agent down on precision against
+    # an arbitrary cutoff, so refuse the task and tell the operator which
+    # knob to turn instead of silently emitting a broken oracle.
+    if scan_result.timed_out and curation_result is None:
+        logger.warning(
+            "skipping %s: pattern scan timed out, so its %d matched files are "
+            "an incomplete answer key — raise --scan-timeout to mine this family",
+            family.name,
+            len(ground_truth_files),
+        )
         return None
 
     task_id_source = f"{family.name}-{scan_result.commit_sha[:8]}"
@@ -608,7 +648,7 @@ def _maybe_enrich(
 
     * ``sg_authoritative=True`` (used by symbol-reference-trace): SG's
       ``find_references`` output IS the ground truth. No grep union, no
-      import filter — the oracle matches exactly what the ``sg_find_references``
+      import filter — the oracle matches exactly what the ``find_references``
       MCP tool returns, so "find references to X" has a well-defined,
       tool-testable answer. Falls back to grep+filter if the SG call fails
       (``None``) or returns an empty set.
@@ -618,13 +658,14 @@ def _maybe_enrich(
     plausibly reference the defining symbol.
     """
     if sg_available and sg_authoritative:
+        from codeprobe.mining.sg_auth import resolve_org_scale_endpoint
         from codeprobe.mining.sg_ground_truth import _call_find_references
 
         sg_files = _call_find_references(
             symbol=symbol,
             defining_file=def_file,
             repo_sg_name=sg_repo,
-            sg_url="https://demo.sourcegraph.com",
+            sg_url=resolve_org_scale_endpoint(),
         )
         if sg_files:
             tier_dict = {f: "required" for f in sg_files}
@@ -1191,7 +1232,7 @@ def _mine_mcp_families(
     consensus runner decide whether SG counted toward agreement.
 
     When ``sg_discovery`` is True, candidate symbols are ranked via
-    Sourcegraph ``sg_find_references`` MCP calls instead of the local
+    Sourcegraph ``find_references`` MCP calls instead of the local
     grep-based Phase 2 scan — cuts wall-clock from hours to minutes on
     large repos.
 
@@ -1269,7 +1310,7 @@ def mine_org_scale_tasks(
             ``SOURCEGRAPH_ACCESS_TOKEN``), MCP family ground truth is
             enriched via Sourcegraph ``find_references``.
         sg_discovery: When True (and ``sg_repo`` is set + auth available),
-            rank candidate symbols via Sourcegraph ``sg_find_references``
+            rank candidate symbols via Sourcegraph ``find_references``
             MCP calls instead of the local grep-based Phase 2 scan. Much
             faster on large repos (hours → minutes). Only affects the
             symbol-reference-trace and change-scope-audit families.
@@ -1326,6 +1367,7 @@ def mine_org_scale_tasks(
             include_multi_hop=include_multi_hop,
         )
 
+        pattern_tasks = _stamp_sg_repo(pattern_tasks, sg_repo)
         if len(repo_paths) > 1:
             pattern_tasks = [
                 _stamp_multi_repo_commits(t, commits) for t in pattern_tasks
@@ -1340,6 +1382,7 @@ def mine_org_scale_tasks(
             count=count - len(tasks),
             max_files=max_files,
         )
+        dep_tasks = _stamp_sg_repo(dep_tasks, sg_repo)
         if len(repo_paths) > 1:
             dep_tasks = [_stamp_multi_repo_commits(t, commits) for t in dep_tasks]
         tasks.extend(dep_tasks)
@@ -1352,6 +1395,22 @@ def mine_org_scale_tasks(
         scan_results=scan_results,
         quarantined=quarantined,
     )
+
+
+def _stamp_sg_repo(tasks: list[Task], sg_repo: str) -> list[Task]:
+    """Set ``metadata.sg_repo`` on every task; a no-op when *sg_repo* is empty.
+
+    ``_mine_pattern_families``/``_mine_dep_trace`` don't receive ``sg_repo``
+    (only ``_mine_mcp_families`` does), so without this stamp their tasks
+    ship with an empty ``sg_repo`` and the Sourcegraph preamble refuses to
+    render for them at eval time.
+    """
+    if not sg_repo:
+        return tasks
+    return [
+        replace(task, metadata=replace(task.metadata, sg_repo=sg_repo))
+        for task in tasks
+    ]
 
 
 def _stamp_multi_repo_commits(task: Task, commits: tuple[tuple[str, str], ...]) -> Task:
