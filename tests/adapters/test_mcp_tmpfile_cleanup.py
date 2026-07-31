@@ -164,6 +164,32 @@ def test_claude_mcp_tmpfile_stays_owner_only(
     )
 
 
+@pytest.mark.parametrize(
+    "authorization",
+    ["[REDACTED]", "token ${MISSING_TOKEN}"],
+)
+def test_claude_refuses_unusable_mcp_credential_before_materializing_tempfile(
+    monkeypatch: pytest.MonkeyPatch,
+    authorization: str,
+) -> None:
+    monkeypatch.setattr(ClaudeAdapter, "find_binary", lambda self: "/fake/claude")
+    monkeypatch.delenv("MISSING_TOKEN", raising=False)
+    adapter = ClaudeAdapter()
+    config = _mcp_config_with_env_ref()
+    config["mcpServers"]["gh"]["headers"]["Authorization"] = authorization
+
+    def _unexpected_tempfile(*_args, **_kwargs):
+        pytest.fail("unusable credentials must fail before tempfile creation")
+
+    monkeypatch.setattr(
+        "codeprobe.adapters._base.tempfile.NamedTemporaryFile",
+        _unexpected_tempfile,
+    )
+
+    with pytest.raises(ValueError):
+        adapter.build_command("prompt", AgentConfig(mcp_config=config))
+
+
 def test_claude_validates_tool_conflicts_before_materializing_mcp_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

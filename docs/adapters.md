@@ -144,7 +144,7 @@ order (`src/codeprobe/adapters/protocol.py`):
 | `model`            | `str \| None`         | `None`      | Model override (adapter picks its own default when `None`)                            |
 | `permission_mode`  | `str`                 | `"default"` | One of `default`, `plan`, `auto`, `acceptEdits`, `dangerously_skip`                   |
 | `timeout_seconds`  | `int`                 | `3600`      | Maximum execution time                                                                 |
-| `mcp_config`       | `dict \| None`        | `None`      | MCP tool configuration (`BaseAdapter` writes it to a temp file, expanding `${VAR}`)   |
+| `mcp_config`       | `dict \| None`        | `None`      | MCP tool configuration (`BaseAdapter` writes it to a temp file, expanding exported `${VAR}` references and rejecting redacted or unresolved values) |
 | `allowed_tools`    | `list[str] \| None`   | `None`      | Restrict the agent to these tools; `[]` disables all built-in tools (MCP-only arms)   |
 | `disallowed_tools` | `list[str] \| None`   | `None`      | Tools the agent may not call                                                           |
 | `extra`            | `dict \| None`        | `None`      | Adapter-specific options                                                               |
@@ -181,7 +181,7 @@ Immutable dataclass returned by `run()`. All fields, in dataclass order:
 | `num_turns`             | `int \| None`              | `None`          | From the CLI result record, when one exists                                               |
 | `result_subtype`        | `str \| None`              | `None`          | Verbatim CLI result subtype (e.g. `"success"`, `"error_max_turns"`)                       |
 | `duration_api_ms`       | `int \| None`              | `None`          | API-side duration from the CLI result record                                              |
-| `mcp_init`              | `McpInitManifest \| None`  | `None`          | Tool surface actually offered to the agent, parsed from the stream-json init event; `None` when the adapter has no streaming transcript |
+| `mcp_init`              | `McpInitManifest \| None`  | `None`          | MCP surface declared in the init event and reconciled with later observed MCP calls; `None` when the adapter has no streaming transcript |
 
 Validation rules enforced by `__post_init__`:
 

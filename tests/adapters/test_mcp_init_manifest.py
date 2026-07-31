@@ -143,6 +143,68 @@ class TestParseMcpInitManifest:
             McpServerStatus(name="sourcegraph", status="pending"),
         )
 
+    def test_observed_http_mcp_call_reconciles_too_early_init_surface(
+        self,
+    ) -> None:
+        init = _stream(
+            tools=["ToolSearch", "Write"],
+            mcp_servers=[{"name": "sourcegraph", "status": "pending"}],
+        ).splitlines()
+        tool_use = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "mcp__sourcegraph__keyword_search",
+                            "input": {"query": "MustNoError"},
+                        }
+                    ]
+                },
+            }
+        )
+        stream = "\n".join([init[0], tool_use, *init[1:]]) + "\n"
+
+        manifest = parse_mcp_init_manifest(stream)
+
+        assert manifest.offered_tools == ("ToolSearch", "Write")
+        assert manifest.observed_tools == (
+            "mcp__sourcegraph__keyword_search",
+        )
+        assert manifest.mcp_tools == (
+            "mcp__sourcegraph__keyword_search",
+        )
+        assert manifest.failed_servers == ()
+        assert manifest.to_dict()["failed_servers"] == []
+
+    def test_observed_tool_from_other_server_does_not_clear_failure(self) -> None:
+        init = _stream(
+            tools=["ToolSearch", "Write"],
+            mcp_servers=[{"name": "sourcegraph", "status": "pending"}],
+        ).splitlines()
+        tool_use = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "mcp__other__search",
+                            "input": {},
+                        }
+                    ]
+                },
+            }
+        )
+        stream = "\n".join([init[0], tool_use, *init[1:]]) + "\n"
+
+        manifest = parse_mcp_init_manifest(stream)
+
+        assert manifest.failed_servers == (
+            McpServerStatus(name="sourcegraph", status="pending"),
+        )
+
     def test_connected_server_without_tools_is_reported_failed(self) -> None:
         """A connected status is not evidence of a usable tool surface."""
         stream = _stream(
@@ -177,6 +239,7 @@ class TestToDict:
         m = McpInitManifest(
             captured=True,
             offered_tools=("Read", *_NAV_TOOLS),
+            observed_tools=("mcp__sourcegraph__keyword_search",),
             mcp_servers=(
                 McpServerStatus(name="sourcegraph", status="connected"),
                 McpServerStatus(name="broken", status="failed"),
@@ -185,6 +248,9 @@ class TestToDict:
         d = m.to_dict()
         assert d["captured"] is True
         assert d["offered_tools"] == ["Read", *_NAV_TOOLS]
+        assert d["observed_tools"] == [
+            "mcp__sourcegraph__keyword_search"
+        ]
         assert set(d["mcp_tools"]) == set(_NAV_TOOLS)
         assert d["mcp_servers"] == [
             {"name": "sourcegraph", "status": "connected"},

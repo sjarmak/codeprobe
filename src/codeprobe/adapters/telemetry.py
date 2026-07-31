@@ -323,19 +323,23 @@ def _recover_truncated_stream_usage(
 
 
 def parse_mcp_init_manifest(raw_output: str) -> McpInitManifest:
-    """Extract the offered tool surface from a stream-json ``init`` event.
+    """Reconcile the init snapshot with MCP tools observed later in the stream.
 
     The Claude CLI run with ``--output-format stream-json --verbose`` emits
     a ``type: "system"`` / ``subtype: "init"`` event before the first turn
     that lists the ``tools`` offered (built-in + ``mcp__<server>__<tool>``)
-    and the ``mcp_servers`` it attached, each with a ``status``. This is the
-    only on-disk proof of which tools were actually available in an arm
-    (codeprobe-9p6).
+    and the ``mcp_servers`` it attached, each with a ``status``. HTTP servers
+    may attach after this event, so later MCP ``tool_use`` blocks are retained
+    as stronger evidence that a server contributed a callable tool.
 
     Returns a captured manifest when the init event is present; otherwise a
     ``McpInitManifest(captured=False)`` — never None — so callers record an
     explicit "not measured" rather than silently dropping the surface.
     """
+    _, _, tools_by_name, _ = _parse_stream_json(raw_output)
+    observed_tools = tuple(
+        tool for tool in tools_by_name if tool.startswith("mcp__")
+    )
     for line in raw_output.splitlines():
         line = line.strip()
         if not line:
@@ -374,9 +378,15 @@ def parse_mcp_init_manifest(raw_output: str) -> McpInitManifest:
             else ()
         )
         return McpInitManifest(
-            captured=True, offered_tools=tools, mcp_servers=servers
+            captured=True,
+            offered_tools=tools,
+            observed_tools=observed_tools,
+            mcp_servers=servers,
         )
-    return McpInitManifest(captured=False)
+    return McpInitManifest(
+        captured=False,
+        observed_tools=observed_tools,
+    )
 
 
 class JsonStdoutCollector:

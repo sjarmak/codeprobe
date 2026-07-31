@@ -300,7 +300,7 @@ def _deterministic_question(
     is_multi_hop: bool,
 ) -> tuple[str, str]:
     """Generate a deterministic question without LLM (--no-llm fallback)."""
-    patterns_str = ", ".join(f"`{p}`" for p in family.content_patterns[:3])
+    patterns_str = ", ".join(f"`{p}`" for p in family.content_patterns)
     repo_name = scan_result.repo_paths[0].name
 
     if is_multi_hop:
@@ -325,6 +325,7 @@ def _llm_question(
     language: str,
     multi_hop_files: frozenset[str] | None,
     is_multi_hop: bool,
+    timeout_seconds: int,
 ) -> tuple[str, str, str, bool]:
     """Call LLM for question generation. Returns (heading, question, difficulty, succeeded)."""
     from codeprobe.core.llm import LLMError, LLMRequest, call_claude
@@ -332,7 +333,11 @@ def _llm_question(
     prompt = _build_task_gen_prompt(scan_result, language, multi_hop_files)
     try:
         response = call_claude(
-            LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
+            LLMRequest(
+                prompt=prompt,
+                model="haiku",
+                timeout_seconds=timeout_seconds,
+            )
         )
         data = json.loads(_strip_fences(response.text))
         heading = data.get("heading", f"{scan_result.family.name} task")
@@ -353,18 +358,39 @@ def _llm_question(
     return heading, question, "medium", False
 
 
+def _oracle_bound_task_id(
+    scope: str,
+    commit_sha: str,
+    oracle_files: frozenset[str],
+) -> str:
+    """Hash task semantics together with the exact file-list oracle."""
+    payload = json.dumps(
+        {
+            "scope": scope,
+            "commit": commit_sha,
+            "oracle_files": sorted(oracle_files),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:8]
+
+
 def generate_org_scale_task(
     scan_result: FamilyScanResult,
     *,
     multi_hop_files: frozenset[str] | None = None,
     no_llm: bool = False,
     curation_result: CurationResult | None = None,
+    llm_timeout_seconds: int = 60,
 ) -> Task | None:
     """Generate a single org-scale task from scan results.
 
     When *curation_result* is provided, its files are used for ground truth
     and the per-file tier mapping is populated on ``TaskVerification.oracle_tiers``.
     """
+    if llm_timeout_seconds <= 0:
+        raise ValueError("llm_timeout_seconds must be positive")
     language = _guess_language(scan_result)
     family = scan_result.family
     is_multi_hop = multi_hop_files is not None
@@ -397,10 +423,12 @@ def generate_org_scale_task(
         )
         return None
 
-    task_id_source = f"{family.name}-{scan_result.commit_sha[:8]}"
-    if is_multi_hop:
-        task_id_source += "-mh"
-    task_id = hashlib.sha256(task_id_source.encode()).hexdigest()[:8]
+    task_scope = family.name + ("-mh" if is_multi_hop else "")
+    task_id = _oracle_bound_task_id(
+        task_scope,
+        scan_result.commit_sha,
+        ground_truth_files,
+    )
 
     if no_llm:
         heading, question = _deterministic_question(family, scan_result, is_multi_hop)
@@ -412,10 +440,16 @@ def generate_org_scale_task(
         else:
             difficulty = "easy"
         llm_succeeded = False
+        enrichment_source = "deterministic"
     else:
         heading, question, difficulty, llm_succeeded = _llm_question(
-            scan_result, language, multi_hop_files, is_multi_hop
+            scan_result,
+            language,
+            multi_hop_files,
+            is_multi_hop,
+            llm_timeout_seconds,
         )
+        enrichment_source = "llm" if llm_succeeded else "llm_fallback"
 
     return Task(
         id=task_id,
@@ -426,10 +460,11 @@ def generate_org_scale_task(
             description=f"{family.name}: {len(ground_truth_files)} files",
             language=language,
             category=family.name,
+            task_type="org_scale_cross_repo",
             org_scale=True,
             issue_title=heading,
             issue_body=question,
-            enrichment_source="llm" if llm_succeeded else "",
+            enrichment_source=enrichment_source,
             ground_truth_commit=scan_result.commit_sha,
         ),
         verification=TaskVerification(
@@ -453,9 +488,11 @@ def _build_dep_trace_task(
 ) -> Task:
     """Build a dep-trace task for a specific package."""
     repo_name = repo_path.name
-    task_id = hashlib.sha256(
-        f"dep-trace-{pkg_name}-{commit_sha[:8]}".encode()
-    ).hexdigest()[:8]
+    task_id = _oracle_bound_task_id(
+        f"dep-trace-{pkg_name}",
+        commit_sha,
+        importing_files,
+    )
 
     return Task(
         id=task_id,
@@ -466,6 +503,7 @@ def _build_dep_trace_task(
             description=f"cross-repo-dep-trace: {pkg_name} ({len(importing_files)} files)",
             language=language,
             category="cross-repo-dep-trace",
+            task_type="org_scale_cross_repo",
             org_scale=True,
             issue_title=f"Find files importing {pkg_name} in {repo_name}",
             issue_body=(
@@ -503,6 +541,7 @@ def _mine_pattern_families(
     no_llm: bool,
     max_files: int,
     include_multi_hop: bool,
+    llm_timeout_seconds: int = 60,
 ) -> list[Task]:
     """Generate tasks from pattern-based scan results (non-dep-trace).
 
@@ -510,7 +549,11 @@ def _mine_pattern_families(
     """
     candidates: list[Task] = []
     for scan_result in scan_results:
-        task = generate_org_scale_task(scan_result, no_llm=no_llm)
+        task = generate_org_scale_task(
+            scan_result,
+            no_llm=no_llm,
+            llm_timeout_seconds=llm_timeout_seconds,
+        )
         if task is not None:
             candidates.append(task)
 
@@ -528,6 +571,7 @@ def _mine_pattern_families(
                     scan_result,
                     multi_hop_files=multi_hop_files,
                     no_llm=no_llm,
+                    llm_timeout_seconds=llm_timeout_seconds,
                 )
                 if mh_task is not None:
                     candidates.append(mh_task)
@@ -662,6 +706,11 @@ def _maybe_enrich(
     :mod:`codeprobe.mining.reference_filter` drops candidates that cannot
     plausibly reference the defining symbol.
     """
+    revision = (
+        get_head_sha(repo_path)
+        if sg_available and repo_path is not None
+        else ""
+    )
     if sg_available and sg_authoritative:
         from codeprobe.mining.sg_auth import resolve_org_scale_endpoint
         from codeprobe.mining.sg_ground_truth import _call_find_references
@@ -671,6 +720,7 @@ def _maybe_enrich(
             defining_file=def_file,
             repo_sg_name=sg_repo,
             sg_url=resolve_org_scale_endpoint(),
+            revision=revision,
         )
         if sg_files:
             tier_dict = {f: "required" for f in sg_files}
@@ -695,6 +745,7 @@ def _maybe_enrich(
             defining_file=def_file,
             grep_files=grep_files,
             repo_sg_name=sg_repo,
+            revision=revision,
         )
     else:
         files, tier_dict = grep_files, {}
@@ -766,6 +817,7 @@ def _consensus_ground_truth(
         threshold=consensus_config.threshold,
         mode=consensus_config.mode,  # type: ignore[arg-type]
         sg_repo=sg_repo,
+        revision=get_head_sha(repo_paths[0]),
     )
 
     if not decision.shipped:
@@ -924,9 +976,11 @@ def _mine_symbol_reference_tasks(
                 sg_authoritative=True,
             )
 
-        task_id = hashlib.sha256(
-            f"sym-ref-{symbol}-{commit_sha[:8]}".encode()
-        ).hexdigest()[:8]
+        task_id = _oracle_bound_task_id(
+            f"sym-ref-{symbol}",
+            commit_sha,
+            enriched_files,
+        )
 
         heading = f"Find references to {symbol} in {repo_name}"
         question = (
@@ -947,6 +1001,7 @@ def _mine_symbol_reference_tasks(
                     ),
                     language=language,
                     category="symbol-reference-trace",
+                    task_type="org_scale_cross_repo",
                     org_scale=True,
                     issue_title=heading,
                     issue_body=question,
@@ -1001,9 +1056,11 @@ def _mine_type_hierarchy_tasks(
     tasks: list[Task] = []
     for base_name, def_file, subclass_files, usage_files in base_types:
         ground_truth = subclass_files | usage_files
-        task_id = hashlib.sha256(
-            f"type-hier-{base_name}-{commit_sha[:8]}".encode()
-        ).hexdigest()[:8]
+        task_id = _oracle_bound_task_id(
+            f"type-hier-{base_name}",
+            commit_sha,
+            ground_truth,
+        )
 
         heading = f"Find implementations and consumers of {base_name}"
         question = (
@@ -1035,6 +1092,7 @@ def _mine_type_hierarchy_tasks(
                     ),
                     language=language,
                     category="type-hierarchy-consumers",
+                    task_type="org_scale_cross_repo",
                     org_scale=True,
                     issue_title=heading,
                     issue_body=question,
@@ -1155,9 +1213,11 @@ def _mine_change_scope_tasks(
                 language=language,
             )
 
-        task_id = hashlib.sha256(
-            f"change-scope-{symbol}-{commit_sha[:8]}".encode()
-        ).hexdigest()[:8]
+        task_id = _oracle_bound_task_id(
+            f"change-scope-{symbol}",
+            commit_sha,
+            enriched_files,
+        )
 
         heading = f"Blast radius of changing {symbol} in {repo_name}"
         question = (
@@ -1178,6 +1238,7 @@ def _mine_change_scope_tasks(
                     ),
                     language=language,
                     category="change-scope-audit",
+                    task_type="org_scale_cross_repo",
                     org_scale=True,
                     issue_title=heading,
                     issue_body=question,
@@ -1293,6 +1354,7 @@ def mine_org_scale_tasks(
     include_multi_hop: bool = True,
     include_mcp_families: bool = False,
     scan_timeout: int = 60,
+    llm_timeout_seconds: int = 60,
     sg_repo: str = "",
     sg_discovery: bool = False,
     consensus_config: ConsensusConfig | None = None,
@@ -1309,6 +1371,7 @@ def mine_org_scale_tasks(
         include_mcp_families: Also mine MCP-advantaged families
             (symbol-reference-trace, type-hierarchy-consumers, change-scope-audit).
         scan_timeout: Per-family scan timeout in seconds.
+        llm_timeout_seconds: Per-task LLM question-generation timeout.
         sg_repo: Sourcegraph repo identifier for ground truth enrichment.
             When set and a Sourcegraph token env var is present (any of
             ``SRC_ACCESS_TOKEN``, ``SOURCEGRAPH_TOKEN``,
@@ -1370,6 +1433,7 @@ def mine_org_scale_tasks(
             no_llm=no_llm,
             max_files=max_files,
             include_multi_hop=include_multi_hop,
+            llm_timeout_seconds=llm_timeout_seconds,
         )
 
         pattern_tasks = _stamp_sg_repo(pattern_tasks, sg_repo)
@@ -1420,33 +1484,12 @@ def _stamp_sg_repo(tasks: list[Task], sg_repo: str) -> list[Task]:
 
 def _stamp_multi_repo_commits(task: Task, commits: tuple[tuple[str, str], ...]) -> Task:
     """Return a new Task with ground_truth_commits set for multi-repo."""
-    return Task(
-        id=task.id,
-        repo=task.repo,
-        metadata=TaskMetadata(
-            name=task.metadata.name,
-            difficulty=task.metadata.difficulty,
-            description=task.metadata.description,
-            license=task.metadata.license,
-            language=task.metadata.language,
-            category=task.metadata.category,
-            org_scale=task.metadata.org_scale,
-            mcp_suite=task.metadata.mcp_suite,
-            tags=task.metadata.tags,
-            estimated_duration_sec=task.metadata.estimated_duration_sec,
-            resource_tier=task.metadata.resource_tier,
-            issue_title=task.metadata.issue_title,
-            issue_body=task.metadata.issue_body,
-            quality_score=task.metadata.quality_score,
-            enrichment_source=task.metadata.enrichment_source,
-            ground_truth_commit=task.metadata.ground_truth_commit,
+    return replace(
+        task,
+        metadata=replace(
+            task.metadata,
             ground_truth_commits=commits,
         ),
-        verification=task.verification,
-        instruction_path=task.instruction_path,
-        instruction_variant_path=task.instruction_variant_path,
-        time_limit_sec=task.time_limit_sec,
-        verification_modes=task.verification_modes,
     )
 
 

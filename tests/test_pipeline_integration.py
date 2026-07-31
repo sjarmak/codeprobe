@@ -115,6 +115,8 @@ class TestMultiRepoMining:
         repo_names = {name for name, _ in task.metadata.ground_truth_commits}
         assert "repo-a" in repo_names
         assert "repo-b" in repo_names
+        assert task.metadata.task_type == "org_scale_cross_repo"
+        assert task.metadata.enrichment_source == "deterministic"
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +137,11 @@ class TestCLIFlags:
         runner = CliRunner()
         result = runner.invoke(main, ["mine", "--help", "--advanced"])
         assert "--scan-timeout" in result.output
+
+    def test_help_shows_llm_timeout_flag(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["mine", "--help", "--advanced"])
+        assert "--llm-timeout" in result.output
 
     def test_help_shows_validate_flag(self) -> None:
         """AC10: --validate appears in advanced help."""

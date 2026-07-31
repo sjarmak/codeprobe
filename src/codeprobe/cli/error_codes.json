@@ -458,6 +458,14 @@
       "remediation_pattern": "Pass --mcp-config=<path-to-mcp.json> or an inline JSON object string."
     },
     {
+      "code": "UNUSABLE_MCP_CREDENTIAL",
+      "kind": "prescriptive",
+      "exit_code": 1,
+      "since": "0.14.0",
+      "description": "An MCP arm contains a credential that was redacted during experiment persistence or references an environment variable that is not exported into the codeprobe process.",
+      "remediation_pattern": "Use an environment-variable reference such as ${SOURCEGRAPH_TOKEN}, export that variable before running codeprobe, and retry. Never place the live token in experiment.json."
+    },
+    {
       "code": "MISSING_EXPERIMENT_NAME",
       "kind": "prescriptive",
       "exit_code": 2,

@@ -215,6 +215,7 @@ _ADVANCED_MINE_FLAGS = (
     "--family",
     "--repos",
     "--scan-timeout",
+    "--llm-timeout",
     "--validate",
     "--curate",
     "--backends",

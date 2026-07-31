@@ -69,6 +69,7 @@ def _stub_backends(
         defining_file: str,
         sg_repo: str,
         sg_url: str = "",
+        revision: str = "",
     ) -> BackendResult:
         if _has_no_evidence(symbol, "sourcegraph"):
             return BackendResult(

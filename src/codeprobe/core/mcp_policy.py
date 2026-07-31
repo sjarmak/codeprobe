@@ -26,6 +26,10 @@ Explicit ``allowed_tools`` on an :class:`ExperimentConfig` always wins:
 a user who pins the surface keeps their pin regardless of ``mcp_mode``.
 The same goes for explicit ``disallowed_tools``. Auto-restriction only
 runs when neither field is set on the experiment config.
+
+The Claude adapter additionally retains ``ToolSearch`` when MCP is configured.
+Claude uses it to load deferred MCP schemas; it does not grant repository read,
+search, or shell access, and blocking it removes the declared MCP surface.
 """
 
 from __future__ import annotations

@@ -428,6 +428,12 @@ class TestGenerateOrgScaleTask:
         assert task.verification.oracle_type == "file_list"
         assert len(task.verification.oracle_answer) == 3
         assert task.metadata.ground_truth_commit == "abc12345deadbeef"
+        assert task.metadata.task_type == "org_scale_cross_repo"
+        assert task.metadata.enrichment_source == "deterministic"
+        assert all(
+            f"`{pattern}`" in task.metadata.issue_body
+            for pattern in MIGRATION_INVENTORY.content_patterns
+        )
 
     def test_multi_hop_task(self, tmp_path: Path) -> None:
         scan = self._make_scan_result(tmp_path)
@@ -438,6 +444,20 @@ class TestGenerateOrgScaleTask:
         assert len(task.verification.oracle_answer) == 3
         # Multi-hop ground truth is the caller files, not the deprecated files
         assert "src/consumer.py" in task.verification.oracle_answer
+
+    def test_task_id_changes_when_oracle_changes(self, tmp_path: Path) -> None:
+        original = self._make_scan_result(tmp_path)
+        expanded = replace(
+            original,
+            matched_files=original.matched_files | {"src/newly-found.py"},
+        )
+
+        original_task = generate_org_scale_task(original, no_llm=True)
+        expanded_task = generate_org_scale_task(expanded, no_llm=True)
+
+        assert original_task is not None
+        assert expanded_task is not None
+        assert original_task.id != expanded_task.id
 
     @patch("codeprobe.core.llm.call_claude")
     def test_llm_generates_task(self, mock_call: object, tmp_path: Path) -> None:
@@ -465,7 +485,33 @@ class TestGenerateOrgScaleTask:
 
         # Falls back to deterministic — still produces a task
         assert task is not None
-        assert task.metadata.enrichment_source == ""
+        assert task.metadata.enrichment_source == "llm_fallback"
+
+    @patch("codeprobe.core.llm.call_claude")
+    def test_llm_timeout_is_configurable(
+        self, mock_call: object, tmp_path: Path
+    ) -> None:
+        from codeprobe.core.llm import LLMResponse
+
+        mock_call.return_value = LLMResponse(
+            text='{"heading":"h","question":"q","difficulty":"medium"}'
+        )
+        task = generate_org_scale_task(
+            self._make_scan_result(tmp_path),
+            no_llm=False,
+            llm_timeout_seconds=97,
+        )
+
+        assert task is not None
+        request = mock_call.call_args.args[0]
+        assert request.timeout_seconds == 97
+
+    def test_llm_timeout_must_be_positive(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="llm_timeout_seconds"):
+            generate_org_scale_task(
+                self._make_scan_result(tmp_path),
+                llm_timeout_seconds=0,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1310,7 +1356,9 @@ class TestSgDiscovery:
             "HandlerGamma": frozenset({"cmd/x.go", "cmd/y.go"}),
         }
 
-        def fake_refs(*, symbol, defining_file, repo_sg_name, sg_url):
+        def fake_refs(
+            *, symbol, defining_file, repo_sg_name, sg_url, revision
+        ):
             # Return enough refs to clear the 10-ref threshold for Alpha,
             # but keep Beta/Gamma below it so they're excluded.
             base = ref_map[symbol]
@@ -1377,7 +1425,9 @@ class TestSgDiscovery:
 
         seen_symbols: list[str] = []
 
-        def fake_refs(*, symbol, defining_file, repo_sg_name, sg_url):
+        def fake_refs(
+            *, symbol, defining_file, repo_sg_name, sg_url, revision
+        ):
             seen_symbols.append(symbol)
             return frozenset({f"ref/{i}.go" for i in range(15)})
 
@@ -1414,7 +1464,9 @@ class TestSgDiscovery:
         )
         tracked = frozenset(["pkg/a.go", "pkg/b.go"])
 
-        def fake_refs(*, symbol, defining_file, repo_sg_name, sg_url):
+        def fake_refs(
+            *, symbol, defining_file, repo_sg_name, sg_url, revision
+        ):
             if symbol == "HandlerAlpha":
                 return None  # API failure
             return frozenset({f"ref/{i}.go" for i in range(15)})
@@ -1528,3 +1580,39 @@ class TestExtractSymbolDefinitions:
             f"Expected handler.py but got {defs.get('process_payment')}; "
             "Python test files must not be picked as definition sites"
         )
+
+    def test_ambiguous_production_symbol_is_not_a_reference_target(
+        self, tmp_path: Path
+    ) -> None:
+        from codeprobe.mining.org_scale_scanner import (
+            _extract_symbol_definitions,
+        )
+
+        repo = self._make_repo(
+            tmp_path,
+            {
+                "pkg/first.go": (
+                    "package pkg\n"
+                    'func (f First) Description() string { return "" }\n'
+                ),
+                "pkg/second.go": (
+                    "package pkg\n"
+                    'func (s Second) Description() string { return "" }\n'
+                ),
+                "pkg/unique.go": (
+                    "package pkg\nfunc MustNoError() error { return nil }\n"
+                ),
+            },
+        )
+        tracked = frozenset(
+            {"pkg/first.go", "pkg/second.go", "pkg/unique.go"}
+        )
+
+        definitions = _extract_symbol_definitions(
+            [repo],
+            tracked,
+            language="go",
+        )
+
+        assert "Description" not in definitions
+        assert definitions["MustNoError"] == "pkg/unique.go"

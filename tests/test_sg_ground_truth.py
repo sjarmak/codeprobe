@@ -200,6 +200,7 @@ class TestAPICall:
                 defining_file="src/models.py",
                 grep_files=frozenset(),
                 repo_sg_name=repo,
+                revision="3eda9cff447",
             )
 
             call_args = mock_req.post.call_args
@@ -210,6 +211,7 @@ class TestAPICall:
             assert params["arguments"]["repo"] == repo
             assert params["arguments"]["path"] == "src/models.py"
             assert params["arguments"]["symbol"] == "MyClass"
+            assert params["arguments"]["revision"] == "3eda9cff447"
             # Tool defaults to 10 results server-side; mining needs the full
             # set to compare fairly against grep/ast ground truth.
             assert params["arguments"]["limit"] == 500

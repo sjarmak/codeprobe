@@ -159,6 +159,7 @@ def _patch_backends(
     ast_unavailable: bool = False,
     sg_unavailable: bool = False,
     sg_no_evidence: bool = False,
+    sg_stable_across_limits: bool = False,
 ) -> None:
     """Replace the three backend dispatchers with deterministic stubs."""
 
@@ -183,6 +184,7 @@ def _patch_backends(
         defining_file: str,
         sg_repo: str,
         sg_url: str = "",
+        revision: str = "",
     ) -> BackendResult:
         if sg_unavailable:
             return BackendResult(
@@ -197,7 +199,9 @@ def _patch_backends(
                 error="zero-result lookup supplied no evidence",
             )
         return BackendResult(
-            backend="sourcegraph", files=frozenset(sg or set())
+            backend="sourcegraph",
+            files=frozenset(sg or set()),
+            stable_across_limits=sg_stable_across_limits,
         )
 
     monkeypatch.setattr(consensus, "_run_grep_backend", _fake_grep)
@@ -397,6 +401,40 @@ class TestComputeConsensus:
         assert by_backend["sourcegraph"]["participating"] is True
         assert by_backend["sourcegraph"]["participation"] == "participating"
 
+    def test_stable_sourcegraph_strict_subset_is_excluded_as_unreliable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        local_files = {f"pkg/use_{index}.go" for index in range(100)}
+        sourcegraph_files = set(sorted(local_files)[:4])
+        _patch_backends(
+            monkeypatch,
+            grep=local_files,
+            ast=local_files,
+            sg=sourcegraph_files,
+            sg_stable_across_limits=True,
+        )
+
+        decision = compute_consensus(
+            symbol="MustNoError",
+            defining_file="lib/check/assertions.go",
+            repo_paths=self.repo_paths,
+            sg_repo="github.com/sourcegraph/sourcegraph",
+            threshold=0.8,
+        )
+
+        assert decision.shipped is True
+        assert set(decision.available_backends) == {"ast", "grep"}
+        sourcegraph = next(
+            result
+            for result in decision.backend_results
+            if result.backend == "sourcegraph"
+        )
+        assert sourcegraph.participation == "no_evidence"
+        assert sourcegraph.error is not None
+        assert "stable across limits" in sourcegraph.error
+        assert "strict subset" in sourcegraph.error
+
     def test_only_one_backend_available_quarantines(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -521,8 +559,16 @@ class TestComputeConsensus:
         sg_auth.AuthError = AuthError
         sg_auth.get_valid_token = lambda endpoint: token_calls.append(endpoint)
         sg_auth.resolve_org_scale_endpoint = lambda: "https://default.example"
+        requested_limits: list[int] = []
+        requested_revisions: list[str] = []
         sg_ground_truth = ModuleType("codeprobe.mining.sg_ground_truth")
-        sg_ground_truth._call_find_references = lambda **kwargs: ["pkg/use.go"]
+
+        def _find_references(**kwargs):
+            requested_limits.append(kwargs["limit"])
+            requested_revisions.append(kwargs["revision"])
+            return ["pkg/use.go"]
+
+        sg_ground_truth._call_find_references = _find_references
         monkeypatch.setitem(sys.modules, "codeprobe.mining.sg_auth", sg_auth)
         monkeypatch.setitem(
             sys.modules,
@@ -536,10 +582,51 @@ class TestComputeConsensus:
             defining_file="pkg/foo.go",
             sg_repo="github.com/x/y",
             sg_url="https://self-hosted.example",
+            revision="3eda9cff447",
         )
 
         assert result.available is True
+        assert result.stable_across_limits is True
+        assert sorted(requested_limits) == [100, 500]
+        assert requested_revisions == ["3eda9cff447", "3eda9cff447"]
         assert token_calls == ["https://self-hosted.example"]
+
+    def test_sourcegraph_probe_failure_preserves_full_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class AuthError(Exception):
+            pass
+
+        sg_auth = ModuleType("codeprobe.mining.sg_auth")
+        sg_auth.AuthError = AuthError
+        sg_auth.get_valid_token = lambda _endpoint: "token"
+        sg_auth.resolve_org_scale_endpoint = lambda: "https://default.example"
+        sg_ground_truth = ModuleType("codeprobe.mining.sg_ground_truth")
+
+        def _find_references(**kwargs):
+            if kwargs["limit"] == 100:
+                raise TimeoutError("probe timed out")
+            return ["pkg/use.go"]
+
+        sg_ground_truth._call_find_references = _find_references
+        monkeypatch.setitem(sys.modules, "codeprobe.mining.sg_auth", sg_auth)
+        monkeypatch.setitem(
+            sys.modules,
+            "codeprobe.mining.sg_ground_truth",
+            sg_ground_truth,
+        )
+
+        result = consensus._run_sourcegraph_backend(
+            "X",
+            self.repo_paths,
+            defining_file="pkg/foo.go",
+            sg_repo="github.com/x/y",
+        )
+
+        assert result.participating is True
+        assert result.files == frozenset({"pkg/use.go"})
+        assert result.stable_across_limits is False
+        assert result.error == "saturation probe failed: TimeoutError"
 
     def test_decision_is_immutable(
         self, monkeypatch: pytest.MonkeyPatch

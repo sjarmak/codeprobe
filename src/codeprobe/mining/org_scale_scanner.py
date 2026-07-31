@@ -808,6 +808,7 @@ def _extract_symbol_definitions(
     exclude_fragments = ("/test", "/vendor/") + extra_exclude_path_fragments
 
     symbol_defs: dict[str, str] = {}
+    ambiguous_symbols: set[str] = set()
     for rp in repo_paths:
         for file_path in tracked_files:
             if not any(file_path.endswith(e) for e in exts):
@@ -844,8 +845,13 @@ def _extract_symbol_definitions(
                     has_mixed_case = name != name.lower() and name != name.upper()
                     if not (has_underscore or has_mixed_case):
                         continue
-                    if name not in symbol_defs:
-                        symbol_defs[name] = file_path
+                    if name in ambiguous_symbols:
+                        continue
+                    if name in symbol_defs:
+                        symbol_defs.pop(name)
+                        ambiguous_symbols.add(name)
+                        continue
+                    symbol_defs[name] = file_path
 
     return symbol_defs
 
@@ -984,6 +990,7 @@ def discover_reference_targets_via_sg(
     from codeprobe.mining.sg_ground_truth import _call_find_references
 
     sg_url = sg_url or resolve_org_scale_endpoint()
+    revision = get_head_sha(repo_paths[0])
 
     symbol_defs = _extract_symbol_definitions(
         repo_paths,
@@ -1016,6 +1023,7 @@ def discover_reference_targets_via_sg(
             defining_file=def_file,
             repo_sg_name=repo_sg_name,
             sg_url=sg_url,
+            revision=revision,
         )
         if refs is None:
             return (-1, sym, def_file, frozenset())

@@ -263,9 +263,11 @@ Additional process-level variables are:
 
 Secrets passed into an agent container are emitted as valueless `-e` arguments
 using only the variable name, so secret values do not appear in the container
-argv. MCP configuration values may expand environment variables into a
-temporary JSON file. That file can contain secrets in cleartext until cleanup
-succeeds; `codeprobe purge` also sweeps stale `codeprobe-mcp-*.json` files.
+argv. MCP configuration values may expand exported environment variables into
+a temporary JSON file. Redacted values and references to variables absent from
+the `codeprobe` process environment are rejected before any agent starts. The
+temporary file can contain secrets in cleartext until cleanup succeeds;
+`codeprobe purge` also sweeps stale `codeprobe-mcp-*.json` files.
 
 Run the offline preflight directly:
 

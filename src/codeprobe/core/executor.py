@@ -1155,7 +1155,7 @@ def _save_task_artifacts(
     Creates runs/{config_label}/{task_id}/ with:
       - agent_output.txt  — raw agent stdout (for trace/debug)
       - agent_error.txt   — raw agent stderr (only if non-empty)
-      - mcp_init.json     — offered tool surface (only when captured)
+      - mcp_init.json     — declared and observed MCP tool surface
       - scoring.json      — scoring details
     """
     task_dir = runs_dir / task_id
@@ -1173,11 +1173,10 @@ def _save_task_artifacts(
             sanitize_secrets(task_result.agent_stderr), encoding="utf-8"
         )
 
-    # Offered tool surface (codeprobe-9p6) — zero-inference proof of which
-    # tools/MCP servers were available this trial. Written whenever the
-    # adapter captured a manifest, including the captured-but-empty and
-    # failed-attach cases, so an MCP-vs-local comparison can verify the
-    # surface per arm instead of inferring it.
+    # Declared and observed tool surface (codeprobe-9p6). The init snapshot
+    # records what was offered early; later tool calls reconcile HTTP servers
+    # that attach after init. Written whenever the adapter produced a manifest,
+    # including captured-but-empty and failed-attach cases.
     if completed.mcp_init is not None:
         (task_dir / "mcp_init.json").write_text(
             _json.dumps(completed.mcp_init, indent=2) + "\n", encoding="utf-8"

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import subprocess
 import sys
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -37,6 +40,11 @@ from codeprobe.config.defaults import (
     resolve_timeout,
     use_v07_defaults,
 )
+from codeprobe.config.mcp_runtime import (
+    MCPConfigCredentialError,
+    resolve_mcp_runtime_config,
+)
+from codeprobe.config.redact import redact_mcp_headers
 from codeprobe.core.capability_preflight import check_arm_capabilities
 from codeprobe.core.checkpoint import CheckpointStore
 from codeprobe.core.containment import (
@@ -68,7 +76,7 @@ from codeprobe.core.experiment import (
 from codeprobe.core.isolation import _discover_experiment_dirs
 from codeprobe.core.mcp_policy import resolve_tool_policy
 from codeprobe.core.registry import available, resolve
-from codeprobe.models.experiment import CompletedTask, ExperimentConfig
+from codeprobe.models.experiment import CompletedTask, Experiment, ExperimentConfig
 from codeprobe.models.suite import Suite
 from codeprobe.trace.content_policy import ContentPolicy
 from codeprobe.trace.recorder import (
@@ -78,6 +86,24 @@ from codeprobe.trace.recorder import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _trace_run_id(experiment: Experiment) -> str:
+    """Return a unique, config-bound identity for one run invocation."""
+    redacted_configs = []
+    for config in experiment.configs:
+        payload = asdict(config)
+        payload["mcp_config"] = redact_mcp_headers(config.mcp_config)
+        redacted_configs.append(payload)
+    config_payload = json.dumps(
+        redacted_configs,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    config_hash = hashlib.sha256(config_payload.encode()).hexdigest()[:12]
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    nonce = uuid.uuid4().hex[:8]
+    return f"{timestamp}-{config_hash}-{nonce}"
 
 
 def _should_use_rich() -> bool:
@@ -937,17 +963,6 @@ def run_eval(
         if not dry_run:
             assert_clean_checkout(repo_root, allow_dirty=allow_dirty)
 
-        try:
-            resolve(agent)
-        except KeyError as exc:
-            raise PrescriptiveError(
-                code="UNKNOWN_BACKEND",
-                message=f"Unknown agent backend: {exc}",
-                next_try_flag="--agent",
-                next_try_value="claude",
-                detail={"requested": agent},
-            ) from exc
-
         # Resolve every arm's agent backend and validate its model token up
         # front — before task discovery and before any agent is spawned. A
         # typo'd backend in ANY config must fail here with a prescriptive
@@ -963,6 +978,40 @@ def run_eval(
         preflight_configs = experiment.configs or [
             ExperimentConfig(label="default", agent=agent, model=model)
         ]
+        for cfg in preflight_configs:
+            try:
+                resolve_mcp_runtime_config(
+                    cfg.mcp_config,
+                    environ=os.environ,
+                )
+            except MCPConfigCredentialError as exc:
+                raise PrescriptiveError(
+                    code="UNUSABLE_MCP_CREDENTIAL",
+                    message=(
+                        f"Config {cfg.label!r} has an unusable MCP credential: "
+                        f"{exc}. Refusing to start any agent because this arm "
+                        "would silently run without its declared tools."
+                    ),
+                    terminal=True,
+                    next_try_flag="--mcp-config",
+                    next_try_value="<path using ${EXPORTED_VARIABLE}>",
+                    detail={
+                        "config_label": cfg.label,
+                        "issue": str(exc),
+                    },
+                ) from exc
+
+        try:
+            resolve(agent)
+        except KeyError as exc:
+            raise PrescriptiveError(
+                code="UNKNOWN_BACKEND",
+                message=f"Unknown agent backend: {exc}",
+                next_try_flag="--agent",
+                next_try_value="claude",
+                detail={"requested": agent},
+            ) from exc
+
         adapters_by_label: dict[str, AgentAdapter] = {}
         for cfg in preflight_configs:
             cfg_agent = cfg.agent or agent
@@ -1170,7 +1219,7 @@ def run_eval(
         trace_content_policy = ContentPolicy(deny_globs=tuple(trace_deny))
         trace_recorder = TraceRecorder(
             trace_db_path,
-            run_id=experiment.name,
+            run_id=_trace_run_id(experiment),
             overflow=overflow_policy,
             content_policy=trace_content_policy,
         )

@@ -34,6 +34,7 @@ def enrich_ground_truth(
     grep_files: frozenset[str],
     repo_sg_name: str,
     sg_url: str | None = None,
+    revision: str = "",
 ) -> tuple[frozenset[str], dict[str, str]]:
     """Call Sourcegraph find_references, return (all_files, tier_map).
 
@@ -66,6 +67,7 @@ def enrich_ground_truth(
         defining_file=defining_file,
         repo_sg_name=repo_sg_name,
         sg_url=sg_url,
+        revision=revision,
     )
 
     tier_map: dict[str, str] = {}
@@ -90,6 +92,8 @@ def _call_find_references(
     defining_file: str,
     repo_sg_name: str,
     sg_url: str,
+    limit: int = _SG_FIND_REFERENCES_LIMIT,
+    revision: str = "",
 ) -> frozenset[str] | None:
     """Call Sourcegraph ``find_references`` via Streamable HTTP MCP transport.
 
@@ -110,20 +114,23 @@ def _call_find_references(
         return None
 
     url = f"{sg_url.rstrip('/')}/.api/mcp/all"
+    arguments = {
+        "repo": repo_sg_name,
+        "path": defining_file,
+        "symbol": symbol,
+        # Tool default is 10, which truncates ground truth for
+        # widely-referenced symbols well below what grep/ast find.
+        "limit": limit,
+    }
+    if revision:
+        arguments["revision"] = revision
     payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
         "params": {
             "name": "find_references",
-            "arguments": {
-                "repo": repo_sg_name,
-                "path": defining_file,
-                "symbol": symbol,
-                # Tool default is 10, which truncates ground truth for
-                # widely-referenced symbols well below what grep/ast find.
-                "limit": _SG_FIND_REFERENCES_LIMIT,
-            },
+            "arguments": arguments,
         },
     }
 

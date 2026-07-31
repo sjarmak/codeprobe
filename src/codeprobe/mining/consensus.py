@@ -15,8 +15,10 @@ task should be flagged or dropped.
 ZFC compliance: pure mechanism. Each backend is a deterministic resolver
 (parser walk, find_references RPC, byte-match), and the consensus decision
 is a pairwise F1 calculation followed by an intersection or union — no
-semantic judgement, no hidden thresholds. ``threshold`` is exposed on the
-CLI so reviewers see the calibration knob explicitly.
+semantic judgement, no hidden thresholds. Sourcegraph saturation detection
+compares two explicit query limits and the same public consensus threshold.
+``threshold`` is exposed on the CLI so reviewers see the calibration knob
+explicitly.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 from pathlib import Path
 from typing import Literal
@@ -48,6 +50,8 @@ BackendParticipation = Literal[
 DEFAULT_BACKENDS: tuple[BackendName, ...] = ("sourcegraph", "ast", "grep")
 DEFAULT_THRESHOLD: float = 0.8
 DEFAULT_MODE: ConsensusMode = "intersection"
+_SOURCEGRAPH_FULL_LIMIT = 500
+_SOURCEGRAPH_PROBE_LIMIT = 100
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +79,7 @@ class BackendResult:
     available: bool = True
     error: str | None = None
     has_evidence: bool = True
+    stable_across_limits: bool = False
 
     @property
     def participating(self) -> bool:
@@ -135,6 +140,7 @@ def _run_sourcegraph_backend(
     defining_file: str,
     sg_repo: str,
     sg_url: str | None = None,
+    revision: str = "",
 ) -> BackendResult:
     """Sourcegraph ``find_references`` via the existing helper.
 
@@ -172,6 +178,8 @@ def _run_sourcegraph_backend(
             defining_file=defining_file,
             repo_sg_name=sg_repo,
             sg_url=sg_url,
+            limit=_SOURCEGRAPH_FULL_LIMIT,
+            revision=revision,
         )
     except Exception as exc:  # pragma: no cover - defensive
         return BackendResult(
@@ -193,7 +201,29 @@ def _run_sourcegraph_backend(
             has_evidence=False,
             error="find_references returned no files",
         )
-    return BackendResult(backend="sourcegraph", files=files)
+    try:
+        probe_files = _call_find_references(
+            symbol=symbol,
+            defining_file=defining_file,
+            repo_sg_name=sg_repo,
+            sg_url=sg_url,
+            limit=_SOURCEGRAPH_PROBE_LIMIT,
+            revision=revision,
+        )
+    except Exception as exc:  # defensive: the full query remains valid evidence
+        return BackendResult(
+            backend="sourcegraph",
+            files=files,
+            error=f"saturation probe failed: {type(exc).__name__}",
+        )
+    stable_across_limits = (
+        probe_files is not None and frozenset(probe_files) == files
+    )
+    return BackendResult(
+        backend="sourcegraph",
+        files=files,
+        stable_across_limits=stable_across_limits,
+    )
 
 
 def _run_backend(
@@ -204,6 +234,7 @@ def _run_backend(
     defining_file: str,
     sg_repo: str,
     sg_url: str,
+    revision: str,
 ) -> BackendResult:
     """Dispatch one backend by name."""
     if name == "grep":
@@ -219,6 +250,7 @@ def _run_backend(
             defining_file=defining_file,
             sg_repo=sg_repo,
             sg_url=sg_url,
+            revision=revision,
         )
     return BackendResult(
         backend=name, available=False, error=f"unknown backend {name!r}"
@@ -300,6 +332,7 @@ def _build_divergence_report(
                 "participation": br.participation,
                 "n_files": len(br.files),
                 "files": sorted(br.files),
+                "stable_across_limits": br.stable_across_limits,
                 "error": br.error,
                 "reason": br.error,
             }
@@ -338,6 +371,67 @@ def _pairwise_metrics(
     if not f1s:
         return pair_metrics, 0.0, 0.0
     return pair_metrics, min(f1s), max(f1s)
+
+
+def _sourcegraph_saturation_reason(
+    sourcegraph: BackendResult,
+    backend_results: tuple[BackendResult, ...],
+    threshold: float,
+) -> str | None:
+    supersets = sorted(
+        (
+            result
+            for result in backend_results
+            if result.backend != "sourcegraph"
+            and result.participating
+            and sourcegraph.files < result.files
+        ),
+        key=lambda result: (-len(result.files), result.backend),
+    )
+    for superset in supersets:
+        pair_f1 = float(
+            compute_pair_metrics(sourcegraph.files, superset.files)["f1"]
+        )
+        if pair_f1 < threshold:
+            return (
+                "result was stable across limits "
+                f"{_SOURCEGRAPH_PROBE_LIMIT} and {_SOURCEGRAPH_FULL_LIMIT} but "
+                f"is a strict subset of {superset.backend} "
+                f"({len(sourcegraph.files)} vs {len(superset.files)} files; "
+                f"pairwise F1 {pair_f1:.3f} is below threshold {threshold:.3f}); "
+                "suspected Sourcegraph index saturation or revision gap"
+            )
+    return None
+
+
+def _exclude_suspected_sourcegraph_saturation(
+    backend_results: tuple[BackendResult, ...],
+    threshold: float,
+) -> tuple[BackendResult, ...]:
+    """Keep mechanically suspicious Sourcegraph evidence out of the oracle."""
+    candidates = (
+        result
+        for result in backend_results
+        if result.backend == "sourcegraph"
+        and result.participating
+        and result.files
+        and result.stable_across_limits
+    )
+    sourcegraph = next(candidates, None)
+    if sourcegraph is None:
+        return backend_results
+    reason = _sourcegraph_saturation_reason(
+        sourcegraph,
+        backend_results,
+        threshold,
+    )
+    if reason is None:
+        return backend_results
+    excluded = replace(sourcegraph, has_evidence=False, error=reason)
+    return tuple(
+        excluded if result is sourcegraph else result
+        for result in backend_results
+    )
 
 
 def _combine_files(
@@ -380,6 +474,7 @@ def compute_consensus(
     mode: ConsensusMode = DEFAULT_MODE,
     sg_repo: str = "",
     sg_url: str | None = None,
+    revision: str = "",
     max_workers: int = 3,
 ) -> ConsensusDecision:
     """Run *backends* for *symbol* and decide whether to ship.
@@ -443,6 +538,7 @@ def compute_consensus(
                 defining_file=defining_file,
                 sg_repo=sg_repo,
                 sg_url=sg_url,
+                revision=revision,
             ): name
             for name in backends_attempted
         }
@@ -453,6 +549,10 @@ def compute_consensus(
     # Preserve the original backend order in the report.
     ordered_results = tuple(
         results[name] for name in backends_attempted if name in results
+    )
+    ordered_results = _exclude_suspected_sourcegraph_saturation(
+        ordered_results,
+        threshold,
     )
     participating = tuple(br for br in ordered_results if br.participating)
     participating_names = tuple(br.backend for br in participating)

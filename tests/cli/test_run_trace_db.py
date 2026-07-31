@@ -10,6 +10,7 @@ orphans and callers see an empty DB (the defect this bead fixes).
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import stat
 import subprocess
@@ -21,6 +22,8 @@ from click.testing import CliRunner
 from codeprobe.adapters.protocol import AgentConfig, AgentOutput
 from codeprobe.adapters.telemetry import JsonStdoutCollector
 from codeprobe.cli import main
+from codeprobe.cli.run_cmd import _trace_run_id
+from codeprobe.models.experiment import Experiment, ExperimentConfig
 
 # A valid Claude CLI ``--output-format stream-json --verbose`` transcript.
 # One assistant event with two ``tool_use`` blocks, followed by a
@@ -277,6 +280,58 @@ def test_run_emits_trace_db_with_events(
         assert "tool_use" in event_types, (
             f"expected tool_use rows; got event_types={event_types}"
         )
+        run_ids = {
+            row[0]
+            for row in conn.execute(
+                "SELECT DISTINCT run_id FROM events"
+            ).fetchall()
+        }
+        assert len(run_ids) == 1
+        run_id = next(iter(run_ids))
+        assert run_id != "trace-test"
+        assert re.fullmatch(
+            r"\d{8}T\d{6}\.\d{6}Z-[0-9a-f]{12}-[0-9a-f]{8}",
+            run_id,
+        )
+
+
+def test_trace_run_identity_is_unique_per_invocation() -> None:
+    experiment = Experiment(
+        name="default",
+        configs=[ExperimentConfig(label="baseline", model="claude-haiku-4-5")],
+    )
+
+    first = _trace_run_id(experiment)
+    second = _trace_run_id(experiment)
+
+    assert first != second
+    assert first.split("-")[1] == second.split("-")[1]
+
+
+def test_trace_config_hash_does_not_depend_on_mcp_secret() -> None:
+    def _experiment(token: str) -> Experiment:
+        return Experiment(
+            name="default",
+            configs=[
+                ExperimentConfig(
+                    label="mcp",
+                    mcp_config={
+                        "mcpServers": {
+                            "sourcegraph": {
+                                "type": "http",
+                                "url": "https://sourcegraph.example/.api/mcp/all",
+                                "headers": {"Authorization": f"token {token}"},
+                            }
+                        }
+                    },
+                )
+            ],
+        )
+
+    first = _trace_run_id(_experiment("secret-one"))
+    second = _trace_run_id(_experiment("secret-two"))
+
+    assert first.split("-")[1] == second.split("-")[1]
 
 
 def test_run_rejects_bogus_trace_overflow(

@@ -20,6 +20,7 @@ from codeprobe.adapters.protocol import (
     AgentConfig,
     AgentOutput,
 )
+from codeprobe.config.mcp_runtime import resolve_mcp_runtime_config
 from codeprobe.core import containment
 from codeprobe.sandbox.agent_container import containerize_argv
 from codeprobe.sandbox.runner import agent_image_reference
@@ -438,7 +439,11 @@ class BaseAdapter:
         """
         if not config.mcp_config:
             return None
-        expanded = json.loads(os.path.expandvars(json.dumps(config.mcp_config)))
+        expanded = resolve_mcp_runtime_config(
+            config.mcp_config,
+            environ=os.environ,
+        )
+        assert expanded is not None
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="codeprobe-mcp-", delete=False)
         json.dump(expanded, tmp)
         tmp.close()

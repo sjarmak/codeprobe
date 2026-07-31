@@ -389,6 +389,13 @@ def init(
     help="Per-family scan timeout in seconds (default: 60).",
 )
 @click.option(
+    "--llm-timeout",
+    default=60,
+    type=click.IntRange(min=1),
+    hidden=True,
+    help="Per-task org-scale question-generation timeout in seconds (default: 60).",
+)
+@click.option(
     "--validate",
     "validate_flag",
     is_flag=True,
@@ -594,6 +601,7 @@ def mine(
     family: tuple[str, ...],
     repos: tuple[str, ...],
     scan_timeout: int,
+    llm_timeout: int,
     validate_flag: bool,
     curate: bool,
     backends: tuple[str, ...],
@@ -861,6 +869,7 @@ def mine(
         no_llm = _prof_val("no_llm", no_llm)  # type: ignore[assignment]
         discover_subsystems = _prof_val("discover_subsystems", discover_subsystems)  # type: ignore[assignment]
         scan_timeout = _prof_val("scan_timeout", scan_timeout)  # type: ignore[assignment]
+        llm_timeout = _prof_val("llm_timeout", llm_timeout)  # type: ignore[assignment]
         validate_flag = _prof_val("validate_flag", validate_flag)  # type: ignore[assignment]
         curate = _prof_val("curate", curate)  # type: ignore[assignment]
         verify_curation_flag = _prof_val("verify_curation_flag", verify_curation_flag)  # type: ignore[assignment]
@@ -899,6 +908,7 @@ def mine(
         families=family,
         repos=repos,
         scan_timeout=scan_timeout,
+        llm_timeout=llm_timeout,
         validate_flag=validate_flag,
         curate=curate,
         backends=backends,
@@ -1374,7 +1384,12 @@ def _parse_tool_csv(raw: str | None) -> list[str] | None:
 @click.option("--model", default=None, help="Model ID (e.g., claude-sonnet-4-6).")
 @click.option("--permission-mode", default="default", help="Permission mode for agent.")
 @click.option(
-    "--mcp-config", default=None, help="MCP config as JSON string or file path."
+    "--mcp-config",
+    default=None,
+    help=(
+        "MCP config as JSON string or file path. Reference secrets as "
+        "${EXPORTED_VAR}; unexported and redacted values are rejected at run time."
+    ),
 )
 @click.option(
     "--instruction-variant",
@@ -1486,7 +1501,12 @@ def add_config(
 @click.option("--model", default=None, help="Model ID (e.g., claude-sonnet-4-6).")
 @click.option("--permission-mode", default=None, help="Permission mode for agent.")
 @click.option(
-    "--mcp-config", default=None, help="MCP config as JSON string or file path."
+    "--mcp-config",
+    default=None,
+    help=(
+        "MCP config as JSON string or file path. Reference secrets as "
+        "${EXPORTED_VAR}; unexported and redacted values are rejected at run time."
+    ),
 )
 @click.option(
     "--instruction-variant",

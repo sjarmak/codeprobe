@@ -116,13 +116,12 @@ class McpServerStatus:
 
 @dataclass(frozen=True)
 class McpInitManifest:
-    """The tool surface actually offered to the agent for one trial.
+    """The declared and observed MCP tool surface for one trial.
 
     Captured from the ``--output-format stream-json --verbose`` ``init`` /
-    ``system`` event the CLI emits before the first turn. This is the
-    zero-inference record of which tools and MCP servers were *available*
-    in an arm (codeprobe-9p6): a server that silently fails to attach is
-    distinguishable from an agent that simply chose not to call it.
+    ``system`` event plus later ``tool_use`` events. HTTP servers can attach
+    after the init snapshot, so an observed call is stronger availability
+    evidence than an empty early surface.
 
     ``captured`` is ``False`` when no init event was found in the stream
     (single-envelope ``--output-format json``, a quota stub, or a crashed
@@ -133,17 +132,24 @@ class McpInitManifest:
 
     captured: bool
     offered_tools: tuple[str, ...] = ()
+    observed_tools: tuple[str, ...] = ()
     mcp_servers: tuple[McpServerStatus, ...] = ()
 
     @property
     def mcp_tools(self) -> tuple[str, ...]:
-        """The ``mcp__<server>__<tool>`` subset of the offered tools."""
-        return tuple(t for t in self.offered_tools if t.startswith("mcp__"))
+        """Unique MCP tools either offered at init or observed in use."""
+        return tuple(
+            dict.fromkeys(
+                tool
+                for tool in (*self.offered_tools, *self.observed_tools)
+                if tool.startswith("mcp__")
+            )
+        )
 
     def _contributed_tools(self, server: str) -> bool:
-        """Whether *server* put at least one tool on the offered surface."""
+        """Whether *server* offered a tool or completed a tool call."""
         prefix = f"mcp__{server}__"
-        return any(t.startswith(prefix) for t in self.offered_tools)
+        return any(t.startswith(prefix) for t in self.mcp_tools)
 
     @property
     def failed_servers(self) -> tuple[McpServerStatus, ...]:
@@ -173,6 +179,7 @@ class McpInitManifest:
         return {
             "captured": self.captured,
             "offered_tools": list(self.offered_tools),
+            "observed_tools": list(self.observed_tools),
             "mcp_tools": list(self.mcp_tools),
             "mcp_servers": [
                 {"name": s.name, "status": s.status} for s in self.mcp_servers
@@ -223,11 +230,9 @@ class AgentOutput:
     num_turns: int | None = None
     result_subtype: str | None = None
     duration_api_ms: int | None = None
-    # The tool surface actually offered to the agent this trial, parsed
-    # from the stream-json init event (codeprobe-9p6). None when the
-    # adapter has no streaming transcript to parse; a captured-but-empty
-    # manifest is represented as McpInitManifest(captured=...) so a failed
-    # attach is never silently indistinguishable from a declined tool.
+    # MCP tools declared at init or observed later in the stream
+    # (codeprobe-9p6). None when the adapter has no streaming transcript
+    # to parse; a captured-but-empty manifest remains explicit.
     mcp_init: McpInitManifest | None = None
 
     def __post_init__(self) -> None:

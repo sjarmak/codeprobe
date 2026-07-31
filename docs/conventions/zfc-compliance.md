@@ -22,6 +22,7 @@ A heuristic in codeprobe doesn't just affect codeprobe — it shapes how users p
 | `assess/heuristics.py:score_repo_with_model()` | Delegates scoring to Claude via fixed `RUBRIC_V1`; model judges quality, code does IO |
 | `mining/extractor.py:generate_instruction()` | Delegates instruction.md generation to LLM; regex fallback only for `--no-llm` offline mode |
 | `mining/curator_tiers.py:verify_curation()` | Delegates the overall pass / warn / fail curation verdict to the model; application code only samples files, validates complete structured output, records explicit unavailable/error states, and enforces the admission gate |
+| `mining/consensus.py` | Computes set overlap and pairwise F1 mechanically. Sourcegraph saturation detection compares two explicit query limits, strict set inclusion, and the caller-visible consensus threshold; suspected incomplete evidence is retained in diagnostics and excluded from oracle construction |
 | `config/defaults.py` narrative-source resolver | Delegates selection to `core/llm.py` under fixed rubric `_NARRATIVE_RUBRIC_V1`; falls back to deterministic priority `pr > commits > rfcs > issues` only when no LLM backend is available or `offline=True`; emits an `LLM_UNAVAILABLE` envelope warning so callers see the degraded mode (PRD §13-T4 refactor) |
 
 ## Known violations (tracked for refactoring)
