@@ -23,6 +23,26 @@ from tests._doctor_helpers import (
 class TestDoctorCLI:
     """Integration tests for the CLI command."""
 
+    def test_old_go_toolchain_is_visible_in_pretty_output(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from codeprobe.mining import ast_resolver
+
+        _use_claude_agent_path(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            ast_resolver,
+            "go_toolchain_status",
+            lambda: (False, "Go 1.23.9 found; Go 1.24 or newer is required"),
+            raising=False,
+        )
+
+        result = CliRunner().invoke(main, ["doctor", "--no-json"])
+
+        assert result.exit_code == 0, result.output
+        assert "WARN  Go AST scanner" in result.output
+        assert "Go 1.24 or newer is required" in result.output
+        assert "Install Go 1.24 or newer" in result.output
+
     def test_selected_agent_ignores_absent_unselected_agents(
         self, monkeypatch: object, tmp_path: Path
     ) -> None:

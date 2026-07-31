@@ -20,7 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from codeprobe.mining.ast_resolver import AstResolver
+from codeprobe.mining.ast_resolver import (
+    AstResolver,
+    _safe_go_env,
+    go_toolchain_status,
+)
 from codeprobe.mining.multi_repo import FileRef, Symbol, SymbolResolver
 
 # ---------------------------------------------------------------------------
@@ -82,6 +86,149 @@ def test_go_versions_before_1_24_are_rejected(
 
     assert available is False
     assert "Go 1.24 or newer" in caplog.text
+
+
+def test_go_toolchain_status_does_not_echo_untrusted_version_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: "/secret/bin/go")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, "malformed\x1b[31m SECRET_VALUE\n", "/secret/error"
+        ),
+    )
+
+    supported, detail = go_toolchain_status()
+
+    assert supported is False
+    assert detail == "unable to determine Go version; Go 1.24 or newer is required"
+    assert "SECRET_VALUE" not in detail
+    assert "/secret" not in detail
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "garbage go1.99.0 SECRET_ENV=token",
+        "go1.24malformed",
+        "go1.25.8\x1b[31m",
+    ],
+)
+def test_go_toolchain_status_rejects_malformed_complete_output(
+    monkeypatch: pytest.MonkeyPatch, output: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/go")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, output, ""
+        ),
+    )
+
+    supported, _ = go_toolchain_status()
+
+    assert supported is False
+
+
+def test_go_toolchain_status_rejects_oversized_numeric_components(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/go")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, f"go{'9' * 5000}.24", ""
+        ),
+    )
+
+    supported, detail = go_toolchain_status()
+
+    assert supported is False
+    assert detail == "unrecognized Go version; Go 1.24 or newer is required"
+
+
+def test_go_toolchain_probe_does_not_inherit_unrelated_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_env: dict[str, str] = {}
+
+    def _capture(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured_env.update(kwargs["env"])  # type: ignore[arg-type]
+        return subprocess.CompletedProcess(args[0], 0, "go1.25.8", "")
+
+    monkeypatch.setenv("CODEPROBE_TEST_SENTINEL_SECRET", "do-not-forward")
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/go")
+    monkeypatch.setattr(subprocess, "run", _capture)
+
+    supported, _ = go_toolchain_status()
+
+    assert supported is True
+    assert captured_env.get("CODEPROBE_TEST_SENTINEL_SECRET") is None
+
+
+def test_go_scanner_env_does_not_inherit_unrelated_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODEPROBE_TEST_SENTINEL_SECRET", "do-not-forward")
+
+    env = _safe_go_env()
+
+    assert env.get("CODEPROBE_TEST_SENTINEL_SECRET") is None
+
+
+def test_missing_custom_go_binary_path_is_not_disclosed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+
+    supported, detail = go_toolchain_status("/private/operator/token/go")
+
+    assert supported is False
+    assert "/private" not in detail
+    assert detail == "Go executable not found; Go 1.24 or newer is required"
+
+
+@pytest.mark.parametrize(
+    ("output", "displayed"),
+    [
+        ("go1.24", "go1.24"),
+        ("go1.24.0", "go1.24.0"),
+        ("go1.24rc1", "go1.24rc1"),
+        ("go1.25.8", "go1.25.8"),
+        ("go1.24.0-privatefork", "go1.24.0"),
+        ("devel go1.26-abcdef", "go1.26 development"),
+        (
+            "devel go1.24-ffb3e574 Thu Aug 29 20:16:26 2024 +0000",
+            "go1.24 development",
+        ),
+        (
+            "go1.25-devel_ffb3e574 Thu Aug 29 20:16:26 2024 +0000",
+            "go1.25 development",
+        ),
+    ],
+)
+def test_go_toolchain_status_accepts_complete_supported_versions(
+    monkeypatch: pytest.MonkeyPatch, output: str, displayed: str
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/go")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, output, ""
+        ),
+    )
+
+    supported, detail = go_toolchain_status()
+
+    assert supported is True
+    assert detail == f"{displayed} (supported)"
+    assert "privatefork" not in detail
+    assert "ffb3e574" not in detail
 
 
 # ---------------------------------------------------------------------------

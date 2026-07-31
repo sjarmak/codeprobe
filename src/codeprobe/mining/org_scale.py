@@ -1026,7 +1026,7 @@ def _mine_symbol_reference_tasks(
                 "(%d files, %d backends agreed)",
                 symbol,
                 len(enriched_files),
-                len(consensus_config.backends),
+                len(oracle_backends_consensus),
             )
         else:
             logger.info(

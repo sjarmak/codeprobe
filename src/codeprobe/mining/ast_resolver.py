@@ -84,6 +84,107 @@ _MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 _GO_SCANNER_PATH = (
     Path(__file__).parent / "_go_ast_scanner" / "scanner.go"
 ).resolve()
+_GO_VERSION_NUMBER = r"[0-9]{1,3}"
+_GO_DEVEL_REVISION = r"[0-9a-f]{6,64}"
+_GO_DEVEL_TIMESTAMP = (
+    r"(?: [A-Z][a-z]{2} [A-Z][a-z]{2} "
+    r"(?:[12][0-9]|3[01]| [1-9]) [0-9]{2}:[0-9]{2}:[0-9]{2} "
+    r"[0-9]{4} [+-][0-9]{4})?"
+)
+_GO_VERSION_PATTERN = re.compile(
+    r"^(?:"
+    rf"go(?P<release_major>{_GO_VERSION_NUMBER})\."
+    rf"(?P<release_minor>{_GO_VERSION_NUMBER})"
+    r"(?:"
+    rf"(?:\.(?P<patch>{_GO_VERSION_NUMBER})"
+    r"(?:-[A-Za-z0-9][A-Za-z0-9.+_-]*)?)"
+    rf"|(?P<prerelease>(?:beta|rc){_GO_VERSION_NUMBER})"
+    r")?"
+    rf"|devel go(?P<devel_major>{_GO_VERSION_NUMBER})\."
+    rf"(?P<devel_minor>{_GO_VERSION_NUMBER})-{_GO_DEVEL_REVISION}"
+    rf"{_GO_DEVEL_TIMESTAMP}"
+    rf"|go(?P<current_devel_major>{_GO_VERSION_NUMBER})\."
+    rf"(?P<current_devel_minor>{_GO_VERSION_NUMBER})"
+    rf"-devel_{_GO_DEVEL_REVISION}{_GO_DEVEL_TIMESTAMP}"
+    r")$"
+)
+_GO_ENV_KEYS = (
+    "GOCACHE",
+    "GOPATH",
+    "GOROOT",
+    "GOTMPDIR",
+    "HOME",
+    "PATH",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "XDG_CACHE_HOME",
+)
+
+
+def go_toolchain_status(go_binary: str = "go") -> tuple[bool, str]:
+    """Return whether *go_binary* can run the contained Go AST scanner."""
+    path = shutil.which(go_binary)
+    if path is None:
+        return False, "Go executable not found; Go 1.24 or newer is required"
+    try:
+        result = subprocess.run(
+            [path, "env", "GOVERSION"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            env=_safe_go_env(),
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return False, (
+            "unable to determine Go version; Go 1.24 or newer is required"
+        )
+
+    if result.returncode != 0:
+        return False, (
+            "unable to determine Go version; Go 1.24 or newer is required"
+        )
+    reported = result.stdout.strip()
+    version = _GO_VERSION_PATTERN.fullmatch(reported)
+    if version is None:
+        return False, (
+            "unrecognized Go version; Go 1.24 or newer is required"
+        )
+    release_major = version.group("release_major")
+    release_minor = version.group("release_minor")
+    major = (
+        release_major
+        or version.group("devel_major")
+        or version.group("current_devel_major")
+    )
+    minor = (
+        release_minor
+        or version.group("devel_minor")
+        or version.group("current_devel_minor")
+    )
+    if major is None or minor is None:  # pragma: no cover - regex invariant
+        return False, (
+            "unrecognized Go version; Go 1.24 or newer is required"
+        )
+    supported = (
+        int(major),
+        int(minor),
+    ) >= (1, 24)
+    if release_major is not None and release_minor is not None:
+        displayed = f"go{release_major}.{release_minor}"
+        patch = version.group("patch")
+        prerelease = version.group("prerelease")
+        if patch is not None:
+            displayed += f".{patch}"
+        elif prerelease is not None:
+            displayed += prerelease
+    else:
+        displayed = f"go{major}.{minor} development"
+    if not supported:
+        return False, f"{displayed} found; Go 1.24 or newer is required"
+    return True, f"{displayed} (supported)"
 
 
 @dataclass(frozen=True)
@@ -368,44 +469,11 @@ class AstResolver:
     def _check_go_binary(self) -> bool:
         if self._go_available is not None:
             return self._go_available
-        path = shutil.which(self._go_binary)
-        if path is None:
-            logger.info(
-                "AstResolver: %r not on PATH; Go files will be skipped",
-                self._go_binary,
-            )
-            self._go_available = False
-            return False
-        try:
-            result = subprocess.run(
-                [path, "env", "GOVERSION"],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-                env=_safe_go_env(),
-            )
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
-            logger.warning(
-                "AstResolver: unable to determine Go version (%s); "
-                "Go files will be skipped",
-                exc,
-            )
-            self._go_available = False
-            return False
-
-        version = re.search(r"\bgo(\d+)\.(\d+)", result.stdout)
-        supported = (
-            result.returncode == 0
-            and version is not None
-            and (int(version.group(1)), int(version.group(2))) >= (1, 24)
-        )
+        supported, detail = go_toolchain_status(self._go_binary)
         if not supported:
-            reported = result.stdout.strip() or result.stderr.strip() or "unknown"
             logger.warning(
-                "AstResolver: Go 1.24 or newer is required for secure "
-                "repository scanning (found %s); Go files will be skipped",
-                reported,
+                "AstResolver: %s; Go files will be skipped",
+                detail,
             )
         self._go_available = supported
         return self._go_available
@@ -615,9 +683,18 @@ def _safe_go_env() -> dict[str, str]:
     works inside repos that have their own ``go.mod`` constraints (it
     has no external dependencies and is a single .go file).
     """
-    env = dict(os.environ)
-    env["GO111MODULE"] = "off"
-    # Use a stable, sandboxed cache so we don't fight a user's pinned
-    # GOCACHE/GOMODCACHE. Falls back to the default when unset.
-    env.setdefault("GOFLAGS", "")
+    env = {
+        key: os.environ[key]
+        for key in _GO_ENV_KEYS
+        if os.environ.get(key)
+    }
+    env.update(
+        {
+            "CGO_ENABLED": "0",
+            "GO111MODULE": "off",
+            "GOENV": "off",
+            "GOFLAGS": "",
+            "GOTOOLCHAIN": "local",
+        }
+    )
     return env

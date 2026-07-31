@@ -106,6 +106,25 @@ class TestDoctorChecks:
         r = next(r for r in results if r.name == "Python version")
         assert not r.passed
 
+    def test_go_ast_toolchain_too_old_is_named_and_advisory(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from codeprobe.mining import ast_resolver
+
+        monkeypatch.setattr(
+            ast_resolver,
+            "go_toolchain_status",
+            lambda: (False, "Go 1.23.9 found; Go 1.24 or newer is required"),
+            raising=False,
+        )
+
+        result = next(r for r in run_checks() if r.name == "Go AST scanner")
+
+        assert result.passed is False
+        assert result.warn_only is True
+        assert result.detail == "Go 1.23.9 found; Go 1.24 or newer is required"
+        assert result.fix == "Install Go 1.24 or newer to mine Go AST evidence."
+
     def test_git_repo_check(self, monkeypatch: object) -> None:
         """Running in codeprobe repo, should pass."""
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")

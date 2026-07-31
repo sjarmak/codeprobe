@@ -81,6 +81,21 @@ def _check_python_version() -> CheckResult:
     )
 
 
+def _check_go_ast_toolchain() -> CheckResult:
+    from codeprobe.mining.ast_resolver import go_toolchain_status
+
+    passed, detail = go_toolchain_status()
+    return CheckResult(
+        name="Go AST scanner",
+        passed=passed,
+        detail=detail,
+        fix=(
+            "" if passed else "Install Go 1.24 or newer to mine Go AST evidence."
+        ),
+        warn_only=not passed,
+    )
+
+
 def _check_install_provenance() -> CheckResult:
     """Flag a codeprobe that is bound to a foreign source tree (codeprobe-v3wn).
 
@@ -334,6 +349,7 @@ def run_checks(
         _check_github_access(),
         _check_git_repo(repo),
         _check_python_version(),
+        _check_go_ast_toolchain(),
         _check_install_provenance(),
         _check_container_images(required=selected_agent is not None),
         _check_proxy_variables(),

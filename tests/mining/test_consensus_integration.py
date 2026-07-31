@@ -204,7 +204,9 @@ def test_consensus_default_mode_is_intersection(
 
 
 def test_sourcegraph_no_evidence_does_not_quarantine_local_consensus(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     monkeypatch.setattr(
         org_scale,
@@ -230,14 +232,15 @@ def test_sourcegraph_no_evidence_does_not_quarantine_local_consensus(
         mode="intersection",
     )
     quarantined: list[QuarantinedCandidate] = []
-    tasks = _mine_symbol_reference_tasks(
-        repo_paths=[tmp_path],
-        tracked_files=frozenset(),
-        language="go",
-        commit_sha="abc" * 13,
-        consensus_config=config,
-        quarantined_out=quarantined,
-    )
+    with caplog.at_level("INFO", logger=org_scale.logger.name):
+        tasks = _mine_symbol_reference_tasks(
+            repo_paths=[tmp_path],
+            tracked_files=frozenset(),
+            language="go",
+            commit_sha="abc" * 13,
+            consensus_config=config,
+            quarantined_out=quarantined,
+        )
 
     assert len(tasks) == 1
     assert quarantined == []
@@ -246,6 +249,8 @@ def test_sourcegraph_no_evidence_does_not_quarantine_local_consensus(
         "ast",
         "grep",
     }
+    assert "Sym shipped via consensus (1 files, 2 backends agreed)" in caplog.text
+    assert "3 backends agreed" not in caplog.text
 
 
 def test_consensus_union_mode_routes_singleton_backend_files_through_curator(
