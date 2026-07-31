@@ -1279,7 +1279,9 @@ def experiment_aggregate(
 
     bias_warnings, _ = detect_bias_warnings(experiment, exp_dir, config_results)
     suppress_winner = any(
-        w.kind == "no_independent_baseline" for w in bias_warnings
+        w.kind in {"backend_overlap", "no_independent_baseline"}
+        and w.severity == "warning"
+        for w in bias_warnings
     ) and not no_warn
 
     # Per-trial quality view derived from the typed CompletedTask records

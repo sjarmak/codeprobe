@@ -806,7 +806,10 @@ def _consensus_ground_truth(
     bias-warning code reads it to detect oracle/tool tautology
     (codeprobe-zat9).
     """
-    from codeprobe.mining.consensus import compute_consensus
+    from codeprobe.mining.consensus import (
+        compute_consensus,
+        sourcegraph_coverage_precondition,
+    )
     from codeprobe.mining.oracle_curator import curate_consensus_decision
 
     decision = compute_consensus(
@@ -819,6 +822,26 @@ def _consensus_ground_truth(
         sg_repo=sg_repo,
         revision=get_head_sha(repo_paths[0]),
     )
+
+    coverage_precondition = (
+        sourcegraph_coverage_precondition(
+            decision,
+            minimum=consensus_config.threshold,
+        )
+        if sg_repo
+        else None
+    )
+    if coverage_precondition is not None and not coverage_precondition["passed"]:
+        divergence_report = dict(decision.divergence_report)
+        divergence_report["decision"] = "quarantined"
+        divergence_report["coverage_precondition"] = coverage_precondition
+        return (
+            decision.consensus_files,
+            (),
+            False,
+            divergence_report,
+            (),
+        )
 
     if not decision.shipped:
         # Gate failed — return empty curated payload; the caller

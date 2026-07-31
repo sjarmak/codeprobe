@@ -288,6 +288,77 @@ class ConsensusDecision:
     divergence_report: dict = field(default_factory=dict)
 
 
+def _sourcegraph_coverage_reason(
+    *,
+    matched_files: int,
+    reference_files: int,
+    coverage: float,
+    minimum: float,
+    participating: bool,
+) -> str:
+    if not participating:
+        return (
+            "sourcegraph did not provide usable evidence; enumeration would measure "
+            "backend availability rather than agent capability"
+        )
+    if not reference_files:
+        return (
+            "local consensus contains no files, so sourcegraph enumeration coverage "
+            "cannot be established"
+        )
+    if coverage >= minimum:
+        return "sourcegraph coverage meets the enumeration precondition"
+    return (
+        f"sourcegraph covered {matched_files}/{reference_files} reference "
+        f"files ({coverage:.3f}), below the required {minimum:.3f}; "
+        "enumeration would measure index coverage rather than agent capability"
+    )
+
+
+def sourcegraph_coverage_precondition(
+    decision: ConsensusDecision,
+    *,
+    minimum: float,
+) -> dict[str, object] | None:
+    """Measure Sourcegraph enumeration coverage against the local consensus."""
+    if "sourcegraph" not in decision.backends_attempted:
+        return None
+    sourcegraph = next(
+        (r for r in decision.backend_results if r.backend == "sourcegraph"),
+        None,
+    )
+    references = tuple(
+        r
+        for r in decision.backend_results
+        if r.backend != "sourcegraph" and r.participating
+    )
+    if sourcegraph is None or not references:
+        return None
+
+    local_consensus = _combine_files(references, decision.mode)
+    matched_files = len(sourcegraph.files & local_consensus)
+    reference_files = len(local_consensus)
+    coverage = matched_files / reference_files if reference_files else 0.0
+    passed = sourcegraph.participating and bool(reference_files) and coverage >= minimum
+    return {
+        "backend": "sourcegraph",
+        "reference_backend": "+".join(sorted(r.backend for r in references)),
+        "backend_files": len(sourcegraph.files),
+        "reference_files": reference_files,
+        "matched_files": matched_files,
+        "coverage": round(coverage, 3),
+        "minimum": minimum,
+        "passed": passed,
+        "reason": _sourcegraph_coverage_reason(
+            matched_files=matched_files,
+            reference_files=reference_files,
+            coverage=coverage,
+            minimum=minimum,
+            participating=sourcegraph.participating,
+        ),
+    }
+
+
 def _build_divergence_report(
     *,
     symbol: str,

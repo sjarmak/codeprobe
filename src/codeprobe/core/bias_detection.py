@@ -6,9 +6,9 @@ become tautological: the with-MCP config recovers the GT because it
 called the grading rubric, not because the tool added value.
 
 These are *honest signal* warnings, not score adjustments. Detection is
-purely structural — backend identity from task metadata vs. configured
-MCP servers — so it stays inside the ZFC envelope (mechanical comparison,
-no semantic judgment).
+purely structural — backend identity from task metadata vs. the resolved
+agent tool surface — so it stays inside the ZFC envelope (mechanical
+comparison, no semantic judgment).
 
 Warning kinds emitted:
 
@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from codeprobe.core.mcp_policy import MCPToolPolicy, resolve_tool_policy
 from codeprobe.models.experiment import Experiment, ExperimentConfig
 
 # MCP server name fragments that signal a Sourcegraph-style index backend.
@@ -71,11 +72,9 @@ class BiasWarning:
     human-readable text printed before the score table. ``detail`` is an
     optional dict with structured fields useful for downstream tooling
     (e.g. CI gates that key off the JSON). ``severity`` distinguishes
-    real measurement risks (``"warning"``) from honest signals that no
-    longer apply because the multi-backend curator independently
-    corroborated the GT (``"informational"``). The default is
-    ``"warning"`` so existing detectors that don't compute severity stay
-    in the warnings stream.
+    real measurement risks (``"warning"``) from informational signals.
+    The default is ``"warning"`` so existing detectors that don't compute
+    severity stay in the warnings stream.
     """
 
     kind: str
@@ -92,18 +91,59 @@ class BiasWarning:
         }
 
 
-def config_backends(config: ExperimentConfig) -> frozenset[str]:
-    """Return the set of MCP server names available to *config*.
+def _fully_blocks_tool(rules: list[str] | None, tool: str) -> bool:
+    target = tool.casefold()
+    for rule in rules or ():
+        normalized = rule.strip().casefold()
+        if normalized == target or normalized == f"{target}(*)":
+            return True
+    return False
 
-    Names are lower-cased and normalised so callers can match against
-    ``_SG_BACKEND_NAMES`` without worrying about user-chosen labels.
+
+def _allows_tool(policy: MCPToolPolicy, tool: str) -> bool:
+    """Whether the resolved policy can invoke *tool* for oracle re-derivation."""
+    if _fully_blocks_tool(policy.disallowed_tools, tool):
+        return False
+    if policy.allowed_tools is None:
+        return True
+
+    target = tool.casefold()
+    for rule in policy.allowed_tools:
+        normalized = rule.strip().casefold()
+        if normalized in {target, f"{target}(*)"}:
+            return True
+        if not normalized.startswith(f"{target}("):
+            continue
+        if target == "grep":
+            return True
+        payload = normalized.removeprefix(f"{target}(").removesuffix(")")
+        command_parts = payload.split(":", 1)[0].split(maxsplit=1)
+        if not command_parts:
+            continue
+        command = command_parts[0]
+        if command.rsplit("/", 1)[-1] in {"grep", "rg"}:
+            return True
+    return False
+
+
+def config_backends(config: ExperimentConfig) -> frozenset[str]:
+    """Return oracle-generating backends reachable by *config*.
+
+    MCP server names are lower-cased. ``grep`` is also included when the
+    resolved built-in tool policy exposes either Grep or a shell capable of
+    invoking grep/ripgrep. This catches local-oracle circularity, not just
+    MCP-to-oracle overlap.
     """
-    if not config.mcp_config:
-        return frozenset()
-    servers = config.mcp_config.get("mcpServers")
-    if not isinstance(servers, dict):
-        return frozenset()
-    return frozenset(str(name).lower() for name in servers.keys())
+    found: set[str] = set()
+    if config.mcp_config:
+        servers = config.mcp_config.get("mcpServers")
+        if isinstance(servers, dict):
+            found.update(str(name).lower() for name in servers)
+
+    policy = resolve_tool_policy(config)
+    if _allows_tool(policy, "Grep") or _allows_tool(policy, "Bash"):
+        found.add("grep")
+    return frozenset(found)
 
 
 def config_has_sg_backend(config: ExperimentConfig) -> bool:
@@ -123,7 +163,8 @@ def detect_task_gt_backends(task_dir: Path) -> frozenset[str]:
     ``"grep"``). Empty when the task carries no provenance signal — the
     safer fallback than guessing.
 
-    Signals consulted (first match wins, then unioned):
+    Explicit artifact fields are unioned. Metadata-only inference is used
+    only when neither ground-truth artifact carries provenance:
 
     1. ``ground_truth.json`` ``oracle_backends_consensus`` — canonical
        semantic field emitted by the multi-backend oracle curator
@@ -195,7 +236,7 @@ def detect_task_gt_backends(task_dir: Path) -> frozenset[str]:
                     found.add(label)
 
     meta_path = task_dir / "metadata.json"
-    if meta_path.is_file():
+    if not found and meta_path.is_file():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -238,13 +279,9 @@ def detect_backend_overlap(
 ) -> list[BiasWarning]:
     """Flag configs whose tool surface includes a GT-producing backend.
 
-    Severity gate (codeprobe-9re9): when at least one GT-producing
-    backend in the affected tasks is *not* reachable by the config, the
-    multi-backend curator has independent corroboration of the answer
-    key. The agent's MCP surface still overlaps a GT backend, but the
-    overlap is no longer load-bearing — flagging is honest signal, not
-    a tautology risk. Severity is downgraded to ``"informational"`` so
-    aggregate viewers can highlight only real measurement bias.
+    Independent corroboration can validate an answer key, but it cannot make
+    an arm independent when that arm can invoke one of the mechanisms that
+    generated the key. Any direct overlap therefore remains actionable.
     """
     warnings: list[BiasWarning] = []
     all_gt_backends: set[str] = set()
@@ -277,15 +314,16 @@ def detect_backend_overlap(
             for b in consensus_for_affected
             if not _backend_matches(cfg_backends, b)
         )
-        severity = "informational" if independent_backends else "warning"
         backend_label = ", ".join(overlap)
-        if severity == "informational":
+        if independent_backends:
             independent_label = ", ".join(independent_backends)
             message = (
-                f"{cfg.label!r} has access to {backend_label}, which "
-                f"contributed to the ground truth — but the curator "
-                f"independently corroborated GT via {independent_label}, so "
-                f"this is informational rather than a tautology risk."
+                f"{cfg.label!r} score may be inflated by oracle-tool overlap — "
+                f"the ground truth was built with {backend_label}, which is "
+                "also reachable from the agent's tool surface. The key was "
+                f"corroborated via {independent_label}, but that does not make "
+                "direct access to an oracle-generating mechanism an independent "
+                "measurement."
             )
         else:
             message = (
@@ -296,7 +334,7 @@ def detect_backend_overlap(
         warnings.append(
             BiasWarning(
                 kind="backend_overlap",
-                severity=severity,
+                severity="warning",
                 message=message,
                 detail={
                     "config": cfg.label,

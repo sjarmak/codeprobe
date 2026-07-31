@@ -74,6 +74,7 @@ def _stub_backends(
         if _has_no_evidence(symbol, "sourcegraph"):
             return BackendResult(
                 backend="sourcegraph",
+                files=frozenset(_lookup(symbol, "sourcegraph")),
                 has_evidence=False,
                 error="zero-result lookup supplied no evidence",
             )
@@ -251,6 +252,196 @@ def test_sourcegraph_no_evidence_does_not_quarantine_local_consensus(
     }
     assert "Sym shipped via consensus (1 files, 2 backends agreed)" in caplog.text
     assert "3 backends agreed" not in caplog.text
+
+
+def test_sourcegraph_coverage_failure_quarantines_before_agent_spend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local_files = {f"pkg/use_{index:03d}.go" for index in range(100)}
+    sourcegraph_files = set(sorted(local_files)[:4])
+    monkeypatch.setattr(
+        org_scale,
+        "discover_reference_targets",
+        lambda repo_paths, tracked_files, language: [
+            ("MustNoError", "lib/check/assertions.go", frozenset(local_files)),
+        ],
+    )
+    _stub_backends(
+        monkeypatch,
+        by_symbol={
+            "MustNoError": {
+                "grep": local_files,
+                "ast": local_files,
+                "sourcegraph": sourcegraph_files,
+            },
+        },
+    )
+    config = ConsensusConfig(
+        backends=("grep", "ast", "sourcegraph"),
+        threshold=0.8,
+        mode="intersection",
+    )
+    quarantined: list[QuarantinedCandidate] = []
+
+    tasks = _mine_symbol_reference_tasks(
+        repo_paths=[tmp_path],
+        tracked_files=frozenset(),
+        language="go",
+        commit_sha="abc" * 13,
+        sg_repo="github.com/sourcegraph/sourcegraph",
+        consensus_config=config,
+        quarantined_out=quarantined,
+    )
+
+    assert tasks == []
+    assert len(quarantined) == 1
+    report = quarantined[0].divergence_report
+    assert report["decision"] == "quarantined"
+    assert report["coverage_precondition"] == {
+        "backend": "sourcegraph",
+        "reference_backend": "ast+grep",
+        "backend_files": 4,
+        "reference_files": 100,
+        "matched_files": 4,
+        "coverage": 0.04,
+        "minimum": 0.8,
+        "passed": False,
+        "reason": (
+            "sourcegraph covered 4/100 reference files (0.040), below "
+            "the required 0.800; enumeration would measure index coverage "
+            "rather than agent capability"
+        ),
+    }
+
+
+def test_sourcegraph_nonparticipation_is_not_misreported_as_low_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        org_scale,
+        "discover_reference_targets",
+        lambda repo_paths, tracked_files, language: [
+            ("Sym", "pkg/foo.go", frozenset({"a.go"})),
+        ],
+    )
+    _stub_backends(
+        monkeypatch,
+        by_symbol={
+            "Sym": {
+                "grep": {"a.go"},
+                "ast": {"a.go"},
+                "sourcegraph": set(),
+            },
+        },
+        no_evidence_by_symbol={"Sym": {"sourcegraph"}},
+    )
+    quarantined: list[QuarantinedCandidate] = []
+
+    tasks = _mine_symbol_reference_tasks(
+        repo_paths=[tmp_path],
+        tracked_files=frozenset(),
+        language="go",
+        commit_sha="abc" * 13,
+        sg_repo="github.com/sourcegraph/sourcegraph",
+        consensus_config=ConsensusConfig(
+            backends=("grep", "ast", "sourcegraph"),
+            threshold=0.8,
+            mode="intersection",
+        ),
+        quarantined_out=quarantined,
+    )
+
+    assert tasks == []
+    precondition = quarantined[0].divergence_report["coverage_precondition"]
+    assert precondition["coverage"] == 0.0
+    assert "did not provide usable evidence" in precondition["reason"]
+    assert "below the required" not in precondition["reason"]
+
+
+def test_empty_local_consensus_cannot_establish_sourcegraph_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        org_scale,
+        "discover_reference_targets",
+        lambda repo_paths, tracked_files, language: [
+            ("Sym", "pkg/foo.go", frozenset({"a.go"})),
+        ],
+    )
+    _stub_backends(
+        monkeypatch,
+        by_symbol={
+            "Sym": {
+                "grep": {"a.go"},
+                "ast": {"b.go"},
+                "sourcegraph": {"a.go"},
+            },
+        },
+    )
+    quarantined: list[QuarantinedCandidate] = []
+
+    tasks = _mine_symbol_reference_tasks(
+        repo_paths=[tmp_path],
+        tracked_files=frozenset(),
+        language="go",
+        commit_sha="abc" * 13,
+        sg_repo="github.com/sourcegraph/sourcegraph",
+        consensus_config=ConsensusConfig(
+            backends=("grep", "ast", "sourcegraph"),
+            threshold=0.8,
+            mode="intersection",
+        ),
+        quarantined_out=quarantined,
+    )
+
+    assert tasks == []
+    precondition = quarantined[0].divergence_report["coverage_precondition"]
+    assert precondition["reference_files"] == 0
+    assert precondition["passed"] is False
+    assert "local consensus contains no files" in precondition["reason"]
+
+
+def test_sourcegraph_coverage_uses_local_consensus_not_largest_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        org_scale,
+        "discover_reference_targets",
+        lambda repo_paths, tracked_files, language: [
+            ("Sym", "pkg/foo.go", frozenset({"a.go", "b.go"})),
+        ],
+    )
+    _stub_backends(
+        monkeypatch,
+        by_symbol={
+            "Sym": {
+                "grep": {"a.go", "b.go", "grep-noise-1.go", "grep-noise-2.go"},
+                "ast": {"a.go", "b.go"},
+                "sourcegraph": {"a.go", "b.go"},
+            },
+        },
+    )
+
+    tasks = _mine_symbol_reference_tasks(
+        repo_paths=[tmp_path],
+        tracked_files=frozenset(),
+        language="go",
+        commit_sha="abc" * 13,
+        sg_repo="github.com/sourcegraph/sourcegraph",
+        consensus_config=ConsensusConfig(
+            backends=("grep", "ast", "sourcegraph"),
+            threshold=0.8,
+            mode="intersection",
+        ),
+        quarantined_out=[],
+    )
+
+    assert len(tasks) == 1
+    assert set(tasks[0].verification.oracle_answer) == {"a.go", "b.go"}
 
 
 def test_consensus_union_mode_routes_singleton_backend_files_through_curator(

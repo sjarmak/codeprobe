@@ -134,6 +134,21 @@ def test_gt_backend_from_sg_repo_and_mcp_category(tmp_path: Path) -> None:
     assert backends == frozenset({"sourcegraph"})
 
 
+def test_explicit_oracle_provenance_wins_over_sg_metadata_fallback(
+    tmp_path: Path,
+) -> None:
+    task_dir = _write_task(
+        tmp_path / "tasks",
+        "t1",
+        metadata_extras={
+            "sg_repo": "github.com/sourcegraph/sourcegraph",
+            "category": "symbol-reference-trace",
+        },
+        gt_extras={"oracle_backends_consensus": ["ast", "grep"]},
+    )
+    assert detect_task_gt_backends(task_dir) == frozenset({"ast", "grep"})
+
+
 def test_gt_backend_empty_for_plain_sdlc(tmp_path: Path) -> None:
     tasks_dir = tmp_path / "tasks"
     task_dir = _write_task(tasks_dir, "t1")
@@ -236,6 +251,20 @@ def test_config_backends_extracts_lowercased_keys() -> None:
 
 def test_config_backends_empty_when_no_mcp() -> None:
     cfg = ExperimentConfig(label="baseline")
+    assert config_backends(cfg) == frozenset({"grep"})
+
+
+def test_config_backends_omits_grep_when_shell_search_is_blocked() -> None:
+    cfg = ExperimentConfig(
+        label="restricted",
+        allowed_tools=["Read", "Write"],
+        disallowed_tools=["Bash", "Grep"],
+    )
+    assert config_backends(cfg) == frozenset()
+
+
+def test_config_backends_ignores_empty_restricted_bash_rule() -> None:
+    cfg = ExperimentConfig(label="restricted", allowed_tools=["Bash()"])
     assert config_backends(cfg) == frozenset()
 
 
@@ -293,14 +322,14 @@ def test_full_overlap_emits_warning_severity() -> None:
     assert w.to_dict()["severity"] == "warning"
 
 
-def test_partial_overlap_with_independent_corroboration_is_informational() -> None:
-    """When the consensus has backends the config can't reach, it's informational.
+def test_partial_overlap_with_independent_corroboration_remains_warning() -> None:
+    """Corroboration does not erase access to an oracle-generating mechanism.
 
     Mirrors the codeprobe-9re9 motivating case: gascity ground truth is
     consensus = {ast, grep, sourcegraph}; the with-sourcegraph config has only
-    ``sourcegraph`` in its MCP surface. ``ast`` and ``grep`` independently
-    corroborate the answer key, so the with-sg score is not tautological —
-    just an honest signal that the GT-producing backend is reachable.
+    ``sourcegraph`` in its MCP surface. ``ast`` and ``grep`` corroborate the
+    answer key, but direct access to one generating backend can still inflate
+    the score and must remain an actionable measurement warning.
     """
     configs = [ExperimentConfig(label="with-sg", mcp_config=_sg_mcp_config())]
     task_gt = {"t1": frozenset({"ast", "grep", "sourcegraph"})}
@@ -308,13 +337,34 @@ def test_partial_overlap_with_independent_corroboration_is_informational() -> No
     assert len(warnings) == 1
     w = warnings[0]
     assert w.kind == "backend_overlap"
-    assert w.severity == "informational"
+    assert w.severity == "warning"
     assert sorted(w.detail["independent_backends"]) == ["ast", "grep"]
     assert w.detail["shared_backends"] == ["sourcegraph"]
-    # The informational message must mention independent corroboration so
-    # readers understand why severity was downgraded.
-    assert "informational" in w.message.lower() or "corroborated" in w.message.lower()
-    assert w.to_dict()["severity"] == "informational"
+    assert "corroborated" in w.message.lower()
+    assert "does not make" in w.message.lower()
+    assert w.to_dict()["severity"] == "warning"
+
+
+def test_baseline_bash_access_flags_grep_built_oracle() -> None:
+    configs = [
+        ExperimentConfig(label="baseline"),
+        ExperimentConfig(
+            label="mcp-strict",
+            mcp_config=_sg_mcp_config(),
+            mcp_mode="strict",
+        ),
+    ]
+    task_gt = {"t1": frozenset({"ast", "grep"})}
+
+    warnings = detect_backend_overlap(configs, task_gt)
+
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning.severity == "warning"
+    assert warning.detail["config"] == "baseline"
+    assert warning.detail["shared_backends"] == ["grep"]
+    assert warning.detail["independent_backends"] == ["ast"]
+    assert "oracle-generating" in warning.message
 
 
 def test_zero_overlap_emits_no_warning() -> None:
@@ -769,6 +819,51 @@ def test_aggregate_emits_warnings_and_json_records(
     report = json.loads((d / "reports" / "aggregate.json").read_text())
     kinds = {w["kind"] for w in report["bias_warnings"]}
     assert kinds == {"backend_overlap", "overshipping", "no_independent_baseline"}
+
+
+def test_aggregate_suppresses_pairwise_claim_for_grep_oracle_overlap(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    exp = Experiment(
+        name="grep-overlap",
+        configs=[
+            ExperimentConfig(label="baseline"),
+            ExperimentConfig(
+                label="mcp-strict",
+                mcp_config=_sg_mcp_config(),
+                mcp_mode="strict",
+            ),
+        ],
+    )
+    exp_dir = create_experiment_dir(tmp_path, exp)
+    _write_task(
+        exp_dir / "tasks",
+        "task-001",
+        gt_extras={"oracle_backends_consensus": ["ast", "grep"]},
+    )
+    for label, score in (("baseline", 0.98), ("mcp-strict", 0.10)):
+        save_config_results(
+            exp_dir,
+            label,
+            [CompletedTask(task_id="task-001", automated_score=score)],
+        )
+
+    result = runner.invoke(main, ["experiment", "aggregate", str(exp_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "[backend_overlap]" in result.output
+    assert "Pairwise Comparisons:" not in result.output
+    assert "Pairwise comparisons suppressed" in result.output
+    report = json.loads(
+        (exp_dir / "reports" / "aggregate.json").read_text(encoding="utf-8")
+    )
+    overlap = next(
+        warning
+        for warning in report["bias_warnings"]
+        if warning["kind"] == "backend_overlap"
+    )
+    assert overlap["detail"]["config"] == "baseline"
+    assert overlap["detail"]["shared_backends"] == ["grep"]
 
 
 def test_aggregate_no_warn_silences_stdout(runner: CliRunner, tmp_path: Path) -> None:
