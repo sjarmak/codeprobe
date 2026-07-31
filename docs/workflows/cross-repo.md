@@ -21,7 +21,7 @@ Use this workflow when you need to mine tasks that span multiple repositories. T
 | --------------- | ------------------------------------ | ------------------------------------------ | --------------------------------------------- |
 | `auto` (default) | Sourcegraph if authed, else ripgrep | Zero-config; matches prior behavior        | Falls back silently when SG auth is missing   |
 | `sourcegraph`   | Sourcegraph `find_references` MCP    | Cross-repo type-aware resolution           | Network + auth required; tautology risk[^t]   |
-| `ast`           | Local Python `ast` + Go `go/parser`  | Offline; tool-independent; no auth         | Intra-package only; no cross-package types    |
+| `ast`           | Local Python `ast` + Go `go/parser`  | Offline; tool-independent; import-aware Go calls | No cross-package receiver-type inference |
 | `grep`          | `ripgrep --word-regexp`              | Always works; trivially deterministic      | No type or import context                     |
 
 [^t]: When the agent under eval also uses the Sourcegraph MCP, ground truth derived from Sourcegraph is tautological — both sides resolve symbols through the same code-intel tool. Use `--backend ast` to break the tautology with a tool-independent oracle.
@@ -32,19 +32,19 @@ The AST backend exists to end the `--mcp-families` tautology: Sourcegraph-derive
 
 - You're comparing MCP-enabled vs. MCP-disabled configs and want a fair oracle.
 - You're running offline / airgapped and can't reach `sourcegraph.com`.
-- The symbol you're targeting has unique enough naming that intra-package scoping is sufficient.
+- The symbol is called directly, through a local receiver, or through its imported Go package.
 
 #### `ast` backend scope (v1)
 
 In scope:
 
 - **Python** (`.py`, `.pyi`): real `ast` walk. Resolves direct calls, method calls on local objects, definitions, and aliased imports. `mod.foo()` calls are filtered when `mod` is a known imported module — those go through the imported package, not a local method.
-- **Go** (`.go`): real `go/parser` walk via an embedded helper invoked with `go run`. Resolves method declarations, method calls on local receivers, and bare function calls. `pkg.Symbol(...)` calls are filtered when `pkg` is in the file's import set.
-- **Same-package scoping**: when constructed with `defining_file=`, results are restricted to the symbol's package directory — matches Sourcegraph's typed `find_references` semantics for intra-package callers.
+- **Go** (`.go`): real `go/parser` walk via an embedded helper invoked with Go 1.24 or newer. Resolves method declarations, method calls on local receivers, bare function calls, and `pkg.Symbol(...)` calls when `pkg` imports the exact module package containing `defining_file` (including import aliases). Same-named calls through unrelated packages are excluded. Older Go toolchains are rejected with a warning because they lack the pinned-root filesystem API required for containment-safe scanning.
+- **Target-aware scoping**: with `defining_file=`, Python remains package-scoped. Go resolves the defining package once, then retains same-package structural references plus exact package-qualified callers elsewhere in the scanned repository set. Explicit `scope="package"` keeps only the defining directory; `scope="repo"` enables repo-wide structural matching.
 
 Out of scope (deferred to v2):
 
-- Cross-package Go type inference (interface satisfaction, full `gopls`-grade resolution).
+- Cross-package Go receiver-type inference such as `client.Symbol()` when `client`'s type originates in another package (interface satisfaction and full `gopls`-grade resolution).
 - Macro-heavy languages (Rust, C++).
 - Dynamic dispatch beyond Go interfaces and Python duck typing.
 - Languages outside Python and Go (use `--backend sourcegraph` or `grep`).

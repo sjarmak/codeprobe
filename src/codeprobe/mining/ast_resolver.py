@@ -21,17 +21,16 @@ In scope:
   method calls (``obj.Symbol()``) where ``obj`` is not an imported
   module, and qualified imports (``from m import Symbol`` then call).
 - **Go**: real ``go/parser`` walk via an embedded Go helper invoked with
-  ``go run``. Resolves method declarations, method calls
-  (``recv.Symbol(...)``) where ``recv`` is not an imported package
-  alias, and bare function calls.
+  ``go run``. Resolves method declarations, local receiver calls,
+  bare function calls, and package-qualified calls whose import path
+  matches the package containing the defining file.
 
 Out of scope (deferred to v2):
 
-- Cross-package Go type inference. ``a.Symbol()`` where ``a`` is the
-  return value of an imported package's constructor is NOT resolved
-  through type inference; it's resolved structurally (the file is
-  included if ``a.Symbol(...)`` call exists and ``a`` is not a package
-  alias).
+- Cross-package Go receiver-type inference. ``a.Symbol()`` where ``a`` is the
+  return value of an imported package's constructor is not included by
+  target-aware ``auto`` scope. Explicit ``repo`` scope can match it
+  structurally, without proving the receiver type.
 - Macro-heavy languages (Rust, C++).
 - Dynamic dispatch beyond Go interfaces and Python duck typing.
 - Files with parse errors are skipped, not failed.
@@ -59,7 +58,9 @@ import ast
 import json
 import logging
 import os
+import re
 import shutil
+import stat
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -76,6 +77,7 @@ logger = logging.getLogger(__name__)
 # <30s for a 1000-file Go repo; 120s gives generous headroom for very
 # large repos before we conclude the toolchain is unhealthy.
 _GO_SCAN_TIMEOUT_SECONDS = 120
+_MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 # Path to the embedded Go AST scanner program (shipped inside the
 # package; run with ``go run`` so we don't ship a compiled binary).
@@ -85,10 +87,16 @@ _GO_SCANNER_PATH = (
 
 
 @dataclass(frozen=True)
-class _GoRef:
-    path: str
-    line: int
-    kind: str
+class _GoTarget:
+    import_path: str = ""
+    package_name: str = ""
+    resolved: bool = False
+
+
+@dataclass(frozen=True)
+class _GoScanResult:
+    files: frozenset[str]
+    target: _GoTarget
 
 
 class AstResolver:
@@ -120,15 +128,15 @@ class AstResolver:
         ----------
         defining_file:
             Repo-relative path where the symbol is defined. When set,
-            the resolver restricts results to the symbol's package
-            (intra-package scoping) — matches SG's typed
-            ``find_references`` semantics without needing full Go type
-            inference. Pass ``""`` to scan the entire repo.
+            Python results are restricted to the symbol's package. Go
+            results also retain callers that import that exact package
+            and invoke ``pkg.Symbol``. Pass ``""`` for repo-wide
+            structural scanning without a package target.
         scope:
-            ``"auto"`` (default) → ``"package"`` when *defining_file* is
-            set, else ``"repo"``. ``"package"`` forces same-package
-            scoping; ``"repo"`` disables it. Same-package = same
-            directory as *defining_file*.
+            ``"auto"`` (default) applies package scope to Python and
+            target-aware import scope to Go when *defining_file* is set.
+            ``"package"`` forces same-directory results; ``"repo"``
+            enables repo-wide structural matches.
         """
         self._defining_file = defining_file
         self._go_binary = go_binary
@@ -157,14 +165,44 @@ class AstResolver:
         if not symbol or not repos:
             return []
 
+        if self._defining_file:
+            primary_repo = Path(repos[0])
+            if (
+                not primary_repo.is_dir()
+                or _read_repo_text(primary_repo, self._defining_file) is None
+            ):
+                logger.warning(
+                    "AstResolver: defining file %r is not a readable, bounded "
+                    "regular file in primary repository %s; refusing to emit "
+                    "unscoped evidence",
+                    self._defining_file,
+                    primary_repo,
+                )
+                return []
+
         refs: list[FileRef] = []
-        for repo in repos:
+        go_target = _GoTarget()
+        for index, repo in enumerate(repos):
             repo_path = Path(repo)
             if not repo_path.is_dir():
                 logger.info("AstResolver: skipping non-directory %s", repo)
                 continue
             repo_name = repo_path.name
-            for rel_path in self._scan_repo(repo_path, symbol):
+            python_files = self._apply_scope(
+                self._scan_python_repo(repo_path, symbol)
+            )
+            if index > 0 and self._defining_file and not go_target.resolved:
+                go_scan = _GoScanResult(frozenset(), go_target)
+            else:
+                go_scan = self._scan_go_repo(
+                    repo_path,
+                    symbol,
+                    defining_file=self._defining_file if index == 0 else "",
+                    target=go_target,
+                )
+            if index == 0:
+                go_target = go_scan.target
+            for rel_path in python_files | go_scan.files:
                 refs.append(FileRef(repo=repo_name, path=rel_path))
         return refs
 
@@ -181,38 +219,22 @@ class AstResolver:
         """
         from codeprobe.mining.multi_repo import Symbol
 
-        file_path = Path(repo) / path
-        if not file_path.is_file():
+        text = _read_repo_text(Path(repo), path)
+        if text is None:
             return None
 
-        suffix = file_path.suffix.lower()
+        suffix = Path(path).suffix.lower()
         if suffix in (".py", ".pyi"):
-            return _resolve_python_symbol_at(file_path, line, repo, path)
+            return _resolve_python_symbol_at(text, line, repo, path)
         if suffix == ".go":
-            return _resolve_go_symbol_at(file_path, line, repo, path, Symbol)
+            return _resolve_go_symbol_at(text, line, repo, path, Symbol)
         return None
 
-    # ------------------------------------------------------------------
-    # Internal: per-repo dispatch
-    # ------------------------------------------------------------------
-
-    def _scan_repo(self, repo_path: Path, symbol: str) -> set[str]:
-        """Return the set of repo-relative paths in *repo_path* that
-        reference *symbol*."""
-        files: set[str] = set()
-        files.update(self._scan_python_repo(repo_path, symbol))
-        files.update(self._scan_go_repo(repo_path, symbol))
-        return self._apply_scope(files)
-
     def _apply_scope(self, files: set[str]) -> set[str]:
-        """Restrict *files* to the symbol's package when scoping is on.
+        """Restrict Python *files* to the symbol's package when scoping is on.
 
-        Same-package = same directory as ``self._defining_file``. This
-        is the lightweight stand-in for full Go type inference: SG's
-        typed ``find_references`` returns intra-package callers
-        plus cross-package callers that explicitly use the receiver
-        type. v1 covers the intra-package case mechanically; cross-
-        package type inference is deferred (see module docstring).
+        The Go helper applies scope itself so it can retain exact
+        package-qualified references outside the defining directory.
         """
         scope = self._scope
         if scope == "auto":
@@ -243,8 +265,10 @@ class AstResolver:
 
         def _scan(path: Path) -> str | None:
             try:
-                if _python_file_references(path, symbol):
-                    return str(path.relative_to(repo_path))
+                rel = str(path.relative_to(repo_path))
+                text = _read_repo_text(repo_path, rel)
+                if text is not None and _python_text_references(text, symbol):
+                    return rel
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("AstResolver: python scan error %s: %s", path, exc)
             return None
@@ -260,9 +284,16 @@ class AstResolver:
     # Go scanning
     # ------------------------------------------------------------------
 
-    def _scan_go_repo(self, repo_path: Path, symbol: str) -> set[str]:
+    def _scan_go_repo(
+        self,
+        repo_path: Path,
+        symbol: str,
+        *,
+        defining_file: str,
+        target: _GoTarget,
+    ) -> _GoScanResult:
         if not self._check_go_binary():
-            return set()
+            return _GoScanResult(frozenset(), target)
 
         try:
             result = subprocess.run(
@@ -274,6 +305,15 @@ class AstResolver:
                     str(repo_path),
                     "-symbol",
                     symbol,
+                    "-defining-file",
+                    defining_file,
+                    "-target-import-path",
+                    target.import_path,
+                    "-target-package-name",
+                    target.package_name,
+                    f"-target-resolved={str(target.resolved).lower()}",
+                    "-scope",
+                    self._scope,
                 ],
                 capture_output=True,
                 text=True,
@@ -289,13 +329,13 @@ class AstResolver:
                 repo_path,
                 symbol,
             )
-            return set()
+            return _GoScanResult(frozenset(), target)
         except (FileNotFoundError, OSError) as exc:
             logger.warning(
                 "AstResolver: Go scanner invocation failed (%s); skipping",
                 exc,
             )
-            return set()
+            return _GoScanResult(frozenset(), target)
 
         if result.returncode != 0:
             logger.warning(
@@ -304,7 +344,7 @@ class AstResolver:
                 repo_path,
                 result.stderr.strip(),
             )
-            return set()
+            return _GoScanResult(frozenset(), target)
 
         try:
             payload = json.loads(result.stdout or "{}")
@@ -312,21 +352,62 @@ class AstResolver:
             logger.warning(
                 "AstResolver: Go scanner produced invalid JSON: %s", exc
             )
-            return set()
+            return _GoScanResult(frozenset(), target)
 
         files = payload.get("files") or []
-        return {f for f in files if isinstance(f, str)}
+        discovered_target = _GoTarget(
+            import_path=str(payload.get("target_import_path") or ""),
+            package_name=str(payload.get("target_package_name") or ""),
+            resolved=payload.get("target_resolved") is True,
+        )
+        return _GoScanResult(
+            frozenset(f for f in files if isinstance(f, str)),
+            target if target.resolved else discovered_target,
+        )
 
     def _check_go_binary(self) -> bool:
         if self._go_available is not None:
             return self._go_available
         path = shutil.which(self._go_binary)
-        self._go_available = path is not None
-        if not self._go_available:
+        if path is None:
             logger.info(
                 "AstResolver: %r not on PATH; Go files will be skipped",
                 self._go_binary,
             )
+            self._go_available = False
+            return False
+        try:
+            result = subprocess.run(
+                [path, "env", "GOVERSION"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+                env=_safe_go_env(),
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning(
+                "AstResolver: unable to determine Go version (%s); "
+                "Go files will be skipped",
+                exc,
+            )
+            self._go_available = False
+            return False
+
+        version = re.search(r"\bgo(\d+)\.(\d+)", result.stdout)
+        supported = (
+            result.returncode == 0
+            and version is not None
+            and (int(version.group(1)), int(version.group(2))) >= (1, 24)
+        )
+        if not supported:
+            reported = result.stdout.strip() or result.stderr.strip() or "unknown"
+            logger.warning(
+                "AstResolver: Go 1.24 or newer is required for secure "
+                "repository scanning (found %s); Go files will be skipped",
+                reported,
+            )
+        self._go_available = supported
         return self._go_available
 
 
@@ -344,7 +425,7 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     skipped_names = frozenset({".git", ".venv", "node_modules", "vendor"})
     out: list[Path] = []
     for path in root.rglob("*"):
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
         try:
             rel_parts = path.relative_to(root).parts
@@ -359,8 +440,57 @@ def _iter_source_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     return out
 
 
-def _python_file_references(path: Path, symbol: str) -> bool:
-    """Return True if *path* contains an AST reference to *symbol*.
+def _read_repo_text(root: Path, relative_path: str) -> str | None:
+    """Read one bounded regular file without following path symlinks."""
+    candidate = Path(relative_path)
+    parts = candidate.parts
+    if candidate.is_absolute() or not parts or any(p in ("", ".", "..") for p in parts):
+        return None
+    try:
+        root = root.resolve(strict=True)
+    except OSError:
+        return None
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    supports_dir_fd: set[object] | None = getattr(os, "supports_dir_fd", None)
+    if (
+        nofollow is None
+        or directory is None
+        or supports_dir_fd is None
+        or os.open not in supports_dir_fd
+    ):
+        return None
+
+    directory_flags = os.O_RDONLY | directory | getattr(os, "O_CLOEXEC", 0)
+    directory_flags |= nofollow
+    file_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    file_flags |= nofollow
+    descriptors: list[int] = []
+    try:
+        directory_fd = os.open(root, directory_flags)
+        descriptors.append(directory_fd)
+        for component in parts[:-1]:
+            directory_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+            descriptors.append(directory_fd)
+        file_fd = os.open(parts[-1], file_flags, dir_fd=directory_fd)
+        descriptors.append(file_fd)
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            return None
+        with os.fdopen(file_fd, "rb", closefd=False) as stream:
+            data = stream.read(_MAX_SOURCE_FILE_BYTES + 1)
+        if len(data) > _MAX_SOURCE_FILE_BYTES:
+            return None
+        return data.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _python_text_references(text: str, symbol: str) -> bool:
+    """Return True if *text* contains an AST reference to *symbol*.
 
     A reference is any of:
 
@@ -372,10 +502,6 @@ def _python_file_references(path: Path, symbol: str) -> bool:
     - ``def Symbol(...)`` / ``async def Symbol(...)`` definition
     - ``class Symbol(...)`` definition
     """
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return False
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -435,14 +561,10 @@ def _collect_python_import_aliases(tree: ast.AST) -> frozenset[str]:
 
 
 def _resolve_python_symbol_at(
-    path: Path, line: int, repo: str, rel_path: str
+    text: str, line: int, repo: str, rel_path: str
 ) -> Symbol | None:
     from codeprobe.mining.multi_repo import Symbol
 
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -463,9 +585,9 @@ def _resolve_python_symbol_at(
 
 
 def _resolve_go_symbol_at(
-    path: Path, line: int, repo: str, rel_path: str, symbol_cls: type[Symbol]
+    text: str, line: int, repo: str, rel_path: str, symbol_cls: type[Symbol]
 ) -> Symbol | None:
-    """Identify the Go func/method declared at *line* in *path*.
+    """Identify the Go func/method declared at *line* in *text*.
 
     Mechanical: read the line, regex-match a func/method declaration
     pattern, return :class:`Symbol`. Avoids spinning up a Go subprocess
@@ -473,10 +595,6 @@ def _resolve_go_symbol_at(
     """
     import re
 
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
     lines = text.splitlines()
     if line <= 0 or line > len(lines):
         return None

@@ -485,7 +485,7 @@ def compute_consensus(
         The symbol whose references we want to resolve.
     defining_file:
         Repo-relative path of the symbol's defining file. Required by SG
-        and used by :class:`AstResolver` for intra-package scoping.
+        and used by :class:`AstResolver` for package-aware scoping.
     repo_paths:
         Local paths for the candidate repos. The first path is treated as
         primary for backends that don't natively support multi-repo input.

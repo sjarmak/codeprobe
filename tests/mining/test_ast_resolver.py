@@ -3,8 +3,8 @@
 Covers:
 
 - Python: bare calls, method calls, definitions, import filtering
-- Go: method declarations, method calls vs. package-qualified calls
-- Scope handling: ``defining_file`` restricts results to the same package
+- Go: method declarations, local calls, and target package-qualified calls
+- Scope handling: ``defining_file`` enables package-aware resolution
 - Protocol conformance with :class:`SymbolResolver`
 - Performance bound: 1000-file Go repo scan completes well under 30s
 - Integration: gascity ``MkdirAll`` example, package-scoped to fake.go
@@ -12,7 +12,9 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -46,6 +48,40 @@ def test_non_directory_repo_skipped(tmp_path: Path) -> None:
     missing = tmp_path / "no-such-dir"
     r = AstResolver()
     assert r.find_references("Foo", [str(missing)]) == []
+
+
+def test_unresolved_defining_file_rejects_all_language_evidence(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    _write(primary / "missing" / "other.py", "def Missing():\n    return 1\n")
+    _write(secondary / "missing" / "other.py", "def Missing():\n    return 2\n")
+
+    refs = AstResolver(defining_file="missing/def.go").find_references(
+        "Missing", [str(primary), str(secondary)]
+    )
+
+    assert refs == []
+
+
+def test_go_versions_before_1_24_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/go")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, "go1.23.9\n", ""
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        available = AstResolver()._check_go_binary()
+
+    assert available is False
+    assert "Go 1.24 or newer" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +183,40 @@ def test_python_unparseable_file_skipped(tmp_path: Path) -> None:
     # broken.py contributes nothing but does not raise.
 
 
+def test_python_scan_rejects_symlinked_source_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    _write(outside, "def Escaped():\n    return 1\n")
+    (repo / "escaped.py").symlink_to(outside)
+
+    refs = AstResolver().find_references("Escaped", [str(repo)])
+
+    assert refs == []
+
+
+def test_resolve_symbol_at_rejects_paths_outside_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.py"
+    _write(outside, "def Escaped():\n    return 1\n")
+    (repo / "escaped.py").symlink_to(outside)
+    resolver = AstResolver()
+
+    assert resolver.resolve_symbol_at(str(repo), "../outside.py", 1) is None
+    assert resolver.resolve_symbol_at(str(repo), str(outside), 1) is None
+    assert resolver.resolve_symbol_at(str(repo), "escaped.py", 1) is None
+
+
+def test_resolve_symbol_at_fails_closed_without_nofollow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write(tmp_path / "safe.py", "def Safe():\n    return 1\n")
+    monkeypatch.delattr(os, "O_NOFOLLOW")
+
+    assert AstResolver().resolve_symbol_at(str(tmp_path), "safe.py", 1) is None
+
+
 # ---------------------------------------------------------------------------
 # Go AST behavior — gated on the go toolchain being available
 # ---------------------------------------------------------------------------
@@ -206,6 +276,244 @@ func main() {
     r = AstResolver()
     refs = r.find_references("MkdirAll", [str(tmp_path)])
     # No method declarations and no non-package-qualified calls.
+    assert refs == []
+
+
+@_REQUIRES_GO
+def test_go_finds_calls_through_imported_defining_package(tmp_path: Path) -> None:
+    _write(tmp_path / "go.mod", "module example.com/project\n\ngo 1.22\n")
+    _write(
+        tmp_path / "lib" / "requirev2" / "require.go",
+        """package require
+
+func MustNoError() {}
+""",
+    )
+    _write(
+        tmp_path / "cmd" / "default" / "main.go",
+        """package main
+
+import "example.com/project/lib/requirev2"
+
+func main() { require.MustNoError() }
+""",
+    )
+    _write(
+        tmp_path / "cmd" / "alias" / "main.go",
+        """package main
+
+import check "example.com/project/lib/requirev2"
+
+func main() { check.MustNoError() }
+""",
+    )
+    _write(
+        tmp_path / "cmd" / "unrelated" / "main.go",
+        """package main
+
+import other "example.com/other/require"
+
+func main() { other.MustNoError() }
+""",
+    )
+
+    resolver = AstResolver(defining_file="lib/requirev2/require.go")
+    refs = resolver.find_references("MustNoError", [str(tmp_path)])
+
+    assert sorted(ref.path for ref in refs) == [
+        "cmd/alias/main.go",
+        "cmd/default/main.go",
+        "lib/requirev2/require.go",
+    ]
+
+
+@_REQUIRES_GO
+def test_go_ignores_shadowed_import_qualifier(tmp_path: Path) -> None:
+    _write(tmp_path / "go.mod", "module example.com/project\n\ngo 1.22\n")
+    _write(
+        tmp_path / "lib" / "require" / "require.go",
+        """package require
+
+func MustNoError() {}
+func Keep() int { return 1 }
+""",
+    )
+    _write(
+        tmp_path / "consumer" / "consumer.go",
+        """package consumer
+
+import "example.com/project/lib/require"
+
+type localCheck struct{}
+func (localCheck) MustNoError() {}
+var _ = require.Keep
+func shadow(require localCheck) { require.MustNoError() }
+""",
+    )
+
+    refs = AstResolver(defining_file="lib/require/require.go").find_references(
+        "MustNoError", [str(tmp_path)]
+    )
+
+    assert sorted(ref.path for ref in refs) == ["lib/require/require.go"]
+
+
+@_REQUIRES_GO
+def test_go_uses_primary_target_package_across_repositories(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    _write(primary / "go.mod", "module example.com/primary\n\ngo 1.22\n")
+    _write(
+        primary / "lib" / "require" / "require.go",
+        "package require\n\nfunc MustNoError() {}\n",
+    )
+    _write(secondary / "go.mod", "module example.com/secondary\n\ngo 1.22\n")
+    _write(
+        secondary / "consumer" / "consumer.go",
+        """package consumer
+
+import "example.com/primary/lib/require"
+
+func call() { require.MustNoError() }
+""",
+    )
+
+    refs = AstResolver(defining_file="lib/require/require.go").find_references(
+        "MustNoError", [str(primary), str(secondary)]
+    )
+
+    assert sorted((ref.repo, ref.path) for ref in refs) == [
+        ("primary", "lib/require/require.go"),
+        ("secondary", "consumer/consumer.go"),
+    ]
+
+
+@_REQUIRES_GO
+def test_go_unresolved_primary_target_does_not_widen_secondary_scan(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    _write(primary / "go.mod", "module example.com/primary\n\ngo 1.22\n")
+    _write(
+        secondary / "unrelated.go",
+        "package secondary\n\nfunc Missing() {}\n",
+    )
+
+    refs = AstResolver(defining_file="missing/missing.go").find_references(
+        "Missing", [str(primary), str(secondary)]
+    )
+
+    assert refs == []
+
+
+@_REQUIRES_GO
+def test_go_unresolved_target_does_not_widen_primary_scan(tmp_path: Path) -> None:
+    _write(
+        tmp_path / "unrelated.go",
+        "package unrelated\n\nfunc Missing() {}\n",
+    )
+
+    refs = AstResolver(defining_file="missing/missing.go").find_references(
+        "Missing", [str(tmp_path)]
+    )
+
+    assert refs == []
+
+
+@_REQUIRES_GO
+def test_go_resolved_target_without_module_does_not_widen_secondary_scan(
+    tmp_path: Path,
+) -> None:
+    primary = tmp_path / "primary"
+    secondary = tmp_path / "secondary"
+    _write(
+        primary / "target" / "target.go",
+        "package target\n\nfunc Local() {}\n",
+    )
+    _write(
+        secondary / "unrelated.go",
+        "package secondary\n\nfunc Local() {}\n",
+    )
+
+    refs = AstResolver(defining_file="target/target.go").find_references(
+        "Local", [str(primary), str(secondary)]
+    )
+
+    assert sorted((ref.repo, ref.path) for ref in refs) == [
+        ("primary", "target/target.go")
+    ]
+
+
+@_REQUIRES_GO
+def test_go_scan_rejects_symlinked_source_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside.go"
+    _write(outside, "package escaped\n\nfunc Escaped() {}\n")
+    (repo / "escaped.go").symlink_to(outside)
+
+    refs = AstResolver().find_references("Escaped", [str(repo)])
+
+    assert refs == []
+
+
+@_REQUIRES_GO
+def test_go_scan_rejects_symlinked_defining_package(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    _write(outside / "go.mod", "module malicious.example/target\n")
+    _write(outside / "target.go", "package target\n\nfunc Escaped() {}\n")
+    (repo / "target").symlink_to(outside, target_is_directory=True)
+    _write(
+        repo / "caller.go",
+        """package caller
+
+import target "malicious.example/target"
+
+func call() { target.Escaped() }
+""",
+    )
+
+    refs = AstResolver(defining_file="target/target.go").find_references(
+        "Escaped", [str(repo)]
+    )
+
+    assert refs == []
+
+
+@_REQUIRES_GO
+def test_go_scan_rejects_symlinked_go_mod(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _write(repo / "target" / "target.go", "package target\n\nfunc Local() {}\n")
+    outside_mod = tmp_path / "outside.mod"
+    _write(outside_mod, "module malicious.example/project\n")
+    (repo / "go.mod").symlink_to(outside_mod)
+    _write(
+        repo / "caller" / "caller.go",
+        """package caller
+
+import target "malicious.example/project/target"
+
+func call() { target.Local() }
+""",
+    )
+
+    refs = AstResolver(defining_file="target/target.go").find_references(
+        "Local", [str(repo)]
+    )
+
+    assert sorted(ref.path for ref in refs) == ["target/target.go"]
+
+
+@_REQUIRES_GO
+def test_go_scan_skips_oversized_source_file(tmp_path: Path) -> None:
+    source = b"package huge\n\nfunc Huge() {}\n" + b" " * (9 * 1024 * 1024)
+    (tmp_path / "huge.go").write_bytes(source)
+
+    refs = AstResolver().find_references("Huge", [str(tmp_path)])
+
     assert refs == []
 
 
@@ -295,8 +603,8 @@ def test_gascity_mkdirall_intra_package_scope() -> None:
     """AstResolver scoped to fake.go finds the same intra-package
     callers SG returns: 4 files in ``internal/fsys/``.
 
-    Cross-package callers require type inference and are explicitly
-    out of scope for AstResolver v1; the README documents this gap.
+    Cross-package receiver calls require type inference and remain out
+    of scope; direct calls through an imported package are supported.
     """
     r = AstResolver(defining_file="internal/fsys/fake.go")
     refs = r.find_references("MkdirAll", [str(_GASCITY)])
