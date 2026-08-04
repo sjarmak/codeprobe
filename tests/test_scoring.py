@@ -172,7 +172,6 @@ def test_score_does_not_follow_symlinks(tmp_path: Path):
         ),
     )
 
-    score_task_output("output", task_dir)
     from codeprobe.core.scoring import _run_in_sandbox
 
     test_sh = task_dir / "tests" / "test.sh"
