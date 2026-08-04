@@ -19,7 +19,7 @@ import pytest
 import codeprobe.core.scoring.sandbox as scoring_sandbox
 from codeprobe.core import containment
 from codeprobe.core.scoring import BinaryScorer, CheckpointScorer
-from codeprobe.core.scoring.sandbox import _run_in_sandbox
+from codeprobe.core.scoring.sandbox import _run_in_sandbox, scorer_env_override
 from codeprobe.sandbox import runner as container_runner
 from codeprobe.sandbox.runner import SandboxError, SandboxResult
 
@@ -50,6 +50,7 @@ def _ok_result(stdout: str = "") -> SandboxResult:
 
 
 def _configure_scoring_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(container_runner, "load_prepared_images", lambda: None)
     monkeypatch.setenv("CODEPROBE_SCORING_IMAGE", SCORING_IMAGE)
 
 
@@ -127,6 +128,16 @@ def _capture_container_mode(monkeypatch: pytest.MonkeyPatch) -> dict[str, object
             cmd=cmd, mounts=mounts, allow_writes=allow_writes, image=image,
             timeout=timeout, workdir=workdir, env=env
         )
+        if env is not None and "TASK_REPO_ROOT" in env:
+            task_repo_root = Path(env["TASK_REPO_ROOT"])
+            calls["task_repo_marker"] = (task_repo_root / "marker").read_text()
+            calls["worktree_leak_is_symlink"] = (
+                task_repo_root / "worktree-leak"
+            ).is_symlink()
+        if workdir is not None:
+            calls["task_leak_is_symlink"] = (
+                Path(workdir) / "task-leak"
+            ).is_symlink()
         return _ok_result()
 
     _configure_scoring_image(monkeypatch)
@@ -173,6 +184,36 @@ class TestContainerPath:
 
         _assert_container_invocation(run, calls)
 
+    def test_container_forwards_scorer_environment_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        task_dir = tmp_path / "task"
+        script = _make_test_sh(task_dir)
+        outside_secret = tmp_path / "outside-secret"
+        outside_secret.write_text("must stay outside")
+        (task_dir / "task-leak").symlink_to(outside_secret)
+        worktree = tmp_path / "agent-worktree"
+        worktree.mkdir()
+        (worktree / "marker").write_text("agent edit")
+        (worktree / "worktree-leak").symlink_to(outside_secret)
+        calls = _capture_container_mode(monkeypatch)
+
+        with scorer_env_override({"TASK_REPO_ROOT": str(worktree)}):
+            run = _run_in_sandbox(script, "agent says", task_dir, timeout=123)
+
+        assert run.execution_mode == "container"
+        env = calls["env"]
+        assert isinstance(env, dict)
+        task_repo_root = Path(env["TASK_REPO_ROOT"])
+        assert task_repo_root != worktree
+        mounts = calls["mounts"]
+        assert isinstance(mounts, dict)
+        assert any(task_repo_root.is_relative_to(Path(root)) for root in mounts)
+        assert calls["task_repo_marker"] == "agent edit"
+        assert calls["task_leak_is_symlink"] is True
+        assert calls["worktree_leak_is_symlink"] is True
+        assert set(env) == {"AGENT_OUTPUT", "TASK_REPO_ROOT"}
+
     def test_sandbox_error_maps_to_error_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -206,6 +247,8 @@ class TestHostFallback:
     ) -> None:
         task_dir = tmp_path / "task"
         script = _make_test_sh(task_dir, "#!/bin/bash\necho ok\nexit 0\n")
+        worktree = tmp_path / "agent-worktree"
+        worktree.mkdir()
         monkeypatch.setattr(container_runner, "detect_engine", lambda: None)
         containment.set_active_plan(
             containment.ContainmentPlan(mode="host-consented")
@@ -216,13 +259,15 @@ class TestHostFallback:
 
         def spy(argv: list[str], **kwargs: object) -> object:
             captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
             return real_run(argv, **kwargs)  # type: ignore[arg-type]
 
         monkeypatch.setattr(
             "codeprobe.core.scoring.sandbox.subprocess.run", spy
         )
 
-        run = _run_in_sandbox(script, "output", task_dir)
+        with scorer_env_override({"TASK_REPO_ROOT": str(worktree)}):
+            run = _run_in_sandbox(script, "output", task_dir)
 
         assert run.execution_mode == "host"
         assert run.returncode == 0
@@ -230,6 +275,9 @@ class TestHostFallback:
         argv = captured["argv"]
         assert isinstance(argv, list)
         assert argv[0] == "bash"
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env["TASK_REPO_ROOT"] == str(worktree)
 
     def test_host_path_planless_library_use(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -296,6 +344,7 @@ class TestMissingImageRefusal:
         monkeypatch.setattr(
             container_runner, "image_available", lambda engine, image: False
         )
+        monkeypatch.setattr(container_runner, "load_prepared_images", lambda: None)
         containment.set_active_plan(
             containment.ContainmentPlan(mode="sandboxed")
         )

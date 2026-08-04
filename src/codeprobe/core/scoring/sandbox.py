@@ -115,9 +115,9 @@ def _thread_env_overrides() -> dict[str, str]:
 def scorer_env_override(overrides: dict[str, str] | None) -> Iterator[None]:
     """Bind a thread-local env overlay visible to sandboxed scorer processes.
 
-    ``overrides`` is merged into the filtered env built by :func:`_safe_env`.
-    The previous overlay is restored on exit, so nested overrides compose
-    in LIFO order.
+    ``overrides`` is merged into the prepared scorer environment for both
+    host and container execution. The previous overlay is restored on exit,
+    so nested overrides compose in LIFO order.
     """
     previous = _thread_env_overrides()
     _scorer_env_tls.overrides = dict(overrides) if overrides else {}
@@ -268,7 +268,7 @@ def _prepare_sandbox(
         shutil.copytree(
             task_dir,
             sandbox_task,
-            symlinks=False,
+            symlinks=True,
             ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
         )
         sandbox_script = sandbox_task / script_path.relative_to(task_dir)
@@ -278,7 +278,10 @@ def _prepare_sandbox(
             sandbox_dir=sandbox_dir,
             sandbox_task=sandbox_task,
             sandbox_script=sandbox_script,
-            env_extra={"AGENT_OUTPUT": str(output_file)},
+            env_extra={
+                **_thread_env_overrides(),
+                "AGENT_OUTPUT": str(output_file),
+            },
         )
     except OSError:
         _cleanup_dir(sandbox_dir)
@@ -306,6 +309,29 @@ def _maybe_materialize_workspace(
         raise RuntimeError("_materialize_workspace returned invalid empty result")
     env_extra = {**prepared.env_extra, "TASK_REPO_ROOT": str(checkout)}
     return replace(prepared, env_extra=env_extra), "git_apply", None
+
+
+def _stage_external_task_repo(prepared: _PreparedSandbox) -> _PreparedSandbox:
+    """Copy an external scorer workspace beneath the container's sole mount."""
+    raw_root = prepared.env_extra.get("TASK_REPO_ROOT")
+    if raw_root is None:
+        return prepared
+    task_repo_root = Path(raw_root)
+    if not task_repo_root.is_dir():
+        return prepared
+    task_repo_root = task_repo_root.resolve()
+    if task_repo_root.is_relative_to(prepared.sandbox_dir.resolve()):
+        staged_root = task_repo_root
+    else:
+        staged_root = prepared.sandbox_dir / "task-repo"
+        shutil.copytree(
+            task_repo_root,
+            staged_root,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(*COPYTREE_IGNORE),
+        )
+    env_extra = {**prepared.env_extra, "TASK_REPO_ROOT": str(staged_root)}
+    return replace(prepared, env_extra=env_extra)
 
 
 def _cleanup_dir(path: Path | None) -> None:
@@ -367,6 +393,7 @@ def _container_outcome(
     scoring_image, image_error = _configured_scoring_image()
     if engine is not None and scoring_image is not None:
         if container_runner.image_available(engine, scoring_image):
+            prepared = _stage_external_task_repo(prepared)
             outcome = _container_exec(
                 prepared.sandbox_script,
                 prepared.sandbox_dir,

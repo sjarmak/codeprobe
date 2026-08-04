@@ -150,7 +150,7 @@ def test_sanitize_secrets_leaves_clean_text():
 
 
 def test_score_does_not_follow_symlinks(tmp_path: Path):
-    """copytree should not follow symlinks — symlinked files are skipped."""
+    """Sandbox preparation preserves links instead of copying target data."""
     task_dir = tmp_path / "task-symlink"
     tests_dir = task_dir / "tests"
     tests_dir.mkdir(parents=True)
@@ -173,9 +173,6 @@ def test_score_does_not_follow_symlinks(tmp_path: Path):
     )
 
     score_task_output("output", task_dir)
-    # With symlinks=False, the symlink is not followed — it's copied as a
-    # regular file (the content IS copied but it's a flat copy, not a link).
-    # The key security property is that the sandbox copy is NOT a symlink.
     from codeprobe.core.scoring import _run_in_sandbox
 
     test_sh = task_dir / "tests" / "test.sh"
@@ -183,8 +180,8 @@ def test_score_does_not_follow_symlinks(tmp_path: Path):
     try:
         if run.sandbox_dir:
             copied = run.sandbox_dir / "task" / "linked_secret.txt"
-            # The copied file should NOT be a symlink
-            assert not copied.is_symlink()
+            assert copied.is_symlink()
+            assert os.readlink(copied) == str(secret_file)
     finally:
         if run.sandbox_dir:
             import shutil

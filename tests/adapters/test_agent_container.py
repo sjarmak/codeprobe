@@ -19,6 +19,7 @@ import pytest
 from codeprobe.adapters._base import BaseAdapter
 from codeprobe.adapters.protocol import AgentConfig
 from codeprobe.core import containment
+from codeprobe.sandbox import runner as container_runner
 from codeprobe.sandbox.agent_container import containerize_argv
 
 ENGINE = "/usr/bin/docker"
@@ -217,6 +218,7 @@ def capture_run(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 
 @pytest.fixture()
 def configured_agent_image(monkeypatch: pytest.MonkeyPatch) -> str:
+    monkeypatch.setattr(container_runner, "load_prepared_images", lambda: None)
     monkeypatch.setenv("CODEPROBE_AGENT_IMAGE", IMAGE)
     return IMAGE
 
