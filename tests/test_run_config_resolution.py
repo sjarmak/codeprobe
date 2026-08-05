@@ -6,6 +6,7 @@ import logging
 import stat
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -214,6 +215,80 @@ class TestConfigResolutionLogging:
             )
         assert "experiment.json" in caplog.text
         assert "sonnet-4" in caplog.text
+
+
+class TestCliTimeoutDispatch:
+    """Explicit timeout provenance must survive CLI config resolution."""
+
+    @staticmethod
+    def _setup_clean_experiment(tmp_path: Path) -> Path:
+        import json
+
+        subprocess.run(
+            ["git", "init", "-q", "-b", "main", str(tmp_path)], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "user.email", "t@t.test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "config", "user.name", "t"], check=True
+        )
+        exp_dir = _setup_experiment(tmp_path)
+        experiment_path = exp_dir / "experiment.json"
+        experiment = json.loads(experiment_path.read_text())
+        experiment["configs"][0]["agent"] = "fake"
+        experiment["configs"][0]["model"] = None
+        experiment_path.write_text(json.dumps(experiment))
+        task_dir = exp_dir / "tasks" / "task-001"
+        (task_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "id": "task-001",
+                    "time_limit_sec": 300,
+                    "verification": {"reward_type": "binary"},
+                }
+            )
+        )
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-q", "-m", "fixture"],
+            check=True,
+        )
+        return exp_dir
+
+    @pytest.mark.parametrize(
+        ("cli_timeout", "expected_override"),
+        [(1200, 1200), (None, None)],
+    )
+    def test_dispatch_marks_only_explicit_timeout_as_task_override(
+        self,
+        tmp_path: Path,
+        cli_timeout: int | None,
+        expected_override: int | None,
+    ) -> None:
+        from codeprobe.cli import run_cmd as run_cmd_mod
+        from tests.conftest import FakeAdapter
+
+        exp_dir = self._setup_clean_experiment(tmp_path)
+        adapter = FakeAdapter()
+
+        with (
+            patch.object(run_cmd_mod, "resolve", return_value=adapter),
+            patch.object(run_cmd_mod, "execute_config", return_value=[]) as execute,
+        ):
+            run_cmd_mod.run_eval(
+                str(exp_dir),
+                agent="fake",
+                timeout=cli_timeout,
+                quiet=True,
+                force_plain=True,
+            )
+
+        assert (
+            execute.call_args.kwargs["task_timeout_override_seconds"]
+            == expected_override
+        )
 
 
 class TestArmCapabilityPreflight:
@@ -563,3 +638,5 @@ class TestCliRepeatsPassthrough:
         assert result.exit_code == 0
         assert "--repeats" in result.output
         assert "--timeout" in result.output
+        help_text = " ".join(result.output.split())
+        assert "overrides task metadata time_limit_sec" in help_text

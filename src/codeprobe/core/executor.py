@@ -596,7 +596,10 @@ def _score_in_sandbox(
 def _resolve_task_timeout_seconds(
     task_meta: dict,
     config_timeout_seconds: int,
+    task_timeout_override_seconds: int | None = None,
 ) -> int:
+    if task_timeout_override_seconds is not None:
+        return task_timeout_override_seconds
     raw_limit = task_meta.get("time_limit_sec")
     if (
         isinstance(raw_limit, int)
@@ -626,6 +629,7 @@ def execute_task(
     config_max_turns_source: str = "",
     low_confidence_threshold: float = 0.5,
     source_root_baseline: frozenset[str] | None = None,
+    task_timeout_override_seconds: int | None = None,
 ) -> TaskResult:
     """Execute a single task and return a TaskResult with trace data.
 
@@ -699,6 +703,7 @@ def execute_task(
     _task_timeout_seconds = _resolve_task_timeout_seconds(
         _task_meta,
         agent_config.timeout_seconds,
+        task_timeout_override_seconds,
     )
     if _task_timeout_seconds != agent_config.timeout_seconds:
         agent_config = dataclasses.replace(
@@ -1261,6 +1266,7 @@ def execute_config(
     config_max_turns_source: str = "",
     pristine_config: bool = False,
     containment_plan: ContainmentPlan | None = None,
+    task_timeout_override_seconds: int | None = None,
 ) -> list[CompletedTask]:
     """Execute all tasks for a single experiment configuration.
 
@@ -1295,6 +1301,10 @@ def execute_config(
     (CLAUDE.md, settings, skills, ...) from the per-slot config dir so
     arms are reproducible across operators. Both the sequential and
     parallel dispatch paths run the same isolate/cleanup lifecycle.
+
+    When *task_timeout_override_seconds* is set, it is an explicit operator
+    override and outranks each task's metadata ``time_limit_sec``. When it is
+    ``None``, valid task metadata remains a safety cap on the config timeout.
     """
     resolved_containment_plan = (
         containment_plan if containment_plan is not None else active_plan()
@@ -1399,6 +1409,7 @@ def execute_config(
                     config_max_turns_source=config_max_turns_source,
                     low_confidence_threshold=experiment_config.low_confidence_threshold,
                     source_root_baseline=source_root_baseline,
+                    task_timeout_override_seconds=task_timeout_override_seconds,
                 )
             # Stamp repeat_index on the completed task
             if repeat_index != 0:

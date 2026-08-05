@@ -803,6 +803,11 @@ def run_eval(
     """
     from codeprobe.tenant_lock import acquire_tenant_lock
 
+    # Keep explicit provenance separate from the resolved config value. The
+    # v0.7 defaults below may populate ``timeout``, but only a caller-supplied
+    # timeout outranks a mined task's metadata time_limit_sec.
+    task_timeout_override_seconds = timeout
+
     # R4 tenant lock: serialize concurrent run invocations within the
     # same tenant. See codeprobe.tenant_lock for details.
     _lock_cm = acquire_tenant_lock(tenant or "local", "run")
@@ -1444,6 +1449,7 @@ def run_eval(
                     config_max_turns_source=config_max_turns_source,
                     pristine_config=pristine_config,
                     containment_plan=containment_plan,
+                    task_timeout_override_seconds=task_timeout_override_seconds,
                 )
             except KeyboardInterrupt:
                 interrupted = True

@@ -70,3 +70,11 @@ def test_agent_config_table_covers_all_fields() -> None:
         f.name for f in dataclasses.fields(AgentConfig) if f"`{f.name}`" not in text
     ]
     assert not missing, f"docs/adapters.md is missing AgentConfig fields: {missing}"
+
+
+def test_timeout_precedence_and_sourcegraph_guardrail_are_documented() -> None:
+    """Pin the operator-visible behavior added after the kubernetes pilot."""
+    text = _doc_text()
+    assert "--timeout" in text
+    assert "time_limit_sec" in text
+    assert "mcp__sourcegraph__evaluator" in text

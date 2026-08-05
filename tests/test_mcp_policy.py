@@ -42,6 +42,14 @@ _MULTI_SERVER_CONFIG = {
     }
 }
 
+_GITHUB_CONFIG = {
+    "mcpServers": {
+        "github": {"type": "http", "url": "https://example.invalid/mcp"},
+    }
+}
+
+_SOURCEGRAPH_EVALUATOR = "mcp__sourcegraph__evaluator"
+
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -93,7 +101,13 @@ class TestStrictAutoRestrict:
         policy = resolve_tool_policy(cfg)
         assert policy.mode == "strict"
         assert policy.warning is None
-        assert policy.disallowed_tools == ["Grep", "Bash", "Glob", "Read"]
+        assert policy.disallowed_tools == [
+            "Grep",
+            "Bash",
+            "Glob",
+            "Read",
+            _SOURCEGRAPH_EVALUATOR,
+        ]
 
     def test_strict_default_allows_only_mcp_servers_and_write(self) -> None:
         cfg = ExperimentConfig(label="with-mcp", mcp_config=_SG_CONFIG)
@@ -111,6 +125,7 @@ class TestStrictAutoRestrict:
         assert "Write" in policy.allowed_tools
         # Read still blocked under strict.
         assert "Read" in policy.disallowed_tools
+        assert policy.disallowed_tools.count(_SOURCEGRAPH_EVALUATOR) == 1
 
     def test_pragmatic_allows_read(self) -> None:
         cfg = ExperimentConfig(
@@ -123,8 +138,18 @@ class TestStrictAutoRestrict:
         assert "Read" in policy.allowed_tools
         assert "Write" in policy.allowed_tools
         assert "mcp__sourcegraph" in policy.allowed_tools
-        assert policy.disallowed_tools == ["Grep", "Bash", "Glob"]
+        assert policy.disallowed_tools == [
+            "Grep",
+            "Bash",
+            "Glob",
+            _SOURCEGRAPH_EVALUATOR,
+        ]
         assert "Read" not in policy.disallowed_tools
+
+    def test_non_sourcegraph_server_does_not_gain_sourcegraph_block(self) -> None:
+        cfg = ExperimentConfig(label="with-github-mcp", mcp_config=_GITHUB_CONFIG)
+        policy = resolve_tool_policy(cfg)
+        assert _SOURCEGRAPH_EVALUATOR not in policy.disallowed_tools
 
 
 # ---------------------------------------------------------------------------
@@ -343,7 +368,13 @@ class TestApiAppliesPolicy:
 
         agent_config = captured["agent_config"]
         assert agent_config.allowed_tools == ["mcp__sourcegraph", "Write"]
-        assert agent_config.disallowed_tools == ["Grep", "Bash", "Glob", "Read"]
+        assert agent_config.disallowed_tools == [
+            "Grep",
+            "Bash",
+            "Glob",
+            "Read",
+            _SOURCEGRAPH_EVALUATOR,
+        ]
 
     def test_api_loose_mode_logs_warning_and_no_restriction(
         self,

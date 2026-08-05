@@ -585,6 +585,35 @@ def test_execute_task_uses_task_time_limit_from_metadata(tmp_path: Path) -> None
     assert adapter.run_calls[0][1].timeout_seconds == 7
 
 
+def test_execute_config_explicit_timeout_overrides_task_metadata(
+    tmp_path: Path,
+) -> None:
+    """An operator timeout must outrank a mined task's default time limit."""
+    task_dir = _make_task(tmp_path / "task-001", passing=True)
+    (task_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "id": "task-001",
+                "time_limit_sec": 300,
+                "verification": {"reward_type": "binary"},
+            }
+        )
+    )
+    adapter = FakeAdapter(stdout="output")
+
+    results = execute_config(
+        adapter=adapter,
+        task_dirs=[task_dir],
+        repo_path=Path("/repo"),
+        experiment_config=ExperimentConfig(label="baseline"),
+        agent_config=AgentConfig(timeout_seconds=1200),
+        task_timeout_override_seconds=1200,
+    )
+
+    assert results[0].status == "completed"
+    assert adapter.run_calls[0][1].timeout_seconds == 1200
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-only")
 def test_execute_task_metadata_time_limit_terminates_child_process_tree(
     tmp_path: Path,

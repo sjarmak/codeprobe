@@ -129,6 +129,14 @@ Consequence: an MCP arm under the default `mcp_mode=strict` is refused on
 adapters without tool-surface control (e.g. copilot); the honest path is
 `mcp_mode=loose`, which runs with a comparison-validity warning.
 
+For an auto-resolved Sourcegraph server named `sourcegraph`, both `strict`
+and `pragmatic` also add `mcp__sourcegraph__evaluator` to the blocklist. The
+tool executes arbitrary search scripts, and a non-interactive pilot showed
+that an unbounded query can abort the agent stream. An explicit
+`allowed_tools` or `disallowed_tools` list remains authoritative and skips
+all automatic policy, including this guardrail; `loose` mode also leaves the
+surface unrestricted by design.
+
 Declarations must match the adapter's actual `config.*` usage — declare
 what the code enforces today, not what the vendor CLI could support.
 
@@ -150,6 +158,14 @@ order (`src/codeprobe/adapters/protocol.py`):
 | `extra`            | `dict \| None`        | `None`      | Adapter-specific options                                                               |
 | `cwd`              | `str \| None`         | `None`      | Working directory for the agent                                                        |
 | `max_turns`        | `int \| None`         | `None`      | Hard cap on agent turns; `None` = uncapped. See [agent_config.md](agent_config.md).   |
+
+At execution time, a valid task-metadata `time_limit_sec` normally caps
+`AgentConfig.timeout_seconds`; the effective value is the smaller of the two.
+An explicit `codeprobe run --timeout N` is the highest-precedence operator
+override and replaces both the task-metadata cap and
+`experiment.json`'s `extra.timeout_seconds`. Without `--timeout`, the task
+limit remains active, including when the experiment or built-in default is
+larger.
 
 `allowed_tools` and `disallowed_tools` are the primary knobs for
 MCP/tool-config A/B experiments: when `allowed_tools` is an empty list the

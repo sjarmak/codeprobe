@@ -1019,7 +1019,10 @@ def mine(
     "--timeout",
     default=None,
     type=int,
-    help="Timeout in seconds per task (overrides experiment.json extra.timeout_seconds).",
+    help=(
+        "Highest-precedence timeout in seconds per task; overrides task metadata "
+        "time_limit_sec and experiment.json extra.timeout_seconds."
+    ),
 )
 @click.option(
     "--max-turns",

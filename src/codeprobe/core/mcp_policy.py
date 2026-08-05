@@ -45,6 +45,10 @@ DEFAULT_MCP_MODE = "strict"
 _HARD_BLOCKED_BUILTINS = ("Grep", "Bash", "Glob")
 # Strict additionally blocks local Read.
 _STRICT_BLOCKED_BUILTINS = (*_HARD_BLOCKED_BUILTINS, "Read")
+# Sourcegraph's evaluator executes arbitrary search scripts. Autonomous runs
+# cannot bound its query scope, so the generated Sourcegraph server surface
+# excludes it unless the operator pins an explicit tool policy.
+_SOURCEGRAPH_EVALUATOR_TOOL = "mcp__sourcegraph__evaluator"
 
 _LOOSE_WARNING = (
     "MCP tool-surface auto-restriction disabled (mcp_mode='loose'). "
@@ -146,6 +150,9 @@ def resolve_tool_policy(exp_config: ExperimentConfig) -> MCPToolPolicy:
     else:  # strict
         allowed = [*server_allow, "Write"]
         blocked = list(_STRICT_BLOCKED_BUILTINS)
+
+    if "mcp__sourcegraph" in server_allow:
+        blocked.append(_SOURCEGRAPH_EVALUATOR_TOOL)
 
     return MCPToolPolicy(
         allowed_tools=allowed,
