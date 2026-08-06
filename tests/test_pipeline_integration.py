@@ -288,6 +288,44 @@ class TestLLMGroundTruthValidation:
     @patch("codeprobe.core.llm.call_claude")
     @patch("codeprobe.core.llm.llm_available", return_value=True)
     @patch("codeprobe.mining.org_scale_scanner.get_tracked_files")
+    def test_rejected_key_files_are_reported_separately(
+        self,
+        mock_tracked: MagicMock,
+        mock_avail: MagicMock,
+        mock_call: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """A key that does not answer the question rejects on the key side.
+
+        The 8faa5715 shape: every sampled answer-key file is wrong for the
+        question the task ships. Callers gate on that ratio, so the two
+        sides cannot be conflated.
+        """
+        from codeprobe.core.llm import LLMResponse
+        from codeprobe.mining.org_scale import validate_ground_truth_sample
+
+        mock_tracked.return_value = frozenset(
+            {"src/old.py", "src/legacy.py", "src/also_old.py", "src/new.py"}
+        )
+        mock_call.return_value = LLMResponse(
+            text='{"disagreements": ["src/old.py", "src/legacy.py", "src/also_old.py"]}'
+        )
+
+        task = self._make_task()
+        result = validate_ground_truth_sample(task, [tmp_path])
+        assert result is not None
+        assert result.agreed is False
+        assert set(result.key_rejected) == {
+            "src/old.py",
+            "src/legacy.py",
+            "src/also_old.py",
+        }
+        assert result.non_key_rejected == ()
+        assert result.key_rejection_ratio == 1.0
+
+    @patch("codeprobe.core.llm.call_claude")
+    @patch("codeprobe.core.llm.llm_available", return_value=True)
+    @patch("codeprobe.mining.org_scale_scanner.get_tracked_files")
     def test_passes_when_llm_agrees(
         self,
         mock_tracked: MagicMock,
@@ -305,7 +343,9 @@ class TestLLMGroundTruthValidation:
 
         task = self._make_task()
         result = validate_ground_truth_sample(task, [tmp_path])
-        assert result is True
+        assert result is not None
+        assert result.agreed is True
+        assert result.key_rejection_ratio == 0.0
 
 
 # ---------------------------------------------------------------------------

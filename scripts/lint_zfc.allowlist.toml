@@ -63,18 +63,18 @@ reason = "Pre-existing: cross-repo-dep-trace task hardcodes difficulty='medium'.
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 1019
-line_end = 1038
+line_start = 1064
+line_end = 1085
 reason = "Pre-existing: org_scale symbol-reference-trace hardcodes difficulty='hard'."
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 1109
-line_end = 1127
+line_start = 1156
+line_end = 1177
 reason = "Pre-existing: org_scale type-hierarchy-consumers hardcodes difficulty='hard'."
 
 [[entry]]
 file = "src/codeprobe/mining/org_scale.py"
-line_start = 1256
-line_end = 1275
+line_start = 1305
+line_end = 1326
 reason = "Pre-existing: org_scale change-scope-audit hardcodes difficulty='hard'."

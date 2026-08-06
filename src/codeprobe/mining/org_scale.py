@@ -203,19 +203,15 @@ Family: {family_name}
 Description: {family_description}
 Repository: {repo_name}
 Language: {language}
-Files matched: {file_count}
+Answer key size: {file_count} files
 
 ## The answer key (read this before writing the question)
 This task is graded by file-set overlap (F1) against a FIXED answer key:
-the complete set of all {file_count} files in this repository where at least
-one of these regexes matches:
-{patterns}
+{answer_key_spec}
 
-Sample matches (first 10 of many — these are ILLUSTRATIVE ONLY, not the
+Sample entries (first 10 of many — these are ILLUSTRATIVE ONLY, not the
 scope of the question):
 {sample_hits}
-
-{multi_hop_context}
 
 ## Instructions
 Produce a JSON object with:
@@ -229,15 +225,15 @@ single-file grep suffices.
 The question must be answerable by listing file paths, one per line.
 
 CRITICAL — the question and the answer key must describe the SAME set.
-The sample matches above show only a handful of the matching files; do not
-let them narrow your question. Therefore:
+The samples above show only a handful of the entries; do not let them narrow
+your question. Therefore:
 - Ask repository-wide. Never scope to one file, one package, one directory,
   or one subsystem that merely appears in the samples.
 - Never ask for a single file, nor for a symbol/method/struct/field NAME —
   the answer is graded as a SET OF FILE PATHS, so any such question is
   unanswerable and scores zero no matter how well the agent works.
-- Describe the property the regexes capture in plain language, generally
-  enough that every matching file qualifies.
+- Describe the property the answer key captures in plain language, generally
+  enough that every file in it qualifies and no other file does.
 
 Do NOT include the answer, the file list, or the literal regexes in the
 question. The agent must find the files by navigating the codebase.
@@ -251,36 +247,48 @@ def _build_task_gen_prompt(
     language: str,
     multi_hop_files: frozenset[str] | None = None,
 ) -> str:
-    """Build the LLM prompt for generating a task question."""
-    sample_hits = "\n".join(
-        f"  {h.file_path}:{h.line_number} — {h.matched_text[:100]}"
-        for h in scan_result.hits[:10]
-    )
-    multi_hop_context = ""
+    """Build the LLM prompt for generating a task question.
+
+    The prompt describes the set the task is actually graded against. For a
+    multi-hop variant that is *multi_hop_files* (the callers), never the
+    scan's pattern matches: stating the wrong set here while also demanding
+    "the question and the answer key must describe the SAME set" is how a
+    caller-set key shipped with a marker-enumeration question.
+    """
+    # The regexes define the scan. Without them the model can only infer
+    # scope from the 10 samples, which is how questions ended up narrower
+    # than the set they are graded against.
+    patterns = "\n".join(f"  {p}" for p in scan_result.family.content_patterns)
+
     if multi_hop_files:
-        multi_hop_context = (
-            f"\n## Multi-Hop Extension\n"
-            f"The scanner also found {len(multi_hop_files)} files that "
-            f"reference symbols defined in the matched files. Ask the agent "
-            f"to find files that USE or CALL the patterns, not just the "
-            f"matches themselves.\n"
-            f"Sample caller files: {', '.join(list(multi_hop_files)[:5])}"
+        key_size = len(multi_hop_files)
+        answer_key_spec = (
+            f"the complete set of all {key_size} files in this repository that "
+            f"reference or call a symbol defined in a file where at least one "
+            f"of these regexes matches:\n{patterns}\n\n"
+            f"The files containing the matches themselves are NOT in the answer "
+            f"key — only the files that use those symbols."
         )
-    # The regexes define the answer key. Without them the model can only
-    # infer scope from the 10 samples, which is how questions ended up
-    # narrower than the set they are graded against.
-    patterns = "\n".join(
-        f"  {p}" for p in scan_result.family.content_patterns
-    )
+        sample_hits = "\n".join(f"  {f}" for f in sorted(multi_hop_files)[:10])
+    else:
+        key_size = len(scan_result.matched_files)
+        answer_key_spec = (
+            f"the complete set of all {key_size} files in this repository where "
+            f"at least one of these regexes matches:\n{patterns}"
+        )
+        sample_hits = "\n".join(
+            f"  {h.file_path}:{h.line_number} — {h.matched_text[:100]}"
+            for h in scan_result.hits[:10]
+        )
+
     return _TASK_GEN_PROMPT.format(
         family_name=scan_result.family.name,
         family_description=scan_result.family.description,
         repo_name=scan_result.repo_paths[0].name,
         language=language,
-        file_count=len(scan_result.matched_files),
-        patterns=patterns,
+        file_count=key_size,
+        answer_key_spec=answer_key_spec,
         sample_hits=sample_hits,
-        multi_hop_context=multi_hop_context,
     )
 
 
@@ -465,7 +473,9 @@ def generate_org_scale_task(
             issue_title=heading,
             issue_body=question,
             enrichment_source=enrichment_source,
+            # The key is the scan of this exact tree — pin the workspace here.
             ground_truth_commit=scan_result.commit_sha,
+            pin_parent_commit=False,
         ),
         verification=TaskVerification(
             type="oracle",
@@ -511,7 +521,9 @@ def _build_dep_trace_task(
                 f"import the package `{pkg_name}`. List the file paths, "
                 f"one per line."
             ),
+            # The key is the scan of this exact tree — pin the workspace here.
             ground_truth_commit=commit_sha,
+            pin_parent_commit=False,
         ),
         verification=TaskVerification(
             type="oracle",
@@ -578,7 +590,55 @@ def _mine_pattern_families(
 
     # Prefer harder tasks when we have more candidates than needed.
     candidates.sort(key=lambda t: _DIFFICULTY_RANK.get(t.metadata.difficulty, 1))
-    return candidates[:count]
+
+    # Check agreement lazily, hardest first, and stop once the quota is met —
+    # a task that will never ship is not worth a model call.
+    kept: list[Task] = []
+    for candidate in candidates:
+        if len(kept) >= count:
+            break
+        if _question_answers_key(candidate, repo_paths, tracked_files):
+            kept.append(candidate)
+    return kept
+
+
+def _question_answers_key(
+    task: Task,
+    repo_paths: list[Path],
+    tracked_files: frozenset[str],
+) -> bool:
+    """Return whether *task*'s question and answer key describe one set.
+
+    The two are generated by different code paths — a scanner builds the key,
+    a model writes the question — and nothing structural ties them together,
+    so a task can ship a valid key that answers a question it was never
+    asked. Sample the key, ask a model, and refuse the task when most of the
+    sample is rejected.
+
+    Only model-written questions are checked. A deterministic question is
+    built from the same family patterns the scanner used to build the key, so
+    the two cannot describe different sets. Also skipped (returns True) when
+    no model is available — an offline mine keeps working, it just does not
+    get this check.
+    """
+    if task.metadata.enrichment_source != "llm":
+        return True
+    check = validate_ground_truth_sample(
+        task, repo_paths, tracked_files=tracked_files
+    )
+    if check is None:
+        return True
+    if check.key_rejection_ratio < _ORACLE_DIVERGENCE_RATIO:
+        return True
+    logger.warning(
+        "skipping %s: %d of %d sampled answer-key files do not answer its own "
+        "question (%r) — the key and the question describe different sets",
+        task.id,
+        len(check.key_rejected),
+        len(check.key_sample),
+        task.metadata.issue_title,
+    )
+    return False
 
 
 def _mine_dep_trace(
@@ -1028,7 +1088,9 @@ def _mine_symbol_reference_tasks(
                     org_scale=True,
                     issue_title=heading,
                     issue_body=question,
+                    # The key is the scan of this exact tree — pin the workspace here.
                     ground_truth_commit=commit_sha,
+                    pin_parent_commit=False,
                     sg_repo=sg_repo,
                     oracle_backends_consensus=oracle_backends_consensus,
                 ),
@@ -1119,7 +1181,9 @@ def _mine_type_hierarchy_tasks(
                     org_scale=True,
                     issue_title=heading,
                     issue_body=question,
+                    # The key is the scan of this exact tree — pin the workspace here.
                     ground_truth_commit=commit_sha,
+                    pin_parent_commit=False,
                 ),
                 verification=TaskVerification(
                     type="oracle",
@@ -1265,7 +1329,9 @@ def _mine_change_scope_tasks(
                     org_scale=True,
                     issue_title=heading,
                     issue_body=question,
+                    # The key is the scan of this exact tree — pin the workspace here.
                     ground_truth_commit=commit_sha,
+                    pin_parent_commit=False,
                     sg_repo=sg_repo,
                     oracle_backends_consensus=oracle_backends_consensus,
                 ),
@@ -1523,20 +1589,64 @@ def _guess_repo_language(tracked_files: frozenset[str]) -> str:
     return guess_language_from_paths(tracked_files)
 
 
+@dataclass(frozen=True)
+class GroundTruthCheck:
+    """Model verdicts on a sampled slice of one task's answer key.
+
+    The two sides are kept apart because they mean different things. A
+    rejected *key* file says the shipped answer does not answer the shipped
+    question — the failure that produced a 0%-valid key (see
+    ``docs/investigations/kubernetes-mcp-pilot-timeout-bug/findings.md``). A
+    rejected *non-key* file only says the key may be missing something.
+    """
+
+    key_sample: tuple[str, ...]
+    key_rejected: tuple[str, ...]
+    non_key_sample: tuple[str, ...]
+    non_key_rejected: tuple[str, ...]
+
+    @property
+    def agreed(self) -> bool:
+        """True when the model disputes at most one sampled file overall."""
+        return (
+            len(self.key_rejected) + len(self.non_key_rejected)
+            <= _MAX_GT_DISAGREEMENTS
+        )
+
+    @property
+    def key_rejection_ratio(self) -> float:
+        """Fraction of the sampled answer key the model says does not belong."""
+        if not self.key_sample:
+            return 0.0
+        return len(self.key_rejected) / len(self.key_sample)
+
+
+# At most one disputed file across both sides still counts as agreement —
+# a single miss is model noise, not a broken key.
+_MAX_GT_DISAGREEMENTS = 1
+
+# Drop the task when the model rejects at least this share of its sampled
+# answer key. A policy threshold over delegated judgments, not a heuristic
+# score: the semantic call ("does this file answer this question") is the
+# model's; this only fixes how much dissent ends a task's life.
+_ORACLE_DIVERGENCE_RATIO = 0.5
+
+
 def validate_ground_truth_sample(
     task: Task,
     repo_paths: list[Path],
     *,
     sample_size: int = 5,
-) -> bool | None:
+    tracked_files: frozenset[str] | None = None,
+) -> GroundTruthCheck | None:
     """Best-effort LLM validation of ground truth for a single task.
 
-    Samples up to ``sample_size`` matches and ``sample_size`` non-matches from
-    the repo, asks the LLM to confirm whether each file should be in the ground
-    truth. Logs a warning if the LLM disagrees on more than 1 file.
+    Samples up to ``sample_size`` answer-key files and ``sample_size``
+    non-key files, then asks the model which of them are misclassified
+    given the task's question.
 
-    Returns True if validation passed, False if disagreements found,
-    None if LLM was unavailable (skipped silently).
+    Returns a :class:`GroundTruthCheck`, or ``None`` when no model was
+    available (skipped silently — mining must still work offline).
     """
     try:
         from codeprobe.core.llm import LLMError, LLMRequest, call_claude, llm_available
@@ -1548,12 +1658,16 @@ def validate_ground_truth_sample(
 
     gt_files = set(task.verification.oracle_answer)
     if not gt_files:
-        return True
+        return GroundTruthCheck((), (), (), ())
 
-    # Gather non-match files from tracked files
-    all_tracked: set[str] = set()
-    for rp in repo_paths:
-        all_tracked.update(get_tracked_files(rp))
+    # Non-key candidates. Callers that already listed the repo pass their set
+    # in rather than paying for another ``git ls-files`` per task.
+    if tracked_files is None:
+        all_tracked: set[str] = set()
+        for rp in repo_paths:
+            all_tracked.update(get_tracked_files(rp))
+    else:
+        all_tracked = set(tracked_files)
     non_matches = sorted(all_tracked - gt_files)
 
     import random
@@ -1587,16 +1701,25 @@ def validate_ground_truth_sample(
             LLMRequest(prompt=prompt, model="haiku", timeout_seconds=30)
         )
         data = json.loads(_strip_fences(response.text))
-        disagreements = data.get("disagreements", [])
-        if len(disagreements) > 1:
-            logger.warning(
-                "LLM ground truth validation: %d disagreements for task %s: %s",
-                len(disagreements),
-                task.id,
-                disagreements,
-            )
-            return False
-        return True
+        disputed = {str(f) for f in data.get("disagreements", [])}
     except (LLMError, json.JSONDecodeError, KeyError) as exc:
         logger.debug("LLM ground truth validation skipped: %s", exc)
         return None
+
+    check = GroundTruthCheck(
+        key_sample=tuple(match_sample),
+        key_rejected=tuple(f for f in match_sample if f in disputed),
+        non_key_sample=tuple(non_match_sample),
+        non_key_rejected=tuple(f for f in non_match_sample if f in disputed),
+    )
+    if not check.agreed:
+        logger.warning(
+            "LLM ground truth validation for task %s: %d/%d answer-key files "
+            "and %d/%d non-key files disputed",
+            task.id,
+            len(check.key_rejected),
+            len(check.key_sample),
+            len(check.non_key_rejected),
+            len(check.non_key_sample),
+        )
+    return check
