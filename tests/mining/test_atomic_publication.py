@@ -358,9 +358,25 @@ def test_stage_swap_during_publish_preserves_conflict_and_original_backup(
         nonlocal swapped
         if source.startswith(".codeprobe-stage-") and not swapped:
             swapped = True
+            # Build the replacement BEFORE freeing the original, so the
+            # filesystem cannot hand back the inode it just released.
+            # Rollback keys on (st_dev, st_ino): under ext4 (the CI
+            # runners) a remove-then-mkdir reuses the inode, the swapped
+            # directory is indistinguishable from the staged one it
+            # replaced, rollback succeeds, and this test's premise —
+            # an unreconcilable component — never happens. xfs allocates
+            # a fresh inode, which is why it passed locally and failed in
+            # CI (codeprobe-7b0e).
+            decoy = ".swapped-by-test"
+            os.mkdir(decoy, 0o700, dir_fd=parent_fd)
+            os.symlink(external, f"{decoy}/escape", dir_fd=parent_fd)
+            before_ino = os.stat(source, dir_fd=parent_fd).st_ino
             safe_output._remove_tree_at(parent_fd, source)
-            os.mkdir(source, 0o700, dir_fd=parent_fd)
-            os.symlink(external, f"{source}/escape", dir_fd=parent_fd)
+            os.rename(decoy, source, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            assert os.stat(source, dir_fd=parent_fd).st_ino != before_ino, (
+                "the swap must produce a distinct inode or the test is "
+                "asserting the wrong failure path"
+            )
         real_rename(parent_fd, source, destination)
 
     monkeypatch.setattr(
