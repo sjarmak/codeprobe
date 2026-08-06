@@ -40,7 +40,8 @@
     "src/codeprobe/snapshot/redact.py",
     "src/codeprobe/trace/content_policy.py",
     "src/codeprobe/trace/store.py",
-    "tests/lint/test_enterprise_security_docs.py"
+    "tests/lint/test_enterprise_security_docs.py",
+    "tests/mining"
   ],
   "local_artifact_paths": [
     {

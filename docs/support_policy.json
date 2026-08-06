@@ -16,8 +16,11 @@
     },
     "operating_system": {
       "supported": ["Ubuntu 22.04 LTS Linux"],
-      "preview": ["other glibc-based x86_64 Linux distributions"],
-      "unsupported": ["Windows", "macOS", "musl-only Linux"]
+      "preview": [
+        "other glibc-based x86_64 Linux distributions",
+        "macOS for the mining path only; CI runs tests/mining on macos-latest and exercises no other path there"
+      ],
+      "unsupported": ["Windows", "musl-only Linux"]
     },
     "architecture": {
       "supported": ["linux/amd64", "linux/arm64 OCI images"],

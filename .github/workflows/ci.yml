@@ -99,6 +99,35 @@ jobs:
           sys.exit(exit_code)
           PY
 
+  # macOS coverage for mining (codeprobe-ra12). Publication renames a staged
+  # directory into place with a descriptor-relative, fail-if-destination-exists
+  # rename, and that syscall is spelled differently per platform —
+  # renameat2/RENAME_NOREPLACE on Linux, renameatx_np/RENAME_EXCL on Darwin.
+  # The ubuntu matrix cannot exercise the Darwin branch, so a real macOS runner
+  # is what keeps the "Operating System :: MacOS :: MacOS X" classifier honest.
+  # Runs on every push to main, so no tag is ever cut from an unverified tree.
+  mining-macos:
+    name: mining (macos)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: pytest (mining)
+        run: pytest tests/mining/ -x
+        env:
+          CODEPROBE_TENANT: ci-${{ github.sha }}
+
   # The self-serve acceptance exit gate (codeprobe-f7rl.46): from nothing
   # but a built wheel in a fresh venv, proves a customer can install
   # skills, mine a fixture repo, run an MCP-vs-baseline A/B comparison,

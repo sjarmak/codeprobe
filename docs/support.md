@@ -15,7 +15,7 @@ supported path before investigating.
 | Dimension | Supported and tested | Preview | Unsupported |
 | --- | --- | --- | --- |
 | Python | CPython 3.11, 3.12, and 3.13 | None | 3.10 and older; 3.14 and newer |
-| Host OS | Ubuntu 22.04 LTS Linux | Other glibc-based x86_64 Linux | Windows, macOS, musl-only Linux |
+| Host OS | Ubuntu 22.04 LTS Linux | Other glibc-based x86_64 Linux; macOS for mining only | Windows, musl-only Linux |
 | Architecture | `linux/amd64` host and OCI; release OCI smoke on `linux/arm64` | arm64 host CLI | 32-bit and non-Linux OCI |
 | Container engine | Docker on the pinned Ubuntu 22.04 release runner | Podman 4.x/5.x on Linux | Engines without digest and read-only mount support |
 | Git | Git 2.34+ on Linux, full clone | None | Older Git; shallow clones for mining |
@@ -26,6 +26,14 @@ The wheel is pure Python, but that does not imply support on every platform
 where pip can unpack it. `requires-python` intentionally matches the tested
 3.11–3.13 range. Published OCI manifests cover amd64 and arm64; the
 release-blocking real-agent journey currently runs on amd64.
+
+macOS is preview, and only for mining. What earns it that status is one CI job
+(`mining-macos`) running `tests/mining` on a macOS runner, which covers the
+platform-specific piece — publication renames a staged directory into place
+with `renameatx_np`/`RENAME_EXCL` there instead of Linux's
+`renameat2`/`RENAME_NOREPLACE`. Nothing else is exercised on macOS: agent and
+scoring containers, the acceptance loop, and the release gates all run on the
+pinned Ubuntu runner. Treat any other macOS path as untested.
 
 ## Compatibility windows
 

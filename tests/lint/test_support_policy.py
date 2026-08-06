@@ -32,6 +32,47 @@ def test_support_policy_is_versioned_and_matches_package_metadata() -> None:
     assert "Development Status :: 3 - Alpha" not in project["classifiers"]
 
 
+# A PyPI classifier is a support claim to everyone who installs the wheel, so
+# it may not say more than docs/support_policy.json does. Classifiers are
+# coarse — they cannot express "preview" or "mining only" — which is exactly
+# why the two have to be checked against each other rather than maintained by
+# hand in two places.
+OS_CLASSIFIERS = {
+    "Operating System :: POSIX :: Linux": "linux",
+    "Operating System :: MacOS :: MacOS X": "macos",
+    "Operating System :: Microsoft :: Windows": "windows",
+}
+
+
+def test_os_classifiers_claim_no_more_than_the_support_policy() -> None:
+    policy = _policy()
+    platforms = policy["platforms"]
+    assert isinstance(platforms, dict)
+    operating_system = platforms["operating_system"]
+    assert isinstance(operating_system, dict)
+    classifiers = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"][
+        "classifiers"
+    ]
+
+    def _mentions(status: str, name: str) -> bool:
+        entries = operating_system[status]
+        assert isinstance(entries, list)
+        return any(name in str(entry).lower() for entry in entries)
+
+    # Only supported-or-preview decides the classifier. The unsupported list
+    # also names variants of an otherwise-carried OS ("musl-only Linux"), and
+    # a classifier is too coarse to exclude a variant, so it is the positive
+    # lists that have to agree.
+    for classifier, name in OS_CLASSIFIERS.items():
+        claimed = classifier in classifiers
+        allowed = _mentions("supported", name) or _mentions("preview", name)
+        assert claimed == allowed, (
+            f"{classifier} is {'present' if claimed else 'absent'} but the "
+            f"support policy lists {name} as "
+            f"{'unsupported' if not allowed else 'supported or preview'}"
+        )
+
+
 def test_policy_names_every_required_platform_and_status() -> None:
     policy = _policy()
     dimensions = policy["platforms"]
