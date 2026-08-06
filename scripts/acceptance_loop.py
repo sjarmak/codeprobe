@@ -95,7 +95,13 @@ DEFAULT_PRODUCER_MINE_COUNT: int = 3
 #: constant (not a hardcoded literal) so a test can point the producer at a
 #: stub/shim binary — e.g. ``(sys.executable, "-m", "codeprobe")`` — without
 #: a real install on PATH.
-DEFAULT_CODEPROBE_CMD: tuple[str, ...] = ("codeprobe",)
+#: The interpreter running this loop, not whatever ``codeprobe`` PATH resolves
+#: to. Release evidence has to come from the code being released: a bare
+#: ``codeprobe`` picks up any `uv tool` / `pipx` install that happens to be
+#: first on PATH, and on the machine that cut 0.14.0 that was a 0.14.0rc2
+#: tool — so the loop would have certified a version nobody was releasing,
+#: and the verdict would not have said so.
+DEFAULT_CODEPROBE_CMD: tuple[str, ...] = (sys.executable, "-m", "codeprobe")
 
 #: Default durable verdict history directory, repo-relative and gitignored.
 DEFAULT_HISTORY_DIRNAME: str = "acceptance/verdict-history"
