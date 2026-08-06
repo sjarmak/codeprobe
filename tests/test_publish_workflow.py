@@ -471,11 +471,13 @@ def _assert_supply_chain_run_commands(run_text: str) -> None:
     assert "--cap-drop=ALL" in run_text
     assert "--security-opt=no-new-privileges" in run_text
     assert "--pids-limit=256" in run_text
-    assert "--memory=4g" in run_text
-    assert "--memory-swap=4g" in run_text
+    assert "--memory=6g" in run_text
+    assert "--memory-swap=6g" in run_text
     assert "--cpus=2" in run_text
     assert "--read-only" in run_text
-    assert "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m" in run_text
+    # /tmp must hold a whole copy of the largest file in the scanned image;
+    # the agent image's Claude Code binary is ~275MB (ga36).
+    assert "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=2g" in run_text
     assert "--tmpfs /root/.cache:rw,nosuid,nodev,size=2g" in run_text
     assert "python -m codeprobe.sandbox.oci_attestations" in run_text
     assert "python -m codeprobe.sandbox.oci_release check-reuse" in run_text

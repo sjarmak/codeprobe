@@ -319,6 +319,11 @@ def _verify_image_signature(
 def _scan_image_platforms(
     identity: ImageIdentity, trivy_image: str, severity: str, runner: CommandRunner
 ) -> None:
+    # Scratch sizing (codeprobe-ga36): Trivy copies each analyzed file into
+    # TMPDIR whole, and the agent image ships the ~275MB Claude Code native
+    # binary, which a 256m /tmp could not hold. tmpfs pages count against the
+    # container's memory cgroup, so 2g + 2g needs more than the old 4g cap.
+    # Keep identical to the scan step in .github/workflows/publish-images.yml.
     for platform in REQUIRED_PLATFORMS:
         runner(
             [
@@ -328,12 +333,12 @@ def _scan_image_platforms(
                 "--cap-drop=ALL",
                 "--security-opt=no-new-privileges",
                 "--pids-limit=256",
-                "--memory=4g",
-                "--memory-swap=4g",
+                "--memory=6g",
+                "--memory-swap=6g",
                 "--cpus=2",
                 "--read-only",
                 "--tmpfs",
-                "/tmp:rw,noexec,nosuid,nodev,size=256m",
+                "/tmp:rw,noexec,nosuid,nodev,size=2g",
                 "--tmpfs",
                 "/root/.cache:rw,nosuid,nodev,size=2g",
                 "-e",

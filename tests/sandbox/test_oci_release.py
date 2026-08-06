@@ -369,11 +369,13 @@ def _assert_hardened_trivy_command(command: list[str]) -> None:
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--pids-limit=256",
-        "--memory=4g",
-        "--memory-swap=4g",
+        "--memory=6g",
+        "--memory-swap=6g",
         "--cpus=2",
         "--read-only",
-        "/tmp:rw,noexec,nosuid,nodev,size=256m",
+        # /tmp must hold a whole copy of the largest file in the scanned
+        # image; the agent image's Claude Code binary is ~275MB (ga36).
+        "/tmp:rw,noexec,nosuid,nodev,size=2g",
         "/root/.cache:rw,nosuid,nodev,size=2g",
     ):
         assert option in command

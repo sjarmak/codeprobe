@@ -302,6 +302,17 @@ jobs:
           esac
           echo "digest_ref=${IMAGE_REF}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
+      # Scratch sizing (codeprobe-ga36): Trivy copies each file it analyzes
+      # into TMPDIR whole, and the agent image ships the Claude Code native
+      # binary at ~275MB (@anthropic-ai/claude-code-linux-{x64,arm64}). A
+      # 256m /tmp could not hold one copy of it, so the scan died with
+      # ENOSPC on /tmp/trivy-*/cached-file-* — a container tmpfs limit, not
+      # runner disk. tmpfs pages are charged to the container's memory
+      # cgroup, so /tmp (2g) plus /root/.cache (2g) alone reached the old 4g
+      # cap; 6g leaves headroom for Trivy itself and fits the 16GB runner.
+      # Keep these limits identical to _scan_image_platforms in
+      # src/codeprobe/sandbox/oci_release.py, which scans the same images on
+      # the reuse path.
       - name: Vulnerability policy scan for each platform
         env:
           DIGEST_REF: ${{ steps.identity.outputs.digest_ref }}
@@ -313,11 +324,11 @@ jobs:
               --cap-drop=ALL \
               --security-opt=no-new-privileges \
               --pids-limit=256 \
-              --memory=4g \
-              --memory-swap=4g \
+              --memory=6g \
+              --memory-swap=6g \
               --cpus=2 \
               --read-only \
-              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=256m \
+              --tmpfs /tmp:rw,noexec,nosuid,nodev,size=2g \
               --tmpfs /root/.cache:rw,nosuid,nodev,size=2g \
               -e TRIVY_USERNAME \
               -e TRIVY_PASSWORD \
