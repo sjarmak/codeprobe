@@ -486,15 +486,29 @@ def test_rollback_preserves_unrelated_concurrent_final(
         real_rename(parent_fd, source, destination)
         if source.startswith(".codeprobe-stage-") and not replaced:
             replaced = True
-            safe_output._remove_tree_at(parent_fd, destination)
-            os.mkdir(destination, 0o700, dir_fd=parent_fd)
+            # Same inode-reuse hazard as the stage-swap test: build the
+            # concurrent directory before freeing the published one, or
+            # ext4 hands back the same inode, rollback cannot tell this
+            # apart from what it published, and nothing raises at all
+            # (codeprobe-7b0e).
+            decoy = ".concurrent-by-test"
+            os.mkdir(decoy, 0o700, dir_fd=parent_fd)
             concurrent_fd = os.open(
-                f"{destination}/concurrent.txt",
+                f"{decoy}/concurrent.txt",
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL,
                 0o600,
                 dir_fd=parent_fd,
             )
             os.close(concurrent_fd)
+            before_ino = os.stat(destination, dir_fd=parent_fd).st_ino
+            safe_output._remove_tree_at(parent_fd, destination)
+            os.rename(
+                decoy, destination, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
+            )
+            assert os.stat(destination, dir_fd=parent_fd).st_ino != before_ino, (
+                "the concurrent replacement must have a distinct inode or "
+                "the test is asserting the wrong failure path"
+            )
 
     monkeypatch.setattr(
         safe_output,
