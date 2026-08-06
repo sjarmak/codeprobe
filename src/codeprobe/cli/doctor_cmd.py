@@ -146,6 +146,45 @@ def _check_user_home_skills(*, required: bool = True) -> CheckResult:
     return result if required else _optional_result(result)
 
 
+def _check_installed_skill_version() -> CheckResult:
+    """Flag installed skills left behind by a package upgrade (codeprobe-ybw7).
+
+    Always advisory: stale skills degrade agent guidance but do not stop
+    the CLI, and an unstamped tree (installed before stamping, or never
+    installed) is a pass.
+    """
+    from codeprobe.cli.skills_cmd import installed_skill_drift
+
+    drift = installed_skill_drift()
+    if not drift:
+        return CheckResult(
+            name="installed skills up to date",
+            passed=True,
+            detail="no version drift detected in ./.claude/skills or ~/.claude/skills",
+            fix="",
+            warn_only=True,
+        )
+    ahead = [d for d in drift if d.direction == "ahead"]
+    detail = "; ".join(
+        f"{d.dest}: skills stamped {d.stamped}, CLI is {d.package}" for d in drift
+    )
+    # Re-running install against a newer skill tree would overwrite it with
+    # the older packaged copy, so the fix there is to upgrade the package.
+    fix = (
+        "Run 'pip install -U codeprobe' — the skills are newer than the "
+        "CLI, and 'codeprobe skills install' would downgrade them."
+        if ahead
+        else "Run 'codeprobe skills install' to refresh them."
+    )
+    return CheckResult(
+        name="installed skills up to date",
+        passed=False,
+        detail=detail,
+        fix=fix,
+        warn_only=True,
+    )
+
+
 def _check_container_images(*, required: bool) -> CheckResult:
     from codeprobe.core import sandbox as codeprobe_sandbox
     from codeprobe.sandbox import runner as container_runner
@@ -360,6 +399,7 @@ def run_checks(
             selected_agent=selected_agent,
         ),
         _check_user_home_skills(required=selected_agent == "claude"),
+        _check_installed_skill_version(),
     ]
 
 

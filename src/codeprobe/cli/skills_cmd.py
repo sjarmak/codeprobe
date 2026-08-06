@@ -40,11 +40,18 @@ from pathlib import Path
 
 import click
 
+from codeprobe import __version__
+from codeprobe.cli._banner import render_banner, should_print_banner
 from codeprobe.cli._error_handler import CodeprobeGroup
 from codeprobe.cli._output_helpers import add_json_flags, emit_envelope, resolve_mode
 from codeprobe.cli.errors import DiagnosticError, PrescriptiveError
 
 __all__ = ["skills"]
+
+# Written at the root of the destination skills tree so a later
+# ``pip install -U codeprobe`` can be detected as skill drift: the copied
+# SKILL.md files are inert data and never update themselves.
+_VERSION_STAMP = ".codeprobe_version"
 
 # Old user-home skill names → canonical replacement skill name.
 USER_HOME_SKILL_MAP: dict[str, str] = {
@@ -167,6 +174,135 @@ def _plan_skill_install(
         else:
             conflicts.append(name)
     return plan, conflicts
+
+
+@dataclass(frozen=True)
+class SkillVersionDrift:
+    """A destination whose installed skills predate (or postdate) the CLI."""
+
+    dest: Path
+    stamped: str
+    package: str
+    direction: str  # "behind" | "ahead"
+
+
+def _stamp_path(dest: Path) -> Path:
+    return dest / _VERSION_STAMP
+
+
+def _write_version_stamp(dest: Path, version: str) -> Path:
+    """Record which codeprobe version materialized the skills in ``dest``."""
+    target = _stamp_path(dest)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(f"{version}\n", encoding="utf-8")
+    return target
+
+
+def read_version_stamp(dest: Path) -> str | None:
+    """Return the stamped version for ``dest``, or None when unstamped.
+
+    An unreadable or empty stamp is reported as absent rather than as an
+    error: the stamp is advisory metadata, and a skill tree installed by
+    a pre-stamp codeprobe is a legitimate state.
+    """
+    try:
+        text = _stamp_path(dest).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text.strip() or None
+
+
+def _version_tuple(raw: str) -> tuple[int, ...]:
+    """Parse the leading numeric release components of a version string.
+
+    ``"0.14.0rc2"`` → ``(0, 14, 0)``. Pre-release suffixes are dropped,
+    so they compare equal to their release — which is why callers treat
+    an equal tuple with unequal text as "behind" (re-run install) rather
+    than guessing a direction.
+    """
+    parts: list[int] = []
+    for chunk in raw.split(".")[:3]:
+        digits = ""
+        for char in chunk:
+            if not char.isdigit():
+                break
+            digits += char
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def skill_version_drift(
+    dest: Path, package_version: str | None = None
+) -> SkillVersionDrift | None:
+    """Compare ``dest``'s version stamp against the running package.
+
+    Returns None when the stamp is absent (nothing installed here, or
+    installed before stamping existed) or matches. ``direction`` is
+    ``"ahead"`` only when the stamp parses as a strictly newer release —
+    that case must NOT advise re-running install, which would silently
+    downgrade the skills.
+    """
+    package = package_version if package_version is not None else __version__
+    stamped = read_version_stamp(dest)
+    if stamped is None or stamped == package:
+        return None
+    direction = (
+        "ahead" if _version_tuple(stamped) > _version_tuple(package) else "behind"
+    )
+    return SkillVersionDrift(
+        dest=dest, stamped=stamped, package=package, direction=direction
+    )
+
+
+def installed_skill_drift(
+    roots: list[Path] | None = None, package_version: str | None = None
+) -> list[SkillVersionDrift]:
+    """Report drift across the two destinations ``install`` writes to.
+
+    Defaults to the project-local ``./.claude/skills`` and the user-home
+    ``~/.claude/skills`` — the ``--dest`` escape hatch is deliberately
+    not tracked, since codeprobe has no way to discover those paths later.
+    """
+    candidates = (
+        roots
+        if roots is not None
+        else [Path.cwd() / ".claude" / "skills", _user_skills_root()]
+    )
+    found = [skill_version_drift(root, package_version) for root in candidates]
+    return [drift for drift in found if drift is not None]
+
+
+def _next_steps(dest: Path, count: int) -> list[str]:
+    """Lines telling the operator what to do with the skills just copied.
+
+    The skills carry ``user-invocable: false`` — they are matched by
+    description, not typed as slash commands — so the call to action is
+    phrased as a request to the agent, not a command to run.
+    """
+    lines = [
+        "",
+        f"Done — {count} skill(s) at {dest}",
+        "",
+        "Open Claude Code in this repo and ask for what you want:",
+        '  "mine eval tasks from this repo"',
+        '  "run the mined tasks against claude and codex"',
+        '  "interpret the last run"',
+        "",
+    ]
+    if dest.name == "skills" and dest.parent.name == ".claude":
+        lines.append(
+            "A new Claude Code session picks these up automatically; they are "
+            "model-invoked, not slash commands."
+        )
+    else:
+        lines.append(
+            "Note: Claude Code only loads skills from ./.claude/skills or "
+            "~/.claude/skills — copy this directory into one of those to "
+            "activate them."
+        )
+    return lines
 
 
 def _is_deprecated_stub(skill_md: Path) -> bool:
@@ -346,6 +482,11 @@ def install_cmd(
             step.target.parent.mkdir(parents=True, exist_ok=True)
             step.target.write_text(step.content, encoding="utf-8")
 
+    # Stamped on every successful install, including the all-unchanged
+    # re-run: that is exactly the path an upgraded package takes to clear
+    # its own drift warning.
+    stamp = _write_version_stamp(dest, __version__)
+
     emit_envelope(
         command="skills install",
         data={
@@ -356,11 +497,21 @@ def install_cmd(
                 s.name for s in plan if s.action == "overwritten"
             ],
             "skill_count": len(plan),
+            "version": __version__,
+            "stamp_path": str(stamp),
         },
     )
     if out_mode.mode == "pretty":
+        # Printed after the envelope, not before it, so the human-facing
+        # block (banner → what was copied → what to do next) stays
+        # contiguous at the end of the output instead of being split by
+        # the machine-readable line that every command also emits.
+        if should_print_banner(mode=out_mode.mode, use_rich=out_mode.use_rich):
+            click.echo(render_banner(__version__))
         for step in plan:
             click.echo(f"  {step.action:>20s}  {step.name} → {step.target}")
+        for line in _next_steps(dest, len(plan)):
+            click.echo(line)
 
 
 @skills.command("migrate")

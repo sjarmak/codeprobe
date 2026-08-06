@@ -28,6 +28,17 @@
   editing task, and states up front that bound tool names come from the
   runtime tool list rather than from the capability names it lists.
 
+### Skill onboarding
+
+- `codeprobe skills install` renders a banner and tells the operator what to
+  ask their agent for next, instead of ending on a list of copied paths. The
+  banner is TTY-only and never enters the JSON envelope path.
+- Install now stamps the destination with the version that wrote it, and
+  `codeprobe doctor` warns when installed skills drift from the running CLI —
+  the copies are inert, so `pip install -U codeprobe` silently left stale
+  guidance in place. Skills stamped *newer* than the package are told to
+  upgrade the package rather than re-run install, which would downgrade them.
+
 ## 0.14.0rc2 (2026-07-29)
 
 ### Evaluation and authentication integrity

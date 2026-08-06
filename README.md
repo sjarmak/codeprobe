@@ -150,6 +150,9 @@ Prefer driving codeprobe through a coding agent instead? `codeprobe skills insta
 puts the packaged skills (`codeprobe-mine`, `codeprobe-run`, `codeprobe-interpret`,
 `codeprobe-calibrate`, `codeprobe-check-infra`) into `.claude/skills/`; see
 [docs/workflows/with-agents.md](docs/workflows/with-agents.md) for the workflow.
+The copies are inert files, so upgrading the package does not update them —
+install stamps the destination with its version and `codeprobe doctor` warns
+when the two drift apart. Re-run `codeprobe skills install` after upgrading.
 
 Prerequisites: CPython 3.11–3.13, Git 2.34+, and one coding agent. The support
 status below applies to repository-edit comparisons.
