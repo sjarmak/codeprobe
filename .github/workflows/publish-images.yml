@@ -41,6 +41,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The authority check below imports tomllib, which is 3.11+. Without
+      # this step the job runs the ubuntu-22.04 default interpreter (3.10)
+      # and dies with ModuleNotFoundError before any image is built, which
+      # is why this workflow had never completed a run. Every other job here
+      # already pins 3.11 the same way.
+      # actions/setup-python v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+
       - name: Authorize tag target from main
         id: authority
         run: |
