@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 (2026-08-06)
 
 ### Org-scale answer-key integrity
 
@@ -42,6 +42,12 @@
   installed into. Each skill already inlines the envelope shape and its closed
   set of error codes, and the runtime envelope's `error` object carries the
   message and remediation.
+- The stage-swap containment test no longer depends on filesystem inode reuse.
+  It asserted an exception group that only forms when rollback also fails,
+  which required the swapped-in directory to differ in `(st_dev, st_ino)` from
+  the staged one — true on xfs, false on ext4, where the freed inode comes
+  straight back. Main's CI had been red on this since 2026-07-29, which also
+  blocked the release train.
 - `codeprobe skills install` renders a banner and tells the operator what to
   ask their agent for next, instead of ending on a list of copied paths. The
   banner is TTY-only and never enters the JSON envelope path.

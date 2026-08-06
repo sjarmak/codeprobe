@@ -114,7 +114,7 @@
   ],
   "images": [
     {
-      "name": "codeprobe-agent:0.14.0rc2",
+      "name": "codeprobe-agent:0.14.0",
       "constant": "DEFAULT_AGENT_IMAGE",
       "dockerfile": "src/codeprobe/sandbox/Dockerfile.agent",
       "base_image_name": "node:22-bookworm-slim",
@@ -134,7 +134,7 @@
       }
     },
     {
-      "name": "codeprobe-scoring:0.14.0rc2",
+      "name": "codeprobe-scoring:0.14.0",
       "constant": "DEFAULT_SCORING_IMAGE",
       "dockerfile": "src/codeprobe/sandbox/Dockerfile.scoring",
       "base_image_name": "debian:bookworm-slim",
