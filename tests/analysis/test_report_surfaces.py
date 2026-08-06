@@ -164,3 +164,72 @@ class TestJsonVerdict:
         assert c_json["verdict"] == c.verdict
         assert c_json["verdict"] == "alpha wins"
         assert c_json["verdict"] in c_json["summary"]
+
+
+# ---------------------------------------------------------------------------
+# Precision / recall on file-list oracle runs
+# ---------------------------------------------------------------------------
+
+
+def _oracle_task(
+    task_id: str, precision: float, recall: float, f1: float
+) -> CompletedTask:
+    return CompletedTask(
+        task_id=task_id,
+        automated_score=f1,
+        duration_seconds=10.0,
+        scoring_details={"precision": precision, "recall": recall, "f1": f1},
+    )
+
+
+def _oracle_report() -> Report:
+    """Two arms at precision parity whose F1 gap is entirely recall."""
+    wide = ConfigResults(
+        config="baseline",
+        completed=[
+            _oracle_task("t1", 0.50, 0.83, 0.62),
+            _oracle_task("t2", 0.52, 0.81, 0.63),
+        ],
+    )
+    narrow = ConfigResults(
+        config="with-mcp",
+        completed=[
+            _oracle_task("t1", 0.48, 0.45, 0.46),
+            _oracle_task("t2", 0.46, 0.44, 0.45),
+        ],
+    )
+    return generate_report("oracle-exp", [wide, narrow])
+
+
+def test_text_rankings_show_precision_and_recall() -> None:
+    text = format_text_report(_oracle_report())
+
+    assert "(P 0.51 / R 0.82)" in text
+    assert "(P 0.47 / R 0.45)" in text
+
+
+def test_html_rankings_show_precision_and_recall() -> None:
+    html = format_html_report(_oracle_report())
+
+    assert "(P 0.51 / R 0.82)" in html
+
+
+def test_json_summaries_carry_precision_and_recall() -> None:
+    payload = json.loads(format_json_report(_oracle_report()))
+    by_label = {s["label"]: s for s in payload["summaries"]}
+
+    assert by_label["baseline"]["mean_precision"] == pytest.approx(0.51)
+    assert by_label["baseline"]["mean_recall"] == pytest.approx(0.82)
+
+
+def test_binary_runs_omit_precision_and_recall() -> None:
+    """A run without those metrics must not render a fabricated 0.00."""
+    report = generate_report(
+        "binary-exp", [_arm("arm-a", [1.0, 0.0]), _arm("arm-b", [1.0, 1.0])]
+    )
+
+    text = format_text_report(report)
+    payload = json.loads(format_json_report(report))
+
+    assert "/ R " not in text
+    assert all(s["mean_precision"] is None for s in payload["summaries"])

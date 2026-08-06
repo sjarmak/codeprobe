@@ -484,6 +484,11 @@ def format_text_report(report: Report) -> str:
             )
         else:
             headline = f"{s.pass_rate:.0%} pass rate"
+        # F1-style scorers report both halves; show them, because "wrong" and
+        # "right but incomplete" score alike and are fixed differently.
+        pr_suffix = ""
+        if s.mean_precision is not None and s.mean_recall is not None:
+            pr_suffix = f" (P {s.mean_precision:.2f} / R {s.mean_recall:.2f})"
         # codeprobe-9xrl: when any trials were lost to OAuth quota,
         # surface the count beside the headline so readers don't
         # interpret the 0-scored quota errors as task-quality failures.
@@ -535,7 +540,7 @@ def format_text_report(report: Report) -> str:
                 f" ⚠ {s.sample_size_warning} — interpret CIs with caution"
             )
         lines.append(
-            f"{rc.rank}. {rc.label} — {headline}{dual_suffix}{n_suffix}, "
+            f"{rc.rank}. {rc.label} — {headline}{pr_suffix}{dual_suffix}{n_suffix}, "
             f"{cost_str}{quota_suffix}{infra_suffix}{errored_suffix}"
             f"{abandoned_suffix}{partial_suffix}{small_n_suffix} — "
             f"{rc.recommendation}"
@@ -1066,6 +1071,7 @@ border-radius:4px;margin-bottom:1rem;font-weight:600}
 .small-sample-badge{background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600}
 .ci-metric-label{color:var(--muted);font-size:.75rem}
+.muted{color:var(--muted);font-size:.8rem}
 .warn-badge{display:inline-block;background:var(--warning);color:#000;padding:2px 8px;
 border-radius:4px;font-size:.8rem;font-weight:600;margin:1px 0}
 .validity-fail{background:#f8d7da;border:1px solid var(--danger);color:#842029;
@@ -1173,6 +1179,12 @@ summary{cursor:pointer;font-weight:600;padding:.4rem 0}
         else:
             pass_cell = _fmt_pct(s.pass_rate)
             mean_cell = _fmt_score(s.mean_score)
+            # Same reason as the text report: F1 hides which half moved.
+            if s.mean_precision is not None and s.mean_recall is not None:
+                mean_cell += (
+                    f' <span class="muted">(P {s.mean_precision:.2f} / '
+                    f"R {s.mean_recall:.2f})</span>"
+                )
         # codeprobe-f7rl.9: per-arm N — distinct tasks over expected. Em dash
         # when no expectation was supplied (report built without total_tasks).
         if s.tasks_expected is not None:

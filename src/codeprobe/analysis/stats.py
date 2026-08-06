@@ -305,6 +305,24 @@ def _choose_summary_ci(
     return lo, hi, "continuous"
 
 
+def scoring_metric(task: CompletedTask, key: str) -> float | None:
+    """Read a numeric metric out of a trial's ``scoring_details``.
+
+    Returns ``None`` when the scorer did not report it, so callers can tell
+    "not measured" from "measured as zero".
+    """
+    value = (task.scoring_details or {}).get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _mean_metric(tasks: Sequence[CompletedTask], key: str) -> float | None:
+    """Mean of *key* over the tasks that reported it, or ``None`` if none did."""
+    values = [v for v in (scoring_metric(t, key) for t in tasks) if v is not None]
+    return statistics.mean(values) if values else None
+
+
 def _dominant_billing_model(tasks: Sequence[CompletedTask]) -> str:
     """Return the most common cost_model among tasks, or 'unknown'."""
     models = [t.cost_model for t in tasks if t.cost_model != "unknown"]
@@ -420,6 +438,15 @@ class ConfigSummary:
     # calculated / estimated / unavailable), so every summary surface can show
     # where its cost number came from. Treated as immutable after construction.
     cost_source_counts: dict[str, int] = field(default_factory=dict)
+    # Mean precision / recall over the reward-population trials whose scorer
+    # reported them (file-list oracles do; binary scorers do not), ``None``
+    # when no trial did. F1 alone cannot distinguish "wrong" from "right but
+    # incomplete", and those call for opposite fixes — an arm can lose on F1
+    # while matching its comparator's precision exactly, which is a statement
+    # about coverage, not accuracy. Never defaulted to 0.0: an absent metric
+    # is not a zero one.
+    mean_precision: float | None = None
+    mean_recall: float | None = None
     # Fraction of SCORABLE trials (the reward population, ``is_scorable_run``)
     # that carry a non-None ``cost_usd``; 0.0 when no scorable trials exist.
     # ``total_cost_usd`` sums whatever costs exist, so an arm covered on 2/10
@@ -625,6 +652,8 @@ def summarize_config(
         infra_failure_count=infra_count,
         errored_count=errored_count,
         abandoned_surface_count=abandoned_count,
+        mean_precision=_mean_metric(reward_tasks, "precision"),
+        mean_recall=_mean_metric(reward_tasks, "recall"),
         cost_source_counts=cost_source_counts,
         cost_coverage=cost_coverage,
     )
@@ -662,6 +691,10 @@ def summarize_completed_tasks(
     durations: list[float] = []
     costs: list[float] = []
     billing_models: list[str] = []
+    # Reward-population precision/recall, kept only where the scorer reported
+    # them — mirrors summarize_config()'s _mean_metric over reward_tasks.
+    precisions: list[float] = []
+    recalls: list[float] = []
     # Cost provenance accumulators — mirror summarize_config()'s tally over
     # ALL trials and coverage over scorable trials (codeprobe-f7rl.35).
     cost_source_counter: Counter[str] = Counter()
@@ -707,6 +740,12 @@ def summarize_completed_tasks(
             durations.append(task.duration_seconds)
             if task.cost_usd is not None:
                 covered_scorable += 1
+            precision = scoring_metric(task, "precision")
+            if precision is not None:
+                precisions.append(precision)
+            recall = scoring_metric(task, "recall")
+            if recall is not None:
+                recalls.append(recall)
 
         cost_source_counter[task.cost_source] += 1
         if task.cost_usd is not None:
@@ -798,6 +837,8 @@ def summarize_completed_tasks(
         infra_failure_count=infra_count,
         errored_count=total - scored_total,
         abandoned_surface_count=abandoned_count,
+        mean_precision=statistics.mean(precisions) if precisions else None,
+        mean_recall=statistics.mean(recalls) if recalls else None,
         cost_source_counts=dict(cost_source_counter),
         cost_coverage=covered_scorable / scored_total if scored_total else 0.0,
     )

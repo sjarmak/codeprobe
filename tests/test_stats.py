@@ -699,3 +699,73 @@ class TestHolmAdjusted:
     def test_empty_and_all_none(self) -> None:
         assert holm_adjusted([]) == []
         assert holm_adjusted([None, None]) == [None, None]
+
+
+class TestPrecisionRecallSummary:
+    """File-list oracles report the two halves of F1, not just F1.
+
+    In the kubernetes MCP pilot both arms sat at precision parity and the
+    whole F1 gap was recall — "correct but incomplete" — which the single
+    headline number hid.
+    """
+
+    def _f1_task(
+        self, task_id: str, precision: float, recall: float, f1: float
+    ) -> CompletedTask:
+        return _task(
+            task_id,
+            f1,
+            scoring_details={"precision": precision, "recall": recall, "f1": f1},
+        )
+
+    def test_summarize_config_averages_both(self) -> None:
+        cr = ConfigResults(
+            config="cfg",
+            completed=[
+                self._f1_task("t1", 0.4, 0.8, 0.53),
+                self._f1_task("t2", 0.6, 0.4, 0.48),
+            ],
+        )
+        summary = summarize_config(cr)
+
+        assert summary.mean_precision == pytest.approx(0.5)
+        assert summary.mean_recall == pytest.approx(0.6)
+
+    def test_single_pass_summarizer_matches(self) -> None:
+        tasks = [
+            self._f1_task("t1", 0.4, 0.8, 0.53),
+            self._f1_task("t2", 0.6, 0.4, 0.48),
+        ]
+        streamed = summarize_completed_tasks("cfg", iter(tasks))
+        buffered = summarize_config(ConfigResults(config="cfg", completed=tasks))
+
+        assert streamed.mean_precision == buffered.mean_precision
+        assert streamed.mean_recall == buffered.mean_recall
+
+    def test_absent_for_binary_scorers(self) -> None:
+        """A run with no precision/recall reports None, never a fake 0.0."""
+        cr = ConfigResults(
+            config="cfg",
+            completed=[_task("t1", 1.0, scoring_details={"passed": True})],
+        )
+        summary = summarize_config(cr)
+
+        assert summary.mean_precision is None
+        assert summary.mean_recall is None
+
+    def test_excluded_trials_do_not_contribute(self) -> None:
+        """Only the reward population counts — same rule as mean_score."""
+        errored = CompletedTask(
+            task_id="t2",
+            automated_score=0.0,
+            status="error",
+            scoring_details={"precision": 0.0, "recall": 0.0},
+        )
+        cr = ConfigResults(
+            config="cfg",
+            completed=[self._f1_task("t1", 0.8, 0.6, 0.69), errored],
+        )
+        summary = summarize_config(cr)
+
+        assert summary.mean_precision == pytest.approx(0.8)
+        assert summary.mean_recall == pytest.approx(0.6)
