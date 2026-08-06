@@ -108,7 +108,7 @@ def test_publish_job_requires_combined_release_gate() -> None:
     publish = jobs["publish"]
     assert isinstance(gate, dict)
     assert isinstance(publish, dict)
-    assert gate["needs"] == ["e2e-enterprise"]
+    assert gate["needs"] == ["test", "e2e-self-serve", "e2e-enterprise"]
     assert publish["needs"] == ["gate"]
 
     gate_steps = gate["steps"]
@@ -323,7 +323,10 @@ def test_oci_image_workflow_pins_actions_scanner_and_base_images() -> None:
 def _expected_action_counts() -> dict[str, int]:
     return {
         "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1": 5,
-        "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 4,
+        # 5, not 4: authorize-release gained one so its tomllib import has a
+        # 3.11 interpreter. Without it the job died on ModuleNotFoundError and
+        # this workflow had never completed a run (codeprobe-7b0e neighbour).
+        "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97": 5,
         "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9": 4,
         "oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d": 4,
         "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6": 3,
@@ -339,7 +342,7 @@ def _expected_action_counts() -> dict[str, int]:
 
 def _assert_workflow_tool_pins(workflow_text: str) -> None:
     assert workflow_text.count("# actions/checkout v7.0.1") == 5
-    assert workflow_text.count("# actions/setup-python v7.0.0") == 4
+    assert workflow_text.count("# actions/setup-python v7.0.0") == 5
     assert workflow_text.count("# astral-sh/setup-uv v9.0.0") == 4
     assert workflow_text.count("# oras-project/setup-oras v2.0.1") == 4
     assert workflow_text.count("# sigstore/cosign-installer v4.1.2") == 3

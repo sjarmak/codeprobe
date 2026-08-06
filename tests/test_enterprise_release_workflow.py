@@ -41,10 +41,59 @@ def test_real_journey_is_release_blocking_and_stub_gate_remains() -> None:
     assert isinstance(publish, dict)
 
     assert real["needs"] == ["test", "e2e-self-serve"]
-    assert gate["needs"] == ["e2e-enterprise"]
+    assert gate["needs"] == ["test", "e2e-self-serve", "e2e-enterprise"]
     assert publish["needs"] == ["gate"]
     assert "self_serve_acceptance.py" in _run_text(stub)
     assert "enterprise_journey.py" in _run_text(real)
+
+
+def test_real_journey_runs_only_where_release_images_are_configured() -> None:
+    """The gate is armed by configuration, not by editing the workflow.
+
+    enterprise_journey.py refuses anything but digest-pinned images, so an
+    unset image variable cannot produce a real journey — only a failed one.
+    Keying the job on those variables means setting them (plus the credential
+    secret) arms the gate and unsetting them skips it, with no code change
+    either way.
+    """
+    condition = str(_jobs()["e2e-enterprise"]["if"])
+    assert "vars.CODEPROBE_RELEASE_AGENT_IMAGE != ''" in condition
+    assert "vars.CODEPROBE_RELEASE_SCORING_IMAGE != ''" in condition
+
+
+def test_a_failed_real_journey_still_blocks_publish() -> None:
+    """Skipped and failed must not be the same thing.
+
+    A skipped journey means the gate was never armed; a failed one means it
+    ran and the candidate did not survive it. Only the first may publish.
+    """
+    condition = str(_jobs()["gate"]["if"])
+    assert "needs.e2e-enterprise.result != 'failure'" in condition
+    assert "needs.e2e-enterprise.result != 'cancelled'" in condition
+    # An unconditional always() would also let a broken test matrix through.
+    assert "needs.test.result == 'success'" in condition
+    assert "needs.e2e-self-serve.result == 'success'" in condition
+
+
+def test_gate_builds_its_own_wheel_only_when_the_journey_did_not_run() -> None:
+    """The published wheel is the exercised one whenever a journey ran."""
+    steps = _steps(_jobs()["gate"])
+    downloads = [
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith("actions/download-artifact@")
+    ]
+    assert downloads, "gate must still inherit the journey's wheel when it ran"
+    for step in downloads:
+        assert step["if"] == "needs.e2e-enterprise.result == 'success'"
+
+    wheel_builds = [
+        step
+        for step in steps
+        if "build --wheel" in str(step.get("run", ""))
+    ]
+    assert len(wheel_builds) == 1
+    assert wheel_builds[0]["if"] == "needs.e2e-enterprise.result != 'success'"
 
 
 def test_real_journey_uses_a_built_wheel_bounded_budget_and_protected_secrets() -> None:

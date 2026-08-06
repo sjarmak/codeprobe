@@ -53,6 +53,14 @@ jobs:
   # clean venv installs and the exact wheel the publish job later receives.
   e2e-enterprise:
     needs: [test, e2e-self-serve]
+    # Runs only where the release images are configured. enterprise_journey.py
+    # refuses anything but digest-pinned images, so an unset variable cannot
+    # produce a real journey — it can only fail. Setting both variables (plus
+    # the credential secret) arms this gate; leaving them unset skips it and
+    # publishes without real-agent evidence. Deliberate: see docs/release.md.
+    if: >-
+      vars.CODEPROBE_RELEASE_AGENT_IMAGE != ''
+      && vars.CODEPROBE_RELEASE_SCORING_IMAGE != ''
     runs-on: ubuntu-22.04
     timeout-minutes: 45
     environment: release-real-agent
@@ -104,7 +112,17 @@ jobs:
           retention-days: 30
 
   gate:
-    needs: [e2e-enterprise]
+    needs: [test, e2e-self-serve, e2e-enterprise]
+    # The real-agent journey blocks the release when it runs, but a skipped
+    # one does not: `e2e-enterprise` only runs where the release images are
+    # configured (see its own `if`). A FAILED journey still blocks — that is
+    # the distinction this condition exists to preserve.
+    if: >-
+      always()
+      && needs.test.result == 'success'
+      && needs.e2e-self-serve.result == 'success'
+      && needs.e2e-enterprise.result != 'failure'
+      && needs.e2e-enterprise.result != 'cancelled'
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -120,23 +138,33 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.12"
+      # The published wheel is the exact one the real-agent journey installed
+      # and exercised, whenever that journey ran.
       # actions/download-artifact v8.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: needs.e2e-enterprise.result == 'success'
         with:
           name: release-dist
           path: candidate-dist/
       # actions/download-artifact v8.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        if: needs.e2e-enterprise.result == 'success'
         with:
           name: enterprise-journey-evidence
           path: enterprise-evidence/
       - run: pip install build twine
+      # With the journey skipped there is no upstream wheel to inherit, so the
+      # gate builds one. It is still twine-checked, artifact-checked, and
+      # upgrade-tested below; it just carries no real-agent evidence.
+      - if: needs.e2e-enterprise.result != 'success'
+        run: python -m build --wheel --outdir candidate-dist
       - run: python -m build --sdist --outdir candidate-dist
       - run: twine check candidate-dist/*
       - run: >-
           python scripts/check_release_artifacts.py candidate-dist/
           --version "${GITHUB_REF_NAME#v}"
       - name: Validate candidate-bound real-agent evidence
+        if: needs.e2e-enterprise.result == 'success'
         run: >-
           python scripts/enterprise_release_gate.py
           --evidence enterprise-evidence/enterprise-journey.json

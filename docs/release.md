@@ -101,7 +101,22 @@ e2e-self-serve ─┘
 - **`test`** — the normal pytest matrix (3.11/3.12/3.13), same as CI.
 - **`e2e-self-serve`** — preserves the zero-cost `e2e-stub` wiring journey.
   Its output is not accepted as real-agent release evidence.
-- **`e2e-enterprise`** — runs only after both jobs above pass and obtains its
+- **`e2e-enterprise`** — **opt-in, and skipped by default.** The job runs only
+  when both `CODEPROBE_RELEASE_AGENT_IMAGE` and
+  `CODEPROBE_RELEASE_SCORING_IMAGE` are set; with either unset it is skipped
+  and the release publishes with no real-agent evidence. That is a deliberate
+  trade: a real journey needs a real credential and real spend, and requiring
+  both of every release blocked 0.14.0 outright. Setting the two image
+  variables (plus the credential secret) re-arms the gate with no code change.
+
+  A *failed* journey still blocks the release — only a skipped one lets
+  `gate` proceed, and `gate` asserts that distinction explicitly. When the
+  journey runs, the published wheel is the exact one it installed and
+  exercised; when it is skipped, `gate` builds the wheel itself and it is
+  still twine-checked, artifact-checked, and upgrade-tested, just without
+  real-agent evidence bound to it.
+
+  Once armed, it runs only after both jobs above pass and obtains its
   credential from the protected `release-real-agent` environment. Configure
   `CODEPROBE_RELEASE_AGENT`, `CODEPROBE_RELEASE_CREDENTIAL_ENV`,
   `CODEPROBE_RELEASE_AGENT_IMAGE`, `CODEPROBE_RELEASE_SCORING_IMAGE`, and
