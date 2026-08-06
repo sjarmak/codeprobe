@@ -22,8 +22,13 @@ _IMAGE_ENV_KEYS = (
     "CODEPROBE_IMAGE_REGISTRY",
     "CODEPROBE_IMAGE_NAMESPACE",
     "CODEPROBE_IMAGE_VERSION",
-    CONTAINER_CONFIG_ENV,
 )
+# CONTAINER_CONFIG_ENV is deliberately NOT cleared here. Deleting it makes
+# load_prepared_images() fall back to ~/.codeprobe/container-images.json, so
+# these tests read whatever the developer last bootstrapped — green in CI,
+# red on a bootstrapped host (codeprobe-9yk6). The suite-wide
+# _isolate_prepared_container_images fixture already points it at a path that
+# does not exist; tests needing a prepared config setenv it themselves.
 _AGENT_DIGEST = "sha256:" + "a" * 64
 _SCORING_DIGEST = "sha256:" + "b" * 64
 _AGENT_LOCAL_ID = "sha256:" + "c" * 64

@@ -147,6 +147,34 @@ def _isolate_codeprobe_state_root(
 
 
 @pytest.fixture(autouse=True)
+def _isolate_prepared_container_images(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Hide the host's ``codeprobe bootstrap`` output from the suite.
+
+    ``load_prepared_images()`` reads ``~/.codeprobe/container-images.json``
+    when ``CODEPROBE_CONTAINER_CONFIG`` is unset, so image-resolution tests
+    saw whatever the developer last bootstrapped: ten tests in
+    tests/sandbox/ and tests/test_containment.py failed on this machine and
+    passed in CI purely because a runner has never bootstrapped
+    (codeprobe-9yk6). Pointing at a path that does not exist reproduces the
+    clean-host "not bootstrapped" state — ``load_prepared_images`` returns
+    None for a missing file.
+
+    Same intent as :func:`_no_container_engine` above. Tests that need a
+    prepared config set this env var themselves, which overrides this.
+
+    Imported inside the fixture, not at module scope: a top-level
+    ``codeprobe.sandbox`` import runs before the wrong-checkout guard below
+    and turns its friendly abort into a raw ModuleNotFoundError.
+    """
+    from codeprobe.sandbox.image_config import CONTAINER_CONFIG_ENV
+
+    absent = tmp_path_factory.mktemp("codeprobe-container") / "container-images.json"
+    monkeypatch.setenv(CONTAINER_CONFIG_ENV, str(absent))
+
+
+@pytest.fixture(autouse=True)
 def _containment_consent_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the containment gate deterministic across test hosts.
 

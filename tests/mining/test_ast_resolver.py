@@ -733,62 +733,59 @@ def test_perf_bound_under_30s_for_1000_file_repo(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Integration: gascity MkdirAll (skipped when checkout absent)
+# The AST backend resolves without Sourcegraph
 # ---------------------------------------------------------------------------
 
 
-_GASCITY = Path("/home/ds/gascity")
-_HAS_GASCITY = (_GASCITY / "internal" / "fsys" / "fake.go").is_file()
-_REQUIRES_GASCITY = pytest.mark.skipif(
-    not (_HAS_GO and _HAS_GASCITY),
-    reason="gascity checkout or go toolchain not available",
-)
+@_REQUIRES_GO
+def test_ast_backend_resolves_with_sourcegraph_env_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AstResolver is a local backend and must never need Sourcegraph.
 
+    Asserted indirectly: with every SG credential removed from the
+    environment, resolution still returns the intra-package callers.
 
-@_REQUIRES_GASCITY
-def test_gascity_mkdirall_intra_package_scope() -> None:
-    """AstResolver scoped to fake.go finds the same intra-package
-    callers SG returns: 4 files in ``internal/fsys/``.
-
-    Cross-package receiver calls require type inference and remain out
-    of scope; direct calls through an imported package are supported.
+    This replaces two tests that ran against a hardcoded ``/home/ds/gascity``
+    checkout (codeprobe-ghd4, codeprobe-9yk6). Pinning assertions to an
+    external repo meant they broke whenever that repo gained a caller — as
+    it had, expecting 4 files and finding 6 — while skipping in CI, where no
+    such checkout exists, so nobody saw it. The intra-package scoping they
+    covered is already asserted synthetically by
+    ``test_go_finds_method_decl_and_call`` and
+    ``test_go_finds_calls_through_imported_defining_package``; the offline
+    property was theirs alone and is kept here.
     """
-    r = AstResolver(defining_file="internal/fsys/fake.go")
-    refs = r.find_references("MkdirAll", [str(_GASCITY)])
-    paths = sorted(ref.path for ref in refs)
-    assert paths == [
-        "internal/fsys/atomic_internal_test.go",
-        "internal/fsys/fake.go",
-        "internal/fsys/fake_test.go",
-        "internal/fsys/fsys.go",
-    ]
-    # Every ref FileRef is anchored on the gascity repo name.
-    assert {ref.repo for ref in refs} == {_GASCITY.name}
+    for key in ("SRC_ACCESS_TOKEN", "SOURCEGRAPH_TOKEN", "SOURCEGRAPH_ACCESS_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
 
+    _write(
+        tmp_path / "fake.go",
+        """package fsys
 
-@_REQUIRES_GASCITY
-def test_gascity_runs_offline() -> None:
-    """The AST backend must not call Sourcegraph; we assert this
-    indirectly by running with all SG-related env vars cleared.
-    """
-    import os
+type Fake struct{}
 
-    original = {
-        k: os.environ.pop(k, None)
-        for k in (
-            "SRC_ACCESS_TOKEN",
-            "SOURCEGRAPH_TOKEN",
-            "SOURCEGRAPH_ACCESS_TOKEN",
-        )
-    }
-    try:
-        r = AstResolver(defining_file="internal/fsys/fake.go")
-        refs = r.find_references("MkdirAll", [str(_GASCITY)])
-        assert len(refs) == 4
-    finally:
-        for k, v in original.items():
-            if v is not None:
-                os.environ[k] = v
+func (f *Fake) MkdirAll(path string) error {
+    return nil
+}
+""",
+    )
+    _write(
+        tmp_path / "fsys.go",
+        """package fsys
+
+func setup(f *Fake) error {
+    return f.MkdirAll("/tmp/x")
+}
+""",
+    )
+
+    refs = AstResolver(defining_file="fake.go").find_references(
+        "MkdirAll", [str(tmp_path)]
+    )
+
+    assert sorted(ref.path for ref in refs) == ["fake.go", "fsys.go"]
+    assert {ref.repo for ref in refs} == {tmp_path.name}
 
 
 # ---------------------------------------------------------------------------

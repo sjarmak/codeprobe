@@ -43,9 +43,12 @@ def _fresh_plan_state(monkeypatch: pytest.MonkeyPatch) -> None:
         container_runner.IMAGE_REGISTRY_ENV,
         container_runner.IMAGE_NAMESPACE_ENV,
         container_runner.IMAGE_VERSION_ENV,
-        "CODEPROBE_CONTAINER_CONFIG",
     ):
         monkeypatch.delenv(name, raising=False)
+    # CODEPROBE_CONTAINER_CONFIG is deliberately left alone: deleting it
+    # sends load_prepared_images() to ~/.codeprobe/container-images.json and
+    # these tests then see the developer's own bootstrap (codeprobe-9yk6).
+    # tests/conftest.py already isolates it to a path that does not exist.
 
 
 class TestResolveContainment:

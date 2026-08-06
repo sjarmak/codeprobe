@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,11 +26,22 @@ def _write_json(path: Path, data: object) -> None:
 
 
 def _run_bash(script: str, cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run a bash -c script with PYTHONPATH pointing at src/ for the module."""
+    """Run a bash -c script that can import codeprobe *and* its dependencies.
+
+    The shim shells out to ``python3``, so what matters is which interpreter
+    that name resolves to inside the subprocess. ``PYTHONPATH`` alone only
+    covers codeprobe's own source: the system ``python3`` still cannot
+    import ``click`` or ``docker_image``, so every delegating test failed on
+    a developer host and passed in CI, where setup-python puts the
+    dependency-carrying interpreter first on PATH (codeprobe-9yk6). Putting
+    this interpreter's directory at the front reproduces CI's arrangement.
+    """
     env = os.environ.copy()
     src_path = str(REPO_ROOT / "src")
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
+    interpreter_dir = str(Path(sys.executable).parent)
+    env["PATH"] = f"{interpreter_dir}{os.pathsep}{env.get('PATH', '')}"
     return subprocess.run(
         ["bash", "-c", script],
         cwd=str(cwd),
