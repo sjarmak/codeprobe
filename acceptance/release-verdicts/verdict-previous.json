@@ -1,8 +1,8 @@
 {
   "all_pass": true,
-  "criteria_source": "/tmp/codeprobe-paid-iter4-rc-6df58ce/runner/acceptance/criteria.toml",
+  "criteria_source": "/home/ds/projects/codeprobe/acceptance/criteria.toml",
   "eval_mode": "full",
-  "evaluated_at": "2026-07-26T13:25:19Z",
+  "evaluated_at": "2026-08-06T17:52:17Z",
   "evaluated_pct": {
     "behavioral": 100.0,
     "statistical": 80.0,
@@ -10,7 +10,7 @@
   },
   "fail_count": 0,
   "failures": [],
-  "iteration": 4,
+  "iteration": 8,
   "mode_skip_count": 0,
   "no_handler_count": 0,
   "no_handler_criteria": [],
@@ -39,5 +39,5 @@
     }
   },
   "total_criteria": 25,
-  "workspace": "/tmp/codeprobe-paid-iter4-rc-6df58ce/workspace/iter-0004"
+  "workspace": "/tmp/codeprobe-acceptance-_248m2xj/iter-0008"
 }
