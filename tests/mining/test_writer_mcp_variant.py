@@ -141,6 +141,31 @@ class TestVariantBodyFromCapabilities:
         for expected in ("keyword_search", "symbol_references", "file_read"):
             assert expected in body, f"missing capability name {expected!r}"
 
+    def test_body_does_not_frame_the_task_as_editing(self) -> None:
+        """org-scale tasks are read-only enumeration, not code change.
+
+        The section is appended to every MCP/org-scale task, so it cannot
+        assume the agent is there to edit files.
+        """
+        body = _render_mcp_section()
+
+        assert "ground your edits" not in body.lower()
+
+    def test_body_defers_tool_names_to_the_runtime_tool_list(self) -> None:
+        """Capability names are not tool names.
+
+        Two of the four registry names are not bound by the Sourcegraph
+        surface these tasks run against, and the server binds tools the
+        registry does not list. The section has to say so up front, before
+        the agent reads the list as a tool table.
+        """
+        body = _render_mcp_section()
+        preamble = " ".join(body.partition("## ")[0].split())
+
+        assert "runtime tool list" in preamble
+        assert "may be named differently" in preamble
+        assert "may expose more than these" in preamble
+
     def test_fixture_capability_set_is_sole_source(self) -> None:
         """With a fixture capability set of {sg_search}, the rendered body
         must NOT contain any other concrete Sourcegraph tool names such as

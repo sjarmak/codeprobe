@@ -1,15 +1,16 @@
 # MCP Capabilities
 
-You have access to the following code-intelligence capabilities via MCP tools.
-Use them to ground your edits in the actual state of the codebase rather than
-guessing at file contents or call sites.
+An MCP code-intelligence server is bound for this task. Ground your work in
+what it reports — answers and edits alike — rather than guessing at file
+contents, call sites, or repository layout.
+
+Tool names come from your runtime tool list, not from this document. The
+capabilities below name operations the server is expected to support; the
+tools bound to them may be named differently, and the server may expose more
+than these. Read your tool list and use what is actually there.
 
 {% for cap in capabilities %}
-## {{ cap.name }}
+## {{ cap.name }} (capability)
 
 {{ cap.description }}
 {% endfor %}
-
-Invoke each capability via the MCP tool your harness has bound to it. Do not
-assume a particular tool naming scheme — the binding is provided by the server
-configuration at runtime.
