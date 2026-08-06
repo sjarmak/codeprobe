@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Org-scale answer-key integrity
+
+- Multi-hop caller scans no longer stop at the first pattern-matching file
+  they encounter, and they exclude vendored, installed, and fixture trees the
+  way the single-hop scan already did. Both defects could truncate or pollute
+  a shipped answer key.
+- Question generation for a multi-hop variant now describes the caller set the
+  task is graded against instead of the single-hop pattern matches, and a
+  mine-time model check drops any org-scale task whose sampled answer key does
+  not answer its own question.
+- Tasks declare whether `ground_truth_commit` is a merge commit to reproduce
+  (workspace pins to its parent) or the tree their answer key was scanned from
+  (workspace pins there). Comprehension and org-scale producers set the
+  latter; PR-derived tasks keep the existing parent pin. **Suites mined before
+  this release keep the old parent-pin behavior and need a re-mine** to be
+  scored against the tree their keys came from.
+
+### Reporting
+
+- `codeprobe interpret` reports mean precision and recall beside mean score
+  wherever the scorer provides them, on the text, HTML, and JSON surfaces. F1
+  alone cannot separate a wrong answer from a correct but incomplete one.
+- The mine-time MCP instruction section no longer frames every task as an
+  editing task, and states up front that bound tool names come from the
+  runtime tool list rather than from the capability names it lists.
+
 ## 0.14.0rc2 (2026-07-29)
 
 ### Evaluation and authentication integrity
