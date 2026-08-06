@@ -49,9 +49,8 @@ codeprobe check-infra offline --json --backend claude
 
 ## JSON fields to parse
 
-Top-level keys are exactly the `Envelope` dataclass fields in
-`src/codeprobe/cli/envelope.py`. Parse `ok`; on `false` inspect `error.code`
-(`error` is a single object, never an array).
+Top-level keys are exactly the envelope fields shown below. Parse `ok`; on
+`false` inspect `error.code` (`error` is a single object, never an array).
 
 Drift:
 
@@ -108,7 +107,8 @@ A TTL shortfall surfaces as `ok: false` with `error.code` of
 
 ## Error handling
 
-Only the codes below may surface. Cross-reference `src/codeprobe/cli/error_codes.json`.
+Only the codes below may surface. At runtime the envelope's `error` object
+carries the authoritative message and remediation for whichever code fired.
 
 | Code | Kind | Retryable? | Action |
 |---|---|---|---|

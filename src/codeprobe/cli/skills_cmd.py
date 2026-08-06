@@ -285,9 +285,10 @@ def _next_steps(dest: Path, count: int) -> list[str]:
         "",
         f"Done — {count} skill(s) at {dest}",
         "",
-        "Open Claude Code in this repo and ask for what you want:",
-        '  "mine eval tasks from this repo"',
-        '  "run the mined tasks against claude and codex"',
+        "Open Claude Code and ask for what you want. The repository to mine is an",
+        "argument, so it can be the one you are in or any other path:",
+        '  "mine 5 eval tasks from this repo"',
+        '  "mine eval tasks from ~/src/myproject and run them against claude"',
         '  "interpret the last run"',
         "",
     ]

@@ -41,8 +41,7 @@ codeprobe calibrate <holdout_path> --json --curator-version <id> --threshold 0.6
 
 ## JSON fields to parse
 
-Top-level keys are exactly the `Envelope` dataclass fields in
-`src/codeprobe/cli/envelope.py`:
+Top-level keys are exactly:
 
 ```json
 {
@@ -78,7 +77,8 @@ emits a profile: the command exits 2 with `ok: false` and `error.code` of
 
 ## Error handling
 
-Only the codes below may surface. Cross-reference `src/codeprobe/cli/error_codes.json`.
+Only the codes below may surface. At runtime the envelope's `error` object
+carries the authoritative message and remediation for whichever code fired.
 
 | Code | Kind | Retryable? | Action |
 |---|---|---|---|

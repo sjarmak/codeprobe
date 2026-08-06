@@ -59,7 +59,7 @@ repo re-run with `--goal quality`.
 ## JSON fields to parse
 
 `--json` emits a single terminal envelope on stdout. Top-level keys are
-exactly the `Envelope` dataclass fields in `src/codeprobe/cli/envelope.py`:
+exactly:
 
 ```json
 {
@@ -133,9 +133,9 @@ Execute it instead of proceeding to `codeprobe run` against an empty suite.
 
 ## Error handling
 
-Only the codes below may surface from this command. Look them up in
-`src/codeprobe/cli/error_codes.json` for the authoritative description and
-remediation pattern.
+Only the codes below may surface from this command. At runtime the
+envelope's `error` object carries the authoritative description and
+remediation pattern for whichever code fired.
 
 | Code | Kind | Retryable? | Action |
 |---|---|---|---|

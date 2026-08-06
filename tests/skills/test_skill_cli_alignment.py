@@ -173,6 +173,27 @@ SKILL_PATHS = _iter_skills()
 
 
 @pytest.mark.parametrize("skill_path", SKILL_PATHS, ids=_skill_id)
+def test_no_codeprobe_checkout_paths(skill_path: Path) -> None:
+    """Shipped skills must not point an agent at this repository's layout.
+
+    ``codeprobe skills install`` materializes these into a *customer's*
+    project, where ``src/codeprobe/...`` does not exist. Each skill already
+    inlines the envelope shape and its closed set of error codes, so a
+    pointer at a checkout path is a dead reference an agent will try to
+    read. The CLI is the only interface a pip install guarantees.
+    """
+    offenders = [
+        f"{n}: {line.strip()}"
+        for n, line in enumerate(skill_path.read_text().splitlines(), 1)
+        if "src/codeprobe" in line
+    ]
+    assert not offenders, (
+        f"{skill_path.parent.name} references the codeprobe checkout, which pip "
+        f"customers do not have: {offenders}"
+    )
+
+
+@pytest.mark.parametrize("skill_path", SKILL_PATHS, ids=_skill_id)
 def test_frontmatter_fields(skill_path: Path) -> None:
     text = skill_path.read_text()
     fm, body = _split_frontmatter(text)

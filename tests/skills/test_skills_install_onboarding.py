@@ -82,8 +82,11 @@ def test_pretty_install_prints_next_steps(tmp_path: Path) -> None:
     result = _install(["--dest", str(dest), "--no-json"])
     assert result.exit_code == 0, result.output
     assert "Done — 5 skill(s)" in result.output
-    assert "mine eval tasks from this repo" in result.output
+    assert "mine 5 eval tasks from this repo" in result.output
     assert "model-invoked, not slash commands" in result.output
+    assert "~/src/myproject" in result.output, (
+        "the repo to mine is an argument — never imply it must be the cwd"
+    )
     assert "type /" not in result.output, (
         "skills are user-invocable: false — never advertise a slash command"
     )
