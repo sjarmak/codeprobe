@@ -37,6 +37,16 @@ DOCKERFILE = (
     / "Dockerfile.sg_only"
 )
 TEST_IMAGE_TAG = "docker.io/library/codeprobe-sandbox:sg-only-test"
+
+# These tests assert containment behaviour (write denial, host-path hiding),
+# never latency, so the per-command timeout only needs to be long enough that
+# a slow container start is not mistaken for the behaviour under test. At 60s
+# it was not: a cold `docker run` here took 69s and surfaced the timeout branch
+# of _run_container_command as a bare SandboxError, so a
+# pytest.raises(SandboxWriteDeniedError) failed for a reason unrelated to what
+# it asserts (codeprobe-9yk6). Warm runs finish in ~1.5s, so this is pure
+# headroom; a genuine hang still fails, just later.
+CONTAINER_COMMAND_TIMEOUT = 300.0
 UNIT_IMAGE = "registry.example.test/codeprobe-sandbox:sg-only"
 
 # ---------------------------------------------------------------------------
@@ -712,7 +722,7 @@ def _assert_container_root_hides_host(docker_image: str, tmp_path: Path) -> None
         {str(tmp_path): "/workspace"},
         allow_writes=False,
         image=docker_image,
-        timeout=60.0,
+        timeout=CONTAINER_COMMAND_TIMEOUT,
     )
     assert result_root.exit_code == 0, result_root.stderr
     assert "workspace" in result_root.stdout
@@ -725,7 +735,7 @@ def _assert_container_home_hides_host(docker_image: str, tmp_path: Path) -> None
         {str(tmp_path): "/workspace"},
         allow_writes=False,
         image=docker_image,
-        timeout=60.0,
+        timeout=CONTAINER_COMMAND_TIMEOUT,
     )
     assert result_home.exit_code == 0, result_home.stderr
     # The test runner's real host homedir basename must not leak in.
@@ -744,7 +754,7 @@ def _assert_host_home_path_absent(docker_image: str, tmp_path: Path) -> None:
         {str(tmp_path): "/workspace"},
         allow_writes=False,
         image=docker_image,
-        timeout=60.0,
+        timeout=CONTAINER_COMMAND_TIMEOUT,
     )
     assert result_probe.exit_code != 0, (
         f"host path {host_home_path!r} is visible inside the container: "
@@ -764,7 +774,7 @@ def test_docker_write_to_ro_mount_raises_write_denied(
             {str(tmp_path): "/workspace"},
             allow_writes=False,
             image=docker_image,
-            timeout=60.0,
+            timeout=CONTAINER_COMMAND_TIMEOUT,
         )
     # Verify nothing was actually written to the host
     assert not (tmp_path / "newfile.txt").exists()
@@ -780,7 +790,7 @@ def test_docker_write_allowed_when_rw(
         {str(tmp_path): "/workspace"},
         allow_writes=True,
         image=docker_image,
-        timeout=60.0,
+        timeout=CONTAINER_COMMAND_TIMEOUT,
     )
     assert result.exit_code == 0, result.stderr
     assert (tmp_path / "newfile.txt").exists()
