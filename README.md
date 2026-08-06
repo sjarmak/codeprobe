@@ -83,7 +83,7 @@ CodeProbe drives external coding agents, so install at least one. Claude Code is
 the default target.
 
 ```bash
-pip install codeprobe
+uv tool install codeprobe     # or: pipx install codeprobe / pip install codeprobe
 
 cd /path/to/your/repo         # a full clone; shallow clones cannot be mined
 
@@ -92,6 +92,11 @@ codeprobe mine .              # reconstruct tasks from repo history
 codeprobe run . --agent claude --max-cost-usd 5.00
 codeprobe interpret .         # rank configs, print a report
 ```
+
+`uv tool install` (or `pipx`) puts the CLI in its own environment and on your
+PATH. A plain `pip install` into whichever interpreter happens to be active can
+land codeprobe somewhere the `codeprobe` on your PATH is not, which shows up
+later as `ModuleNotFoundError` from a command that looked installed.
 
 Use `codeprobe doctor --repo . --agent copilot` when GitHub Copilot CLI is the
 selected agent. Copilot CLI auth can come from `COPILOT_GITHUB_TOKEN`,

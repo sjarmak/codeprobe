@@ -6,12 +6,14 @@ If you prefer typing commands directly, see [standard.md](./standard.md) instead
 
 ## Installing the skills
 
-The skills ship inside the `codeprobe` wheel, so `pip install codeprobe` is the only prerequisite; no repository checkout is involved.
+The skills ship inside the `codeprobe` wheel, so installing the package is the only prerequisite; no repository checkout is involved.
 
 ```bash
-pip install codeprobe
+uv tool install codeprobe     # or: pipx install codeprobe / pip install codeprobe
 codeprobe skills install
 ```
+
+Prefer `uv tool install` or `pipx`: they give the CLI its own environment and put it on your PATH. A plain `pip install` into whichever interpreter is active can land codeprobe somewhere the `codeprobe` on your PATH is not.
 
 That writes the packaged `codeprobe-*` skills into `~/.claude/skills/`, so they are available in every project on the machine. That is the default because the repository you benchmark is an *argument* to `codeprobe mine` and `codeprobe run` — the skills are not tied to the directory you installed from, and you should not have to re-install for each repo you point them at.
 
@@ -71,4 +73,4 @@ The skills are for interactive sessions where you want the agent to handle the w
 
 - **Skills don't get picked up**: make sure `~/.claude/skills/<skill-name>/SKILL.md` exists (or `./.claude/skills/...` for a `--project` install) and has valid YAML frontmatter. Restart Claude Code; skills are discovered on startup.
 - **Skills out of date after upgrading codeprobe**: the installed copies are inert files, so upgrading the package does not touch them. `codeprobe doctor` warns when they drift from the CLI; re-run `codeprobe skills install` to refresh. If it refuses with `SKILL_INSTALL_CONFLICT` because you edited the installed copies, re-run with `--force` to overwrite them.
-- **`codeprobe: command not found` inside a skill**: the skills shell out to the `codeprobe` CLI. Make sure it's installed in the same environment the agent runs from (`pip install codeprobe`).
+- **`codeprobe: command not found` inside a skill**: the skills shell out to the `codeprobe` CLI, so it has to be on the PATH the agent runs with. `uv tool install codeprobe` (or `pipx install codeprobe`) puts it there; a `pip install` into a virtualenv the agent does not activate will not.

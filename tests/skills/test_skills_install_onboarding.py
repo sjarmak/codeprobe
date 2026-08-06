@@ -18,7 +18,10 @@ from click.testing import CliRunner
 
 from codeprobe import __version__
 from codeprobe.cli._banner import render_banner, should_print_banner
-from codeprobe.cli.doctor_cmd import _check_installed_skill_version
+from codeprobe.cli.doctor_cmd import (
+    _check_installed_skill_version,
+    _upgrade_command,
+)
 from codeprobe.cli.skills_cmd import (
     _VERSION_STAMP,
     _version_tuple,
@@ -340,8 +343,37 @@ def test_doctor_advises_package_upgrade_when_skills_are_newer(
 
     result = _check_installed_skill_version()
     assert result.passed is False
-    assert "pip install -U codeprobe" in result.fix
     assert "would downgrade" in result.fix
+    assert _upgrade_command() in result.fix
+
+
+@pytest.mark.parametrize(
+    ("marker", "prefix_parts", "expected"),
+    [
+        ("uv-receipt.toml", ("tools", "codeprobe"), "uv tool upgrade codeprobe"),
+        (None, ("pipx", "venvs", "codeprobe"), "pipx upgrade codeprobe"),
+        (None, ("some", "venv"), "pip install -U codeprobe"),
+    ],
+)
+def test_upgrade_command_matches_the_install_method(
+    tmp_path: Path,
+    monkeypatch,
+    marker: str | None,
+    prefix_parts: tuple[str, ...],
+    expected: str,
+) -> None:
+    """Sending a `uv tool install` user to pip points at the wrong env.
+
+    uv stamps every tool venv with uv-receipt.toml and pipx keeps its
+    venvs under pipx/venvs, so sys.prefix alone identifies both.
+    """
+    prefix = tmp_path.joinpath(*prefix_parts)
+    prefix.mkdir(parents=True)
+    if marker is not None:
+        (prefix / marker).write_text("", encoding="utf-8")
+    monkeypatch.setattr("codeprobe.cli.doctor_cmd.sys.prefix", str(prefix))
+
+    assert _upgrade_command() == expected
 
 
 def test_doctor_reports_content_drift_at_a_matching_version(

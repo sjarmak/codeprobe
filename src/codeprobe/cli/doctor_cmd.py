@@ -7,6 +7,7 @@ import shutil as shutil
 import subprocess
 import sys
 from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
@@ -175,7 +176,7 @@ def _check_installed_skill_version() -> CheckResult:
         # Re-running install against a newer skill tree would overwrite it
         # with the older packaged copy, so the fix is to upgrade instead.
         fix = (
-            "Run 'pip install -U codeprobe' — the skills are newer than the "
+            f"Run '{_upgrade_command()}' — the skills are newer than the "
             "CLI, and 'codeprobe skills install' would downgrade them."
         )
     elif any(d.stale for d in drift):
@@ -196,6 +197,23 @@ def _check_installed_skill_version() -> CheckResult:
         fix=fix,
         warn_only=True,
     )
+
+
+def _upgrade_command() -> str:
+    """Return the upgrade command that matches how codeprobe was installed.
+
+    Telling a `uv tool install` user to run `pip install -U codeprobe`
+    sends them to an environment that does not hold the CLI they are
+    running. uv writes ``uv-receipt.toml`` at the root of each tool venv
+    and pipx keeps its venvs under a ``pipx/venvs`` path, so both are
+    identifiable from ``sys.prefix`` alone — no subprocess, no guessing.
+    """
+    prefix = Path(sys.prefix)
+    if (prefix / "uv-receipt.toml").is_file():
+        return "uv tool upgrade codeprobe"
+    if "pipx" in prefix.parts and "venvs" in prefix.parts:
+        return "pipx upgrade codeprobe"
+    return "pip install -U codeprobe"
 
 
 def _describe_skill_drift(report: SkillDriftReport) -> str:
