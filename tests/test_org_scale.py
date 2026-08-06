@@ -6,7 +6,7 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -29,6 +29,7 @@ from codeprobe.mining.org_scale_scanner import (
     FamilyScanResult,
     PatternHit,
     discover_top_imports,
+    find_callers_of_symbols,
     scan_repo_for_family,
 )
 from codeprobe.mining.safe_output import SafeOutputDir
@@ -398,6 +399,68 @@ class TestScanner:
         assert len(result.matched_files) == 3
 
 
+class TestFindCallersOfSymbols:
+    """Multi-hop caller scan — the answer key for ``-mh`` task variants."""
+
+    def _repo(self, tmp_path: Path, files: dict[str, str]) -> Path:
+        return TestScanner()._make_repo(tmp_path, files)
+
+    def test_symbol_file_does_not_abort_the_scan(self, tmp_path: Path) -> None:
+        """A symbol file must be skipped, not end the whole scan.
+
+        Candidates are visited in sorted order, so ``src/a_marker.py`` is
+        reached before ``src/z_caller.py``. Breaking out of the loop there
+        truncated the key to whatever happened to sort first — the defect
+        that shipped task 8faa5715 with 7 of 152 files.
+        """
+        repo = self._repo(
+            tmp_path,
+            {
+                "src/a_marker.py": "@deprecated\ndef legacy_handler(): pass",
+                "src/z_caller.py": "from src.a_marker import legacy_handler\n"
+                "legacy_handler()",
+            },
+        )
+        callers = find_callers_of_symbols(
+            [repo],
+            frozenset({"src/a_marker.py"}),
+            frozenset({"src/a_marker.py", "src/z_caller.py"}),
+            "python",
+        )
+        assert callers == frozenset({"src/z_caller.py"})
+
+    def test_excludes_vendored_and_generated_callers(self, tmp_path: Path) -> None:
+        """Caller candidates use the same exclusions as the single-hop scan.
+
+        ``_filter_by_suffix`` drops vendor/, node_modules/ and testdata/, so a
+        multi-hop key containing them describes a repo the single-hop key of
+        the same family says does not exist.
+        """
+        repo = self._repo(
+            tmp_path,
+            {
+                "src/marker.py": "@deprecated\ndef legacy_handler(): pass",
+                "src/caller.py": "legacy_handler()",
+                "vendor/dep/use.py": "legacy_handler()",
+                "node_modules/pkg/use.py": "legacy_handler()",
+                "testdata/fixture.py": "legacy_handler()",
+            },
+        )
+        tracked = frozenset(
+            {
+                "src/marker.py",
+                "src/caller.py",
+                "vendor/dep/use.py",
+                "node_modules/pkg/use.py",
+                "testdata/fixture.py",
+            }
+        )
+        callers = find_callers_of_symbols(
+            [repo], frozenset({"src/marker.py"}), tracked, "python"
+        )
+        assert callers == frozenset({"src/caller.py"})
+
+
 # ---------------------------------------------------------------------------
 # Task generation tests
 # ---------------------------------------------------------------------------
@@ -434,6 +497,17 @@ class TestGenerateOrgScaleTask:
             f"`{pattern}`" in task.metadata.issue_body
             for pattern in MIGRATION_INVENTORY.content_patterns
         )
+
+    def test_declares_its_key_was_scanned_at_the_commit(self, tmp_path: Path) -> None:
+        """Org-scale keys come from the tree AT ground_truth_commit.
+
+        The executor pins to the parent by default (PR-repro semantics), so
+        every scan-derived producer has to say otherwise.
+        """
+        task = generate_org_scale_task(self._make_scan_result(tmp_path), no_llm=True)
+
+        assert task is not None
+        assert task.metadata.pin_parent_commit is False
 
     def test_multi_hop_task(self, tmp_path: Path) -> None:
         scan = self._make_scan_result(tmp_path)
@@ -512,6 +586,139 @@ class TestGenerateOrgScaleTask:
                 self._make_scan_result(tmp_path),
                 llm_timeout_seconds=0,
             )
+
+
+class TestTaskGenPrompt:
+    """The prompt must describe the key the task actually ships."""
+
+    def _make_scan_result(self, tmp_path: Path) -> FamilyScanResult:
+        return TestGenerateOrgScaleTask()._make_scan_result(tmp_path)
+
+    def test_single_hop_prompt_describes_the_pattern_matches(
+        self, tmp_path: Path
+    ) -> None:
+        from codeprobe.mining.org_scale import _build_task_gen_prompt
+
+        prompt = _build_task_gen_prompt(self._make_scan_result(tmp_path), "python")
+
+        assert "all 3 files" in prompt
+        assert "at least one of these regexes matches" in prompt
+
+    def test_multi_hop_prompt_describes_the_caller_set(self, tmp_path: Path) -> None:
+        """Multi-hop keys are callers, not marker files.
+
+        The prompt used to state the single-hop scan set as the answer key
+        even for the multi-hop variant, then demand the question describe
+        'the SAME set' — which is how 8faa5715 shipped a marker-enumeration
+        question against a 7-file caller key.
+        """
+        from codeprobe.mining.org_scale import _build_task_gen_prompt
+
+        callers = frozenset(
+            {"src/a.py", "src/b.py", "src/c.py", "src/d.py", "src/e.py"}
+        )
+        prompt = _build_task_gen_prompt(
+            self._make_scan_result(tmp_path), "python", multi_hop_files=callers
+        )
+
+        assert "all 5 files" in prompt
+        assert "all 3 files" not in prompt
+        assert "reference or call a symbol defined in" in prompt
+        assert "are NOT in the answer key" in prompt
+
+
+class TestQuestionOracleAgreementGate:
+    """Mine-time gate: drop tasks whose question does not match their key."""
+
+    def _scan(self, tmp_path: Path) -> FamilyScanResult:
+        return TestGenerateOrgScaleTask()._make_scan_result(tmp_path)
+
+    @patch("codeprobe.core.llm.call_claude")
+    @patch("codeprobe.core.llm.llm_available", return_value=True)
+    @patch("codeprobe.mining.org_scale_scanner.get_tracked_files")
+    def test_divergent_question_and_key_is_dropped(
+        self,
+        mock_tracked: MagicMock,
+        mock_avail: MagicMock,
+        mock_call: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from codeprobe.core.llm import LLMResponse
+
+        mock_tracked.return_value = frozenset(
+            {"src/old.py", "src/legacy.py", "src/also.py", "src/unrelated.py"}
+        )
+        mock_call.side_effect = [
+            LLMResponse(
+                text='{"heading": "h", "question": "Find every caller of a '
+                'deprecated symbol", "difficulty": "hard"}'
+            ),
+            LLMResponse(
+                text='{"disagreements": ["src/old.py", "src/legacy.py", '
+                '"src/also.py"]}'
+            ),
+        ]
+
+        tasks = _mine_pattern_families(
+            [self._scan(tmp_path)],
+            [tmp_path],
+            frozenset({"src/old.py", "src/legacy.py", "src/also.py"}),
+            count=5,
+            no_llm=False,
+            max_files=100,
+            include_multi_hop=False,
+        )
+
+        assert tasks == []
+
+    @patch("codeprobe.core.llm.call_claude")
+    @patch("codeprobe.core.llm.llm_available", return_value=True)
+    @patch("codeprobe.mining.org_scale_scanner.get_tracked_files")
+    def test_agreeing_question_and_key_is_kept(
+        self,
+        mock_tracked: MagicMock,
+        mock_avail: MagicMock,
+        mock_call: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        from codeprobe.core.llm import LLMResponse
+
+        mock_tracked.return_value = frozenset(
+            {"src/old.py", "src/legacy.py", "src/also.py", "src/unrelated.py"}
+        )
+        mock_call.side_effect = [
+            LLMResponse(
+                text='{"heading": "h", "question": "Which files carry a '
+                'deprecation marker?", "difficulty": "hard"}'
+            ),
+            LLMResponse(text='{"disagreements": []}'),
+        ]
+
+        tasks = _mine_pattern_families(
+            [self._scan(tmp_path)],
+            [tmp_path],
+            frozenset({"src/old.py", "src/legacy.py", "src/also.py"}),
+            count=5,
+            no_llm=False,
+            max_files=100,
+            include_multi_hop=False,
+        )
+
+        assert len(tasks) == 1
+
+    def test_gate_is_skipped_without_an_llm(self, tmp_path: Path) -> None:
+        """``--no-llm`` mining keeps its tasks; the gate needs a model."""
+        tasks = _mine_pattern_families(
+            [self._scan(tmp_path)],
+            [tmp_path],
+            frozenset({"src/old.py", "src/legacy.py", "src/also.py"}),
+            count=5,
+            no_llm=True,
+            max_files=100,
+            include_multi_hop=False,
+        )
+
+        assert len(tasks) == 1
 
 
 # ---------------------------------------------------------------------------

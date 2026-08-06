@@ -187,6 +187,18 @@ def scan_repo_for_family(
     return result
 
 
+# Vendored, installed, and fixture trees. Every candidate set that feeds an
+# answer key runs through this — the single-hop pattern scan and the multi-hop
+# caller scan alike, so the two variants of one family cannot disagree about
+# which files the repository contains.
+_EXCLUDED_DIR_SEGMENTS: tuple[str, ...] = ("vendor/", "node_modules/", "testdata/")
+
+
+def is_excluded_path(file_path: str) -> bool:
+    """Return True when *file_path* lives in a vendored/generated/fixture tree."""
+    return any(seg in file_path for seg in _EXCLUDED_DIR_SEGMENTS)
+
+
 def _filter_by_suffix(
     tracked_files: frozenset[str],
     glob_patterns: tuple[str, ...],
@@ -215,8 +227,7 @@ def _filter_by_suffix(
     for f in tracked_files:
         if len(result) >= max_files:
             break
-        # Skip vendored / generated / test-data directories
-        if any(seg in f for seg in ("vendor/", "node_modules/", "testdata/")):
+        if is_excluded_path(f):
             continue
         # Fast path: suffix set lookup
         if suffixes and any(f.endswith(s) for s in suffixes):
@@ -465,11 +476,19 @@ def find_callers_of_symbols(
     for rp in repo_paths:
         scanned = 0
         rp_tracked = tracked_files if tracked_files else get_tracked_files(rp)
-        for file_path in rp_tracked:
-            if file_path in symbol_files or scanned >= max_files:
+        # Sorted, so a partial scan (either cap below) truncates the same way
+        # on every run rather than by set-iteration order.
+        for file_path in sorted(rp_tracked):
+            if scanned >= max_files or len(caller_files) >= _MAX_MULTI_HOP_FILES:
                 break
-            if len(caller_files) >= _MAX_MULTI_HOP_FILES:
-                break
+            # A file that defines a deprecated symbol is not a caller of it.
+            # Skipping it must not end the scan: this was a ``break``, which
+            # truncated the answer key at whichever definition file the
+            # iteration reached first.
+            if file_path in symbol_files:
+                continue
+            if is_excluded_path(file_path):
+                continue
             if not any(file_path.endswith(ext) for ext in _SOURCE_EXTS):
                 continue
             full_path = rp / file_path
