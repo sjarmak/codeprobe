@@ -108,3 +108,14 @@ prompts/
 .prd-build/
 
 .gc-reports/
+
+# pytest-cov parallel-mode temp files. `.coverage` above does not match the
+# `.coverage.<host>.<pid>.<rand>` form, and a stray one left the working tree
+# dirty, which `codeprobe run` refuses (DIRTY_CHECKOUT) — including the run
+# the acceptance loop performs to produce release evidence.
+.coverage.*
+
+# Local scratch: agent skill staging and hand-mined probe corpora. Generated,
+# never tracked, and same DIRTY_CHECKOUT hazard as above.
+.agents/
+probes/
