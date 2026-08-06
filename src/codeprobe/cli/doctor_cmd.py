@@ -7,6 +7,7 @@ import shutil as shutil
 import subprocess
 import sys
 from dataclasses import asdict
+from typing import TYPE_CHECKING
 
 import click
 
@@ -31,6 +32,11 @@ from codeprobe.cli.doctor_agents import (
 )
 from codeprobe.cli.errors import DiagnosticError
 from codeprobe.config.defaults import compact_budget_bytes
+
+if TYPE_CHECKING:
+    # Imported for typing only; the runtime import stays inside the check
+    # function so `codeprobe doctor` does not pay for it on every command.
+    from codeprobe.cli.skills_cmd import SkillDriftReport
 
 _COPILOT_OFFLINE_ENV_KEYS: tuple[str, ...] = (
     "COPILOT_PROVIDER_BASE_URL",
@@ -160,22 +166,29 @@ def _check_installed_skill_version() -> CheckResult:
         return CheckResult(
             name="installed skills up to date",
             passed=True,
-            detail="no version drift detected in ./.claude/skills or ~/.claude/skills",
+            detail="~/.claude/skills and ./.claude/skills match the packaged skills",
             fix="",
             warn_only=True,
         )
-    ahead = [d for d in drift if d.direction == "ahead"]
-    detail = "; ".join(
-        f"{d.dest}: skills stamped {d.stamped}, CLI is {d.package}" for d in drift
-    )
-    # Re-running install against a newer skill tree would overwrite it with
-    # the older packaged copy, so the fix there is to upgrade the package.
-    fix = (
-        "Run 'pip install -U codeprobe' — the skills are newer than the "
-        "CLI, and 'codeprobe skills install' would downgrade them."
-        if ahead
-        else "Run 'codeprobe skills install' to refresh them."
-    )
+    detail = "; ".join(_describe_skill_drift(d) for d in drift)
+    if any(d.version_direction == "ahead" for d in drift):
+        # Re-running install against a newer skill tree would overwrite it
+        # with the older packaged copy, so the fix is to upgrade instead.
+        fix = (
+            "Run 'pip install -U codeprobe' — the skills are newer than the "
+            "CLI, and 'codeprobe skills install' would downgrade them."
+        )
+    elif any(d.stale for d in drift):
+        # Content differs at the same version: either a hand edit or a
+        # source tree that moved ahead of an installed copy. Install
+        # refuses to clobber edits without --force, so name both.
+        fix = (
+            "Run 'codeprobe skills install' to refresh them; if it reports "
+            "SKILL_INSTALL_CONFLICT because you edited a copy, re-run with "
+            "--force to take the packaged version."
+        )
+    else:
+        fix = "Run 'codeprobe skills install' to refresh them."
     return CheckResult(
         name="installed skills up to date",
         passed=False,
@@ -183,6 +196,23 @@ def _check_installed_skill_version() -> CheckResult:
         fix=fix,
         warn_only=True,
     )
+
+
+def _describe_skill_drift(report: SkillDriftReport) -> str:
+    """One-line summary of a drift report, most severe part first."""
+    parts: list[str] = []
+    if report.version_direction:
+        parts.append(f"stamped {report.stamped}, CLI is {report.package}")
+    if report.stale:
+        parts.append(
+            f"{len(report.stale)} skill(s) differ from the packaged copy "
+            f"({', '.join(report.stale)})"
+        )
+    if report.missing:
+        parts.append(
+            f"{len(report.missing)} not installed ({', '.join(report.missing)})"
+        )
+    return f"{report.dest}: " + "; ".join(parts)
 
 
 def _check_container_images(*, required: bool) -> CheckResult:

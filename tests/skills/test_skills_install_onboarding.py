@@ -10,6 +10,7 @@ The stamp is what lets ``codeprobe doctor`` notice that a later
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,9 @@ from codeprobe.cli.doctor_cmd import _check_installed_skill_version
 from codeprobe.cli.skills_cmd import (
     _VERSION_STAMP,
     _version_tuple,
+    inspect_installed_skills,
     installed_skill_drift,
     read_version_stamp,
-    skill_version_drift,
     skills,
 )
 
@@ -189,45 +190,91 @@ def test_version_tuple_drops_prerelease_suffixes(
     assert _version_tuple(raw) == expected
 
 
-def test_no_drift_when_unstamped_or_matching(tmp_path: Path) -> None:
-    assert skill_version_drift(tmp_path, "0.14.0") is None
-    _stamp(tmp_path).write_text("0.14.0\n", encoding="utf-8")
-    assert skill_version_drift(tmp_path, "0.14.0") is None
+def _install_into(dest: Path) -> None:
+    assert _install(["--dest", str(dest), "--json"]).exit_code == 0
 
 
-def test_drift_behind_when_stamp_is_older(tmp_path: Path) -> None:
+def test_untouched_directory_is_not_drift(tmp_path: Path) -> None:
+    """A ~/.claude/skills full of other people's skills is not our business."""
+    (tmp_path / "someone-elses-skill").mkdir()
+    assert inspect_installed_skills(tmp_path, "0.14.0") is None
+
+
+def test_clean_install_reports_no_drift(tmp_path: Path) -> None:
+    _install_into(tmp_path)
+    report = inspect_installed_skills(tmp_path, __version__)
+    assert report is not None
+    assert report.drifted is False
+    assert (report.stale, report.missing, report.version_direction) == ((), (), None)
+
+
+def test_version_behind_when_stamp_is_older(tmp_path: Path) -> None:
+    _install_into(tmp_path)
     _stamp(tmp_path).write_text("0.13.0\n", encoding="utf-8")
-    drift = skill_version_drift(tmp_path, "0.14.0")
-    assert drift is not None
-    assert (drift.stamped, drift.package, drift.direction) == (
-        "0.13.0",
-        "0.14.0",
-        "behind",
-    )
+    report = inspect_installed_skills(tmp_path, "0.14.0")
+    assert report is not None and report.version_direction == "behind"
+    assert report.drifted is True
 
 
-def test_drift_ahead_when_stamp_is_newer(tmp_path: Path) -> None:
+def test_version_ahead_when_stamp_is_newer(tmp_path: Path) -> None:
+    _install_into(tmp_path)
     _stamp(tmp_path).write_text("0.15.0\n", encoding="utf-8")
-    drift = skill_version_drift(tmp_path, "0.14.0")
-    assert drift is not None and drift.direction == "ahead"
+    report = inspect_installed_skills(tmp_path, "0.14.0")
+    assert report is not None and report.version_direction == "ahead"
 
 
 def test_prerelease_difference_counts_as_behind(tmp_path: Path) -> None:
     """Equal release tuples, unequal text — never advise a downgrade path."""
+    _install_into(tmp_path)
     _stamp(tmp_path).write_text("0.14.0rc1\n", encoding="utf-8")
-    drift = skill_version_drift(tmp_path, "0.14.0rc2")
-    assert drift is not None and drift.direction == "behind"
+    report = inspect_installed_skills(tmp_path, "0.14.0rc2")
+    assert report is not None and report.version_direction == "behind"
+
+
+def test_edited_skill_is_content_drift_at_a_matching_version(
+    tmp_path: Path,
+) -> None:
+    """The gap a version stamp alone cannot see.
+
+    An editable checkout that moved ahead of an installed copy, or a hand
+    edit, leaves the stamp it was written with — so only comparing bytes
+    catches it.
+    """
+    _install_into(tmp_path)
+    (tmp_path / "codeprobe-mine" / "SKILL.md").write_text("# edited\n", "utf-8")
+
+    report = inspect_installed_skills(tmp_path, __version__)
+    assert report is not None
+    assert report.version_direction is None, "the stamp still matches"
+    assert report.stale == ("codeprobe-mine",)
+    assert report.drifted is True
+
+
+def test_partially_installed_tree_reports_missing(tmp_path: Path) -> None:
+    _install_into(tmp_path)
+    shutil.rmtree(tmp_path / "codeprobe-run")
+
+    report = inspect_installed_skills(tmp_path, __version__)
+    assert report is not None
+    assert report.missing == ("codeprobe-run",)
+    assert report.stale == ()
 
 
 def test_installed_skill_drift_scans_supplied_roots(tmp_path: Path) -> None:
     clean, stale = tmp_path / "a", tmp_path / "b"
-    clean.mkdir()
-    stale.mkdir()
-    _stamp(clean).write_text("0.14.0\n", encoding="utf-8")
-    _stamp(stale).write_text("0.13.0\n", encoding="utf-8")
+    _install_into(clean)
+    _install_into(stale)
+    _stamp(stale).write_text("0.0.1\n", encoding="utf-8")
 
-    drift = installed_skill_drift([clean, stale], "0.14.0")
+    drift = installed_skill_drift([clean, stale], __version__)
     assert [d.dest for d in drift] == [stale]
+
+
+def test_installed_skill_drift_deduplicates_roots(tmp_path: Path) -> None:
+    """cwd and $HOME can be the same directory — report it once, not twice."""
+    _install_into(tmp_path)
+    _stamp(tmp_path).write_text("0.0.1\n", encoding="utf-8")
+    assert len(installed_skill_drift([tmp_path, tmp_path], __version__)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -257,13 +304,25 @@ def test_doctor_check_name_does_not_look_like_a_tool_check(
     assert not _check_installed_skill_version().name.endswith("CLI")
 
 
-def test_doctor_warns_and_advises_install_when_behind(
-    tmp_path: Path, monkeypatch
-) -> None:
+def _home_install(tmp_path: Path, monkeypatch) -> Path:
+    """Point cwd and $HOME at tmp_path, install, and return the skills dir."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
     dest = tmp_path / ".claude" / "skills"
-    dest.mkdir(parents=True)
+    _install_into(dest)
+    return dest
+
+
+def test_doctor_passes_on_a_clean_install(tmp_path: Path, monkeypatch) -> None:
+    _home_install(tmp_path, monkeypatch)
+    result = _check_installed_skill_version()
+    assert result.passed is True
+
+
+def test_doctor_warns_and_advises_install_when_behind(
+    tmp_path: Path, monkeypatch
+) -> None:
+    dest = _home_install(tmp_path, monkeypatch)
     _stamp(dest).write_text("0.0.1\n", encoding="utf-8")
 
     result = _check_installed_skill_version()
@@ -276,13 +335,32 @@ def test_doctor_warns_and_advises_install_when_behind(
 def test_doctor_advises_package_upgrade_when_skills_are_newer(
     tmp_path: Path, monkeypatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    dest = tmp_path / ".claude" / "skills"
-    dest.mkdir(parents=True)
+    dest = _home_install(tmp_path, monkeypatch)
     _stamp(dest).write_text("99.0.0\n", encoding="utf-8")
 
     result = _check_installed_skill_version()
     assert result.passed is False
     assert "pip install -U codeprobe" in result.fix
     assert "would downgrade" in result.fix
+
+
+def test_doctor_reports_content_drift_at_a_matching_version(
+    tmp_path: Path, monkeypatch
+) -> None:
+    dest = _home_install(tmp_path, monkeypatch)
+    (dest / "codeprobe-run" / "SKILL.md").write_text("# edited\n", encoding="utf-8")
+
+    result = _check_installed_skill_version()
+    assert result.passed is False
+    assert "differ from the packaged copy" in result.detail
+    assert "codeprobe-run" in result.detail
+    assert "--force" in result.fix, "the refusal path needs naming in the fix"
+
+
+def test_doctor_reports_a_missing_skill(tmp_path: Path, monkeypatch) -> None:
+    dest = _home_install(tmp_path, monkeypatch)
+    shutil.rmtree(dest / "codeprobe-calibrate")
+
+    result = _check_installed_skill_version()
+    assert result.passed is False
+    assert "not installed (codeprobe-calibrate)" in result.detail

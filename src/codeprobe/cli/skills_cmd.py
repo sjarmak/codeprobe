@@ -183,13 +183,30 @@ def _plan_skill_install(
 
 
 @dataclass(frozen=True)
-class SkillVersionDrift:
-    """A destination whose installed skills predate (or postdate) the CLI."""
+class SkillDriftReport:
+    """How one installed skill tree differs from the running package.
+
+    Two independent axes, because they need different remediation:
+
+    * ``version_direction`` — the stamp disagrees with the package.
+      ``"ahead"`` must never be answered by re-running install, which
+      would overwrite newer skills with the older packaged copy.
+    * ``stale`` / ``missing`` — the SKILL.md bytes themselves differ from
+      what this package ships. Version-only comparison misses this
+      entirely: an editable checkout that moved ahead of an installed
+      copy, or a hand-edited skill, keeps the stamp it was written with.
+    """
 
     dest: Path
-    stamped: str
+    stamped: str | None
     package: str
-    direction: str  # "behind" | "ahead"
+    version_direction: str | None  # None | "behind" | "ahead"
+    stale: tuple[str, ...]
+    missing: tuple[str, ...]
+
+    @property
+    def drifted(self) -> bool:
+        return bool(self.version_direction or self.stale or self.missing)
 
 
 def _stamp_path(dest: Path) -> Path:
@@ -239,45 +256,81 @@ def _version_tuple(raw: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
-def skill_version_drift(
-    dest: Path, package_version: str | None = None
-) -> SkillVersionDrift | None:
-    """Compare ``dest``'s version stamp against the running package.
+def _version_direction(stamped: str | None, package: str) -> str | None:
+    """Classify a stamp against the package version.
 
-    Returns None when the stamp is absent (nothing installed here, or
-    installed before stamping existed) or matches. ``direction`` is
-    ``"ahead"`` only when the stamp parses as a strictly newer release —
-    that case must NOT advise re-running install, which would silently
-    downgrade the skills.
+    ``"ahead"`` only when the stamp parses as a strictly newer release.
+    Equal release tuples with unequal text (``0.14.0rc1`` vs ``0.14.0rc2``)
+    fall through to ``"behind"``, whose remediation is safe either way.
+    """
+    if stamped is None or stamped == package:
+        return None
+    return "ahead" if _version_tuple(stamped) > _version_tuple(package) else "behind"
+
+
+def inspect_installed_skills(
+    dest: Path, package_version: str | None = None
+) -> SkillDriftReport | None:
+    """Compare one installed skill tree against what this package ships.
+
+    Returns None when ``dest`` holds no codeprobe skills and no stamp —
+    an untouched ``~/.claude/skills`` full of somebody else's skills is
+    not drift, and must not nag someone who installed with ``--project``.
     """
     package = package_version if package_version is not None else __version__
     stamped = read_version_stamp(dest)
-    if stamped is None or stamped == package:
+    stale: list[str] = []
+    missing: list[str] = []
+    present = False
+    for name, content in _packaged_skills():
+        target = dest / name / "SKILL.md"
+        if not target.is_file():
+            missing.append(name)
+            continue
+        present = True
+        try:
+            if target.read_bytes() != content.encode("utf-8"):
+                stale.append(name)
+        except OSError:
+            stale.append(name)
+    if not present and stamped is None:
         return None
-    direction = (
-        "ahead" if _version_tuple(stamped) > _version_tuple(package) else "behind"
-    )
-    return SkillVersionDrift(
-        dest=dest, stamped=stamped, package=package, direction=direction
+    return SkillDriftReport(
+        dest=dest,
+        stamped=stamped,
+        package=package,
+        version_direction=_version_direction(stamped, package),
+        stale=tuple(stale),
+        missing=tuple(missing),
     )
 
 
 def installed_skill_drift(
     roots: list[Path] | None = None, package_version: str | None = None
-) -> list[SkillVersionDrift]:
-    """Report drift across the two destinations ``install`` writes to.
+) -> list[SkillDriftReport]:
+    """Report drift across the destinations ``install`` writes to.
 
-    Defaults to the project-local ``./.claude/skills`` and the user-home
-    ``~/.claude/skills`` — the ``--dest`` escape hatch is deliberately
-    not tracked, since codeprobe has no way to discover those paths later.
+    Defaults to the user-home ``~/.claude/skills`` (the install default)
+    and the project-local ``./.claude/skills`` — the ``--dest`` escape
+    hatch is deliberately not tracked, since codeprobe has no way to
+    discover those paths later.
     """
     candidates = (
         roots
         if roots is not None
-        else [Path.cwd() / ".claude" / "skills", _user_skills_root()]
+        else [_user_skills_root(), Path.cwd() / ".claude" / "skills"]
     )
-    found = [skill_version_drift(root, package_version) for root in candidates]
-    return [drift for drift in found if drift is not None]
+    seen: set[Path] = set()
+    reports: list[SkillDriftReport] = []
+    for root in candidates:
+        resolved = root.expanduser()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        report = inspect_installed_skills(resolved, package_version)
+        if report is not None and report.drifted:
+            reports.append(report)
+    return reports
 
 
 def _next_steps(dest: Path, count: int) -> list[str]:

@@ -50,6 +50,11 @@
   the copies are inert, so `pip install -U codeprobe` silently left stale
   guidance in place. Skills stamped *newer* than the package are told to
   upgrade the package rather than re-run install, which would downgrade them.
+- The drift check compares the installed SKILL.md bytes against the packaged
+  ones, not just the version stamp, and reports skills that are missing from a
+  destination. A hand-edited copy, or an editable checkout that moved ahead of
+  an installed one, keeps the stamp it was written with, so a version-only
+  comparison could not see it.
 
 ## 0.14.0rc2 (2026-07-29)
 
