@@ -28,6 +28,10 @@ class RepoRef:
     ground_truth_commit: str
     url: str = ""  # empty when ``local_path`` is provided
     local_path: str = ""  # absolute path to a local clone to copy
+    # See ``TaskMetadata.pin_parent_commit`` — same contract, per secondary
+    # repo. A cross-repo task can mix the two: its primary reproduces a merge
+    # commit while its secondaries were scanned at their own HEAD.
+    pin_parent_commit: bool = True
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -100,6 +104,24 @@ class TaskMetadata:
     quality_score: float = 0.0
     enrichment_source: str = ""
     ground_truth_commit: str = ""
+    # Producer-declared: what ``ground_truth_commit`` names.
+    #
+    # True (default, PR-derived tasks): it is the merge commit whose changes
+    # the agent must reproduce, so the workspace is pinned to its PARENT —
+    # the pre-merge state.
+    #
+    # False (comprehension / org-scale tasks): the answer key was produced by
+    # scanning the tree AT that commit, so the workspace is pinned THERE.
+    # Pinning to the parent instead scores the agent against a tree it never
+    # saw — every file the merge touched is silently wrong in the key.
+    #
+    # Declared by the producer rather than inferred by the consumer, for the
+    # codeprobe-b31f reason spelled out on ``dual_eligible`` below, and because
+    # no existing flag separates the two: mining.multi_repo emits org_scale
+    # tasks whose primary is a PR repro and whose secondaries are scanned.
+    # Suites mined before this field existed keep the True default and need a
+    # re-mine to pick up the correct semantics.
+    pin_parent_commit: bool = True
     ground_truth_commits: tuple[
         tuple[str, str], ...
     ] = ()  # (repo_name, sha) pairs for multi-repo

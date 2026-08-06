@@ -108,6 +108,32 @@ class TestMultiRepoWorkspace:
         assert _current_sha(workspace / "repos" / "repoA") == shas_a[1]
         assert _current_sha(workspace / "repos" / "repoB") == shas_b[0]
 
+    def test_scanned_ref_pins_at_its_own_commit(self, tmp_path: Path) -> None:
+        """A key scanned AT a commit must not be scored against its parent.
+
+        Cross-repo caller tasks scan the secondaries at their HEAD, so the
+        agent has to see that tree — pinning to the parent scored agents
+        against files they could not read.
+        """
+        repo = tmp_path / "src_scanned"
+        shas = _init_repo(repo, "s1", "s2", "s3")
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        setup_multi_repo_workspace(
+            workspace,
+            [
+                RepoRef(
+                    name="scanned",
+                    ground_truth_commit=shas[2],
+                    local_path=str(repo),
+                    pin_parent_commit=False,
+                )
+            ],
+        )
+
+        assert _current_sha(workspace / "repos" / "scanned") == shas[2]
+
     def test_accepts_dict_shape(self, tmp_path: Path) -> None:
         repo = tmp_path / "src"
         shas = _init_repo(repo, "c1", "c2")

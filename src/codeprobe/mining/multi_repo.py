@@ -413,11 +413,16 @@ def _mine_callers(
             continue
 
         # Build task with additional_repos + file_list ground truth.
+        # The primary keeps the default parent pin: its ground_truth_commit is
+        # the PR the agent must reproduce. The secondaries are the opposite —
+        # cross_refs were found by scanning them at HEAD, so that is the tree
+        # the agent has to see.
         repo_refs = tuple(
             RepoRef(
                 name=s.name,
                 ground_truth_commit=_head_sha(s),
                 local_path=str(s.resolve()),
+                pin_parent_commit=False,
             )
             for s in secondaries
         )

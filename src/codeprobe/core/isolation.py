@@ -48,6 +48,7 @@ def _coerce_repo_ref(value: object) -> RepoRef:
             ground_truth_commit=str(value.get("ground_truth_commit", "")),
             url=str(value.get("url", "")),
             local_path=str(value.get("local_path", "")),
+            pin_parent_commit=bool(value.get("pin_parent_commit", True)),
         )
     raise TypeError(f"Cannot coerce {type(value).__name__} to RepoRef")
 
@@ -878,8 +879,10 @@ def setup_multi_repo_workspace(
        ``workspace/repos/<name>``.
     2. Otherwise, clone (or reuse cache) from ``url`` at
        ``cache_dir/<name>``, then copy into the workspace.
-    3. Pin the resulting workspace copy to ``ground_truth_commit^`` via
-       :func:`git_pin_commit`.
+    3. Pin the resulting workspace copy via :func:`git_pin_commit` — to
+       ``ground_truth_commit^`` when the ref declares ``pin_parent_commit``
+       (a merge commit to reproduce), else to ``ground_truth_commit`` itself
+       (the tree its answer key was scanned from).
 
     Returns the list of workspace-relative repo paths (one per input).
 
@@ -903,7 +906,12 @@ def setup_multi_repo_workspace(
                 cached = _ensure_cached_clone(ref.url, ref.name, cache_dir)
                 _copy_tree(cached, target)
             created.append(target)
-            git_pin_commit(target, f"{ref.ground_truth_commit}^")
+            git_pin_commit(
+                target,
+                f"{ref.ground_truth_commit}^"
+                if ref.pin_parent_commit
+                else ref.ground_truth_commit,
+            )
     except Exception:
         # Roll back partial state so the caller never sees a half-set-up
         # workspace.

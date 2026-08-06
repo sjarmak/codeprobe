@@ -745,6 +745,9 @@ def execute_task(
     # didn't already supply one, so git checkout/restore/clean can never
     # target the caller's primary checkout (codeprobe-f7rl.2).
     pin_commit = _meta_block.get("ground_truth_commit", "")
+    # Absent on suites mined before the field existed; the default matches
+    # the PR-repro behavior those suites were mined under.
+    pin_parent = bool(_meta_block.get("pin_parent_commit", True))
     additional_repos = _meta_block.get("additional_repos", [])
     _owned_iso: IsolationStrategy | None = None
     _owned_wt: Path | None = None
@@ -857,30 +860,34 @@ def execute_task(
         else:
             prompt = base_prompt(instruction, repo_path, worktree_path=_effective_wt)
 
-        # Pin workspace to pre-merge commit when task has a ground_truth_commit.
-        # The agent starts from the parent of the merge commit (the state before
-        # the PR landed) and must reproduce the changes. When a pin applies,
-        # _effective_wt is always set (owned or caller-supplied), so the pin
-        # never targets repo_path.
+        # Pin the workspace when the task has a ground_truth_commit. Which
+        # commit depends on what that SHA means to the producer: a merge
+        # commit the agent must reproduce (pin the parent — the pre-merge
+        # state) or the tree the answer key was scanned from (pin it
+        # directly, or the agent is graded against files it cannot see).
+        # When a pin applies, _effective_wt is always set (owned or
+        # caller-supplied), so the pin never targets repo_path.
         effective_workspace = _effective_wt or repo_path
         if pin_commit:
+            suffix = "^" if pin_parent else ""
+            pin_ref = f"{pin_commit}{suffix}"
+            pin_state = "pre-merge state" if pin_parent else "ground-truth state"
+            short_ref = f"{pin_commit[:8]}{suffix}"
             try:
-                git_pin_commit(effective_workspace, f"{pin_commit}^")
+                git_pin_commit(effective_workspace, pin_ref)
                 logger.info(
-                    "[%s] Pinned workspace to %s^ (pre-merge state)",
-                    task_id,
-                    pin_commit[:8],
+                    "[%s] Pinned workspace to %s (%s)", task_id, short_ref, pin_state
                 )
             except subprocess.CalledProcessError as exc:
                 return _error_result(
-                    f"Failed to pin workspace to {pin_commit[:8]}^: "
+                    f"Failed to pin workspace to {short_ref}: "
                     + (exc.stderr.decode(errors="replace") if exc.stderr else str(exc)),
                     error_category="system",
                 )
 
-        # Cross-repo tasks: lay out additional repos as workspace/repos/<name>
-        # and pin each to its own ground_truth_commit^.  Like commit pinning,
-        # this only ever runs against a worktree, never repo_path.
+        # Cross-repo tasks: lay out additional repos as workspace/repos/<name>,
+        # each pinned per its own RepoRef. Like commit pinning, this only ever
+        # runs against a worktree, never repo_path.
         if additional_repos:
             try:
                 setup_multi_repo_workspace(effective_workspace, additional_repos)

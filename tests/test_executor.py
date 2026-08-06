@@ -2521,7 +2521,11 @@ class TestCommitPinning:
     ground_truth_commit is present in task metadata."""
 
     def _make_task_with_metadata(
-        self, task_dir: Path, *, ground_truth_commit: str = ""
+        self,
+        task_dir: Path,
+        *,
+        ground_truth_commit: str = "",
+        pin_parent_commit: bool | None = None,
     ) -> Path:
         """Create a task with metadata.json containing ground_truth_commit."""
         import json
@@ -2534,13 +2538,16 @@ class TestCommitPinning:
         test_sh.write_text("#!/bin/bash\nexit 0\n")
         test_sh.chmod(0o755)
 
+        meta_block: dict[str, object] = {
+            "name": f"merge-{task_dir.name}",
+            "ground_truth_commit": ground_truth_commit,
+        }
+        if pin_parent_commit is not None:
+            meta_block["pin_parent_commit"] = pin_parent_commit
         metadata = {
             "id": task_dir.name,
             "repo": "test-repo",
-            "metadata": {
-                "name": f"merge-{task_dir.name}",
-                "ground_truth_commit": ground_truth_commit,
-            },
+            "metadata": meta_block,
             "verification": {"type": "test_script", "command": "bash tests/test.sh"},
         }
         (task_dir / "metadata.json").write_text(json.dumps(metadata))
@@ -2557,6 +2564,28 @@ class TestCommitPinning:
         with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
             result = execute_task(adapter, task_dir, Path("/repo"), config)
             mock_pin.assert_called_once_with(Path("/repo"), "abc123def456^")
+            assert result.completed.status == "completed"
+
+    def test_pins_at_the_commit_when_the_key_was_scanned_there(
+        self, tmp_path: Path
+    ) -> None:
+        """Scan-derived oracles pin at their own commit, not its parent.
+
+        Org-scale answer keys are built by scanning the tree AT
+        ground_truth_commit; pinning to the parent scored agents against a
+        tree they never saw.
+        """
+        task_dir = self._make_task_with_metadata(
+            tmp_path / "task-pin-at",
+            ground_truth_commit="abc123def456",
+            pin_parent_commit=False,
+        )
+        adapter = FakeAdapter(stdout="output")
+        config = AgentConfig()
+
+        with patch("codeprobe.core.executor.git_pin_commit") as mock_pin:
+            result = execute_task(adapter, task_dir, Path("/repo"), config)
+            mock_pin.assert_called_once_with(Path("/repo"), "abc123def456")
             assert result.completed.status == "completed"
 
     def test_no_pin_without_ground_truth_commit(self, tmp_path: Path) -> None:
