@@ -131,20 +131,51 @@ def test_install_user_flag_targets_home_skills(
     assert on_disk == EXPECTED_SKILLS
 
 
-def test_install_dest_and_user_are_mutually_exclusive(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--dest", "DEST", "--user"],
+        ["--dest", "DEST", "--project"],
+        ["--user", "--project"],
+    ],
+)
+def test_install_destination_selectors_are_mutually_exclusive(
+    tmp_path: Path, flags: list[str]
 ) -> None:
-    result = _install(["--dest", str(tmp_path), "--user"])
+    args = [str(tmp_path) if f == "DEST" else f for f in flags]
+    result = _install(args)
     assert result.exit_code != 0
     payload = _payload(result)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "MUTEX_FLAGS"
 
 
-def test_install_defaults_to_cwd_claude_skills(tmp_path: Path) -> None:
+def test_install_defaults_to_user_home_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repo under test is an argument, not the install directory.
+
+    Scoping the skills to whatever directory the customer happened to run
+    ``pip install`` from would make the common case — point codeprobe at
+    some other checkout — silently skill-less.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    runner = CliRunner()
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(
+            skills, ["install", "--json"], env={"HOME": str(tmp_path)}
+        )
+        assert result.exit_code == 0, result.output
+        dest = tmp_path / ".claude" / "skills"
+        assert _payload(result)["data"]["dest"] == str(dest)
+        on_disk = {p.parent.name for p in dest.glob("*/SKILL.md")}
+        assert on_disk == EXPECTED_SKILLS
+
+
+def test_install_project_flag_targets_cwd_claude_skills(tmp_path: Path) -> None:
     runner = CliRunner()
     with runner.isolated_filesystem(temp_dir=tmp_path) as cwd:
-        result = runner.invoke(skills, ["install", "--json"])
+        result = runner.invoke(skills, ["install", "--project", "--json"])
         assert result.exit_code == 0, result.output
         dest = Path(cwd) / ".claude" / "skills"
         assert _payload(result)["data"]["dest"] == str(dest)

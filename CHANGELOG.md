@@ -30,6 +30,18 @@
 
 ### Skill onboarding
 
+- **`codeprobe skills install` now installs into `~/.claude/skills` by default**,
+  not `./.claude/skills`. The repository under test is an argument to
+  `codeprobe mine` / `run`, so skills scoped to the directory someone happened
+  to install from left every other repo skill-less. `--project` selects the old
+  project-local behavior, `--user` states the new default explicitly, and
+  `--dest` still takes an explicit path; combining any two is `MUTEX_FLAGS`.
+- The shipped skills no longer tell agents to cross-reference
+  `src/codeprobe/cli/error_codes.json` or `.../envelope.py`. Those paths exist
+  only in a codeprobe checkout, never in the repository the skills are
+  installed into. Each skill already inlines the envelope shape and its closed
+  set of error codes, and the runtime envelope's `error` object carries the
+  message and remediation.
 - `codeprobe skills install` renders a banner and tells the operator what to
   ask their agent for next, instead of ending on a list of copied paths. The
   banner is TTY-only and never enters the JSON envelope path.

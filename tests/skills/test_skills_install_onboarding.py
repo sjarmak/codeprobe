@@ -92,6 +92,28 @@ def test_pretty_install_prints_next_steps(tmp_path: Path) -> None:
     )
 
 
+def test_default_install_says_skills_are_machine_wide(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The default lands in ~/.claude/skills — say so, don't say "this project"."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = CliRunner().invoke(
+        skills, ["install", "--no-json"], env={"HOME": str(tmp_path)}
+    )
+    assert result.exit_code == 0, result.output
+    assert "Available in every project on this machine" in result.output
+    assert str(tmp_path / ".claude" / "skills") in result.output
+
+
+def test_project_install_scopes_the_message_and_points_at_user(
+    tmp_path: Path,
+) -> None:
+    result = _install(["--dest", str(tmp_path / ".claude" / "skills"), "--no-json"])
+    assert result.exit_code == 0, result.output
+    assert "in this project picks these up" in result.output
+    assert "Use --user to make them available everywhere" in result.output
+
+
 def test_non_claude_dest_warns_skills_will_not_load(tmp_path: Path) -> None:
     result = _install(["--dest", str(tmp_path / "elsewhere"), "--no-json"])
     assert result.exit_code == 0, result.output

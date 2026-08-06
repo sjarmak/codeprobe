@@ -2,10 +2,16 @@
 
 ``codeprobe skills install`` copies the packaged agent skills
 (``codeprobe.skills_data`` wheel package data) into a ``.claude/skills``
-directory — the project-local one by default, ``~/.claude/skills`` with
-``--user`` — so pip customers get the paired-skills contract (PRD §7)
+directory — ``~/.claude/skills`` by default, the project-local one with
+``--project`` — so pip customers get the paired-skills contract (PRD §7)
 without cloning this repository. Existing files that differ from the
 packaged versions are never overwritten without ``--force``.
+
+The user-home default follows from the CLI's own shape: the repository
+under test is an argument to ``codeprobe mine`` / ``codeprobe run``, so
+the skills are not tied to the directory they were installed from, and
+scoping them per-project would mean re-installing for every repo someone
+wants to benchmark.
 
 ``codeprobe skills migrate`` implements PRD §13-T5 + §16 M-Mod 5: the
 user-home skills at
@@ -92,8 +98,8 @@ envelope / error-code / default-resolution shape.
 
 * If you installed codeprobe via ``pip install codeprobe``, run
   ``codeprobe skills install`` to materialize the packaged
-  ``codeprobe-{new_suffix}`` replacement into your project's
-  ``.claude/skills/`` directory.
+  ``codeprobe-{new_suffix}`` replacement into ``~/.claude/skills/``
+  (or pass ``--project`` to scope it to the current repository).
 * If you want to keep editing a local copy, delete this directory
   (``rm -r ~/.claude/skills/{old_name}``) and pin the repo-committed
   version via your project-level ``.claude`` config.
@@ -292,10 +298,16 @@ def _next_steps(dest: Path, count: int) -> list[str]:
         '  "interpret the last run"',
         "",
     ]
-    if dest.name == "skills" and dest.parent.name == ".claude":
+    if dest == _user_skills_root():
         lines.append(
-            "A new Claude Code session picks these up automatically; they are "
-            "model-invoked, not slash commands."
+            "Available in every project on this machine; they are model-invoked, "
+            "not slash commands."
+        )
+    elif dest.name == "skills" and dest.parent.name == ".claude":
+        lines.append(
+            "A new Claude Code session in this project picks these up; they are "
+            "model-invoked, not slash commands. Use --user to make them available "
+            "everywhere."
         )
     else:
         lines.append(
@@ -405,17 +417,21 @@ def skills() -> None:
     "dest_opt",
     type=click.Path(path_type=Path),
     default=None,
-    help=(
-        "Directory to install skills into "
-        "(default: ./.claude/skills of the current directory)."
-    ),
+    help="Directory to install skills into (default: ~/.claude/skills).",
 )
 @click.option(
     "--user",
     "user_flag",
     is_flag=True,
     default=False,
-    help="Install into ~/.claude/skills instead (mutually exclusive with --dest).",
+    help="Install into ~/.claude/skills — the default, stated explicitly.",
+)
+@click.option(
+    "--project",
+    "project_flag",
+    is_flag=True,
+    default=False,
+    help="Install into ./.claude/skills of the current directory instead.",
 )
 @click.option(
     "--force",
@@ -427,6 +443,7 @@ def skills() -> None:
 def install_cmd(
     dest_opt: Path | None,
     user_flag: bool,
+    project_flag: bool,
     force_flag: bool,
     json_flag: bool,
     no_json_flag: bool,
@@ -440,27 +457,43 @@ def install_cmd(
     versions are left untouched; files that differ are never overwritten
     without ``--force`` — the command refuses with
     ``SKILL_INSTALL_CONFLICT`` before writing anything.
+
+    The default is ``~/.claude/skills``: the repository being benchmarked
+    is an argument to ``codeprobe mine`` / ``run``, not the directory you
+    installed from, so scoping the skills to one project would make the
+    common case (mine a path from wherever you happen to be) fail. Use
+    ``--project`` to scope them to the current repository instead.
     """
     out_mode = resolve_mode(
         "skills install", json_flag, no_json_flag, json_lines_flag,
     )
-    if dest_opt is not None and user_flag:
+    selectors = [
+        name
+        for name, chosen in (
+            ("--dest", dest_opt is not None),
+            ("--user", user_flag),
+            ("--project", project_flag),
+        )
+        if chosen
+    ]
+    if len(selectors) > 1:
         raise PrescriptiveError(
             code="MUTEX_FLAGS",
             message=(
-                "Cannot use --dest with --user. Use --dest <path> for an "
-                "explicit directory or --user for ~/.claude/skills."
+                f"Cannot combine {' with '.join(selectors)}. Pick one "
+                "destination: --user for ~/.claude/skills (the default), "
+                "--project for ./.claude/skills, or --dest <path>."
             ),
-            next_try_flag="--dest",
+            next_try_flag=selectors[0],
             next_try_value="",
-            detail={"conflicting_flags": ["--dest", "--user"]},
+            detail={"conflicting_flags": selectors},
         )
-    if user_flag:
-        dest = _user_skills_root()
+    if project_flag:
+        dest = Path.cwd() / ".claude" / "skills"
     elif dest_opt is not None:
         dest = dest_opt
     else:
-        dest = Path.cwd() / ".claude" / "skills"
+        dest = _user_skills_root()
 
     plan, conflicts = _plan_skill_install(
         _packaged_skills(), dest, force=force_flag

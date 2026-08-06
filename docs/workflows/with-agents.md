@@ -10,18 +10,21 @@ The skills ship inside the `codeprobe` wheel, so `pip install codeprobe` is the 
 
 ```bash
 pip install codeprobe
-
-# Option A: install into the repo you want to benchmark (recommended)
-cd /path/to/your/repo
 codeprobe skills install
-
-# Option B: install user-wide (available in every project)
-codeprobe skills install --user
 ```
 
-`codeprobe skills install` writes the packaged `codeprobe-*` skills into `./.claude/skills/` (or `~/.claude/skills/` with `--user`). It never clobbers local edits: if an existing copy differs from the packaged version, the command refuses with `SKILL_INSTALL_CONFLICT` before writing anything, and `--force` overwrites deliberately.
+That writes the packaged `codeprobe-*` skills into `~/.claude/skills/`, so they are available in every project on the machine. That is the default because the repository you benchmark is an *argument* to `codeprobe mine` and `codeprobe run` — the skills are not tied to the directory you installed from, and you should not have to re-install for each repo you point them at.
 
-Start (or restart) Claude Code in the target repo. The skills are discovered on startup.
+To scope them to a single repository instead — checking them into that repo, or keeping a pinned copy — install from inside it:
+
+```bash
+cd /path/to/your/repo
+codeprobe skills install --project   # writes ./.claude/skills/
+```
+
+`--dest <path>` takes an explicit directory. Whichever you choose, the command never clobbers local edits: if an existing copy differs from the packaged version, it refuses with `SKILL_INSTALL_CONFLICT` before writing anything, and `--force` overwrites deliberately.
+
+Start (or restart) Claude Code. The skills are discovered on startup.
 Before asking a skill to mine or run, check the selected agent path from that repo:
 
 ```bash
@@ -66,6 +69,6 @@ The skills are for interactive sessions where you want the agent to handle the w
 
 ## Troubleshooting
 
-- **Skills don't get picked up**: make sure `.claude/skills/<skill-name>/SKILL.md` exists and has valid YAML frontmatter. Restart Claude Code; skills are discovered on startup.
-- **Skills out of date after upgrading codeprobe**: re-run `codeprobe skills install`. If it refuses with `SKILL_INSTALL_CONFLICT` because you edited the installed copies, re-run with `--force` to overwrite them.
+- **Skills don't get picked up**: make sure `~/.claude/skills/<skill-name>/SKILL.md` exists (or `./.claude/skills/...` for a `--project` install) and has valid YAML frontmatter. Restart Claude Code; skills are discovered on startup.
+- **Skills out of date after upgrading codeprobe**: the installed copies are inert files, so upgrading the package does not touch them. `codeprobe doctor` warns when they drift from the CLI; re-run `codeprobe skills install` to refresh. If it refuses with `SKILL_INSTALL_CONFLICT` because you edited the installed copies, re-run with `--force` to overwrite them.
 - **`codeprobe: command not found` inside a skill**: the skills shell out to the `codeprobe` CLI. Make sure it's installed in the same environment the agent runs from (`pip install codeprobe`).
