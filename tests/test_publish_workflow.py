@@ -126,6 +126,25 @@ def test_publish_job_requires_combined_release_gate() -> None:
     )
 
 
+def test_publish_runs_on_gates_real_result_not_an_inherited_skip() -> None:
+    """A green gate must publish; a skipped or failed one must not.
+
+    Regression for run 31136068209, which passed every gate and shipped
+    nothing: publish carried no condition of its own, so the skip of
+    e2e-enterprise reached it through the needs graph even though gate had
+    succeeded. Only a status-check function stops that inheritance, and the
+    explicit result comparison is what keeps a skipped gate from publishing.
+    """
+    publish = _workflow()["jobs"]["publish"]
+    assert isinstance(publish, dict)
+    condition = publish["if"]
+    assert isinstance(condition, str)
+
+    normalized = " ".join(condition.split())
+    assert "always()" in normalized
+    assert "needs.gate.result == 'success'" in normalized
+
+
 def test_pypi_credentials_exist_only_after_gate_job() -> None:
     jobs = _workflow()["jobs"]
     assert isinstance(jobs, dict)

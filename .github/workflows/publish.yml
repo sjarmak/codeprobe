@@ -203,6 +203,13 @@ jobs:
 
   publish:
     needs: [gate]
+    # `gate` survives a skipped e2e-enterprise via its own always(), but that
+    # rescues only the job it is written on: with an implicit condition,
+    # publish still inherited the skip from further up the needs graph and was
+    # skipped with zero steps even though gate had genuinely succeeded — run
+    # 31136068209 passed every gate and shipped nothing. Assert gate's real
+    # result instead, so a skipped or failed gate still cannot publish.
+    if: always() && needs.gate.result == 'success'
     runs-on: ubuntu-22.04
     permissions:
       contents: read
